@@ -37,7 +37,7 @@
 #            or a missing CPU figure, is marked VOID and left out of the means (the PC is shared with other users' VMs
 #            and builds).
 # ARMS: A=main, B=fix, A2=main again (the A/A floor), S=SPLIT if set. Order rotated per block. Usage:
-#   sched_wake_ab_pc.sh [BLOCKS]   MAIN= FIX= FIX_MARK=<string only the fix's hal_linux.c has> SPLIT= OUT= WORK=.
+#   sched_wake_ab_pc.sh [BLOCKS]   MAIN= FIX= FIX_MARK=<string only the fix's hal_linux.c has> SPLIT= SPLIT_MARK= OUT= WORK=.
 # Run it detached. The last line is always "sched_wake_ab_pc done rc=<n>".
 set -u
 BLOCKS=${1:-4}
@@ -87,7 +87,10 @@ arm_sha[A2]=${arm_sha[A]}
 arms=(A B A2)
 if [ -n "$SPLIT" ]; then
     prepare S "$SPLIT"
-    grep -q 'rx_wait_long' "${arm_dir[S]}/../../../../src/hal_linux.c" || { echo "split arm has no rx_wait_long"; exit 1; }
+    # SPLIT_MARK: what the extra arm's hal_linux.c must contain (the split design's rx_wait_long by default; set it to
+    # another design's marker to run that one as arm S).
+    grep -q "${SPLIT_MARK:-rx_wait_long}" "${arm_dir[S]}/../../../../src/hal_linux.c" ||
+        { echo "arm S has no ${SPLIT_MARK:-rx_wait_long}"; exit 1; }
     arms+=(S)
 fi
 [ "${arm_sha[A]}" != "${arm_sha[B]}" ] || { echo "MAIN and FIX are the same commit"; exit 1; }
@@ -212,7 +215,7 @@ END {
         insn("srv_insn_u/rtt", siu, b, a, a2); insn("srv_insn_k/rtt", sik, b, a, a2)
         printf "\n"
         if (n[s]) {
-            printf "SPLIT nice=%d runs S=%d (not judged) | gap_p50_us S=%.1f d=%+.1f | cli_cpu_us/rtt S=%.1f d=%+.1f (%+.1f%%) | srv_cpu_us/rtt S=%.1f d=%+.1f", ni, n[s], m(gap, s), m(gap, s) - m(gap, a), m(cpu, s), m(cpu, s) - m(cpu, a), pct(cpu, s, a), m(srv, s), m(srv, s) - m(srv, a)
+            printf "ARM_S nice=%d runs S=%d (not judged) | gap_p50_us S=%.1f d=%+.1f | cli_cpu_us/rtt S=%.1f d=%+.1f (%+.1f%%) | srv_cpu_us/rtt S=%.1f d=%+.1f", ni, n[s], m(gap, s), m(gap, s) - m(gap, a), m(cpu, s), m(cpu, s) - m(cpu, a), pct(cpu, s, a), m(srv, s), m(srv, s) - m(srv, a)
             insn("cli_insn_u/rtt", ciu, s, a, a2); insn("cli_insn_k/rtt", cik, s, a, a2)
             insn("srv_insn_u/rtt", siu, s, a, a2); insn("srv_insn_k/rtt", sik, s, a, a2)
             printf "\n"
