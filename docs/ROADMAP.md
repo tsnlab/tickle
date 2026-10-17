@@ -207,6 +207,12 @@ The user's active list (2026-10-05), in order.
    (DESIGN.md 2, "Receive path (FreeRTOS HAL)").
 8. **CycloneDDS arm of the mixed shared-memory + network test**: the mixed-delivery test has no Cyclone arm yet.
    It needs iceoryx plus network config. (COMPARISON 1a, mixed delivery)
+   Done 2026-10-17 at `4e49ed43` (`experiments/mixed_delivery.sh FRAMEWORK=cyclonedds`, run by
+   `mixed_delivery_campaign.sh` with TickLE and FastDDS at the same commit; `~/rig_results_safe/mixed_4e49ed43_20261017-152135.*`).
+   CycloneDDS's local subscriber took shared memory in every MIXED rep (publisher-host IP octets per local payload
+   octet <= 0.0004, against 1.07 in the MIXED_NET control). p2, 4 reps: BEST_EFFORT 49.7 / 70.6 k/s (local loses
+   20-33%, remote 0.07-0.13%); RELIABLE 71.7 / 71.7 k/s, every sample delivered to both. TickLE at the same commit:
+   90.6 / 90.6 and 90.4 / 90.4, loss 0.
 
 ## Next
 
