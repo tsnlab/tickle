@@ -542,6 +542,11 @@ struct tt_LargeState {
     // encode_failed: samples whose ranged encode and data_encode both failed after some of it had gone - dropped.
     uint64_t encoded_by_range;
     uint64_t encode_failed;
+    // discovery_replies_skipped: discovery replies (our announce unicast to a peer that announced or asked) left unsent
+    // because the send buffer was full (tickle.c send_datagram_unless_full()); the peer pulls the list later.
+    // reply_unless_full: set while such a reply is being sent, so its flush neither waits for room nor blocks the poll.
+    uint64_t discovery_replies_skipped;
+    bool reply_unless_full;
     // Set by the HAL's wait when the socket a large send waits on has room again (tt_tx_await_writable()); core clears
     // it and resumes the send (large_tx_writable()).
     bool tx_writable;
