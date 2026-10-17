@@ -145,6 +145,19 @@
 #                 control: the same binary. Cross-host default mode only; named in meta.txt (large_block_arms=). Its
 #                 treatment is the publisher's shutdown line, "large_block_waits=<n> large_block_timeouts=<n>": a
 #                 tickle@block run whose publisher shows large_block_waits=0 on a saturating cell did not receive it.
+#
+# Added 2026-10-17 for creation-time latency (the user's decision: latency = arrival - the data's creation time, the
+# scheduled publish time in a fixed-rate cell; creation_latency_summary.py, perf_test_creation_trace.py). Off unless set:
+#   CREATION_TRACE=1  every perf_test runs with PERF_TEST_CREATION_TRACE=/tmp/ka_<role>.ctrace, fetched to
+#                 <stem>_<role>.ctrace: one line per published sample (its stamp and how late the stamp was against
+#                 its schedule) and per received one (its stamp and perf_test's own latency). perf_test must carry the
+#                 trace (perf_test_creation_trace.py apply, then a stage-2 build); a perf_test without it writes no file,
+#                 which the summary reads as "no trace", never as "no wait". Recorded in meta.txt (creation_trace=1).
+#   ROUNDTRIP=1   the ping-pong control: the client's perf_test runs --roundtrip_mode Main (-p 1 -s 1; its "pub" log
+#                 and trace hold both its sends and the echoes' arrivals, one clock), the server's --roundtrip_mode
+#                 Relay (-p 0 -s 1: it republishes every sample it receives with its stamp unchanged). Cross-host
+#                 default mode only (no SAMEHOST, no EQUAL_BOUND, no DRY). Recorded in meta.txt (roundtrip=1). The
+#                 other summaries do not read a round-trip run; creation_latency_summary.py does.
 #   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
 #                 "tbf rate 1gbit burst 64kb latency 100ms" - the rig's link, which a veth does not have: without it
 #                 the I4s cell does not saturate on the PC. Lossless cells only; restored to none at the end.
@@ -366,6 +379,15 @@ say "qos [$QOS_ARGS] rate $PUB_RATE Hz; samehost $SAMEHOST; clock probe $CLOCK_P
     "(client $CLIENT, server $SERVER)"
 printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\npc_preflight=%s\n' "$QOS_ARGS" \
     "$PUB_RATE" "$SAMEHOST" "$CLOCK_PROBE" "$DUR" "$DRY" "$PC_PREFLIGHT" > "$OUT.runs/meta.txt"
+# CREATION_TRACE and ROUNDTRIP (header, 2026-10-17).
+CREATION_TRACE=${CREATION_TRACE:-0}; ROUNDTRIP=${ROUNDTRIP:-0}
+case "$CREATION_TRACE:$ROUNDTRIP" in [01]:[01]) ;; *) say "CREATION_TRACE and ROUNDTRIP are 0 or 1"; exit 64 ;; esac
+if [ "$ROUNDTRIP" = 1 ] && { [ "$SAMEHOST" = 1 ] || [ -n "$EQUAL_BOUND" ] || [ "$DRY" = 1 ]; }; then
+    say "REFUSED: ROUNDTRIP=1 is cross-host default mode only (no SAMEHOST, EQUAL_BOUND or DRY)"; exit 64
+fi
+printf 'creation_trace=%s\nroundtrip=%s\npf_shape=%s\n' "$CREATION_TRACE" "$ROUNDTRIP" "$PF_SHAPE" >> "$OUT.runs/meta.txt"
+[ "$CREATION_TRACE" = 1 ] && say "creation trace: every perf_test writes /tmp/ka_<role>.ctrace (perf_test_creation_trace.py)"
+[ "$ROUNDTRIP" = 1 ] && say "round trip: client perf_test --roundtrip_mode Main, server --roundtrip_mode Relay"
 case " $ARMS " in *" tickle@csum0 "*)
     echo "udp_csum0_arms=tickle@head:TT_UDP_CSUM0-unset tickle@csum0:TT_UDP_CSUM0=1(head's binary)" >> "$OUT.runs/meta.txt"
     say "UDP checksum 0 A/B: tickle@csum0 = tickle@head's librmw_tickle.so with TT_UDP_CSUM0=1" ;;
@@ -627,7 +649,9 @@ role=$1; envfile=$2; shift 2
 source "$envfile"
 '"$(remote_child_of_perf)"'
 PT=${KA_PERF_TEST:-$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test}
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start /tmp/ka_$role.pgf
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start /tmp/ka_$role.pgf /tmp/ka_$role.ctrace
+# CREATION_TRACE=1 (header): perf_test writes its creation trace here; unset, it writes nothing.
+if [ "${KA_CTRACE:-0}" = 1 ]; then export PERF_TEST_CREATION_TRACE=/tmp/ka_$role.ctrace; else unset PERF_TEST_CREATION_TRACE; fi
 date +%s%N > /tmp/ka_$role.start
 setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.lpid; exec ${KA_PRE:-} \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.lpid ] && break; sleep 0.2; done
@@ -788,7 +812,7 @@ net_snap() { # $1 file, $2 label: one line per host (header, <stem>_net.txt); "u
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
     [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
-    sh_ "$h" "KA_PRE='$pre' KA_PGF='${PGFAULTS:-0}' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
+    sh_ "$h" "KA_PRE='$pre' KA_PGF='${PGFAULTS:-0}' KA_CTRACE='$CREATION_TRACE' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
 }
 # insn_of <host> <role>: that role's counts as RUN-line fields (gate v2 A2), once perf itself has exited (up to 5 s).
 insn_of() {
@@ -818,9 +842,12 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     # Every arm, not only rmw_tickle's: rclcpp's type-description service needs a typesupport rmw_tickle does not
     # provide (its first run here died on it), and switching off an introspection service changes no data path.
     local rosargs="--ros-args --param start_type_description_service:=false"
-    launch "$SERVER" sub "$arm" "$topic" "$common -p 0 -s 1 --expected_num_pubs 1 --max_runtime $((dur + 8)) $rosargs"
+    # ROUNDTRIP=1 (header): the server relays (-p 0 -s 1 Relay), the client publishes and receives the echoes (Main).
+    local sub_mode="" pub_ps="-p 1 -s 0"
+    [ "$ROUNDTRIP" = 1 ] && sub_mode="--roundtrip_mode Relay" pub_ps="-p 1 -s 1 --roundtrip_mode Main"
+    launch "$SERVER" sub "$arm" "$topic" "$common -p 0 -s 1 $sub_mode --expected_num_pubs 1 --max_runtime $((dur + 8)) $rosargs"
     sleep 2
-    launch "$CLIENT" pub "$arm" "$topic" "$common -r $PUB_RATE -p 1 -s 0 --expected_num_subs 1 --max_runtime $dur $rosargs"
+    launch "$CLIENT" pub "$arm" "$topic" "$common -r $PUB_RATE $pub_ps --expected_num_subs 1 --max_runtime $dur $rosargs"
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
@@ -831,6 +858,10 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     fetch_ "$SERVER" /tmp/ka_sub.log "$dir/${stem}_sub.log"
     fetch_ "$CLIENT" /tmp/ka_pub.start "$dir/${stem}_pub.start"
     fetch_ "$SERVER" /tmp/ka_sub.start "$dir/${stem}_sub.start"
+    if [ "$CREATION_TRACE" = 1 ]; then # absent when perf_test has no trace: the summary says so
+        fetch_ "$CLIENT" /tmp/ka_pub.ctrace "$dir/${stem}_pub.ctrace"
+        fetch_ "$SERVER" /tmp/ka_sub.ctrace "$dir/${stem}_sub.ctrace"
+    fi
     if [ "${PGFAULTS:-0}" = 1 ]; then
         fetch_ "$CLIENT" /tmp/ka_pub.pgf "$dir/${stem}_pub.pgf"
         fetch_ "$SERVER" /tmp/ka_sub.pgf "$dir/${stem}_sub.pgf"
