@@ -20,6 +20,7 @@
  * block, the FastDDS harness had no compile-database entries for clang-tidy to use. The logic, the
  * timing and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -76,7 +77,7 @@ namespace {
     // ping's creation time.
     uint64_t g_next_due_ns = 0;
     struct BenchCreation g_creation;
-    char g_creation_fields[BENCH_CREATION_FIELDS_MAX];
+    std::array<char, BENCH_CREATION_FIELDS_MAX> g_creation_fields {};
 
     void sleep_to_next_ping(double seconds) {
         g_next_due_ns = harness::now_ns() + harness::seconds_to_ns(seconds);
@@ -262,7 +263,7 @@ namespace {
             static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s, opts.edge_max_s,
             BenchWindow_edge_end_name(stats.warmup_end), BenchWindow_edge_end_name(stats.cooldown_end),
             stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
-            BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
+            BenchCreation_fields(&g_creation, g_creation_fields.data(), g_creation_fields.size()),
             harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
