@@ -497,8 +497,9 @@ $check: FAIL"
     fi
 done
 
-# A scheduled entry runs at its deadline (sched_wake_check.c): within 150 us of clock_nanosleep()'s lateness at 1 ms and
-# at 500 ms, without spinning. Exit 2 is VOID - the control itself ran over 1 ms late - and is not a pass.
+# A scheduled entry runs at its deadline (sched_wake_check.c): within 150 us of clock_nanosleep()'s lateness at 500 ms,
+# at 1 ms and when another thread schedules an earlier entry, without spinning. Exit 2 is VOID - the control itself ran
+# over 1 ms late, or a bare relative wait showed no slack to catch - and is not a pass.
 make sched_wake_check
 # shellcheck disable=SC2024
 sudo ip netns exec "$NS1" ./sched_wake_check </dev/null >sched_wake_check.log 2>&1

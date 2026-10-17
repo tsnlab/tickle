@@ -239,7 +239,7 @@ rx_direct_check_raw: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle
 
 # A scheduled entry runs at its deadline, not 0.1% of its wait late (sched_wake_check.c). Run by test.sh (test-linux).
 sched_wake_check: sched_wake_check.c libtickle.a
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -lpthread
 
 # No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c says how it forces the race).
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
