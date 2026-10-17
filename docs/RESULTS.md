@@ -12,7 +12,7 @@ One table per area. A count is a number of scored comparisons: a table row, or o
 or cell is a WIN only when TickLE beats every scored vendor, and a LOSE when any vendor beats it. The large-message
 (L4) table instead scores each vendor separately, one letter each. Latency is measured **from the data's creation time** (its
 scheduled publish time) since 2026-10-17. The older send-stamp figures stay as diagnostics. Rows not yet re-measured
-from creation time say so.
+or not read from creation time say so (S7, the cross-host tails and the Array1m L4 cells).
 
 **Cross-host, core** (each framework's native API; [section 2](#2-cross-host-two-pis-over-the-rigs-link))
 
@@ -37,24 +37,28 @@ from creation time say so.
 
 | scored set | WIN | DRAW | LOSE | of |
 |---|---:|---:|---:|---:|
-| rows S1-S19 (S14 not scored; latency from the send stamp) | 18 | 0 | 0 | 18 |
+| rows S1-S19 (S14 not scored); S8-S10 latency from creation time (`596e9c9c`, 2026-10-17), S7 from the send stamp (its creation figure NOT READ, rule R4) | 18 | 0 | 0 | 18 |
+| *rows S1-S19 until 2026-10-18 (latency from the send stamp)* | *18* | *0* | *0* | *18* |
 
 | headline | TickLE | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
 | BEST_EFFORT KEEP_LAST 1 goodput, max rate, P2, Mbps | **20,867** | 0.31 | 934 | S1 |
 | RELIABLE goodput, P2, Mbps | **13,764** | 1,012 | delivery failed | S4 |
-| RTT mean from the send stamp, P2, ms | **0.023** | 0.107 | 0.074 | S7 |
+| RTT mean from creation time, P3, 200/s, ms | **0.082** | 0.164 | 0.129 | S9c |
+| RTT mean from the send stamp, P2, ms (diagnostic) | **0.023** | 0.107 | 0.074 | S7 |
 | client + server CPU per delivered sample, RELIABLE P3, us | **1.53** | 31.65 | delivery failed | S17 |
 
 **rmw, cross-host** (`rclcpp` over each rmw; [rmw layer](#rmw-layer))
 
 | scored set | WIN | DRAW | LOSE | of |
 |---|---:|---:|---:|---:|
-| rows 48-75 (latency from the send stamp) | 20 | 8 | 0 | 28 |
+| rows 48-75, latency rows from creation time (48c-67c, `18f16b85`, 2026-10-18) | 22 | 6 | 0 | 28 |
+| *rows 48-75 until 2026-10-18 (latency from the send stamp, `934f90de`)* | *20* | *8* | *0* | *28* |
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean from the send stamp, block wait, Bench 64 B BEST_EFFORT, ms | **0.246** | 0.320 | 0.269 | 48 |
+| RTT mean from creation time, block wait, Bench 64 B BEST_EFFORT, ms | **0.302** | 0.389 | 0.336 | 48c |
+| RTT mean from the send stamp, block wait, Bench 64 B BEST_EFFORT, ms (diagnostic) | **0.246** | 0.320 | 0.269 | 48 |
 | delivered msg/s, RELIABLE KEEP_ALL, Array1k, 5% loss | **74,129** | does not run | 1,808 | 73 |
 | RTT median from creation time, Array1k RELIABLE 100 Hz, ms (the control, not scored) | **0.32** | 0.42 | 0.35 | [control](#latency-from-creation-time-2026-10-17) |
 
@@ -62,13 +66,15 @@ from creation time say so.
 
 | scored set | WIN | DRAW | LOSE | of |
 |---|---:|---:|---:|---:|
-| rows R1-R21 and the 31 cells not shown (latency from the send stamp) | 52 | 0 | 0 | 52 |
+| rows R1-R21 and the 31 cells not shown; the eight round-trip cells (R1c-R12 and their p50, p99, CPU and RSS) from creation time at `18f16b85` (2026-10-18), the throughput cells at `06dd78d8` | 52 | 0 | 0 | 52 |
+| *the same until 2026-10-18 (latency from the send stamp, all at `06dd78d8`)* | *52* | *0* | *0* | *52* |
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean, block wait, Bench 64 B BEST_EFFORT, us | **35.8** | 121.4 | 111.6 | R1 |
+| RTT mean from creation time, block wait, Bench 64 B BEST_EFFORT, us | **94.9** | 184.1 | 166.3 | R1c |
+| RTT mean from the send stamp, block wait, Bench 64 B BEST_EFFORT, us (diagnostic, `06dd78d8`) | **35.8** | 121.4 | 111.6 | R1 |
 | delivered msg/s, Array1k BEST_EFFORT KEEP_LAST 1, max rate | **140,885** | 17,547 | 70,420 | R14 |
-| peak RSS, larger process, RTT Bench RELIABLE, kB | **13,572** | 26,264 | 15,248 | R12 |
+| peak RSS, larger process, RTT Bench RELIABLE, kB | **14,676** | 27,148 | 16,172 | R12 |
 
 **rmw, large messages** (Array1m and Array4m cross-host; [rmw large messages](#rmw-large-messages-l4-cross-host))
 
@@ -103,9 +109,12 @@ from creation time say so.
   not scored; campaign `A` counts the cell's RTT as one DRAW.
 - **Loss TIEs in the campaigns** (10 in `A`, 2 in `T`): TickLE lost nothing, and every vendor either lost nothing or
   had a range that touched zero.
-- **rmw poll wait, rows 59 and 62-67, against CycloneDDS.** At 100 and 200 us sleeps, half a poll cycle of waiting
-  dominates the round trip, and it is the same for every rmw. In row 67 CycloneDDS's median is lower (0.380 against
-  0.391 ms) but inside the spread.
+- **rmw poll wait, rows 63c-67c, against CycloneDDS** (from creation time, `18f16b85`). At 100 and 200 us sleeps, half
+  a poll cycle of waiting dominates the round trip, and it is the same for every rmw. In rows 63c, 65c and 67c
+  CycloneDDS's median is lower (0.400 against 0.402, 0.428 against 0.431, 0.443 against 0.454 ms) and in 64c equal
+  (0.426), each inside the interquartile overlap. Until 2026-10-18 (send stamp, `934f90de`) the list was rows 59 and
+  62-67; 59c and 62c are WINs in the new session, on the send stamp too ([Readings superseded on
+  2026-10-18](#readings-superseded-on-2026-10-18)).
 - **rmw KEEP_ALL Array4k at 0% loss** (row 74): all three are at the link ceiling.
 - **rmw large messages, 23 of 80:**
   - delivered % in every complete cell (13), where everyone delivered 100%;
@@ -117,7 +126,8 @@ from creation time say so.
   undelivered in a saturating cell.
 
 **Not scored as rows:** rows 5 and 5c (netem dominates), rows 45-47 (every framework detects correctly), S14 (nothing leaves the
-host), and zenoh-pico and rmw_zenoh (reference only). Places where
+host), S7c (creation: NOT READ under rule R4, pending a rule decision by the user; S7 stays scored on its send-stamp
+figure), and zenoh-pico and rmw_zenoh (reference only). Places where
 TickLE is behind inside a lead:
 
 - rmw_tickle's kernel wake (ppoll, then recvfrom) is ~6 us slower than the vendors' blocking recvmsg, although it is
@@ -130,6 +140,9 @@ TickLE is behind inside a lead:
   [Hybrid transport](#hybrid-transport-large-samples-rig)): AUTO's p99 is above forced MTU's, beyond the A/A floor, at
   0.01% loss (+0.12 ms) and 0.1% loss (+0.025 ms). Its wire bytes per unit are 0.46% higher at 1%. The pre-registered
   criterion against forced MTU failed at all three rates.
+- Same host at 200 pings/s (a 5 ms interval), TickLE's client sends each ping ~60 us after its due time, as the DDS
+  clients do; at 20/s it sends after 11 us. The scheduler's `timerfd` deadline wait (`596e9c9c`) covers only waits
+  longer than 10 ms. A further fix (ab/sched-wake-slack) is in rig A/B. Its creation lead in S8c-S10c holds anyway.
 
 ## How to read these numbers
 
@@ -173,8 +186,11 @@ S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `e521bbba` (2026-10
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
 explicitly (the DDS default), and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
 
-The RTT rows (S7-S10, S12, S18) are from the send stamp; they are not yet measured from creation time. Corrections
-and earlier sessions of these rows are in [Corrections and history](#same-host-corrections-and-earlier-sessions).
+The round-trip rows were re-measured from creation time on main `596e9c9c` (2026-10-17, rows S7c-S10c, and S12 and
+S18 from the same runs; [Same host from creation time](#same-host-from-creation-time-2026-10-17)). Latency is scored
+from creation time in S8c-S10c. S7c is NOT READ under rule R4, so S7 stays scored on its send-stamp figure. S7-S10 are
+the send-stamp figures, kept as diagnostics. Corrections and earlier sessions of these rows are in [Corrections and
+history](#same-host-corrections-and-earlier-sessions).
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
@@ -185,18 +201,23 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
 | S4 | RELIABLE | P2 1292 B | ✅ **13,764** | ❌ 1,012 | DELIVERY FAILED ◊ (2,165) | `e521bbba` | [notes](#same-host-notes) |
 | S5 | RELIABLE | P3 1424 B | ✅ **14,771** | ❌ 980 | DELIVERY FAILED ◊ (2,414) | `e521bbba` | [notes](#same-host-notes) |
 | S6 | RELIABLE | P4 2800 B | ✅ **14,917** | ❌ 1,924 | DELIVERY FAILED ◊ (4,542) | `e521bbba` | [notes](#same-host-notes) |
-| | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
+| | **[Latency from creation time](#same-host-from-creation-time-2026-10-17), RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
+| S7c | RTT from creation | P2 1292 B | NOT READ (R4) (0.082) | (0.167) | (0.129) | `596e9c9c` | creation: NOT READ (R4), pending a rule decision by the user |
+| S8c | RTT from creation, 20/s (60 s) | P2 1292 B | ✅ **0.039** | ❌ 0.166 | DELIVERY FAILED ◊ (0.141) | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S9c | RTT from creation | P3 1424 B | ✅ **0.082** | ❌ 0.164 | 0.129 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S10c | RTT from creation | P4 2800 B | ✅ **0.086** | ❌ 0.162 | 0.130 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
+| | **Latency from the send stamp, RTT mean ms** (diagnostic since 2026-10-17; S7 still scored) | | | | | | |
 | S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.107 | 0.074 | `e521bbba` | [notes](#same-host-notes) |
 | S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | DELIVERY FAILED ◊ (0.071) | `e17b4e6f` | [notes](#same-host-notes) |
 | S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.110 | DELIVERY FAILED ◊ (0.067) | `e521bbba` | [notes](#same-host-notes) |
 | S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | DELIVERY FAILED ◊ (0.069) | `e521bbba` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
 | S11 | publisher, us per delivered sample | BEST_EFFORT P4, max rate, KEEP_LAST 1 | ✅ **0.898** | ❌ 35,234 | 11.85 ¶ | `228da18d` | [notes](#same-host-notes) |
-| S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | DELIVERY FAILED ◊ (102.2) | `e17b4e6f` | [notes](#same-host-notes) |
+| S12 | client, us per round trip | RTT P2, 20/s | ✅ **22.4** | ❌ 82.9 | DELIVERY FAILED ◊ (49.7) | `596e9c9c` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
 | S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.53** | ❌ 31.65 | DELIVERY FAILED ◊ (12.04) | `e521bbba` | [notes](#same-host-notes) |
-| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **41.9** | ❌ 167.9 | DELIVERY FAILED ◊ (96.6 ‡) | `e521bbba` | [notes](#same-host-notes) |
+| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **35.5** | ❌ 165.8 | 93.9 ‡ | `596e9c9c` | [notes](#same-host-notes) |
 | S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | ❌ 46.9 | DELIVERY FAILED ◊ (239.2 ‡) | `e521bbba` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
 | S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | 49.7 / 70.6, loss 20-33% / 0.07-0.13% † | `7f127d56`, CycloneDDS `e4e090cd` | [notes](#same-host-notes) |
@@ -216,11 +237,14 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
   56.6 / 56.2 and 28.5), so the rig did not move. S15 has no single worst: CycloneDDS is lower locally, FastDDS
   remotely.
 
-- **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here**, so it is listed with its figure in
-  parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
+- **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here except the 200/s round trips (S7, and at `596e9c9c`
+  S7c, S9c, S10c and S18), so it is listed with its figure in parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
   P2 1,846,706 of 1,847,846, 1,891,539 of 1,892,787, 1,912,083 of 1,912,622; P3 1,899,458 of 1,900,191, 1,914,870
   of 1,915,270, 1,909,889 of 1,910,394; P4 1,836,739 of 1,837,157, 1,875,547 of 1,876,358, 1,828,471 of 1,829,659
-  (3 of 3 reps each, 0.02-0.07% missing, as sequence gaps mid-stream). RTT (S9, S18 from P3 and S10 from P4): one
+  (3 of 3 reps each, 0.02-0.07% missing, as sequence gaps mid-stream). **RTT at `596e9c9c` (2026-10-17, S7c-S10c, S12,
+  S18):** at 200/s CycloneDDS answered every round trip in every rep at P2, P3 and P4 (e.g. 10,141 of 10,141), so it is
+  scored in S9c, S10c and S18; at 20/s (S8c, S12) it is DELIVERY FAILED, 9,388 of 9,389 in 1 of 3 reps. The
+  readings below are the earlier sessions. RTT at `e521bbba` (S9, S18 from P3 and S10 from P4): one
   round trip not answered in 1 of 3 reps (10,133 of 10,134; 10,131 of 10,132). S8 and S12 (`e17b4e6f`,
   `~/rig_results_safe/s6_latency_p2_20hz_e17b4e6f.txt`): 1,186 of 1,187 in 2 of 3 reps. TickLE and FastDDS
   delivered everything they sent in every one of these cells. Pinned (the note below): CycloneDDS RELIABLE
@@ -282,6 +306,44 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
   against 1,269k/s alone). TickLE gives both subscribers the full link rate with no loss; FastDDS loses 4-22% at
   BEST_EFFORT and delivers a third of that rate at RELIABLE. No RELIABLE subscriber lost a sample after matching.
 
+### Same host from creation time (2026-10-17)
+
+Rows S7c-S10c, and S12 and S18 from the same runs. `experiments/fair_samehost_remeasure.sh` on main `596e9c9c` (the
+scheduler wait ending at its deadline), 2026-10-17 22:56-23:46, cells `reliable_latency` P2, P3 and P4 at 200/s and P2
+at 20/s for 60 s, 3 reps per framework, free arm (nothing pinned), TickLE with gate v2's layout-stable flags. Raw files
+`~/rig_results_safe/creation_rtt_samehost_596e9c9c_20261017-225621.*`. Read by `fair_samehost_summary.py` (its
+creation block, rules C1-C3) with the R4 control of `18f16b85`: `...225621.summary_eps.txt`. The first reading,
+`...225621.summary.txt`, predates `18f16b85` and failed S10c's TickLE control on float rounding alone (`|d - g|` =
+0.061 - 0.060 ms read as just over 1.0 us, exactly at its bound); nothing else differs between the two.
+
+**Samples first.** Every rep's measured round trips equal `crt_kept`, and `crt_no_due` is 0. Per rep at 200/s:
+TickLE 1,968 (P4 1,967), FastDDS 1,930-1,937, CycloneDDS 1,945-1,952. At 20/s: 1,200 / 1,196 / 1,197. Enough for a
+mean and a p50 (>= 50) and, at 200/s, a p99 (>= 500). Figures are the creation mean in ms, median of the reps, with
+the reps' range; `g` is the median delay from each ping's due time to its send.
+
+| row | cell | TickLE creation mean | FastDDS | CycloneDDS | creation p50 T / F / C | stamp mean T / F / C | g us, T / F / C | control | vs FastDDS | vs CycloneDDS |
+|---|---|---:|---:|---:|---:|---:|---:|:-:|:-:|:-:|
+| S7c | P2, 200/s | 0.0815 [0.0813-0.0816] | 0.1666 [0.1666-0.1688] | 0.1287 [0.1216-0.1376] | 0.081 / 0.174 / 0.127 | 0.0211 / 0.1041 / 0.0679 | 59.7 / 62.0 / 59.8 | FAIL (TickLE) | NOT READ | NOT READ |
+| S8c | P2, 20/s | 0.0393 [0.0393-0.0396] | 0.1655 [0.1634-0.1776] | DELIVERY FAILED (0.1411) | 0.033 / 0.157 / 0.140 | 0.0228 / 0.1033 / 0.0794 | 11.3 / 61.5 / 61.3 | PASS | WIN | not scored |
+| S9c | P3, 200/s | 0.0816 [0.0814-0.0819] | 0.1644 [0.1603-0.1763] | 0.1292 [0.1269-0.1313] | 0.081 / 0.155 / 0.127 | 0.0213 / 0.1020 / 0.0685 | 59.6 / 61.6 / 60.0 | PASS | WIN | WIN |
+| S10c | P4, 200/s | 0.0856 [0.0856-0.0860] | 0.1622 [0.1597-0.1639] | 0.1301 [0.1285-0.1313] | 0.085 / 0.153 / 0.128 | 0.0250 / 0.1002 / 0.0690 | 60.0 / 61.2 / 60.4 | PASS | WIN | WIN |
+
+- **The reading.** From creation time TickLE beats both vendors at P3 and P4 and FastDDS at P2 20/s, on the mean and
+  on the p50; CycloneDDS is DELIVERY FAILED at 20/s. The send-stamp mean reads WIN in every cell, as before.
+- **S7c is NOT READ (rule R4).** TickLE's `|d - g|` is 1.3 us (d +61.0, g 59.7 us) against a bound of 1 us: noise
+  0 plus the 1 us print resolution, because all three reps' stamp p50 print as 0.020 ms, so their range is 0. Both
+  vendors pass. Its creation figures would read WIN against both, but a failed control leaves them unscored.
+  **Pending a rule decision by the user.** S7 stays scored on its send-stamp figure (`e521bbba`).
+- **When TickLE's ping leaves.** At 200/s (a 5 ms interval) TickLE's client sends each ping ~60 us after its due time,
+  like the DDS clients (60-62 us); at 20/s (50 ms) it sends after 11 us. The `timerfd` deadline wait of `596e9c9c`
+  covers only waits longer than 10 ms. A further fix (ab/sched-wake-slack) is in rig A/B.
+- **CPU, the same runs (S12, S18).** Per answered round trip, reps' ranges: S12 (P2 20/s, client) TickLE 22.3-22.6,
+  FastDDS 80.0-87.4 us, CycloneDDS DELIVERY FAILED (49.7); S18 (P3 200/s, client + server) TickLE 35.4-35.5, FastDDS
+  163.0-177.7, CycloneDDS 93.1-94.7 us (iox-roudi's 1.6 us included). TickLE has the lowest in both. Until 2026-10-18
+  S12 was 66.0 / 136.7 / (102.2) at `e17b4e6f`, from another harness (`s6_latency_p2_20hz_e17b4e6f.txt`), and S18
+  41.9 / 167.9 / (96.6) at `e521bbba`; both are kept in [Corrections and
+  history](#same-host-corrections-and-earlier-sessions).
+
 ### rmw layer, same host
 
 `rmw_tickle`, `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp` (jazzy), with `rmw_zenoh_cpp` 0.2.9 and its router as
@@ -300,9 +362,28 @@ last column is rmw_tickle in the same harness at `a7e02807` (2026-10-09,
 **Scored: WIN 52** of 52 (at `a7e02807`: WIN 46, DRAW 3, LOSE 3, every non-win a peak-RSS row; at `03585237`: WIN 50,
 DRAW 1, LOSE 1; at `f128f686`: WIN 45, DRAW 1, LOSE 6).
 
+**The round-trip cells from creation time (2026-10-18).** The eight RTT cells (R1c-R8c, and R9-R12 with them) were
+re-measured on main `18f16b85` with the same harness and rules, 3 reps per arm, 03:24-04:13
+(`~/rig_results_safe/creation_rtt_rmwsh_18f16b85_20261018-001954.{txt,runs}`, its summary at the end of the `.txt`;
+queue log `~/rig_results_safe/creation_rtt_queue_rmw.log`). Read by `rmw_samehost_summary.py` at `18f16b85`:
+preflight 9 usable runs, 0 VOID; every cell n=3 for every arm; 4,992-10,059 measured round trips per run (min 2,000),
+every one with its due time. The R4 control passed for every arm in every cell (`g` 56.9-61.9 us for every rmw: the
+ping's own 1 ms sleep, the same binary for all). Every scored metric of those cells is a WIN from creation time, as it
+was from the send stamp: RTT mean, p50 and p99, CPU per round trip and peak RSS. The send-stamp rows R1-R8 (`06dd78d8`)
+stay as diagnostics; R9-R12 are now the `18f16b85` figures (their `06dd78d8` values are in the notes below).
+
 | # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `a7e02807` |
 |---|---|---|---|---|---|---|---|---|
-| | **RTT mean, us** (lower is better) | | | | | | | |
+| | **RTT mean from creation time, us** (lower is better; `18f16b85`) | | | | | | | |
+| R1c | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **94.9** | 184.1 | 166.3 | 297.9 | WIN | – |
+| R2c | block wait | Bench 64 B, RELIABLE | **95.8** | 205.9 | 168.9 | 293.3 | WIN | – |
+| R3c | block wait | Array1k, BEST_EFFORT | **96.9** | 189.0 | 178.7 | 302.3 | WIN | – |
+| R4c | block wait | Array1k, RELIABLE | **99.2** | 214.3 | 174.1 | 303.7 | WIN | – |
+| R5c | poll wait, 100 us sleep | Bench 64 B, BEST_EFFORT | **207.4** | 247.5 | 239.6 | 345.1 | WIN | – |
+| R6c | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **208.2** | 262.9 | 245.0 | 348.0 | WIN | – |
+| R7c | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **209.4** | 251.3 | 240.5 | 353.2 | WIN | – |
+| R8c | poll wait, 100 us sleep | Array1k, RELIABLE | **208.8** | 262.7 | 244.6 | 352.9 | WIN | – |
+| | **RTT mean from the send stamp, us** (diagnostic since 2026-10-18; `06dd78d8`) | | | | | | | |
 | R1 | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **35.8** | 121.4 | 111.6 | 234.2 | WIN | 36.0 |
 | R2 | block wait | Bench 64 B, RELIABLE | **40.0** | 151.2 | 112.7 | 236.3 | WIN | 36.9 |
 | R3 | block wait | Array1k, BEST_EFFORT | **38.3** | 129.8 | 111.5 | 242.5 | WIN | 37.8 |
@@ -311,12 +392,12 @@ DRAW 1, LOSE 1; at `f128f686`: WIN 45, DRAW 1, LOSE 6).
 | R6 | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **151.4** | 201.2 | 189.4 | 288.3 | WIN | 149.3 |
 | R7 | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **151.2** | 194.7 | 187.4 | 292.7 | WIN | 150.2 |
 | R8 | poll wait, 100 us sleep | Array1k, RELIABLE | **150.9** | 204.2 | 191.1 | 291.7 | WIN | 150.9 |
-| | **CPU, ping + pong, us per round trip** (lower is better) | | | | | | | |
-| R9 | block wait | Bench 64 B, RELIABLE | **68.1** | 257.2 | 151.7 | 345.5 | WIN | 63.3 |
-| R10 | block wait | Array1k, RELIABLE | **66.5** | 258.9 | 152.6 | 353.1 | WIN | 65.6 |
-| | **Peak RSS, kB, larger of the two processes** (lower is better) | | | | | | | |
-| R11 | RTT | Bench 64 B, BEST_EFFORT, block | **13,480** | 26,260 | 15,248 | 22,496 | WIN | 15,236 (DRAW) |
-| R12 | RTT | Bench 64 B, RELIABLE, block | **13,572** | 26,264 | 15,248 | 22,464 | WIN | 15,336 (LOSE) |
+| | **CPU, ping + pong, us per round trip** (lower is better; `18f16b85`) | | | | | | | |
+| R9 | block wait | Bench 64 B, RELIABLE | **63.5** | 247.9 | 151.0 | 339.2 | WIN | 63.3 |
+| R10 | block wait | Array1k, RELIABLE | **67.6** | 259.6 | 157.2 | 354.4 | WIN | 65.6 |
+| | **Peak RSS, kB, larger of the two processes** (lower is better; R11-R12 `18f16b85`, R13 `06dd78d8`) | | | | | | | |
+| R11 | RTT | Bench 64 B, BEST_EFFORT, block | **14,592** | 27,124 | 16,100 | 23,284 | WIN | 15,236 (DRAW) |
+| R12 | RTT | Bench 64 B, RELIABLE, block | **14,676** | 27,148 | 16,172 | 23,276 | WIN | 15,336 (LOSE) |
 | R13 | throughput | Array1k, RELIABLE | **16,000** | 35,796 | 17,152 | 102,588 § | WIN | 17,664 (LOSE) |
 | | **Delivered msg/s** (higher is better) | | | | | | | |
 | R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **140,885** | 17,547 | 70,420 | 61,560 | WIN | 132,752 |
@@ -329,9 +410,23 @@ DRAW 1, LOSE 1; at `f128f686`: WIN 45, DRAW 1, LOSE 6).
 | R20 | max rate | Array1k, RELIABLE | **6.35** | 639.34 | 35.12 | 21.17 | WIN | 7.09 |
 | R21 | max rate | Array4k, RELIABLE | **8.64** | 83.84 | 38.72 | 26.40 | WIN | 9.04 |
 
-Rows not shown: RTT p50 and p99 in every cell (WIN), CPU per round trip in the six other cells (WIN, 61.8-78.1 us
-against FastDDS 170-245 and CycloneDDS 147-160), and the nine other peak-RSS cells (WIN, rmw_tickle 13,448-15,616 kB
-against CycloneDDS 15,240-18,344).
+Rows not shown, from `18f16b85` in the RTT cells: RTT p50 and p99 from creation time in every cell (WIN; e.g. Bench
+BEST_EFFORT block p99 117.8 against 238.0 and 224.2 us), CPU per round trip in the six other cells (WIN, 62.1-74.8 us
+against FastDDS 169-242 and CycloneDDS 145-162), and the six other RTT peak-RSS cells (WIN, rmw_tickle 14,464-14,608
+kB against CycloneDDS 15,968-16,188); from `06dd78d8`, the three other throughput peak-RSS cells (WIN). Until
+2026-10-18 the RTT p50 and p99 were from the send stamp, and every one of these cells was `06dd78d8`'s: CPU 61.8-78.1
+us against FastDDS 170-245 and CycloneDDS 147-160, and the nine other peak-RSS cells rmw_tickle 13,448-15,616 kB
+against CycloneDDS 15,240-18,344.
+
+- **R9-R12 at `18f16b85` against `06dd78d8`** (the values those rows held until 2026-10-18): R9 68.1 -> 63.5 us, R10
+  66.5 -> 67.6, R11 13,480 -> 14,592 kB, R12 13,572 -> 14,676 kB. The vendors in the same cells moved too: CycloneDDS
+  R9 151.7 -> 151.0, R10 152.6 -> 157.2, R11 15,248 -> 16,100, R12 15,248 -> 16,172 kB; FastDDS R11 26,260 -> 27,124.
+  rmw_tickle's peak RSS rose by 1,104-1,112 kB against CycloneDDS's 852-924 kB, so most of the rise is shared with
+  the control (the session), and about 200 kB is rmw_tickle's own, not attributed. Every row stays a WIN.
+- **The send stamp in the same run** (`18f16b85`): R1-R8 rmw_tickle 36.4 / 37.3 / 38.2 / 40.6 / 149.6 / 150.3 / 151.3 /
+  150.9 us against `06dd78d8`'s 35.8 / 40.0 / 38.3 / 39.1 / 150.8 / 151.4 / 151.2 / 150.9; every cell a WIN on it too.
+  From creation every rmw adds its ping's sleep overshoot `g` (57-62 us), so the creation figures are about 58 us above
+  the stamp ones for every arm.
 
 - **The six peak-RSS non-wins of `a7e02807` are WINs** (R11-R13, and Array1k BEST_EFFORT block, Array1k RELIABLE
   block, Bench RELIABLE poll): across all twelve cells rmw_tickle peaks at 13.4-16.0 MB against CycloneDDS's
@@ -410,7 +505,8 @@ decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring s
 ## 2. Cross-host (two Pis over the rig's link)
 
 **✅ = best, ❌ = worst** in the row. Lower is better for latency, CPU, memory and bandwidth; higher for throughput.
-Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp figures, kept as diagnostics.
+Latency is scored from creation time (rows 1c-6bc and 48c-67c). Rows 1-6b and 48-67 are the send-stamp figures, kept
+as diagnostics.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
@@ -478,7 +574,28 @@ Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp
 | 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | ✗ no event ¶ | S |
 | 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | ✗ no event ¶ | L |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
-| | **[rmw layer](#rmw-layer)** (ms, cross-host) | | | | |  | – | |
+| | **[rmw layer](#rmw-layer), latency from creation time** (ms, cross-host; [rmw cross-host from creation time](#rmw-cross-host-from-creation-time-2026-10-18)) | | | | |  | – | |
+| 48c | RTT mean from creation, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.302** | 0.389 | 0.336 | – | ❌ 0.449 | Wc |
+| 49c | RTT mean from creation, block wait, RELIABLE | Bench (64 B) | ✅ **0.305** | 0.396 | 0.334 | – | ❌ 0.445 | Wc |
+| 50c | RTT mean from creation, block wait, BEST_EFFORT | Array1k | ✅ **0.322** | 0.406 | 0.354 | – | ❌ 0.686 | Wc |
+| 51c | RTT mean from creation, block wait, RELIABLE | Array1k | ✅ **0.326** | 0.423 | 0.342 | – | ❌ 0.682 | Wc |
+| 52c | RTT mean from creation, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.301** | 0.383 | 0.331 | – | ❌ 0.452 | Jc |
+| 53c | RTT mean from creation, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.304** | 0.394 | 0.331 | – | ❌ 0.449 | Jc |
+| 54c | RTT mean from creation, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.320** | 0.404 | 0.350 | – | ❌ 0.679 | Jc |
+| 55c | RTT mean from creation, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.323** | 0.414 | 0.342 | – | ❌ 0.689 | Jc |
+| 56c | RTT mean from creation, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.352** | 0.416 | 0.371 | – | ❌ 0.482 | Jc |
+| 57c | RTT mean from creation, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.354** | 0.417 | 0.365 | – | ❌ 0.488 | Jc |
+| 58c | RTT mean from creation, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.372** | 0.437 | 0.390 | – | ❌ 0.726 | Jc |
+| 59c | RTT mean from creation, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ✅ **0.377** | 0.446 | 0.380 | – | ❌ 0.724 | Jc |
+| 60c | RTT mean from creation, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.377** | 0.433 | 0.393 | – | ❌ 0.507 | Jc |
+| 61c | RTT mean from creation, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.383** | 0.445 | 0.391 | – | ❌ 0.508 | Jc |
+| 62c | RTT mean from creation, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.399** | 0.454 | 0.412 | – | ❌ 0.742 | Jc |
+| 63c | RTT mean from creation, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.402 | 0.467 | ⚪ 0.400 | – | ❌ 0.750 | Jc |
+| 64c | RTT mean from creation, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.426 | 0.468 | ⚪ 0.426 | – | ❌ 0.572 | Jc |
+| 65c | RTT mean from creation, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.431 | 0.486 | ⚪ 0.428 | – | ❌ 0.563 | Jc |
+| 66c | RTT mean from creation, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.450 | 0.499 | ⚪ 0.457 | – | ❌ 0.802 | Jc |
+| 67c | RTT mean from creation, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.454 | 0.509 | ⚪ 0.443 | – | ❌ 0.803 | Jc |
+| | **[rmw layer](#rmw-layer)** (ms, cross-host; rows 48-67 from the send stamp, diagnostic since 2026-10-18) | | | | |  | – | |
 | 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.246** | 0.320 | 0.269 | – | ❌ 0.381 | W |
 | 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.247** | 0.335 | 0.269 | – | ❌ 0.386 | W |
 | 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.263** | 0.338 | 0.294 | – | ❌ 0.611 | W |
@@ -511,7 +628,7 @@ Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp
 ### Legend
 
 - **⚪** deliberately not scored: a fair comparison is not possible in that row (5, 5c, 45-47), or, in rows 52-67 and
-  the first two are within each other's spread (a draw).
+  52c-67c, the two marked are within each other's spread (a draw).
 - **zenoh-pico is reference and never scored**: no ✅/❌ toward totals, no WIN/DRAW/LOSE. Its cells come from its own
   session (`Z`, `results/zenoh_cells_31d58011_2026-09-29.txt`), so its margins are looser than a within-row one.
 - **`†`** measured over TCP, the only configuration where zenoh-pico's reliability is real (its RELIABLE means
@@ -541,6 +658,8 @@ Within a row all scored frameworks come from one session; across letters they do
 | `L` | liveliness, `liveliness_l2.sh`, 2026-09-27, `0f220ba0`, 20 reps (`results/liveliness_l2e_2026-09-27.txt`) |
 | `W` | four-way rmw block wait, `934f90de`, 3 reps (`results/rmw_4way_block_934f90de_2026-09-30.txt`) |
 | `J` | four-way rmw poll wait, random phase, RTT at callback, `934f90de`, 7 reps (`results/rmw_4way_poll*_cb_r7_*_2026-10-01.txt`) |
+| `Wc` | `W` again from creation time: `experiments/rmw_crosshost_rtt.sh`, main `18f16b85`, 3 reps, 2026-10-18 00:19-00:38 (`~/rig_results_safe/creation_rtt_rmwW_18f16b85_20261018-001954.txt`), read by `rmw_crosshost_creation.py` at `18f16b85` together with `Jc` (`...rmwW_18f16b85_20261018-001954.creation.txt`); [rmw cross-host from creation time](#rmw-cross-host-from-creation-time-2026-10-18) |
+| `Jc` | `J` again from creation time: the same harness, main `18f16b85`, 7 reps, 2026-10-18 00:38-03:24 (`~/rig_results_safe/creation_rtt_rmwJ_18f16b85_20261018-001954.txt`), the same reader and reading |
 | `Ke` | rmw RELIABLE + KEEP_ALL at equal KEEP_ALL bounds, as `K` but 5 reps, frameworks interleaved, 5% loss only, main `29dff630`, 2026-10-08 (`experiments/rmw_keepall_rig.sh` `EQUAL_BOUND=auto`; `~/rig_results_safe/rmw_keepall_equal_main_29dff630_20261008-134901.{txt,runs,launch.log}`). Until 2026-10-08 rows 73 and 75 were `K`: 70,127 / 1,784 and 26,486 / 340, each rmw at its own default bound |
 | `K` | rmw RELIABLE + KEEP_ALL, apex `perf_test` at max rate across the link, 20 s, 3 reps, medians, `ae724688`, rmw_tickle built as the vendor debs are (CMake type None, `-g -O2`), 2026-10-06 (`experiments/rmw_keepall_rig.sh`; `~/rig_results_safe/rmw_keepall_rig_O2_20261006-123017.txt`). First measured at `a8c1cd83` with rmw_tickle at `-O3`: 87,977 / 65,051 / 27,421 / 26,483 |
 
@@ -634,8 +753,9 @@ range in brackets. `g` is the median delay from each ping's due time to its send
   is not a scored row. RTT median from creation, rmw_tickle / FastDDS / CycloneDDS: 0.32 / 0.42 / 0.35 ms. From the
   stamp: 0.26 / 0.36 / 0.29 ms. `g` is 59.4 / 62.6 / 60.4 us, and the verdict is CONTROL PASS. There the sender is
   perf_test's own timer, so rmw_tickle sends as promptly as the DDS rmws.
-- **Not yet measured from creation time:** the tails (rows 2, 4, 6), the same-host RTT rows (S7-S10, S12, S18), the
-  rmw RTT rows (48-67, R1-R8) and the Array1m cells of the L4 table. Their figures are from the send stamp.
+- **Not yet measured from creation time:** the tails (rows 2, 4, 6) and the Array1m cells of the L4 table. Their
+  figures are from the send stamp. The same-host RTT rows (S7c-S10c, with S12 and S18) were measured on `596e9c9c` on
+  2026-10-17 and the rmw RTT rows (48c-67c, R1c-R8c) on `18f16b85` on 2026-10-18; S7c is NOT READ (rule R4).
 
 ### Latency
 
@@ -751,7 +871,59 @@ figures. Memory is from outside each process; CPU is the pong's whole-run thread
 trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segment: row 68 rose from 11,264 to
 12,544 kB when the segment was added to core.
 
-**Rows 72-75 (rmw KEEP_ALL, `K`, `Ke`):** apex `perf_test` publisher alone on one Pi and subscriber alone on the other,
+#### rmw cross-host from creation time (2026-10-18)
+
+Rows 48c-67c. The `W` and `J` harness (`experiments/rmw_crosshost_rtt.sh`) on main `18f16b85`, rmw_tickle, core and
+harness at the same commit, queued by `experiments/rig_queue_creation_rtt.sh` under one hold of the rig lock
+(`~/rig_results_safe/creation_rtt_queue_rmw.log`, 2026-10-18 00:19-04:13; nothing pinned). `rmw_perf_pingpong`'s ping
+records each round trip's due time (the end of the sleep before it, or its grid point at random phase). Block wait 3
+reps, poll wait 7 reps, 100 round trips a rep. Reader `experiments/rmw_crosshost_creation.py` at `18f16b85` on both
+files (`~/rig_results_safe/creation_rtt_rmwW_18f16b85_20261018-001954.creation.txt`): **20 cells CONTROL PASS, 0
+FAIL** (R4 for every rmw: `g` 58.6-66.5 us). It scores the creation mean, the rows' figure, against each vendor by the
+rule each row was published with: the reps' ranges for 48-51, the interquartile overlap for 52-67.
+
+**Samples first.** Every read rep has `crt_kept` equal to its answered round trips and `crt_no_due` 0. The harness
+voids a rep with any loss or a jitter phase that is not uniform, and the reader does not read it. 17 reps of 496 are
+VOID (`W` 1 of 48, `J` 16 of 448). **VOID(loss) in 14**, each 94 of 95 round trips answered: rmw_tickle 10, all poll
+wait (52c, 53c, 55c, 56c, 57c twice, 58c, 60c, 62c, 65c; five of them RELIABLE: 53c, 55c, 57c twice, 65c), and
+CycloneDDS 4, all BEST_EFFORT (50c, 54c, 60c, 64c). A jitter phase that was not uniform in 3 (rmw_tickle 62c,
+CycloneDDS 56c, rmw_zenoh 67c). Fast DDS: none. At `934f90de` no `J` rep was VOID(loss) (`W`: CycloneDDS 1, the same
+94 of 95). rmw_tickle's unanswered round trips are not attributed. Readable reps, rmw_tickle / FastDDS / CycloneDDS /
+rmw_zenoh, are in the table; no cell falls below 2.
+
+| row | cell | rmw_tickle creation mean | FastDDS | CycloneDDS | rmw_zenoh (ref) | stamp mean T / F / C | g us, T / F / C | reps read T / F / C / Z | vs FastDDS | vs CycloneDDS | stamp verdict F / C (diag.) |
+|---|---|---:|---:|---:|---:|---:|---:|:-:|:-:|:-:|:-:|
+| 48c | Bench BE block | 0.302 [0.300-0.309] | 0.389 [0.382-0.389] | 0.336 [0.335-0.337] | 0.449 | 0.241 / 0.323 / 0.275 | 61.2 / 66.5 / 61.7 | 3 / 3 / 3 / 3 | WIN | WIN | WIN / WIN |
+| 49c | Bench REL block | 0.305 [0.303-0.305] | 0.396 [0.387-0.405] | 0.334 [0.328-0.335] | 0.445 | 0.244 / 0.332 / 0.275 | 60.7 / 64.6 / 59.0 | 3 / 3 / 3 / 3 | WIN | WIN | WIN / WIN |
+| 50c | Array1k BE block | 0.322 [0.322-0.323] | 0.406 [0.402-0.411] | 0.354 [0.354-0.355] | 0.686 | 0.261 / 0.342 / 0.293 | 61.4 / 65.5 / 61.6 | 3 / 3 / 2 / 3 | WIN | WIN | WIN / WIN |
+| 51c | Array1k REL block | 0.326 [0.323-0.326] | 0.423 [0.422-0.423] | 0.342 [0.340-0.344] | 0.682 | 0.264 / 0.358 / 0.283 | 61.0 / 65.9 / 59.4 | 3 / 3 / 3 / 3 | WIN | WIN | WIN / WIN |
+| 52c | Bench BE poll 0 us | 0.301 [0.298-0.303] | 0.383 [0.370-0.386] | 0.331 [0.329-0.334] | 0.452 | 0.240 / 0.316 / 0.269 | 60.4 / 65.3 / 62.3 | 6 / 7 / 7 / 7 | WIN | WIN | WIN / WIN |
+| 53c | Bench REL poll 0 us | 0.304 [0.299-0.308] | 0.394 [0.389-0.406] | 0.331 [0.327-0.431] | 0.449 | 0.242 / 0.330 / 0.271 | 61.4 / 64.6 / 59.6 | 6 / 7 / 7 / 7 | WIN | WIN | WIN / WIN |
+| 54c | Array1k BE poll 0 us | 0.320 [0.317-0.324] | 0.404 [0.396-0.408] | 0.350 [0.347-0.355] | 0.679 | 0.260 / 0.341 / 0.289 | 60.2 / 64.2 / 62.1 | 7 / 7 / 6 / 7 | WIN | WIN | WIN / WIN |
+| 55c | Array1k REL poll 0 us | 0.323 [0.319-0.326] | 0.414 [0.409-0.421] | 0.342 [0.338-0.345] | 0.689 | 0.262 / 0.351 / 0.282 | 61.0 / 64.0 / 59.6 | 6 / 7 / 7 / 7 | WIN | WIN | WIN / WIN |
+| 56c | Bench BE poll 50 us | 0.352 [0.350-0.357] | 0.416 [0.411-0.423] | 0.371 [0.364-0.375] | 0.482 | 0.292 / 0.354 / 0.309 | 61.1 / 62.1 / 61.4 | 6 / 7 / 6 / 7 | WIN | WIN | WIN / WIN |
+| 57c | Bench REL poll 50 us | 0.354 [0.349-0.361] | 0.417 [0.415-0.431] | 0.365 [0.360-0.463] | 0.488 | 0.294 / 0.356 / 0.307 | 60.5 / 62.4 / 58.9 | 5 / 7 / 7 / 7 | WIN | WIN ¹ | WIN / WIN |
+| 58c | Array1k BE poll 50 us | 0.372 [0.366-0.378] | 0.437 [0.427-0.440] | 0.390 [0.380-0.391] | 0.726 | 0.312 / 0.375 / 0.329 | 61.0 / 61.6 / 61.1 | 6 / 7 / 7 / 7 | WIN | WIN | WIN / WIN |
+| 59c | Array1k REL poll 50 us | 0.377 [0.370-0.380] | 0.446 [0.440-0.451] | 0.380 [0.369-0.392] | 0.724 | 0.317 / 0.382 / 0.321 | 60.3 / 62.3 / 58.9 | 7 / 7 / 7 / 7 | WIN | WIN ¹ | WIN / WIN |
+| 60c | Bench BE poll 100 us | 0.377 [0.371-0.385] | 0.433 [0.418-0.442] | 0.393 [0.389-0.400] | 0.507 | 0.317 / 0.371 / 0.333 | 60.8 / 62.1 / 61.5 | 6 / 7 / 6 / 7 | WIN | WIN | WIN / WIN |
+| 61c | Bench REL poll 100 us | 0.383 [0.371-0.386] | 0.445 [0.428-0.459] | 0.391 [0.384-0.408] | 0.508 | 0.323 / 0.383 / 0.332 | 60.4 / 62.0 / 58.6 | 7 / 7 / 7 / 7 | WIN | WIN ¹ | WIN / WIN |
+| 62c | Array1k BE poll 100 us | 0.399 [0.388-0.408] | 0.454 [0.443-0.460] | 0.412 [0.407-0.418] | 0.742 | 0.337 / 0.392 / 0.351 | 60.9 / 61.6 / 61.2 | 5 / 7 / 7 / 7 | WIN | WIN ¹ | WIN / WIN |
+| 63c | Array1k REL poll 100 us | 0.402 [0.396-0.425] | 0.467 [0.463-0.472] | 0.400 [0.396-0.414] | 0.750 | 0.342 / 0.405 / 0.342 | 60.5 / 62.6 / 59.3 | 7 / 7 / 7 / 7 | WIN | DRAW | WIN / DRAW |
+| 64c | Bench BE poll 200 us | 0.426 [0.413-0.435] | 0.468 [0.457-0.471] | 0.426 [0.418-0.449] | 0.572 | 0.365 / 0.407 / 0.365 | 60.6 / 61.6 / 61.3 | 7 / 7 / 6 / 7 | WIN | DRAW | WIN / DRAW |
+| 65c | Bench REL poll 200 us | 0.431 [0.411-0.442] | 0.486 [0.477-0.502] | 0.428 [0.410-0.440] | 0.563 | 0.369 / 0.429 / 0.370 | 60.9 / 61.4 / 58.6 | 6 / 7 / 7 / 7 | WIN | DRAW | WIN / DRAW |
+| 66c | Array1k BE poll 200 us | 0.450 [0.433-0.462] | 0.499 [0.476-0.506] | 0.457 [0.444-0.469] | 0.802 | 0.392 / 0.437 / 0.397 | 59.9 / 62.0 / 61.1 | 7 / 7 / 7 / 7 | WIN | DRAW | WIN / DRAW |
+| 67c | Array1k REL poll 200 us | 0.454 [0.438-0.462] | 0.509 [0.502-0.522] | 0.443 [0.434-0.456] | 0.803 | 0.392 / 0.447 / 0.383 | 60.4 / 62.2 / 59.4 | 7 / 7 / 7 / 6 | WIN | DRAW | WIN / DRAW |
+
+¹ A WIN by the interquartile rule the row is scored by; the reps' ranges overlap (DRAW by the range rule).
+
+- **The reading.** From creation time rmw_tickle beats Fast DDS in all 20 rows and CycloneDDS in 15; rows 63c-67c
+  are DRAWs against CycloneDDS (100 us sleep Array1k RELIABLE, and every 200 us cell). Rows 48-75 read **WIN 22, DRAW
+  6, LOSE 0** of 28, against WIN 20, DRAW 8 from the send stamp at `934f90de`. Rows 59 and 62 moved from DRAW to WIN,
+  and the send stamp of the same run moves them the same way, so the move is the session (`18f16b85` against
+  `934f90de`), not the definition. No verdict differs between the creation and stamp readings of this run.
+- **Every rmw's ping leaves 58.6-66.5 us after its due time** (`g`): the ping is one binary for all, and its sleep
+  overshoots alike, so creation time adds about 60 us to every arm and moves no ranking.
+
 RELIABLE + KEEP_ALL, `-r 0`, `tc netem` loss on the publisher's egress, each arm identified by `/proc/PID/maps`.
 rmw_tickle lost no sample in any of its 12 runs (`gap_evicted` 0, no give-up). Every rmw blocks a full KEEP_ALL
 publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for it).
@@ -996,6 +1168,30 @@ old summary quoted is still in the tables above. These are the readings that cha
 - The rest of "Where TickLE does not come first" is now in "Every LOSE" and "Every DRAW", unchanged. It also said that
   I1L (5% loss) "lost on incomplete delivery on f5fcda06, is complete and won on main dde87857 (2026-10-16)"; that
   correction is in the I1L note.
+
+### Readings superseded on 2026-10-18
+
+The remaining round-trip rows were measured from creation time (same host on `596e9c9c`, 2026-10-17; rmw on
+`18f16b85`, 2026-10-18). The send-stamp figures stay in the tables as diagnostics; these are the readings that
+changed:
+
+- **Same host (S7-S10, S12, S18).** The summary counted S7-S10 on the send stamp, all WIN, with CycloneDDS DELIVERY
+  FAILED in S8-S10 and S18 (one round trip unanswered in 2 of 3 reps at S8, `e17b4e6f`, and in 1 of 3 at S9, S10
+  and S18, `e521bbba`). Now S8c-S10c are scored from creation time,
+  all WIN; CycloneDDS answered everything at 200/s, so S9c, S10c and S18 score it, and it is still DELIVERY FAILED at
+  20/s (S8c, S12). S7c is NOT READ (R4), so S7 keeps its send-stamp WIN. The count stays WIN 18 of 18. S12 was 66.0 /
+  136.7 / (102.2) us at `e17b4e6f` (`~/rig_results_safe/s6_latency_p2_20hz_e17b4e6f.txt`, from another harness),
+  now 22.4 / 82.9 / (49.7) at
+  `596e9c9c`; S18 was 41.9 / 167.9 / (96.6) us at `e521bbba`, now 35.5 / 165.8 / 93.9. The README's same-host round
+  trip moved from S7 (send stamp, 0.023 / 0.107 / 0.074 ms) to S9c (creation, 0.082 / 0.164 / 0.129 ms).
+- **rmw cross-host (rows 48-67).** WIN 20, DRAW 8 (rows 59, 62-67 against CycloneDDS, and 74) from the send stamp at
+  `934f90de` -> WIN 22, DRAW 6 (63c-67c, and 74) from creation time at `18f16b85`. The two that moved, 59 and 62,
+  also read WIN on the send stamp of the new run, so the change is the session, not the definition. The DRAW note
+  read: "In row 67 CycloneDDS's median is lower (0.380 against 0.391 ms) but inside the spread"; in 67c it is 0.443
+  against 0.454 ms, again a DRAW.
+- **rmw same host (R1-R12).** Every scored metric of the eight round-trip cells reads WIN from creation time at
+  `18f16b85`, as it did from the send stamp at `06dd78d8`; WIN 52 of 52 stands. R9-R12's `06dd78d8` values are in the
+  [rmw same-host notes](#rmw-layer-same-host).
 
 ### Same host: corrections and earlier sessions
 

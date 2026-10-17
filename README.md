@@ -25,7 +25,7 @@ goodput since 2026-10-17. P1 to P4 are payload sizes: 76, 1292, 1424 and 2800 by
 | Cross host, throughput client peak memory, P1 (KB) | **2,087** | 15,947 | 5,407 | row 28, `09a0437d` |
 | Same host, BEST_EFFORT goodput, P4 (delivered Mbps) | **25,066** | 0.70 | 1,854 | S3, `e521bbba` |
 | Same host, RELIABLE goodput, P4 (delivered Mbps) | **14,917** | 1,924 | delivery failed | S6, `e521bbba` |
-| Same host, round trip, P2 (ms) | **0.023** | 0.107 | 0.074 | S7, `e521bbba` |
+| Same host, round trip from creation time, P3 (ms) | **0.082** | 0.164 | 0.129 | S9c, `596e9c9c` |
 
 - **Across the network** TickLE is best in every scored row of latency, throughput, CPU, memory and bandwidth: 139
   wins, 11 draws or ties, **0 losses** of 150 metric cells (campaign `A`), with throughput scored as goodput and
@@ -33,7 +33,8 @@ goodput since 2026-10-17. P1 to P4 are payload sizes: 76, 1292, 1424 and 2800 by
 - **On one host,** at the DDS default (BEST_EFFORT, KEEP_LAST 1), TickLE delivers every sample at the maximum rate,
   CycloneDDS about a fifth and FastDDS almost none. "Delivery failed": in every same-host RELIABLE run CycloneDDS
   delivered 0.02-0.07% fewer samples than it sent, so it is not scored.
-- **Through ROS 2,** rmw_tickle wins all 52 scored same-host rows (`06dd78d8`). For large messages (1 MB and 4 MB
+- **Through ROS 2,** rmw_tickle wins all 52 scored same-host rows (round trips from creation time at `18f16b85`, the
+  rest `06dd78d8`), and across the network 22 of 28 rows with 6 draws and no loss. For large messages (1 MB and 4 MB
   arrays across the network) it scores WIN 55 / DRAW 23 / LOSE 2 of 80; the two losses are publisher and subscriber
   CPU per MB against FastDDS in one cell.
 
