@@ -79,6 +79,7 @@ for round in $(seq 1 "$ROUNDS"); do
         # 50 us (2026-10-18); the row says which (slack_ns=, read back from the process before exec).
         slack=""
         case " ${SLACK_LABELS:-} " in *" $label "*) slack="echo ${SLACK_NS:-1} > /proc/\$\$/timerslack_ns; " ;; esac
+        # shellcheck disable=SC2024
         sudo -n ip netns exec "$NS" bash -c "${slack}renice -n 0 -p \$\$ >/dev/null; ulimit -v 2097152; \
             echo SLACK=\$(cat /proc/\$\$/timerslack_ns); exec ${bin[$label]} --sweep" \
             </dev/null >"$WORK/run.log" 2>&1
