@@ -18,8 +18,14 @@
 // The check, in one context with no peer:
 //   tickle   - schedule an entry INTERVAL ahead, poll with timeout -1 until it has run, and record how late it ran:
 //              the clock read in the entry minus the time it was scheduled for.
+//   earlier  - as tickle, but the poll first waits for an entry 4 intervals ahead, and another thread then schedules
+//              one INTERVAL ahead (2026-10-17, with the deadline-timer design: the wait must move its timer in).
 //   control  - clock_nanosleep(TIMER_ABSTIME) to the same kind of deadline: the lateness this host gives a deadline
 //              whose slack does not grow with the wait (the DDS clients' pacing).
+//   positive - at the long intervals, a bare epoll_pwait2() with the same relative timeout: the defect itself, which
+//              must show (more than 2 x LATE_MARGIN_NS past the control) for a pass to mean anything.
+// The 1 ms case runs after the 500 ms one, so its waits start with a fired timer: a fire left pending would make
+// each of them return at once and spin.
 // Reading rules, enforced below and fixed before the first run:
 //   PASS  for every interval, median(tickle) <= median(control) + LATE_MARGIN_NS, and the thread's CPU time per entry
 //         <= CPU_PER_WAKE_NS - a precise wake must not be bought by spinning to the deadline.
@@ -28,7 +34,8 @@
 //         the first version, where main failed by only ~80 us at nice 0 (346 us against a control of 116): too thin
 //         a margin to trust on a CI host, so it was lengthened; the bounds themselves are as first written.
 //   VOID  the control's own median above CONTROL_VOID_NS at any interval: the host is too loaded for a lateness of
-//         a few hundred microseconds to be told from its scheduling delay (exit 2, not a pass).
+//         a few hundred microseconds to be told from its scheduling delay; or the positive control not showing the
+//         slack (exit 2, not a pass). Added after a loaded PC (load 10-25) let the no-long-rule mutant pass.
 // --sweep runs more intervals and, beside the two arms, the raw waits the poll loop and the alternatives use, with no
 // context - epoll_pwait2() and ppoll() with a relative timeout, a timerfd armed for the absolute deadline - and prints
 // their lateness, which says which component the tickle arm's lateness comes from. The sweep prints and judges nothing.
@@ -38,6 +45,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,7 +69,8 @@
 #define CONTROL_VOID_NS (1000ULL * US_NS) // a control median above this voids the run
 #define CPU_PER_WAKE_NS (500ULL * US_NS)  // thread CPU per entry, user + system; ~20-90 us when it sleeps
 #define MAX_SAMPLES 64
-#define CHECK_CONTEXT_ID 59 // any valid id; this context never meets another
+#define POSITIVE_CONTROL_FROM_NS (100ULL * MS_NS) // judged intervals from here on carry the positive control
+#define CHECK_CONTEXT_ID 59                       // any valid id; this context never meets another
 
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_VOID = 2, CHECK_SETUP_FAILED = 3 };
 
@@ -70,9 +79,22 @@ struct interval {
     int samples;
 };
 
-// The judged intervals: a short one, where the relative wait's slack (1 us) is below the thread's 50 us, and a long
-// one, where 0.1% of it (500 us) is ten times that.
-static const struct interval judged[] = {{1 * MS_NS, 20}, {500 * MS_NS, 5}};
+enum arm { ARM_TICKLE, ARM_EARLIER, ARM_NANOSLEEP, ARM_EPOLL, ARM_PPOLL, ARM_TIMERFD, ARM_COUNT };
+
+struct judged_case {
+    struct interval when;
+    enum arm arm;
+};
+
+// The judged cases: a short interval, where the relative wait's slack (1 us) is below the thread's 50 us; a long one,
+// where 0.1% of it (500 us) is ten times that; and an entry another thread schedules EARLIER than the one the poll
+// is already waiting for (ARM_EARLIER, added 2026-10-17 with the deadline-timer design: the wait must move its
+// deadline in, not sleep on to the one it armed first).
+// The short interval runs after the long one, so that its waits start with the long one's timer fired: a fire left
+// pending would end each of them at once, and the wait would spin, which the CPU bound catches.
+static const struct judged_case judged[] = {{{500 * MS_NS, 5}, ARM_TICKLE},
+                                            {{1 * MS_NS, 20}, ARM_TICKLE},
+                                            {{500 * MS_NS, 4}, ARM_EARLIER}};
 static const struct interval swept[] = {{1 * MS_NS, 40},  {5 * MS_NS, 30},  {10 * MS_NS, 30}, {50 * MS_NS, 12},
                                         {100 * MS_NS, 8}, {200 * MS_NS, 8}, {500 * MS_NS, 6}, {1000 * MS_NS, 5}};
 
@@ -130,6 +152,59 @@ static bool arm_tickle(struct tt_Context* node, uint64_t interval, uint64_t* lat
         (void)tt_Context_poll(node, -1);
     }
     *late = g_ran_at - due;
+    return true;
+}
+
+// ---- earlier: the poll waits for an entry EARLIER_FAR_FACTOR intervals ahead; after EARLIER_AFTER_NS another thread
+// schedules one INTERVAL ahead, which wakes the poll (tt_Context_schedule()); the late one is judged.
+
+#define EARLIER_AFTER_NS (50 * MS_NS)
+#define EARLIER_FAR_FACTOR 4U
+
+struct earlier_job {
+    struct tt_Context* node;
+    uint64_t interval;
+    uint64_t due; // 0: not scheduled
+};
+
+static void far_entry(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+}
+
+static void* schedule_earlier(void* arg) {
+    struct earlier_job* job = arg;
+    struct timespec pause;
+    to_timespec(EARLIER_AFTER_NS, &pause);
+    (void)nanosleep(&pause, NULL);
+    const uint64_t due = tt_get_ns() + job->interval;
+    job->due = due; // read by the polling thread only after pthread_join()
+    if (!tt_Context_schedule(job->node, due, entry, NULL)) {
+        job->due = 0;
+    }
+    return NULL;
+}
+
+static bool arm_earlier(struct tt_Context* node, uint64_t interval, uint64_t* late) {
+    g_ran_at = 0;
+    if (!tt_Context_schedule(node, tt_get_ns() + (EARLIER_FAR_FACTOR * interval), far_entry, NULL)) {
+        return false;
+    }
+    struct earlier_job job = {node, interval, 0};
+    pthread_t helper; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    if (pthread_create(&helper, NULL, schedule_earlier, &job) != 0) {
+        return false;
+    }
+    while (g_ran_at == 0) {
+        (void)tt_Context_poll(node, -1);
+    }
+    (void)pthread_join(helper, NULL);
+    (void)tt_Context_unschedule(node, far_entry, NULL);
+    if (job.due == 0) {
+        return false;
+    }
+    *late = g_ran_at - job.due;
     return true;
 }
 
@@ -202,9 +277,8 @@ static bool arm_timerfd_absolute(int epoll_fd, int timer_fd, uint64_t interval, 
     return true;
 }
 
-enum arm { ARM_TICKLE, ARM_NANOSLEEP, ARM_EPOLL, ARM_PPOLL, ARM_TIMERFD, ARM_COUNT };
-static const char* const arm_names[ARM_COUNT] = {"tickle", "clock_nanosleep_abs", "epoll_pwait2_rel", "ppoll_rel",
-                                                 "timerfd_abs"};
+static const char* const arm_names[ARM_COUNT] = {"tickle",           "tickle_earlier", "clock_nanosleep_abs",
+                                                 "epoll_pwait2_rel", "ppoll_rel",      "timerfd_abs"};
 
 struct raw_fds {
     int idle_fd;        // an eventfd nothing writes: the waits' only member besides the timer
@@ -218,6 +292,8 @@ static bool run_arm(enum arm arm, struct tt_Context* node, const struct raw_fds*
     switch (arm) {
     case ARM_TICKLE:
         return arm_tickle(node, interval, late);
+    case ARM_EARLIER:
+        return arm_earlier(node, interval, late);
     case ARM_NANOSLEEP:
         return arm_nanosleep(interval, late);
     case ARM_EPOLL:
@@ -250,23 +326,33 @@ static bool measure(enum arm arm, struct tt_Context* node, const struct raw_fds*
     return true;
 }
 
-static int sweep(struct tt_Context* node) {
-    struct raw_fds fds = {-1, -1, -1, -1};
-    fds.idle_fd = eventfd(0, EFD_CLOEXEC);
-    fds.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    fds.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-    fds.timer_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+static bool raw_fds_open(struct raw_fds* fds) {
+    fds->idle_fd = eventfd(0, EFD_CLOEXEC);
+    fds->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    fds->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    fds->timer_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     struct epoll_event idle_event = {.events = EPOLLIN, .data = {.u32 = 0}};
     struct epoll_event timer_event = {.events = EPOLLIN, .data = {.u32 = 1}};
-    if (fds.idle_fd < 0 || fds.epoll_fd < 0 || fds.timer_fd < 0 || fds.timer_epoll_fd < 0 ||
-        epoll_ctl(fds.epoll_fd, EPOLL_CTL_ADD, fds.idle_fd, &idle_event) != 0 ||
-        epoll_ctl(fds.timer_epoll_fd, EPOLL_CTL_ADD, fds.timer_fd, &timer_event) != 0) {
+    if (fds->idle_fd < 0 || fds->epoll_fd < 0 || fds->timer_fd < 0 || fds->timer_epoll_fd < 0 ||
+        epoll_ctl(fds->epoll_fd, EPOLL_CTL_ADD, fds->idle_fd, &idle_event) != 0 ||
+        epoll_ctl(fds->timer_epoll_fd, EPOLL_CTL_ADD, fds->timer_fd, &timer_event) != 0) {
         printf("sched_wake_check: SETUP FAILED - raw wait descriptors: %s\n", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static int sweep(struct tt_Context* node) {
+    struct raw_fds fds = {-1, -1, -1, -1};
+    if (!raw_fds_open(&fds)) {
         return CHECK_SETUP_FAILED;
     }
     printf("sched_wake_check: sweep, timerslack_ns of this thread: see /proc/self/timerslack_ns\n");
     for (size_t i = 0; i < sizeof swept / sizeof swept[0]; i++) {
         for (int arm = 0; arm < ARM_COUNT; arm++) {
+            if (arm == ARM_EARLIER) {
+                continue; // judged only
+            }
             uint64_t med = 0;
             uint64_t most = 0;
             uint64_t cpu = 0;
@@ -282,6 +368,10 @@ static int sweep(struct tt_Context* node) {
 static int judge(struct tt_Context* node) {
     int failures = 0;
     bool void_run = false;
+    struct raw_fds fds = {-1, -1, -1, -1};
+    if (!raw_fds_open(&fds)) {
+        return CHECK_SETUP_FAILED;
+    }
     for (size_t i = 0; i < sizeof judged / sizeof judged[0]; i++) {
         uint64_t tickle_med = 0;
         uint64_t tickle_max = 0;
@@ -289,28 +379,50 @@ static int judge(struct tt_Context* node) {
         uint64_t control_med = 0;
         uint64_t control_max = 0;
         uint64_t control_cpu = 0;
-        if (!measure(ARM_TICKLE, node, NULL, judged[i], &tickle_med, &tickle_max, &tickle_cpu) ||
-            !measure(ARM_NANOSLEEP, node, NULL, judged[i], &control_med, &control_max, &control_cpu)) {
+        if (!measure(judged[i].arm, node, NULL, judged[i].when, &tickle_med, &tickle_max, &tickle_cpu) ||
+            !measure(ARM_NANOSLEEP, node, NULL, judged[i].when, &control_med, &control_max, &control_cpu)) {
             printf("sched_wake_check: SETUP FAILED - could not schedule or sleep\n");
             return CHECK_SETUP_FAILED;
         }
-        const double interval_ms = (double)judged[i].ns / (double)MS_NS;
+        const double interval_ms = (double)judged[i].when.ns / (double)MS_NS;
         if (control_med > CONTROL_VOID_NS) {
             printf("sched_wake_check: VOID at %.0f ms - the control itself ran %.1f us late (bound %.0f us)\n",
                    interval_ms, (double)control_med / (double)US_NS, (double)CONTROL_VOID_NS / (double)US_NS);
             void_run = true;
             continue;
         }
+        // The positive control, at the long intervals: a bare epoll_pwait2() with the same relative timeout must itself
+        // run more than twice LATE_MARGIN_NS past the control, or this host does not show the slack the check exists
+        // to catch and a pass would mean nothing. Under load other timers' interrupts expire the slack early
+        // (2026-10-17, load 10-25: main read 254-310 us at 500 ms against 560 us quiet, and the mutant without the
+        // long-wait rule passed while the bare wait ran 224 us late against a control of 65 us).
+        if (judged[i].when.ns >= POSITIVE_CONTROL_FROM_NS) {
+            uint64_t raw_med = 0;
+            uint64_t raw_max = 0;
+            uint64_t raw_cpu = 0;
+            if (!measure(ARM_EPOLL, node, &fds, judged[i].when, &raw_med, &raw_max, &raw_cpu)) {
+                printf("sched_wake_check: SETUP FAILED - the bare relative wait\n");
+                return CHECK_SETUP_FAILED;
+            }
+            if (raw_med <= control_med + (2 * LATE_MARGIN_NS)) {
+                printf("sched_wake_check: VOID at %.0f ms - a bare relative wait ran only %.1f us late against the "
+                       "control's %.1f us: the host shows no slack to catch\n",
+                       interval_ms, (double)raw_med / (double)US_NS, (double)control_med / (double)US_NS);
+                void_run = true;
+            }
+        }
         if (tickle_med > control_med + LATE_MARGIN_NS) {
-            printf("sched_wake_check: FAIL at %.0f ms - entries ran %.1f us late (median), the control %.1f us; "
+            printf("sched_wake_check: FAIL at %.0f ms (%s) - entries ran %.1f us late (median), the control %.1f us; "
                    "allowed %.0f us more than the control\n",
-                   interval_ms, (double)tickle_med / (double)US_NS, (double)control_med / (double)US_NS,
-                   (double)LATE_MARGIN_NS / (double)US_NS);
+                   interval_ms, arm_names[judged[i].arm], (double)tickle_med / (double)US_NS,
+                   (double)control_med / (double)US_NS, (double)LATE_MARGIN_NS / (double)US_NS);
             failures++;
         }
         if (tickle_cpu > CPU_PER_WAKE_NS) {
-            printf("sched_wake_check: FAIL at %.0f ms - %.1f us of CPU per entry (bound %.0f us): the wait spins\n",
-                   interval_ms, (double)tickle_cpu / (double)US_NS, (double)CPU_PER_WAKE_NS / (double)US_NS);
+            printf(
+                "sched_wake_check: FAIL at %.0f ms (%s) - %.1f us of CPU per entry (bound %.0f us): the wait spins\n",
+                interval_ms, arm_names[judged[i].arm], (double)tickle_cpu / (double)US_NS,
+                (double)CPU_PER_WAKE_NS / (double)US_NS);
             failures++;
         }
     }
@@ -336,8 +448,9 @@ int main(int argc, char** argv) {
         printf("sched_wake_check: SETUP FAILED - cannot create context\n");
         return CHECK_SETUP_FAILED;
     }
-    // Settle: the context's own start-up entries (announcements) run before anything is measured.
-    const uint64_t settle_until = tt_get_ns() + (100 * MS_NS);
+    // Settle: the context's own start-up entries (announcements) run before anything is measured. 100 ms was too short:
+    // the first 500 ms case ran on main at a median of 214 us late (max 568), its waits cut short by those entries.
+    const uint64_t settle_until = tt_get_ns() + (1000 * MS_NS);
     while (tt_get_ns() < settle_until) {
         (void)tt_Context_poll(&node, (int64_t)(10 * MS_NS));
     }
