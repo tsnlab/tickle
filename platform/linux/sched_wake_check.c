@@ -95,8 +95,9 @@ struct judged_case {
 static const struct judged_case judged[] = {{{500 * MS_NS, 5}, ARM_TICKLE},
                                             {{1 * MS_NS, 20}, ARM_TICKLE},
                                             {{500 * MS_NS, 4}, ARM_EARLIER}};
-static const struct interval swept[] = {{1 * MS_NS, 40},  {5 * MS_NS, 30},  {10 * MS_NS, 30}, {50 * MS_NS, 12},
-                                        {100 * MS_NS, 8}, {200 * MS_NS, 8}, {500 * MS_NS, 6}, {1000 * MS_NS, 5}};
+static const struct interval swept[] = {{1 * MS_NS, 40},  {2 * MS_NS, 40},  {5 * MS_NS, 30},
+                                        {10 * MS_NS, 30}, {50 * MS_NS, 12}, {100 * MS_NS, 8},
+                                        {200 * MS_NS, 8}, {500 * MS_NS, 6}, {1000 * MS_NS, 5}};
 
 static uint64_t thread_cpu_ns(void) {
     struct rusage usage; // NOLINT(misc-include-cleaner) - <sys/resource.h>
