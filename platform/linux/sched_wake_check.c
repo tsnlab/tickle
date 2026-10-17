@@ -36,6 +36,13 @@
 //   VOID  the control's own median above CONTROL_VOID_NS at any interval: the host is too loaded for a lateness of
 //         a few hundred microseconds to be told from its scheduling delay; or the positive control not showing the
 //         slack (exit 2, not a pass). Added after a loaded PC (load 10-25) let the no-long-rule mutant pass.
+// The short case (added 2026-10-18): below 596e9c9c's 10 ms threshold a wait for an entry still took the relative
+// timeout, whose slack is never less than the thread's 50 us timer slack, so a 5 ms entry ran ~60 us late - the same as
+// clock_nanosleep(), which carries that slack too, so the control above cannot see it. Its reference is a timerfd armed
+// for the absolute deadline (no slack, ~10 us late), which is what the poll's wait now uses:
+//   PASS  median(tickle) <= median(timerfd_abs) + SHORT_MARGIN_NS at SHORT_INTERVAL_NS, CPU as above.
+//   FAIL  above it. On main (18f16b85, PC, nice 0) 5 ms entries ran 58-62 us late against a timerfd's 7-24 us.
+//   VOID  a bare relative epoll_pwait2() no more than SHORT_SLACK_SHOWN_NS above the timerfd: no slack to catch.
 // --sweep runs more intervals and, beside the two arms, the raw waits the poll loop and the alternatives use, with no
 // context - epoll_pwait2() and ppoll() with a relative timeout, a timerfd armed for the absolute deadline - and prints
 // their lateness, which says which component the tickle arm's lateness comes from. The sweep prints and judges nothing.
@@ -56,6 +63,7 @@
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/timerfd.h>
 #include <tickle/config.h>
@@ -71,6 +79,10 @@
 #define MAX_SAMPLES 64
 #define POSITIVE_CONTROL_FROM_NS (100ULL * MS_NS) // judged intervals from here on carry the positive control
 #define CHECK_CONTEXT_ID 59                       // any valid id; this context never meets another
+#define SHORT_INTERVAL_NS (5 * MS_NS)             // the short case: below the 10 ms threshold of 596e9c9c
+#define SHORT_SAMPLES 40
+#define SHORT_MARGIN_NS (25ULL * US_NS)      // tickle's median may exceed the absolute timerfd's by this much
+#define SHORT_SLACK_SHOWN_NS (30ULL * US_NS) // the bare relative wait must exceed the timerfd's by more than this
 
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_VOID = 2, CHECK_SETUP_FAILED = 3 };
 
@@ -309,14 +321,30 @@ static bool run_arm(enum arm arm, struct tt_Context* node, const struct raw_fds*
 }
 
 // One arm at one interval: `samples` waits, their median and maximum lateness and the thread CPU per wait.
+// The arms that are not TickLE's - the controls and the raw waits - run at the thread's default timer slack (50 us),
+// whatever the poll has set it to: the HAL lowers the polling thread's slack (hal_linux.c TT_RX_TIMER_SLACK_NS,
+// 2026-10-18), and this thread is that thread, so without this the positive control lost the very slack it exists to
+// show (VOID at 5 ms, 13.9 us against the timerfd's 9.5) and clock_nanosleep() stopped being the DDS clients' pacing.
+#define CONTROL_SLACK_NS 50000UL
+
 static bool measure(enum arm arm, struct tt_Context* node, const struct raw_fds* fds, struct interval when,
                     uint64_t* med, uint64_t* most, uint64_t* cpu_per) {
     uint64_t late[MAX_SAMPLES];
+    const bool control = arm != ARM_TICKLE && arm != ARM_EARLIER;
+    const int poll_slack = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0); // NOLINT(misc-include-cleaner) - <sys/prctl.h>
+    if (control) {
+        (void)prctl(PR_SET_TIMERSLACK, CONTROL_SLACK_NS, 0, 0, 0); // NOLINT(misc-include-cleaner) - <sys/prctl.h>
+    }
     const uint64_t cpu_before = thread_cpu_ns();
-    for (int i = 0; i < when.samples; i++) {
-        if (!run_arm(arm, node, fds, when.ns, &late[i])) {
-            return false;
-        }
+    bool ran = true;
+    for (int i = 0; i < when.samples && ran; i++) {
+        ran = run_arm(arm, node, fds, when.ns, &late[i]);
+    }
+    if (control && poll_slack > 0) {
+        (void)prctl(PR_SET_TIMERSLACK, (unsigned long)poll_slack, 0, 0, 0); // NOLINT(misc-include-cleaner)
+    }
+    if (!ran) {
+        return false;
     }
     *cpu_per = (thread_cpu_ns() - cpu_before) / (uint64_t)when.samples;
     *most = maximum(late, when.samples);
@@ -364,6 +392,45 @@ static int sweep(struct tt_Context* node) {
         }
     }
     return CHECK_PASS;
+}
+
+// The short case: CHECK_PASS, CHECK_FAIL or CHECK_VOID (see the header), CHECK_SETUP_FAILED.
+static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
+    const struct interval when = {SHORT_INTERVAL_NS, SHORT_SAMPLES};
+    uint64_t tickle_med = 0;
+    uint64_t timerfd_med = 0;
+    uint64_t raw_med = 0;
+    uint64_t most = 0;
+    uint64_t tickle_cpu = 0;
+    uint64_t cpu = 0;
+    if (!measure(ARM_TICKLE, node, fds, when, &tickle_med, &most, &tickle_cpu) ||
+        !measure(ARM_TIMERFD, node, fds, when, &timerfd_med, &most, &cpu) ||
+        !measure(ARM_EPOLL, node, fds, when, &raw_med, &most, &cpu)) {
+        printf("sched_wake_check: SETUP FAILED - the short case\n");
+        return CHECK_SETUP_FAILED;
+    }
+    const double interval_ms = (double)SHORT_INTERVAL_NS / (double)MS_NS;
+    int result = CHECK_PASS;
+    if (tickle_med > timerfd_med + SHORT_MARGIN_NS) {
+        printf(
+            "sched_wake_check: FAIL at %.0f ms (short) - entries ran %.1f us late (median), a timerfd for the absolute "
+            "deadline %.1f us; allowed %.0f us more\n",
+            interval_ms, (double)tickle_med / (double)US_NS, (double)timerfd_med / (double)US_NS,
+            (double)SHORT_MARGIN_NS / (double)US_NS);
+        result = CHECK_FAIL;
+    }
+    if (tickle_cpu > CPU_PER_WAKE_NS) {
+        printf("sched_wake_check: FAIL at %.0f ms (short) - %.1f us of CPU per entry (bound %.0f us): the wait spins\n",
+               interval_ms, (double)tickle_cpu / (double)US_NS, (double)CPU_PER_WAKE_NS / (double)US_NS);
+        result = CHECK_FAIL;
+    }
+    if (result == CHECK_PASS && raw_med <= timerfd_med + SHORT_SLACK_SHOWN_NS) {
+        printf("sched_wake_check: VOID at %.0f ms (short) - a bare relative wait ran only %.1f us late against the "
+               "timerfd's %.1f us: the host shows no slack to catch\n",
+               interval_ms, (double)raw_med / (double)US_NS, (double)timerfd_med / (double)US_NS);
+        result = CHECK_VOID;
+    }
+    return result;
 }
 
 static int judge(struct tt_Context* node) {
@@ -427,14 +494,20 @@ static int judge(struct tt_Context* node) {
             failures++;
         }
     }
-    if (failures != 0) {
+    const int short_result = judge_short(node, &fds);
+    if (short_result == CHECK_SETUP_FAILED) {
+        return CHECK_SETUP_FAILED;
+    }
+    if (failures != 0 || short_result == CHECK_FAIL) {
         return CHECK_FAIL;
     }
-    if (void_run) {
+    if (void_run || short_result == CHECK_VOID) {
         return CHECK_VOID;
     }
-    printf("sched_wake_check: PASS - every entry median within %.0f us of clock_nanosleep()'s, without spinning\n",
-           (double)LATE_MARGIN_NS / (double)US_NS);
+    printf("sched_wake_check: PASS - every entry median within %.0f us of clock_nanosleep()'s and, at %.0f ms, within "
+           "%.0f us of an absolute timerfd's, without spinning\n",
+           (double)LATE_MARGIN_NS / (double)US_NS, (double)SHORT_INTERVAL_NS / (double)MS_NS,
+           (double)SHORT_MARGIN_NS / (double)US_NS);
     return CHECK_PASS;
 }
 
