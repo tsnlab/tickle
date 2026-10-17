@@ -53,11 +53,16 @@ Index 0 is the default node, created on first use of a `tt_Context_create_*()` s
 - The wait is `epoll_pwait2()` (never `SO_RCVTIMEO`) over a set registered once: both sockets, an `eventfd` for
   wake-ups, the segment doorbell FIFO, and a deadline `timerfd`. `ppoll()` is the fallback without epoll or Linux 5.11.
 - **A wait for a scheduler entry ends at its deadline.** Linux gives a relative `epoll_pwait2`/`ppoll` timeout a slack
-  of 0.1% of its length (0.5% at nice > 0), so a 100 ms wait ended ~100-500 us late and a ping went out ~111 us after
-  its due time on the rig. A wait longer than 10 ms for a scheduler entry instead arms the set's `timerfd` at the
+  of 0.1% of its length (0.5% at nice > 0) and never less than the thread's timer slack (50 us by default), so a
+  100 ms wait ended ~100-500 us late (a ping ~111 us after its due time on the rig) and a 5 ms one ~60 us late, as
+  `clock_nanosleep()` does. A wait longer than 10 ms for a scheduler entry instead arms the set's `timerfd` at the
   entry's absolute deadline (`CLOCK_MONOTONIC`, `TFD_TIMER_ABSTIME`, edge-triggered so a fire needs no `read()`),
-  which has only the thread's own 50 us slack: one wake, at the deadline (rig: 13 us late; `sched_wake_check`). The
-  timer is re-armed whenever the deadline moves (about two `timerfd_settime` calls per round trip on a ping client).
+  whose timer carries no slack: one wake, ~10 us after the deadline (rig: 13 us late; `sched_wake_check`). The timer
+  is re-armed whenever the deadline moves (about two `timerfd_settime` calls per round trip on a ping client). For the
+  shorter waits the polling thread's timer slack is lowered to 1 ns at its first wait (`prctl(PR_SET_TIMERSLACK)`,
+  never raised; `TT_RX_TIMER_SLACK_NS`), so their relative timeout ends within 0.1% of the wait (5 ms: ~15 us late on
+  the PC, against ~60) without a system call per wait - arming the `timerfd` for them cost one or two
+  `timerfd_settime` a round trip. It applies to every timer of that thread.
   The `ppoll()` fallback still uses a relative timeout.
 - At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a receive check, so a
   max-rate publisher cannot starve ACKNACK processing.
