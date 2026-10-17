@@ -25,7 +25,9 @@
 //          (the arrival count answered instead of lwIP - the hint is in use);
 //        - socket build, the control: the busy phase has empty reads > 0 - the counter can see an empty read, so the
 //          netconn build's zero is a measurement and not a blind instrument;
-//      then tt_rx_maybe_ready() itself: true with a datagram queued and, in the netconn build, false once it is read.
+//   4. tt_rx_maybe_ready() itself (check_rx_hint): false once drained (netconn), true with a datagram queued, false
+//      straight after that datagram is read (netconn). test.sh also runs this harness on mutated HALs that must fail
+//      it.
 // It ends the QEMU process through the virt machine's test device: exit status 0 on PASS, 1 on FAIL, so test.sh does
 // not have to wait out a timeout.
 
@@ -240,23 +242,33 @@ static void check_rx_cost(void) {
 #endif
 }
 
+// The hint's own contract, one datagram at a time (ROADMAP "Now" 7); test.sh runs a mutant against each hint check:
+//   - drained first, then "no" (netconn): what any earlier phase left is read, so the "yes" below comes from the one
+//     datagram sent here and not from a count already standing - the control for the next check;
+//   - "maybe" once a datagram is queued: the arrival callback set the hint (mutant: a callback that never counts);
+//   - "no" straight after that one datagram is read, before any read finds nothing (netconn): taking the datagram
+//     cleared the hint by itself (mutant: a callback that ignores the take - an empty read would still clear it, so
+//     this check must come before one);
+//   - then nothing more to read: exactly the one datagram was there.
 static void check_rx_hint(void) {
+    uint8_t buf[RX_DATAGRAM_BYTES * 2];
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    while (tt_try_receive(&node, buf, sizeof(buf), &ip, &port) >= 0) {
+    }
+#if tt_HAL_FREERTOS_NETCONN
+    check(!tt_rx_maybe_ready(&node), "netconn: tt_rx_maybe_ready() is false with nothing queued");
+#endif
     int sock = sender_socket();
     bool sent = sock >= 0 && send_one(sock, own_data_port());
     vTaskDelay(pdMS_TO_TICKS(20)); // the loopback queue and the tcpip thread deliver it
     check(sent && tt_rx_maybe_ready(&node), "tt_rx_maybe_ready() is true with a datagram queued");
-    uint8_t buf[RX_DATAGRAM_BYTES * 2];
-    uint32_t ip = 0;
-    uint16_t port = 0;
-    int32_t got = 0;
-    int32_t len = 0;
-    while ((len = tt_try_receive(&node, buf, sizeof(buf), &ip, &port)) >= 0) {
-        got += len == RX_DATAGRAM_BYTES ? 1 : 0;
-    }
-    check(got == 1, "tt_try_receive() returns the queued datagram");
+    int32_t len = tt_try_receive(&node, buf, sizeof(buf), &ip, &port);
+    check(len == RX_DATAGRAM_BYTES, "tt_try_receive() returns the queued datagram");
 #if tt_HAL_FREERTOS_NETCONN
     check(!tt_rx_maybe_ready(&node), "netconn: tt_rx_maybe_ready() is false once it is read");
 #endif
+    check(tt_try_receive(&node, buf, sizeof(buf), &ip, &port) < 0, "nothing else was queued");
 }
 
 // --- the measured retry granularity (DESIGN.md 6) ---

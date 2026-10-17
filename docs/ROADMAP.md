@@ -201,6 +201,10 @@ The user's active list (2026-10-05), in order.
    selftest counts empty reads per datagram: 1.0 (waiting poll) and ~1,200 (busy poll) on sockets, 0 and 0 on
    netconn, which also answers `tt_try_receive()`'s "nothing" from the count. Found on the way: closing an lwIP
    socket faults, because lwIP sets errno, picolibc keeps errno thread-local, and the board never sets `tp`.
+   Tightened 2026-10-17: the selftest checks the hint false once drained and false straight after the one datagram
+   is read (before any empty read could clear it), and `test.sh` now runs three HAL mutants in every
+   `make test-freertos` - arrival not counted, take not counted, hint always "maybe" - each killed on its own check
+   (DESIGN.md 2, "Receive path (FreeRTOS HAL)").
 8. **CycloneDDS arm of the mixed shared-memory + network test**: the mixed-delivery test has no Cyclone arm yet.
    It needs iceoryx plus network config. (COMPARISON 1a, mixed delivery)
 

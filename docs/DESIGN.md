@@ -81,6 +81,21 @@ concurrently with the poll on another; `tt_THREAD_SAFE=0` compiles the locks out
   `kernel.io_uring_disabled`, Linux < 5.1; README.md has the seccomp recipe). `tt_RX_HINT_READ` (1): compiled out.
   `tt_RX_HINT_URING` (2): required, else context creation fails with `tt_RET_UNSUPPORTED`.
 
+**Receive path (FreeRTOS HAL).** lwIP's socket layer keeps its netconn callback to itself, so the HAL is on the netconn
+API (`tt_HAL_FREERTOS_NETCONN=1`, default; `0` = BSD sockets and `select()`, kept as the test control).
+
+- Each of the two receive netconns has a callback, run by lwIP itself (no TickLE thread): `RCVPLUS` (tcpip thread,
+  after the datagram is queued) adds 1 to that netconn's atomic arrival count and gives one binary semaphore;
+  `RCVMINUS` (the reading task, on the take) subtracts 1, never below 0.
+- `tt_rx_maybe_ready()` is "no" only when both counts are 0: two loads, no lwIP call. A datagram is queued before it
+  is counted, and a count falls only on a take or on a read that finds the mailbox empty (and then only if no arrival
+  was counted meanwhile), so no queued datagram is left uncounted; a stale count is a false "maybe", which that empty
+  `NETCONN_DONTBLOCK` read clears.
+- `tt_receive()` waits on the semaphore, which `tt_wake_signal()` also gives (no loopback wake socket).
+- Tests: the QEMU selftest (`platform/freertos/main.c`, `make test-freertos`) checks the hint false once drained, true
+  with a datagram queued and false straight after it is read; `test.sh` runs it against three HAL mutants (arrival
+  not counted, take not counted, hint always "maybe"), each of which must fail its own check.
+
 **Time.** Two clocks, as in DDS, so that a step of the date (NTP, `date -s`) moves no deadline: on one clock a forward
 step expired leases and lifespans early and a backward step stalled every timer.
 

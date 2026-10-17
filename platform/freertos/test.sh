@@ -171,8 +171,84 @@ $(printf '%-10s FAIL (status %s; %s failed checks)' "selftest/$rx_path" "$selfte
     return 1
 }
 
+# The receive hint's mutants (ROADMAP "Now" 7): the netconn selftest again, built against a copy of
+# src/hal_freertos.c with one line replaced, which must fail the one check written to catch that defect. A mutant
+# that passes means the check cannot see what it claims to; one whose line is not found, that does not build, or that
+# does not reach main.c's verdict is reported as such - "could not look" is never read as "killed".
+# The copies live under obj-mutants/ (ignored, removed by `make clean`, pruned from `make lint`).
+run_rx_hint_mutant() {
+    name=$1
+    expect_check=$2
+    old_line=$3
+    new_line=$4
+    dir="obj-mutants/$name"
+    log="selftest-mutant-$name.log"
+    label="mutant/$name"
+    mkdir -p "$dir"
+    if ! python3 -I -c '
+import sys
+src, dst, old, new = sys.argv[1:5]
+lines = open(src).read().split("\n")
+hits = [i for i, line in enumerate(lines) if line == old]
+if len(hits) != 1:
+    sys.exit("expected exactly one line equal to %r, found %d" % (old, len(hits)))
+lines[hits[0]] = new
+open(dst, "w").write("\n".join(lines))
+' ../../src/hal_freertos.c "$dir/hal_freertos.c" "$old_line" "$new_line"; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (the mutation did not apply - the HAL line it targets changed)' "$label")"
+        return 1
+    fi
+    if ! make ROLE=selftest RX_PATH=netconn NODE_ID=1 HAL_SRC="$dir/hal_freertos.c" VARIANT="-mutant-$name" all; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (the mutant did not build)' "$label")"
+        return 1
+    fi
+
+    timeout 60 qemu-system-riscv32 -machine virt -nographic -bios none \
+        -kernel "RTOSDemo-selftest-1-mutant-$name.elf" \
+        -global virtio-mmio.force-legacy=off \
+        -netdev socket,id=net0,mcast=$SELFTEST_MCAST_GROUP -device virtio-net-device,netdev=net0 \
+        </dev/null >"$log" 2>&1
+    mutant_status=$?
+    sed -i 's/\r$//' "$log" # the serial console ends its lines with CR LF; the whole-line matches below need LF
+
+    echo "=== $log (selftest lines) ==="
+    grep '^selftest: ' "$log"
+    # Killed only by main.c's own verdict: the FAIL line of the expected check, the final FAIL, and the finisher's
+    # status 1. A timeout (124) or a crash reaches none of them.
+    if [ "$mutant_status" -eq 1 ] && grep -qxF "selftest: FAIL $expect_check" "$log" &&
+        grep -qx 'selftest: FAIL' "$log"; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s PASS (killed by "%s")' "$label" "$expect_check")"
+        return 0
+    fi
+    if grep -qx 'selftest: PASS' "$log"; then
+        verdict="SURVIVED - the selftest passed"
+    elif grep -qx 'selftest: FAIL' "$log"; then
+        verdict="failed, but not on \"$expect_check\""
+    else
+        verdict="no verdict (status $mutant_status) - could not look"
+    fi
+    SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (%s)' "$label" "$verdict")"
+    return 1
+}
+
 status=0
 run_selftest netconn || status=1
+# The arrival callback never counts: the hint stays "no" with a datagram queued - the missed readiness hal.h forbids.
+run_rx_hint_mutant no_count "tt_rx_maybe_ready() is true with a datagram queued" \
+    '        __atomic_add_fetch(&node->hal.rx_arrivals[which], 1U, __ATOMIC_SEQ_CST);' \
+    '        (void)which; // mutant: the arrival is not counted' || status=1
+# The callback ignores the take: the hint stays "maybe" after the only datagram is read, until an empty read.
+run_rx_hint_mutant no_take "netconn: tt_rx_maybe_ready() is false once it is read" \
+    '    } else if (evt == NETCONN_EVT_RCVMINUS) {' \
+    '    } else if (0) { // mutant: the take is not counted' || status=1
+# The hint always answers "maybe", the socket build's answer: the control check must see it.
+run_rx_hint_mutant always_maybe "netconn: tt_rx_maybe_ready() is false with nothing queued" \
+    '    if ((__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' \
+    '    if (false && (__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' || status=1
 run_selftest socket || status=1
 run_round_trip uint64 publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip set_bool client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1

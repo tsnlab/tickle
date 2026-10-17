@@ -123,7 +123,7 @@ ASFLAGS = $(ARCH_FLAGS) -I$(CHIP_EXT) -I.
 # crt0/linker script so our own start.S/link.ld stay in control of boot and memory layout.
 CFLAGS += --specs=picolibc.specs
 
-ELF = RTOSDemo-$(ROLE)-$(NODE_ID)$(RX_SUFFIX).elf
+ELF = RTOSDemo-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)$(VARIANT).elf
 LDFLAGS = $(ARCH_FLAGS) -nostartfiles --specs=picolibc.specs -T board/link.ld \
           -Wl,--gc-sections -Wl,-Map=$(ELF:.elf=.map)
 
@@ -152,7 +152,11 @@ BOARD_SRCS = board/start.S board/uart.c board/stdio_uart.c board/runtime_stubs.c
 # TickLE's own protocol/encoding sources plus this platform's HAL - the same src/*.c the
 # top-level Makefile builds into libtickle.a for other platforms, just cross-compiled here
 # instead of built as a separate static archive (no host-side build system to link against).
-TICKLE_SRCS = $(ROOT)/src/tickle.c $(ROOT)/src/encoding.c $(ROOT)/src/log.c $(ROOT)/src/hal_freertos.c
+# HAL_SRC/VARIANT: test.sh builds the selftest against a mutated copy of the HAL (HAL_SRC, somewhere under the repo
+# root) to show its checks can fail; VARIANT keeps that build's objects and ELF apart from the real one's.
+HAL_SRC ?= $(ROOT)/src/hal_freertos.c
+VARIANT ?=
+TICKLE_SRCS = $(ROOT)/src/tickle.c $(ROOT)/src/encoding.c $(ROOT)/src/log.c $(HAL_SRC)
 
 SRCS = $(MAIN_SRC) net_init.c app_hooks.c $(BOARD_SRCS) $(TICKLE_SRCS) $(FREERTOS_SRCS) $(FREERTOS_ASM) \
        $(LWIP_SRCS) $(ROLE_SRCS)
@@ -167,7 +171,7 @@ REPO_ROOT = $(abspath $(ROOT))
 # Per-(ROLE,NODE_ID) obj dir: objects compiled with different -DNET_NODE_ID/-DROLE-selected
 # sources aren't interchangeable, so each combination that's actually built keeps its own cache
 # instead of clobbering (or, worse, silently reusing) another combination's.
-OBJ_DIR = obj-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)
+OBJ_DIR = obj-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)$(VARIANT)
 OBJS = $(foreach src,$(SRCS),$(OBJ_DIR)/$(patsubst $(REPO_ROOT)/%,%,$(abspath $(src))).o)
 
 .PHONY: all clean run lint lint-headers-ci
@@ -255,7 +259,7 @@ lint-headers-ci:
 	    -I$(LWIP)/src/include -I$(LWIP_FREERTOS_PORT)/include -I$(ROOT)/include -I$(ROOT)/src
 
 lint:
-	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
-	find . -name '*.[ch]' -exec clang-tidy $(TIDY_ARGS) {} +
+	find . -path './obj-*' -prune -o -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
+	find . -path './obj-*' -prune -o -name '*.[ch]' -exec clang-tidy $(TIDY_ARGS) {} +
 	clang-format --dry-run --Werror $(EXTERNAL_TIDY_FILES)
 	clang-tidy $(TIDY_ARGS) $(EXTERNAL_TIDY_CHECKS) $(EXTERNAL_TIDY_FILES)
