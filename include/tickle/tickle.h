@@ -1105,6 +1105,10 @@ struct tt_Context {
     uint32_t wait_seq;
     uint32_t wait_until_hi;
     uint32_t wait_until_lo;
+    // Whether that wait ends for a scheduler entry rather than at the poll's own budget (poll_wait_io()). Written by
+    // the poller before tt_receive() and read by the HAL in the same thread: the Linux HAL ends a long wait on a
+    // precise timer only for an entry (hal_linux.c rx_wait_epoll(), 2026-10-17).
+    bool wait_until_entry;
     // This context's own timer lateness (2026-10-08, DESIGN.md 6): how much later than the deadline it slept to a
     // wait in tt_Context_poll() for a retry timer actually returned, smoothed as RFC 6298 smooths a round trip (mean
     // and mean deviation, timer_lateness_fold() in tickle.c). Only the poller writes the two estimates.

@@ -5134,6 +5134,7 @@ static void node_init_locks(struct tt_Context* node) {
     wall_offset_refresh(node);
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
+    node->wait_until_entry = false;
     // G (timer_lateness_fold()) starts cold, at tt_TIMER_LATENESS_INITIAL, and never falls below what this
     // platform's waits can resolve. Here and not in reset_node_state(): it is the host's lateness, not the node's.
     node->timer_lateness_mean_ns = 0;
@@ -21369,6 +21370,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 
     bool woke_for_scheduler = false;
     int64_t rest = poll_wait_length(has_next, next, time, timeout, until_next_event, &woke_for_scheduler);
+    node->wait_until_entry = woke_for_scheduler; // the HAL's precise timer is for an entry, not a budget
 
     uint32_t ip = 0;
     uint16_t port = 0;
