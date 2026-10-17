@@ -64,6 +64,13 @@ n=${#labels[@]}
 for round in $(seq 1 "$ROUNDS"); do
     for i in $(seq 0 $((n - 1))); do
         label=${labels[$(((i + round - 1) % n))]}
+        # QUIET_WAIT=<s>: wait up to that long for the load to fall to LOAD_MAX first; judged on the load at the start.
+        waited=0
+        while [ "$waited" -lt "${QUIET_WAIT:-0}" ] && awk -v l="$(cut -d' ' -f1 /proc/loadavg)" -v m="$LOAD_MAX" \
+            'BEGIN { exit !(l > m) }'; do
+            sleep 5
+            waited=$((waited + 5))
+        done
         load=$(cut -d' ' -f1 /proc/loadavg)
         verdict=ok
         awk -v l="$load" -v m="$LOAD_MAX" 'BEGIN { exit !(l > m) }' && verdict=VOID_LOAD
