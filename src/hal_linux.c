@@ -693,6 +693,19 @@ static void uring_close(struct tt_Context* node);
 #define RX_READY_WRITABLE 16U // data_sock has room again (tt_tx_await_writable())
 #define RX_READY_TIMER 32U    // the wait's deadline timer fired (rx_wait_lazy())
 
+// The deadline timer edge-triggered: a fire needs no read() (rx_timer_take()). 0: level-triggered and read, as before
+// 2026-10-17 (the A/B control).
+#ifndef TT_RX_TIMER_EDGE
+#define TT_RX_TIMER_EDGE 1
+#endif
+// A wait in a poll longer than this takes the deadline timer whatever the run of waits that ended for data
+// (rx_wait_epoll()): past it the kernel's slack on a poll()-family timeout - 0.1% of the wait, 0.5% for a thread with a
+// positive nice value, against the thread's 50 us timer slack for a timerfd - makes the wait end measurably late.
+// 0: never (the rule before 2026-10-17, the A/B control).
+#ifndef TT_RX_TIMER_LONG_NS
+#define TT_RX_TIMER_LONG_NS (10LL * 1000000LL)
+#endif
+
 #if TT_HAL_EPOLL
 static bool wait_set_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
     struct epoll_event event = {.events = events, .data = {.u32 = tag}};
@@ -726,7 +739,7 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC); // tt_get_ns()'s clock
-    if (timer < 0 || !wait_set_add(epoll_fd, timer, EPOLLIN, RX_READY_TIMER)) {
+    if (timer < 0 || !wait_set_add(epoll_fd, timer, TT_RX_TIMER_EDGE ? (EPOLLIN | EPOLLET) : EPOLLIN, RX_READY_TIMER)) {
         TT_LOG_DEBUG("No deadline timer in the wait set (%s) - each wait takes its timeout", strerror(errno));
         if (timer >= 0) {
             (void)close(timer);
@@ -3197,11 +3210,15 @@ static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
     }
 }
 
-// The timer fired: read, so the level-triggered set stops reporting it, and disarmed. A fire
-// also starts the run of waits that ended for data again (rx_wait_epoll()): the timer cost a read in this wait.
+// The timer fired: disarmed, and - registered level-triggered - read, so the set stops reporting it. Edge-triggered
+// (TT_RX_TIMER_EDGE, the default since 2026-10-17) it needs no read: epoll reports each expiry once, and the next
+// timerfd_settime() clears the count, so a fire costs no system call. A fire also starts the run of waits that ended
+// for data again (rx_wait_epoll()).
 static void rx_timer_take(struct tt_hal* hal) {
+#if !TT_RX_TIMER_EDGE
     uint64_t expirations = 0;
     (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations));
+#endif
     hal->timer_armed_ns = 0;
     hal->timer_fires++;
     hal->timer_data_streak = 0;
@@ -3348,10 +3365,14 @@ static __attribute__((noinline)) int rx_wait_lazy_run(struct tt_Context* node, u
 static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
     struct tt_hal* hal = &node->hal;
     const uint64_t until = hal->timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
+    // A long wait takes the timer too (TT_RX_TIMER_LONG_NS): with its timeout it would end up to 0.1-0.5% of it late,
+    // which ran a scheduled entry ~0.5 ms late after a 500 ms wait (sched_wake_check.c, 2026-10-17). One wake-up at
+    // the deadline, and a timerfd_settime() only when the deadline is earlier than the one armed or none is.
+    const bool long_wait = TT_RX_TIMER_LONG_NS > 0 && timeout > (int64_t)TT_RX_TIMER_LONG_NS;
 #if TT_HAL_UDP_GRO
-    if (until != 0 && rx_timer_lazy_next(hal) && hal->gro_state != TT_GRO_SETTLING) {
+    if (until != 0 && (rx_timer_lazy_next(hal) || long_wait) && hal->gro_state != TT_GRO_SETTLING) {
 #else
-    if (until != 0 && rx_timer_lazy_next(hal)) {
+    if (until != 0 && (rx_timer_lazy_next(hal) || long_wait)) {
 #endif
         return rx_wait_lazy_run(node, until, ready);
     }
