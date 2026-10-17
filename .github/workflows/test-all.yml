@@ -39,60 +39,60 @@ concurrency:
   group: test-all-${{ github.sha }}
   cancel-in-progress: true
 
-jobs:
-  test:
-    # Pinned rather than ubuntu-latest (2026-09-23): GitHub moves that label to Ubuntu 26 on
-    # 2026-10-19, and an image change landing by itself, mid-task, is the kind of surprise that
-    # costs a day to attribute. This pin is a scheduling decision, not a compatibility claim - we
-    # have not tested Ubuntu 26 and are not asserting anything about it either way. Move to
-    # ubuntu-26.04 deliberately, as its own change, with its own CI run to look at.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60 # per-tier steps + dashboard; 16-19.4 min on 2026-10-07, 30-34 min on 2026-10-16 (two runs cut at 35)
-    permissions:
-      contents: write # the "Publish dashboard" step below pushes to gh-pages (main only)
+permissions:
+  contents: read
 
+# Six jobs run the tiers side by side, each on its own runner, and `test` gates on all of them (2026-10-17). Until then
+# one job ran every tier in sequence: 33 min on 2026-10-17, against 16-19 min on 2026-10-07, while the only steps that
+# can share a machine without changing their results are the static checks. Every tier, flag and timeout is as it was;
+# only where each runs changed. On separate runners no integration tier shares a CPU with a sanitizer build, which the
+# perf tier's sensitivity to a second copy of the suite (the concurrency note above) makes the safer arrangement anyway.
+#
+# Each tier is still its own continue-on-error step, so every tier is attempted and recorded even after another
+# fails; each job hands its step outcomes up as job outputs, and `test` fails if any gated outcome is not `success` or
+# any job did not finish with `success` - so a job that died before reaching a tier (checkout, apt, a timeout) leaves
+# an empty outcome and fails the gate instead of reading as a pass.
+#
+# Runner pin, for every job: ubuntu-24.04 rather than ubuntu-latest (2026-09-23). GitHub moves that label to Ubuntu 26
+# on 2026-10-19, and an image change landing by itself, mid-task, is the kind of surprise that costs a day to
+# attribute. This pin is a scheduling decision, not a compatibility claim - we have not tested Ubuntu 26 and are not
+# asserting anything about it either way. Move to ubuntu-26.04 deliberately, as its own change, with its own CI run.
+#
+# Builds use -j$(nproc): until 2026-10-17 the unit tests compiled one binary at a time, which was 83 s of the plain
+# run, 105 s of coverage and 544 s of ASan + UBSan. Each test binary is its own make target with its own output files
+# (coverage's .gcno/.gcda are prefixed with the binary's name), and check-gates has built `sanitize` with -j8 since
+# 2026-10-16. The tests themselves still run one at a time, in the same order.
+jobs:
+  # Linux build, the static checks, the plain unit tests, ThreadSanitizer, the fuzz smoke and the same-host tier.
+  linux-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25 # about 5 min on 2026-10-17's step timings
+    outputs:
+      build_linux: ${{ steps.build_linux.outcome }}
+      doc_shas: ${{ steps.doc_shas.outcome }}
+      rig_lock: ${{ steps.rig_lock.outcome }}
+      headers: ${{ steps.headers.outcome }}
+      unit: ${{ steps.unit.outcome }}
+      tsan: ${{ steps.tsan.outcome }}
+      fuzz: ${{ steps.fuzz.outcome }}
+      itest_samehost: ${{ steps.itest_samehost.outcome }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
           submodules: true
           # Full history, for the "Documented commit ids resolve" step below. actions/checkout
           # defaults to depth 1, and against a shallow clone `git cat-file -e` fails for every
           # historical sha - so that step would report all 83 citations as missing and be a gate
           # that fails on a correct tree. Set from the documented default rather than discovered
-          # from a red run.
+          # from a red run. Only this job reads history; the others check out at depth 1.
           fetch-depth: 0
 
-      - name: Install RISC-V toolchain and QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf \
-            qemu-system-misc
-
-      # Each platform's compile + test tiers run as their own step so the dashboard can show
-      # exactly which one broke. continue-on-error keeps every tier attempted (and recorded)
-      # even after an earlier one fails; the "Gate" step at the end still fails the job.
       - name: Build - Linux x86-64
         id: build_linux
         continue-on-error: true
         run: make all
 
-      - name: Build - FreeRTOS RISC-V
-        id: build_freertos
-        continue-on-error: true
-        run: make -C platform/freertos all
-
-      - name: Lint - FreeRTOS
-        id: lint_freertos
-        continue-on-error: true
-        run: make -C platform/freertos lint
-
-      # Every public header, as C and as C++. rmw_tickle's typesupport is C++ and includes these,
-      # so a C-only construct in one breaks it - and nothing else in this workflow can see that,
-      # because every other tier is C. _Static_assert in config.h took the Check-all workflow red
-      # for eight commits before anyone looked, which is what this step exists to prevent.
       # Every commit sha the documents cite must exist and be reachable. Six did not, and none of
       # them was careless: each was recorded from the sha in front of whoever did the work, and a
       # rebase before the push changed it. "Record the sha with every figure" cannot catch that,
@@ -112,6 +112,10 @@ jobs:
         continue-on-error: true
         run: make check-rig-lock
 
+      # Every public header, as C and as C++. rmw_tickle's typesupport is C++ and includes these,
+      # so a C-only construct in one breaks it - and nothing else in this workflow can see that,
+      # because every other tier is C. _Static_assert in config.h took the Check-all workflow red
+      # for eight commits before anyone looked, which is what this step exists to prevent.
       - name: Public headers compile as C and C++
         id: headers
         continue-on-error: true
@@ -120,33 +124,7 @@ jobs:
       - name: Unit tests (mock HAL)
         id: unit
         continue-on-error: true
-        run: make test
-
-      # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced.
-      # It builds into its own obj/coverage/ tree, so no other tier's objects change, and it is deliberately absent
-      # from the Gate list below - no figure fails the job, and a failing unit test is already "Unit tests" above.
-      # Uploaded straight after it. (`make sanitize` used to start with `make clean`, which removed the report; since
-      # 2026-10-16 it builds into obj/sanitize/ and leaves every other tree alone.)
-      - name: Coverage (tracked, not enforced)
-        id: coverage
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y gcovr
-          make coverage
-          python3 .github/scripts/coverage_summary.py platform/linux/obj/coverage/report/summary.json >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload coverage report
-        if: always() && steps.coverage.outcome != 'skipped'
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-report
-          path: platform/linux/obj/coverage/report/
-          if-no-files-found: warn
-
-      - name: Unit tests under ASan + UBSan
-        id: sanitize
-        continue-on-error: true
-        run: make sanitize
+        run: make -j"$(nproc)" test
 
       # Core is callable from several threads (tickle.h, "Threading"). The plain unit run checks the
       # multi-threaded test's outcome; ThreadSanitizer checks the way there. Against the core as it was
@@ -163,25 +141,150 @@ jobs:
 
       # Real sockets, two nodes, one host - the case the unit suite cannot reach because it mocks
       # the HAL away, and the case a bug lived in until a benchmark found it. No root needed, so
-      # unlike the netns tier below it is not a privilege question whether this runs.
+      # unlike the netns tier it is not a privilege question whether this runs.
       - name: Integration - two nodes on one host
         id: itest_samehost
         continue-on-error: true
         run: make test-samehost
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-all-logs-linux-unit
+          path: platform/linux/*.log
+          if-no-files-found: ignore
+
+  # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced. It builds
+  # into its own obj/coverage/ tree, and it is deliberately absent from the Gate list - no figure fails the job, and a
+  # failing unit test is already "Unit tests" in linux-unit. The longest job: test_hybrid_send runs about 240 s of it
+  # under --coverage, against about 90 s plain.
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30 # about 6.5 min on 2026-10-17's step timings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Coverage (tracked, not enforced)
+        id: coverage
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcovr
+          make -j"$(nproc)" coverage
+          python3 .github/scripts/coverage_summary.py platform/linux/obj/coverage/report/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always() && steps.coverage.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: platform/linux/obj/coverage/report/
+          if-no-files-found: warn
+
+  # The unit tests again under AddressSanitizer + UndefinedBehaviorSanitizer, in their own obj/sanitize/ tree.
+  sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30 # about 5 min on 2026-10-17's step timings with a parallel build (11 min serial)
+    outputs:
+      sanitize: ${{ steps.sanitize.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Unit tests under ASan + UBSan
+        id: sanitize
+        continue-on-error: true
+        run: make -j"$(nproc)" sanitize
+
+  linux-netns:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25 # about 4 min on 2026-10-17's step timings; ping_pong and perf run for fixed times
+    outputs:
+      itest_linux: ${{ steps.itest_linux.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
 
       - name: Integration - Linux HAL over netns
         id: itest_linux
         continue-on-error: true
         run: make test-linux
 
-      # S8's control arm (RMW_GAPS_PLAN.md): the same suite with the shared-memory module compiled out. On
-      # 2026-09-29 this suite was red for thirteen commits and nothing in CI could say whether the module was the
-      # cause; it was, and that was established by a person building the tree both ways in a terminal. The script
-      # refuses to run if the two libraries come out byte-identical, so the arm cannot silently become a no-op.
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-all-logs-linux-netns
+          path: platform/linux/*.log
+          if-no-files-found: ignore
+
+  # S8's control arm (RMW_GAPS_PLAN.md): the same suite with the shared-memory module compiled out. On
+  # 2026-09-29 this suite was red for thirteen commits and nothing in CI could say whether the module was the
+  # cause; it was, and that was established by a person building the tree both ways in a terminal. The script
+  # refuses to run if the two libraries come out byte-identical, so the arm cannot silently become a no-op.
+  # Its own runner also keeps its `make clean` away from every other tier's objects.
+  linux-netns-shm-off:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25 # about 4 min on 2026-10-17's step timings
+    outputs:
+      itest_linux_shm_off: ${{ steps.itest_linux_shm_off.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
       - name: Integration - Linux HAL over netns, shared memory OFF (control)
         id: itest_linux_shm_off
         continue-on-error: true
         run: .github/scripts/test_linux_module_off.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-all-logs-linux-netns-shm-off
+          path: platform/linux/*.log
+          if-no-files-found: ignore
+
+  freertos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25 # about 4.5 min on 2026-10-17's step timings; each QEMU run lasts a fixed `timeout`
+    outputs:
+      build_freertos: ${{ steps.build_freertos.outcome }}
+      lint_freertos: ${{ steps.lint_freertos.outcome }}
+      itest_freertos: ${{ steps.itest_freertos.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
+          submodules: true
+
+      - name: Install RISC-V toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf \
+            qemu-system-misc
+
+      - name: Build - FreeRTOS RISC-V
+        id: build_freertos
+        continue-on-error: true
+        run: make -C platform/freertos all
+
+      - name: Lint - FreeRTOS
+        id: lint_freertos
+        continue-on-error: true
+        run: make -C platform/freertos lint
 
       - name: Integration - FreeRTOS HAL over QEMU virtio-net
         id: itest_freertos
@@ -192,16 +295,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-all-logs
-          path: |
-            platform/linux/*.log
-            platform/freertos/*.log
+          name: test-all-logs-freertos
+          path: platform/freertos/*.log
           if-no-files-found: ignore
+
+  # The gate, under the job name the workflow has always had, so a required "test" check keeps meaning "every tier".
+  test:
+    needs: [linux-unit, coverage, sanitize, linux-netns, linux-netns-shm-off, freertos]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the "Publish dashboard" step below pushes to gh-pages (main only)
+    steps:
+      - name: Checkout
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@v7
 
       - name: Publish dashboard (build/test section)
         # Only a push to main updates the shared status page; PRs still run every tier above.
         # continue-on-error: a flaky gh-pages push must not turn the test signal red - "Gate" does that.
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -216,41 +330,48 @@ jobs:
             "run_url": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
             "rows": {
               "linux": {
-                "build": "$(map '${{ steps.build_linux.outcome }}')",
-                "unit": "$(map '${{ steps.unit.outcome }}')",
-                "integration": "$(map '${{ steps.itest_linux.outcome }}')"
+                "build": "$(map '${{ needs.linux-unit.outputs.build_linux }}')",
+                "unit": "$(map '${{ needs.linux-unit.outputs.unit }}')",
+                "integration": "$(map '${{ needs.linux-netns.outputs.itest_linux }}')"
               },
               "freertos": {
-                "build": "$(map '${{ steps.build_freertos.outcome }}')",
+                "build": "$(map '${{ needs.freertos.outputs.build_freertos }}')",
                 "unit": "n/a",
-                "integration": "$(map '${{ steps.itest_freertos.outcome }}')"
+                "integration": "$(map '${{ needs.freertos.outputs.itest_freertos }}')"
               }
             }
           }
           EOF
           .github/scripts/publish_dashboard.sh buildtest buildtest-frag.json
 
-      - name: Gate - fail the job if any tier failed
-        if: always()
+      # Strictly `success`, not "not failure": a tier whose job died before reaching it has an empty outcome, which
+      # the one-job version could not produce and which must not pass.
+      - name: Gate - fail the job if any tier or job failed
         run: |
           fail=0
           for s in \
-            'Build Linux=${{ steps.build_linux.outcome }}' \
-            'Build FreeRTOS=${{ steps.build_freertos.outcome }}' \
-            'Lint FreeRTOS=${{ steps.lint_freertos.outcome }}' \
-            'Doc commit ids=${{ steps.doc_shas.outcome }}' \
-            'Rig lock coverage=${{ steps.rig_lock.outcome }}' \
-            'Headers C/C++=${{ steps.headers.outcome }}' \
-            'Unit tests=${{ steps.unit.outcome }}' \
-            'Sanitizers=${{ steps.sanitize.outcome }}' \
-            'ThreadSanitizer=${{ steps.tsan.outcome }}' \
-            'Fuzz smoke=${{ steps.fuzz.outcome }}' \
-            'Same-host=${{ steps.itest_samehost.outcome }}' \
-            'Integration Linux=${{ steps.itest_linux.outcome }}' \
-            'Integration Linux shm-off=${{ steps.itest_linux_shm_off.outcome }}' \
-            'Integration FreeRTOS=${{ steps.itest_freertos.outcome }}'; do
+            'Build Linux=${{ needs.linux-unit.outputs.build_linux }}' \
+            'Build FreeRTOS=${{ needs.freertos.outputs.build_freertos }}' \
+            'Lint FreeRTOS=${{ needs.freertos.outputs.lint_freertos }}' \
+            'Doc commit ids=${{ needs.linux-unit.outputs.doc_shas }}' \
+            'Rig lock coverage=${{ needs.linux-unit.outputs.rig_lock }}' \
+            'Headers C/C++=${{ needs.linux-unit.outputs.headers }}' \
+            'Unit tests=${{ needs.linux-unit.outputs.unit }}' \
+            'Sanitizers=${{ needs.sanitize.outputs.sanitize }}' \
+            'ThreadSanitizer=${{ needs.linux-unit.outputs.tsan }}' \
+            'Fuzz smoke=${{ needs.linux-unit.outputs.fuzz }}' \
+            'Same-host=${{ needs.linux-unit.outputs.itest_samehost }}' \
+            'Integration Linux=${{ needs.linux-netns.outputs.itest_linux }}' \
+            'Integration Linux shm-off=${{ needs.linux-netns-shm-off.outputs.itest_linux_shm_off }}' \
+            'Integration FreeRTOS=${{ needs.freertos.outputs.itest_freertos }}' \
+            'job linux-unit=${{ needs.linux-unit.result }}' \
+            'job coverage=${{ needs.coverage.result }}' \
+            'job sanitize=${{ needs.sanitize.result }}' \
+            'job linux-netns=${{ needs.linux-netns.result }}' \
+            'job linux-netns-shm-off=${{ needs.linux-netns-shm-off.result }}' \
+            'job freertos=${{ needs.freertos.result }}'; do
             name="${s%%=*}"; outcome="${s#*=}"
-            printf '%-22s %s\n' "$name" "$outcome"
-            if [ "$outcome" = failure ]; then fail=1; fi
+            printf '%-26s %s\n' "$name" "${outcome:-<none>}"
+            if [ "$outcome" != success ]; then fail=1; fi
           done
           exit $fail
