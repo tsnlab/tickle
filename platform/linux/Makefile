@@ -363,7 +363,11 @@ tsan:
 # Reports land in obj/coverage/report/: index.html (per-line), coverage.xml (Cobertura), summary.json, summary.txt.
 # -fprofile-update=atomic: test_thread_safety and test_transport_seam run core from several threads, and with the
 # default non-atomic counters gcov reported a negative hit count on tickle.c and gcovr refused the whole report.
-# gcovr comes from apt (`apt install gcovr`) or pip; override with GCOVR=/path/to/gcovr.
+# gcovr: 8.3 is what CI pins from pip (override with GCOVR=/path/to/gcovr). Ubuntu 24.04's apt gcovr 7.0 cannot parse
+# gcov's block lines past source line 9999 (`%%%%%:10003-block  0`, no space after the colon) and writes no report
+# for tickle.c, which is longer than that. --merge-mode-functions=separate: some static functions in tickle.c have
+# one definition per build flag (publisher_oldest_seq_no under !tt_LARGE_SAMPLES and tt_LARGE_SAMPLES), the test
+# binaries are built with different flags, and gcovr's default strict mode aborts on a name seen on two lines.
 GCOVR ?= gcovr
 COV_OBJ = obj/coverage
 COV_REPORT = $(COV_OBJ)/report
@@ -372,7 +376,8 @@ coverage:
 	rm -rf $(COV_OBJ)
 	$(MAKE) test OBJ=$(COV_OBJ) CFLAGS='-O0 -g -Wall -Wextra --coverage -fprofile-update=atomic'
 	mkdir -p $(COV_REPORT)
-	$(GCOVR) --root $(REPO_ROOT) --filter '$(REPO_ROOT)/src/' --exclude '.*/src/hal_[^/]*\.c$$' \
+	$(GCOVR) --root $(REPO_ROOT) --merge-mode-functions=separate \
+	    --filter '$(REPO_ROOT)/src/' --exclude '.*/src/hal_[^/]*\.c$$' \
 	    --html-details $(COV_REPORT)/index.html --cobertura $(COV_REPORT)/coverage.xml \
 	    --json-summary-pretty --json-summary $(COV_REPORT)/summary.json --txt $(COV_REPORT)/summary.txt \
 	    $(COV_OBJ)/tests

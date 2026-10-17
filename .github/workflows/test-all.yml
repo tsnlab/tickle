@@ -155,13 +155,25 @@ jobs:
           path: platform/linux/*.log
           if-no-files-found: ignore
 
-  # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced. It builds
-  # into its own obj/coverage/ tree, and it is deliberately absent from the Gate list - no figure fails the job, and a
-  # failing unit test is already "Unit tests" in linux-unit. The longest job: test_hybrid_send runs about 240 s of it
-  # under --coverage, against about 90 s plain.
+  # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced - no
+  # figure fails anything. It builds into its own obj/coverage/ tree. The longest job: test_hybrid_send runs about 240 s
+  # of it under --coverage, against about 90 s plain.
+  #
+  # The step IS gated ("Coverage report" in `test`), on whether a report was produced, not on its value. Until
+  # 2026-10-17 it was not, and gcovr had been crashing unseen: the step was continue-on-error and outside the Gate list,
+  # so the job read as success and `coverage-report` was uploaded with no summary in it.
+  #
+  # gcovr is pinned from PyPI rather than taken from apt. ubuntu-24.04's apt gcovr is 7.0, whose gcov parser requires a
+  # space after the count field of a block line (`%%%%%: 1234-block 0`); gcov prints the line number in a 5-wide
+  # field, so from line 10000 on there is none (`%%%%%:10003-block  0`), and once tickle.c passed 10,000 lines gcovr
+  # 7.0 raised UnknownLineType on every such line and wrote no report. gcovr 7.2 made the space optional; 8.3 is pinned
+  # so that a newer apt or runner image cannot change the parser under us. The Makefile says why it also passes
+  # --merge-mode-functions=separate.
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 30 # about 6.5 min on 2026-10-17's step timings
+    outputs:
+      coverage: ${{ steps.coverage.outcome }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -172,9 +184,9 @@ jobs:
         id: coverage
         continue-on-error: true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcovr
-          make -j"$(nproc)" coverage
+          python3 -m venv "$RUNNER_TEMP/gcovr"
+          "$RUNNER_TEMP/gcovr/bin/pip" install --quiet gcovr==8.3
+          make -j"$(nproc)" coverage GCOVR="$RUNNER_TEMP/gcovr/bin/gcovr"
           python3 .github/scripts/coverage_summary.py platform/linux/obj/coverage/report/summary.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
@@ -358,6 +370,7 @@ jobs:
             'Headers C/C++=${{ needs.linux-unit.outputs.headers }}' \
             'Unit tests=${{ needs.linux-unit.outputs.unit }}' \
             'Sanitizers=${{ needs.sanitize.outputs.sanitize }}' \
+            'Coverage report=${{ needs.coverage.outputs.coverage }}' \
             'ThreadSanitizer=${{ needs.linux-unit.outputs.tsan }}' \
             'Fuzz smoke=${{ needs.linux-unit.outputs.fuzz }}' \
             'Same-host=${{ needs.linux-unit.outputs.itest_samehost }}' \
