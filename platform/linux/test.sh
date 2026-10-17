@@ -509,6 +509,18 @@ udp offload: FAIL"
     status=1
 fi
 
+# Discovery replies (discovery_reply_check.sh): never held on a full send buffer, and discovery converges without them.
+make discovery_reply_check
+if ./discovery_reply_check.sh; then
+    SUMMARY="$SUMMARY
+discovery reply: PASS"
+else
+    echo "discovery reply: FAIL"
+    SUMMARY="$SUMMARY
+discovery reply: FAIL"
+    status=1
+fi
+
 echo
 echo "=== Summary ==="
 if [ "$status" -eq 0 ]; then

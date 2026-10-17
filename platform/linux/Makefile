@@ -255,6 +255,14 @@ udp_offload_check_flap: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/en
 	    -DCHECK_READ_DELAY_NS=1500000L $(LDFLAGS) -o $@ udp_offload_check.c \
 	    $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# A discovery reply never holds the polling thread on a full send buffer, and discovery converges when it is left unsent
+# (discovery_reply_check.c). Built as rmw_tickle builds core, the one build whose polling thread fills the buffer.
+DISCOVERY_REPLY_CHECK_SRC = discovery_reply_check.c $(ROOT)/examples/uint64/UInt64.c $(HAL_SRC) $(SRC)/tickle.c \
+    $(SRC)/encoding.c $(SRC)/log.c
+discovery_reply_check: $(DISCOVERY_REPLY_CHECK_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) -I$(ROOT)/examples/uint64 $(LDFLAGS) -o $@ \
+	    $(DISCOVERY_REPLY_CHECK_SRC) -lpthread -lm
+
 test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
     bell_wake_check
 	./test_samehost.sh
@@ -623,6 +631,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f discovery_reply_check libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
