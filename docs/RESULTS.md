@@ -15,13 +15,17 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   delivered rate `server.recv_mbps` is new, a WIN in all 12 `A` cells and both `T` cells) it is WIN 139, DRAW/TIE
   11, against WIN 136, DRAW/TIE 14 at `3ae721aa` (137 / 13 on the unrounded loss). All four changes are a
   `server.loss_pct` verdict, where TickLE lost nothing in either run and only whether a vendor's range touched zero
-  moved (section 2, "Re-measure at `09a0437d`").
+  moved (section 2, "Re-measure at `09a0437d`"). **Re-scored on goodput** (2026-10-17, the same raw files,
+  `goodput_rescore.py`): no verdict changes and the totals stand; rows 11-11c and 12 now show the vendors' delivered
+  rate (row 11 FastDDS 44.7 -> 28.8 Mbps). The client throughput metric now carries the same figure as
+  `server.recv_mbps`, so counted once the totals are WIN 139, DRAW/TIE 11 of 150 (`A`) and WIN 18, TIE 2 of 20 (`T`).
 - **The largest margin is RELIABLE under 5% loss:** TickLE keeps 86.9% (P1) and 91.6% (P4) of its throughput;
   FastDDS 43.1% / 38.9%, CycloneDDS 4.8% / 1.6% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, unpinned, with warm-up excluded. At BEST_EFFORT
   KEEP_LAST 1 (the DDS default) TickLE delivered every sample at max rate, CycloneDDS about a fifth and FastDDS
-  almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 1.5 us against 12.0 and 31.7 (S17,
-  `e521bbba`).
+  almost none (S1-S3, goodput since 2026-10-17); TickLE's CPU per delivered RELIABLE sample is 1.5 us against
+  FastDDS's 31.7 (S17, `e521bbba`). CycloneDDS (12.0) is listed as DELIVERY FAILED in every same-host RELIABLE cell:
+  it delivered 0.02-0.07% fewer samples than it sent (section 1, "Same-host notes").
 - **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
   CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss, with the writers' KEEP_ALL bounds made
   equal, it delivers 41x (Array1k) and 78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times
@@ -34,7 +38,8 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   and CycloneDDS ~3%, and has the smallest subscriber in every cell. At 0% loss it wins or draws every metric against
   every vendor except I4 best effort, where Fast DDS as shipped spends 4% less subscriber and 3% less publisher CPU per
   MB, and I4s (a link-saturating cell), where its median latency is behind all three because a DDS `publish()` blocks
-  before it stamps the sample (L4 table: WIN 53, DRAW 22, LOSE 5 of 80).
+  before it stamps the sample (L4 table: WIN 52, DRAW 23, LOSE 5 of 80 with CPU per MB delivered since 2026-10-17;
+  WIN 53, DRAW 22 per MB published, where I4s publisher CPU against Fast DDS as shipped was a win).
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -42,8 +47,11 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 Publisher and subscriber on **one** rig Pi, each framework on its own shared-memory path: TickLE's segment,
 **FastDDS as shipped** (data-sharing, on by default) and **CycloneDDS with iceoryx**. Each arm's transport is checked
 by a witness that cannot be configured into agreeing (loopback packet count, and TickLE's own `tx_shm` share).
-Harness `experiments/s6_transport_cells.sh`, 3 repetitions per framework unless noted, throughput from drop-free
-repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-S10 (but S8) and S1d-S3d,
+Harness `experiments/s6_transport_cells.sh`, 3 repetitions per framework unless noted. Throughput is **goodput**
+since 2026-10-17 (TESTING.md section 4): the subscriber's complete samples in the measured window, every repetition
+counted, CPU per delivered sample; a RELIABLE framework that delivered fewer samples than it sent is listed as
+DELIVERY FAILED and not scored (`fair_samehost_summary.py` applies both rules; until 2026-10-17 it applied no
+delivery check, and S1-S6 were send rates from drop-free repetitions). **No process is pinned to a core** (TESTING.md section 5); S1-S10 (but S8) and
 S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `e521bbba` (2026-10-09;
 `~/rig_results_safe/fair_samehost_e521bbba_20261009-033254.*`, read by `fair_samehost_summary.py`): every
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
@@ -51,30 +59,26 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
-| | **Throughput, send Mbps** (higher is better) | | | | | | |
-| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **20,867** | 6,370 | ❌ 4,439 | `e521bbba` | [notes](#same-host-notes) |
-| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **21,982** | 7,006 | ❌ 4,882 | `e521bbba` | [notes](#same-host-notes) |
-| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **25,137** ¶ | 12,832 | ❌ 9,333 | `e521bbba` | [notes](#same-host-notes) |
-| S4 | RELIABLE | P2 1292 B | ✅ **13,764** | ❌ 1,012 | 2,165 | `e521bbba` | [notes](#same-host-notes) |
-| S5 | RELIABLE | P3 1424 B | ✅ **14,771** | ❌ 980 | 2,414 | `e521bbba` | [notes](#same-host-notes) |
-| S6 | RELIABLE | P4 2800 B | ✅ **14,917** | ❌ 1,924 | 4,542 | `e521bbba` | [notes](#same-host-notes) |
-| | **Delivered, receive Mbps** (higher is better; the subscriber's rate over the measured window) | | | | | | |
-| S1d | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **20,867** (100%) | ❌ 0 (0%) | 934 (21%) | `e521bbba` | [notes](#same-host-notes) |
-| S2d | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **21,982** (100%) | ❌ 0 (0%) | 1,029 (21%) | `e521bbba` | [notes](#same-host-notes) |
-| S3d | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **25,137** ¶ (100%) | ❌ 1 (0%) | 1,854 (20%) | `e521bbba` | [notes](#same-host-notes) |
+| | **Throughput, goodput Mbps** (higher is better; the subscriber's complete samples over the measured window) | | | | | | |
+| S1 | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **20,867** | ❌ 0.31 | 934 | `e521bbba` | [notes](#same-host-notes) |
+| S2 | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **21,982** | ❌ 0.32 | 1,029 | `e521bbba` | [notes](#same-host-notes) |
+| S3 | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **25,066** | ❌ 0.70 | 1,854 | `e521bbba` | [notes](#same-host-notes) |
+| S4 | RELIABLE | P2 1292 B | ✅ **13,764** | ❌ 1,012 | DELIVERY FAILED ◊ (2,165) | `e521bbba` | [notes](#same-host-notes) |
+| S5 | RELIABLE | P3 1424 B | ✅ **14,771** | ❌ 980 | DELIVERY FAILED ◊ (2,414) | `e521bbba` | [notes](#same-host-notes) |
+| S6 | RELIABLE | P4 2800 B | ✅ **14,917** | ❌ 1,924 | DELIVERY FAILED ◊ (4,542) | `e521bbba` | [notes](#same-host-notes) |
 | | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
 | S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.107 | 0.074 | `e521bbba` | [notes](#same-host-notes) |
-| S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | 0.071 | `e17b4e6f` | [notes](#same-host-notes) |
-| S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.110 | 0.067 | `e521bbba` | [notes](#same-host-notes) |
-| S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | 0.069 | `e521bbba` | [notes](#same-host-notes) |
+| S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | DELIVERY FAILED ◊ (0.071) | `e17b4e6f` | [notes](#same-host-notes) |
+| S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.110 | DELIVERY FAILED ◊ (0.067) | `e521bbba` | [notes](#same-host-notes) |
+| S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | DELIVERY FAILED ◊ (0.069) | `e521bbba` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
-| S11 | publisher, us per sample | BEST_EFFORT P4, max rate | ✅ **1.071** | ❌ 1.694 | – | `e17b4e6f` | [notes](#same-host-notes) |
-| S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | [notes](#same-host-notes) |
+| S11 | publisher, us per sample | BEST_EFFORT P4, max rate | 1.071 | 1.694 | – | `e17b4e6f` | cannot be re-scored from existing data (no FastDDS receive count) |
+| S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | DELIVERY FAILED ◊ (102.2) | `e17b4e6f` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
-| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.53** | ❌ 31.65 | 12.04 | `e521bbba` | [notes](#same-host-notes) |
-| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **41.9** | ❌ 167.9 | 96.6 ‡ | `e521bbba` | [notes](#same-host-notes) |
-| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | 46.9 | ❌ 239.2 ‡ | `e521bbba` | [notes](#same-host-notes) |
+| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.53** | ❌ 31.65 | DELIVERY FAILED ◊ (12.04) | `e521bbba` | [notes](#same-host-notes) |
+| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **41.9** | ❌ 167.9 | DELIVERY FAILED ◊ (96.6 ‡) | `e521bbba` | [notes](#same-host-notes) |
+| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | ❌ 46.9 | DELIVERY FAILED ◊ (239.2 ‡) | `e521bbba` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
 | S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | – | `7f127d56` | [notes](#same-host-notes) |
 | S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | 30.8 / 30.8 | – | `7f127d56` | [notes](#same-host-notes) |
@@ -83,7 +87,35 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 
 ### Same-host notes
 
-- **FastDDS delivers ~0% in S1d-S3d.** At BEST_EFFORT KEEP_LAST 1 (the DDS default; data-sharing on, as shipped)
+- **Corrected 2026-10-17: goodput (TESTING.md section 4), the same raw files re-read.** `fair_samehost_summary.py`
+  on `~/rig_results_safe/fair_samehost_e521bbba_20261009-033254`, `free` arm, medians:
+  - **S1-S3 are now the delivered rate** and absorb S1d-S3d. Until today S1-S3 were the client's send rate (S1 20,867
+    / 6,370 / 4,439, S2 21,982 / 7,006 / 4,882, S3 25,137 / 12,832 / 9,333 Mbps, TickLE / FastDDS / CycloneDDS) and
+    S1d-S3d the subscriber's (20,867 / 0 / 934, 21,982 / 0 / 1,029, 25,137 / 1 / 1,854, with each framework's
+    delivered share of its own published samples: 100% / 0% / 21%, 21%, 20%). The worst framework (❌) moves from
+    CycloneDDS to FastDDS, which took 0.31-0.70 Mbps. The share column is gone: it divided by each framework's own
+    published samples, the denominator the user rejected for saturating cells on 2026-10-12. TickLE's leader verdict
+    does not change.
+  - **S3 TickLE 25,137 (n=2) -> 25,066 (n=3):** the drop-free rule is retired, so the rep with `shm_full_dropped=2690`
+    (9,995,120 of 9,996,465 samples delivered) counts at its goodput, 24,879 Mbps in the window. All other S cells were n=3 already.
+  - **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here**, so it is listed with its figure in
+    parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
+    P2 1,846,706 of 1,847,846, 1,891,539 of 1,892,787, 1,912,083 of 1,912,622; P3 1,899,458 of 1,900,191, 1,914,870
+    of 1,915,270, 1,909,889 of 1,910,394; P4 1,836,739 of 1,837,157, 1,875,547 of 1,876,358, 1,828,471 of 1,829,659
+    (3 of 3 reps each, 0.02-0.07% missing, as sequence gaps mid-stream). RTT (S9, S18 from P3 and S10 from P4): one
+    round trip not answered in 1 of 3 reps (10,133 of 10,134; 10,131 of 10,132). S8 and S12 (`e17b4e6f`,
+    `~/rig_results_safe/s6_latency_p2_20hz_e17b4e6f.txt`): 1,186 of 1,187 in 2 of 3 reps. TickLE and FastDDS
+    delivered everything they sent in every one of these cells. Pinned (the note below): CycloneDDS RELIABLE
+    throughput delivered 33-44% of what it sent (e.g. 769,327 of 2,246,638 at P2), so the pinned CycloneDDS S4-S6
+    figures (2,673 / 2,876 / 5,209) were send rates of an incomplete delivery; its pinned goodput was 912 / 1,035 /
+    1,997 Mbps. Until today this reader applied no delivery check; the cross-host reader always has. No verdict for
+    TickLE changes; S19's worst (❌) moves from CycloneDDS to FastDDS. S12 is now per answered round trip: CycloneDDS
+    102.1 -> 102.2 us.
+  - **S11 cannot be re-scored from existing data:** its file (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`) has
+    no FastDDS receive count, so CPU per delivered sample cannot be formed; the figures stay as measured (per sample
+    sent) and are no longer scored. For scale, `e521bbba`'s P4 BEST_EFFORT client + server CPU per delivered sample
+    is 1.75 / 87,167 / 31.9 us (another build and another metric, so not a substitute).
+- **FastDDS delivers ~0% in S1-S3 (S1d-S3d until 2026-10-17).** At BEST_EFFORT KEEP_LAST 1 (the DDS default; data-sharing on, as shipped)
   its publisher sent ~5.5M samples in 9 s and its subscriber took 105-284 of them, in every rep and at every size.
   Re-run 2026-10-07 (`experiments/fastdds_be_delivery.sh` at `5ac23fbc`, p3, 3 reps;
   `~/rig_results_safe/fastdds_be_delivery_5ac23fbc_20261007-103007.*`): reproduced, 250 of 5.50M delivered
@@ -93,8 +125,8 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   Reproduced again at `f128f686` (2026-10-08): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each (280-463
   samples taken per rep). And at `e521bbba` (2026-10-09): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each.
 - **2026-10-09 re-measure** (`e521bbba`, same harness, rules and order as `f128f686`; 3 reps per cell, every cell
-  n=3 except **¶ S3/S3d TickLE n=2**: one rep dropped at a full ring and is excluded, as the rule says; S2/S2d are
-  n=3 again). Was at `f128f686` -> now: S1 18,484 -> **20,867** (+12.9%), S2 19,716 -> **21,982** (+11.5%), S3
+  n=3 except **¶ S3/S3d TickLE n=2**: one rep dropped at a full ring and is excluded, as the rule then said; S2/S2d
+  are n=3 again; since 2026-10-17 that rep counts, above). Was at `f128f686` -> now: S1 18,484 -> **20,867** (+12.9%), S2 19,716 -> **21,982** (+11.5%), S3
   24,696 -> **25,137** (+1.8%), S4 12,613 -> **13,764** (+9.1%), S5 13,539 -> **14,771** (+9.1%), S6 14,900 ->
   **14,917** (+0.1%) Mbps; S7 0.023 -> **0.023**, S9 0.023 -> **0.023**, S10 0.027 -> **0.027** ms (-0.8%, -1.0%,
   +2.4% unrounded); S17 1.67 -> **1.53** us (-8.5%); S18 42.3 -> **41.9** us (-0.8%); S19 8.3 -> **8.5** MB (+2.4%).
@@ -143,11 +175,12 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   S6 12,701 / 2,049 / 5,235; S7 0.030 / 0.099 / 0.062; S9 0.031 / 0.098 / 0.061; S10 0.052 / 0.099 / 0.063 ms.
   Raw files `~/rig_results_safe/fair_samehost_7fb6fabf_20261005-190124.*`. S8 and S11-S13 are still the pinned
   figures of their builds and have not been re-measured unpinned.
-- **S1-S3 compare send rates, not delivery.** FastDDS's bench subscriber uses the default reader QoS (KEEP_LAST 1);
+- **S1-S3 compared send rates, not delivery, until 2026-10-17** (corrected above). FastDDS's bench subscriber uses the default reader QoS (KEEP_LAST 1);
   on one host its writer overwrites what the reader has not taken, and in `mixed_delivery.sh`'s FastDDS LOCAL_ONLY
-  arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million** samples sent. TickLE's figures are
-  drop-free reps, so for it sent equals delivered. Delivered vendor rates are on the roadmap. A TickLE BEST_EFFORT rep
-  that drops at a full ring reads *higher* (dropping is cheaper than delivering), which is why such reps are excluded.
+  arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million** samples sent. TickLE's figures were
+  drop-free reps, so for it sent equals delivered. A TickLE BEST_EFFORT rep that drops at a full ring reads a *higher*
+  send rate (dropping is cheaper than delivering), which is why such reps were excluded until goodput made the
+  delivered rate the figure (2026-10-17, above).
 - **S6 (RELIABLE p4)** was VOID on `8d1c3712`: a lost-wakeup defect (the writer did not ring a reader that had gone
   back to sleep) made the application give up 4-7 samples per rep. Fixed in `fe45f276` (the writer now rings each
   sleep of the reader once) and re-measured there with every rep `write_fail=0`, `lost=0`. That pinned run gave
@@ -329,16 +362,16 @@ decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring s
 | 6 | RTT max (tail) | +10 ms netem | ✅ **12.20** | ❌ 12.26 | 12.24 | 12.15 | – | A |
 | 6a | RTT mean | P3 1424 B | ✅ **0.234** | ❌ 0.337 | 0.291 | 0.248 † | – | A |
 | 6b | RTT mean | P4 2800 B | ✅ **0.249** | ❌ 0.358 | 0.293 | 0.402 † | – | A |
-| | **[Throughput](#throughput)** (Mbps) | | | | |  | – | |
+| | **[Throughput](#throughput)** (goodput, Mbps) | | | | |  | – | |
 | 7 | RELIABLE | P1 76 B | ✅ **107** | ❌ 28.1 | 52.2 | 236.8 † | – | A |
 | 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 591 | 864 | ✗ † | – | A |
 | 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 401 | 716 | ✗ † | – | T |
 | 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 519 | 891 | ✗ † | – | T |
-| 11 | BEST_EFFORT | P1, max rate | ✅ **115** | ❌ 44.7 | 66.6 | 53.4 | – | A |
-| 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 740 | 911 | 867 | – | A |
-| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** ‡ | ❌ 574 | 828 | ✅ **941** ‡ | – | A |
-| 11c | BEST_EFFORT | P4 2800 B, max rate | ✅ **944** ‡ | ❌ 915 | 938 | ✅ **945** ‡ | – | A |
-| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 38.0 | 75.1 | – | – | A |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **115** | ❌ 28.8 | 62.1 | 53.4 | – | A |
+| 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 575 | 906 | 867 | – | A |
+| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** ‡ | ❌ 560 | 654 | ✅ **941** ‡ | – | A |
+| 11c | BEST_EFFORT | P4 2800 B, max rate | ✅ **944** ‡ | ❌ 902 | 937 | ✅ **945** ‡ | – | A |
+| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 38.0 | 72.6 | – | – | A |
 | 13 | RELIABLE | P1, **5% loss** | ✅ **93.0** | 12.1 | ❌ 2.49 | ✗ † | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **865** | 216 | ❌ 14.3 | ✗ † | – | T |
 | 15 | RELIABLE | P1, 5% reorder | ✅ **95.2** | ❌ 28.9 | 60.7 | ✗ † | – | A |
@@ -449,7 +482,8 @@ Every `A` and `T` row except `T` cell 6 comes from `experiments/fair_crosshost_r
 (2026-10-08; `~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.{A_free,A_pinned,T_free,T_pinned}.txt`,
 driver log `...112506.driver.log`), the driver of the `3ae721aa` run, now with the equal warm-up and cool-down
 (TESTING.md section 5 item 9): throughput is scored over the window (`send_mbps` between 2 s edges; the whole-run rate
-is printed beside it and not scored), latency over 100 measured round trips between 4,096-round-trip edges. Samples
+is printed beside it and not scored; since 2026-10-17 goodput, the server's delivered rate in the same window, see
+"Throughput"), latency over 100 measured round trips between 4,096-round-trip edges. Samples
 before values: `A_free` has 153 RESULT lines, 151 `ok` and `window=ok`, every edge ended on its count except cell 12's
 (10 ms netem; both on the 20 s bound, 91 measured round trips per rep, every framework alike). The two VOIDs are FastDDS
 as shipped at P4 under 5% loss (cell 6, reps 2-3): its write timed out 86 times at the 100 ms blocking bound and the
@@ -515,12 +549,26 @@ zenoh-pico's column here is its TCP arm.
 
 ### Throughput
 
-Rows 7-17. `send_mbps`, client, over the window between the 2 s edges, the mean of 3 (the text said median until
-2026-10-08; the figures were always `campaign_summary.py`'s mean), RELIABLE + KEEP_ALL with `sent == recv` checked on
-every side. The delivered rate in the same window (`server.recv_mbps`) is scored beside it and agrees within 1% for
-TickLE in every cell.
-11b and 11c are at the link ceiling (‡). **Row 11's FastDDS figure is a send rate it did not fully deliver:** FastDDS
-lost 15.5% of samples in that cell on a 2026-10-03 run and 22.2% in the QoS sweep. FastDDS as shipped
+Rows 7-17. **Goodput** since 2026-10-17 (TESTING.md section 4): the complete samples the server's application took
+inside the window between the 2 s edges, the mean of 3 (the text said median until 2026-10-08; the figures were
+always `campaign_summary.py`'s mean). Read by `experiments/goodput_rescore.py` on the `A`, `T` and `T6` files above,
+which puts the server's windowed `win_recv_mbps` where the client's send rate was (G1-G6 in its header; the window
+lengths agree in every rep, 4.995 s), then `fair_crosshost_rows.py` on the rewritten files. RELIABLE + KEEP_ALL has
+`sent == recv` checked on every side.
+11b and 11c are at the link ceiling (‡). The zenoh-pico column is its own session's figure and was not re-read.
+
+**Corrected 2026-10-17: rows 11, 11a-11c and 12 were send rates** (the client's `send_mbps` in the window), and the
+vendors did not deliver all they sent: rows 11-11c are BEST_EFFORT and row 12 is KEEP_LAST, where a writer may
+replace unacknowledged samples. Was -> now (TickLE / FastDDS / CycloneDDS, Mbps, 3 reps each, `A_free` cells 8, 13,
+14, 15, 9): row 11 115 / 44.7 / 66.6 -> 115 / **28.8** [22.0-33.6] / **62.1** [60.9-64.1]; 11a 938 / 740 / 911 ->
+938 / **575** [481-641] / **906**; 11b 943 / 574 / 828 -> 943 / **560** [497-598] / **654** [640-666]; 11c 944 /
+915 / 938 -> 944 / **902** [895-910] / **937**; row 12 117 / 38.0 / 75.1 -> 117 / 38.0 / **72.6** [66.1-81.2].
+FastDDS in row 11 delivered 457,479 of 657,793, 507,930 of 669,528 and 324,111 of 655,022 samples (64% of its send
+rate). TickLE delivered every sample it sent in every one of these cells (lost 0), so none of its figures moves, nor
+any verdict or ✅/❌. Rows 7-10 and 13-17 do not move: RELIABLE + KEEP_ALL delivered everything it sent. Pinned, row 11
+reads 120 / **33.0** / **67.7** (was 120 / 45.3 / 67.9) and 11a FastDDS **632** (was 735).
+(Before this correction this paragraph read: "Row 11's FastDDS figure is a send rate it did not fully deliver: FastDDS
+lost 15.5% of samples in that cell on a 2026-10-03 run and 22.2% in the QoS sweep.") FastDDS as shipped
 (`maxMessageSize` 65,500) at the `T` cells, for reference (`A` cells 3, 4, 6 at `09a0437d`): P3 465 Mbps and 1,677
 B/sample; P4 734 Mbps, 3,102 B/sample and 14,932 KB; P4 under 5% loss its write timed out 85-86 times per run at the
 100 ms blocking bound, two of three runs ended shorter than their edges (VOID), and the one left sent 3.3 Mbps,
@@ -532,7 +580,8 @@ Pi's interrupt core). Pinned scores WIN 149, DRAW/TIE 13, LOSE 0 of 162; the
 verdicts that differ are `server.loss_pct` in cells 1, 5 and 9 (whether a vendor's range touched zero) and row 5's
 draw, where pinned TickLE is no longer ahead of CycloneDDS (10.4 against 10.2 ms, ranges overlapping). Unpinning costs every
 framework at P1, most of all the two DDS: RELIABLE P1 (row 7) pinned is TickLE 114, FastDDS 37.7, CycloneDDS 89.4 Mbps
-(unpinned 0.94x, 0.75x, 0.58x); BEST_EFFORT P1 (row 11) 120, 45.3, 67.9; KEEP_LAST (row 12) 118, 40.0, 87.2. P2-P4
+(unpinned 0.94x, 0.75x, 0.58x); BEST_EFFORT P1 (row 11) 120, 33.0, 67.7 goodput (send rates 120, 45.3, 67.9, as published until
+2026-10-17); KEEP_LAST (row 12) 118, 40.0, 87.2. P2-P4
 TickLE is at the link either way and CycloneDDS moves by under 1% except at P3 (836 pinned against 716); FastDDS
 RELIABLE P2-P4 is 664, 442, 635 pinned. Retention at P1 (row 16) pinned: 88.6%, 30.5%, 3.0%. CPU per sample at P1
 (rows 18-19) pinned: 5.34 / 2.56, 19.5 / 19.4, 6.95 / 11.1. At `3ae721aa` (pinned WIN 135, DRAW/TIE 15) row 7 was
@@ -548,7 +597,10 @@ is free, so that figure must not stand beside a recovered one.
 
 ### CPU
 
-Rows 18-27. `cpu_s_per_Msample`, mean of 3 (the text said median until 2026-10-08). Absolute CPU seconds are never a verdict: every cell runs for a fixed
+Rows 18-27. `cpu_s_per_Msample`, mean of 3 (the text said median until 2026-10-08), per DELIVERED sample since
+2026-10-17 (TESTING.md section 4; `goodput_rescore.py` rule G5). Every row here is a RELIABLE + KEEP_ALL or latency
+cell that delivered all it sent, so none moved; per delivered sample the BEST_EFFORT cells' client figures (not table
+rows) rose for the vendors, e.g. cell 8 FastDDS 13.6 -> 21.8, CycloneDDS 13.6 -> 14.7, TickLE unchanged at 5.35. Absolute CPU seconds are never a verdict: every cell runs for a fixed
 duration, so a framework that sends more burns more. TickLE figures from before 2026-09-26 were an `-O0` build;
 every row here asserts `core_build=release` on all sides.
 
@@ -562,7 +614,8 @@ sample, peaks at 14,379 KB (row 31). (Until 2026-09-29 FastDDS held up to 4,000 
 
 ### Bandwidth
 
-Rows 35-41. Wire bytes per sample from `/proc/net/dev`, so retransmissions and control traffic count. Row 41's per
+Rows 35-41. Wire bytes per sample from `/proc/net/dev`, so retransmissions and control traffic count; per delivered
+sample since 2026-10-17, which moves no table row (each delivered all it sent; cell 8 FastDDS, not a row, 254 -> 404). Row 41's per
 single-datagram framing includes the 42 B of Ethernet+IP+UDP.
 
 ### QoS mechanics
@@ -666,8 +719,8 @@ medians. rmw_tickle is the large-message step A build as measured: branch ab/lar
 each file's header); it landed from ab/largemsg-land a5747a85, which adds the claimed-slot and lending interaction
 fixes and was not re-measured here. Built `-g -O2` on both Pis as the vendors; each arm identified by
 `/proc/PID/maps`. Latency is one-way, corrected by a clock probe
-before and after every run; p99 is a lower bound from the per-second maxima. CPU is ms per MB delivered (subscriber)
-or published (publisher); RSS is the subscriber's peak. Read by `experiments/largemsg_rig_summary.py` (whole sample
+before and after every run; p99 is a lower bound from the per-second maxima. CPU is ms per MB delivered, subscriber and
+publisher (since 2026-10-17, TESTING.md section 4; the publisher's was per MB published until then); RSS is the subscriber's peak. Read by `experiments/largemsg_rig_summary.py` (whole sample
 counts, since `perf_test`'s rate columns are floor(count / D)) from
 `~/rig_results_safe/largemsgA4_{s2_rel1m_20261010-125430,s3a_20261010-140102,s3b_20261010-145247,s3c_20261010-152057}.txt`
 and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS with `maxMessageSize` 1472 / CycloneDDS
@@ -690,10 +743,22 @@ with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps
 | I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.41 / 9.48 | 2.29 / 3.94 | 18,684 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
 | I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 10.04 / 15.75 | 4.17 / 3.65 | 18,792 | –D– | –W– | –W– | –W– | –W– |
 | I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
-| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | 54.98 / 71.23 | 1.40 / 3.43 | 30,952 | W–W–W | L–L–L | D–W–W | W–W–W | W–W–W |
-| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 36.57 / 36.64 | 2.21 / 3.68 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W |
+| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | 54.98 / 71.23 | 1.40 / 3.60 | 30,952 | W–W–W | L–L–L | D–W–W | D–W–W | W–W–W |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 36.57 / 36.64 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W |
 | I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 36.52 / 36.60 | 2.19 / 3.72 | 30,580 | D–D–D | W–W–W | L–W–W | L–W–W | W–W–W |
 
+- **Corrected 2026-10-17: publisher CPU per MB delivered** (the user's goodput decision, TESTING.md section 4; same
+  raw runs, `experiments/largemsg_goodput.py`, which re-uses `largemsg_rig_summary.py` unchanged and divides the
+  publisher's CPU by the subscriber's delivered MB; its `pub` mode reproduces the previous letters). Only **I4s** moves
+  by more than 0.01 ms/MB: rmw_tickle 3.43 -> **3.60** (reps 3.577-3.615), Fast DDS as shipped 3.57 -> 3.56
+  (3.536-3.579), Fast DDS at 1472 6.87 -> 9.27, CycloneDDS 3.90 -> 3.93; letters **W–W–W -> D–W–W**. Samples first,
+  delivered of published per run: rmw_tickle 1,718-1,720 of 1,802-1,803, Fast DDS 1,690-1,691 of 1,694-1,695, Fast
+  DDS at 1472 999-1,156 of 1,531-1,532, CycloneDDS 1,696-1,699 of 1,699-1,701 (r4 1,140). The cause is rmw_tickle's
+  non-blocking `publish()`: it spends CPU on the ~84 samples per run it drops at the sender, where a DDS publisher
+  blocks. For CPU this supersedes the offered-tick denominator; delivered % of offered still ranks I4s, and ranks it
+  as goodput does. I4 RELIABLE publisher 3.68 -> 3.69; I1, I1L, I1 best effort and I4 best effort unchanged at the
+  table's precision (I4 best effort Fast DDS 3.61 -> 3.62, still L). Subscriber CPU and delivered % were already per
+  delivered sample. L4 totals: WIN 53, DRAW 22, LOSE 5 -> **WIN 52, DRAW 23, LOSE 5** of 80.
 - **Re-measured 2026-10-15 (main f5fcda06 against main 0c9f9a3b, same harness):** subscriber CPU fell 0.19-0.28
   ms/MB in every 0%-loss cell (I1 RELIABLE 2.56 -> 2.28, I1 best effort 2.38 -> 2.20, I4 RELIABLE 2.45 -> 2.21, I4
   best effort 2.40 -> 2.19, I4s 1.61 -> 1.40), most of it UDP checksum 0 (its rig A/B: -0.10 to -0.12 ms/MB). Against
@@ -788,8 +853,9 @@ Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; lande
 ### Where TickLE does not come first
 
 - **rmw large messages** (L4 above, main f5fcda06, 2026-10-15, 5 reps): at I4 best effort subscriber CPU per MB is
-  behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.61); the other 0%-loss
-  cells are draws on CPU. I1L (5% loss), lost on incomplete delivery on f5fcda06, is complete and won on main dde87857
+  behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.62 per MB delivered); the other 0%-loss
+  cells are draws on CPU, I4s publisher CPU included since it is per MB delivered (2026-10-17; it was a win per MB
+  published). I1L (5% loss), lost on incomplete delivery on f5fcda06, is complete and won on main dde87857
   (2026-10-16). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
 - **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
   forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
@@ -826,5 +892,5 @@ measured before 2026-10-05 built rmw_tickle as `Release` (`-O3`); later rmw rows
 
 ## 4. Open work
 
-The to-do list (delivered vendor rates for S1-S3, missing same-host CPU/memory cells, loaned messages, and more) is
+The to-do list (missing same-host CPU/memory cells, loaned messages, and more) is
 in [ROADMAP.md](ROADMAP.md).

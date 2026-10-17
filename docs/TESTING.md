@@ -158,11 +158,23 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 - **Payload-boundary gate:** at N0 each payload must produce its designed packets per sample (1.0 at P1/P2; at P3 1.0 for TickLE and 2.0 for the vendors; at least 2.0 at P4). If it does not, the cell is VOID.
 - **Library identity:** before an rmw number is believed, check which `librmw_tickle.so` the benchmark actually has mapped (`assert_loaded_rmw_tickle.sh`, `/proc/PID/maps`). Stale workspaces can shadow it.
 
-**Delivery and voids**
-- **Drop-free rule:** throughput figures come only from repetitions with no drops (`write_fail=0`, `lost=0`). Drop-free and dropping repetitions are reported separately and never averaged together.
-- **Incomplete delivery:** compare received with sent. `loss_pct` cannot see samples that never arrived.
-  - If a vendor delivers less than it sent, it is excluded from that cell and listed as DELIVERY FAILED.
+**Goodput, delivery and voids** (the user, 2026-10-17)
+- **Throughput is goodput:** the payload of the samples the receiving application got complete and unique, inside
+  the same measured window (section 5 item 9). A partly received large sample counts 0; duplicates and
+  retransmissions do not count. Every bench's receiver already counts this way: it counts a sample once, when its
+  application takes it whole (`goodput_rescore.py`'s header gives the reading).
+- **The send rate is diagnostic only.** It is printed beside goodput (`diag_*`, `send Mbps`) and never decides a cell.
+- **CPU and wire bytes are per delivered sample** (or MB delivered, or round trip answered), saturating cells
+  included. For CPU this supersedes the offered-ticks denominator of 2026-10-12; delivered % of offered still ranks
+  a saturating cell, and ranks it as goodput does.
+- **Incomplete delivery in a RELIABLE cell:** compare received with sent. `loss_pct` cannot see samples that never
+  arrived.
+  - If a vendor delivers less than it sent, it is excluded from that cell and listed as DELIVERY FAILED, with its
+    counts.
   - If TickLE delivers less than it sent, every metric in that cell counts as a LOSE.
+  - **BEST_EFFORT cells are scored on goodput alone:** a sample not delivered is a sample not counted.
+- **No drop-free rule.** Until 2026-10-17 throughput came only from repetitions with no drops, because a rep that
+  dropped read a higher send rate. Goodput prices a drop at zero, so every repetition counts at its goodput.
 - **A cell is VOID** if:
   - a leftover guard fired;
   - there is no `RESULT:` line;
@@ -221,7 +233,7 @@ table for it.
    the Ethernet frame (`sample + base framing <= 1514`); P3 is the size where TickLE's smaller framing still fits one
    datagram and the vendors need two, which is a real difference in framing - so no claim rests on P3 alone.
 6. **Measure what is delivered.** A sender's rate says nothing about a reader that kept up with a tenth of it (the
-   same-host BEST_EFFORT rows are still send rates; ROADMAP).
+   same-host BEST_EFFORT rows were send rates until 2026-10-17). Every throughput row is goodput (section 4).
 7. **Report everything.** Every cell, every VOID, every row TickLE loses or draws, every tuned arm beside its shipped
    one; a correction is made in place with its cause, never by deleting the figure it corrects.
 8. **Constants are not fitted to the rig.** A value tuned on two Raspberry Pi 5s may be wrong elsewhere. Prefer an
@@ -234,8 +246,8 @@ table for it.
    around `-d` seconds of measured pings; RTT figures are over the measured round trips only and the line says
    `warmup= cooldown= measured= edge_max_s= warmup_end= cooldown_end=` (`count` or `time`).
    Throughput: 2 s at each end of sender time (`--warmup-s`/`--cooldown-s`) around `-d` measured seconds, client and
-   server windowed by the same rule on each sample's `send_ns`; read `win_send_mbps`/`win_recv_mbps`, with the
-   whole-run `send_mbps`/`recv_mbps` beside them. `window=fail:...` is VOID, never a figure. Defaults and reasons:
+   server windowed by the same rule on each sample's `send_ns`; score the server's `win_recv_mbps` (goodput, section
+   4), with the client's `win_send_mbps` and the whole-run `send_mbps`/`recv_mbps` beside it as diagnostics. `window=fail:...` is VOID, never a figure. Defaults and reasons:
    `examples/perf_hil/tickle/common/BenchWindow.h`. Found when TickLE's same-host p4 latency turned out to be a
    first-lap figure (ROADMAP 0a).
 
