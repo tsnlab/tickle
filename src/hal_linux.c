@@ -85,6 +85,8 @@
 #include <sys/types.h> // pid_t
 #endif
 
+#include <sys/prctl.h> // PR_SET_TIMERSLACK (rx_timer_slack_once())
+
 // The segment's mapping (SHM_PLAN.md stage 1) and io_uring's rings are both mmap()ed.
 #if tt_SEGMENT_ENABLED || tt_HAL_IO_URING
 #include <sys/mman.h>
@@ -709,6 +711,16 @@ static void uring_close(struct tt_Context* node);
 #endif
 #ifndef TT_RX_TIMER_LONG_NS
 #define TT_RX_TIMER_LONG_NS (10LL * 1000000LL)
+#endif
+// The polling thread's timer slack, lowered to this many nanoseconds the first time the thread waits in tt_receive()
+// (rx_timer_slack_once(); never raised). A wait of TT_RX_TIMER_LONG_NS or less takes the relative timeout, whose
+// slack is 0.1% of the wait but never less than the thread's timer slack - 50 us by default, so a ping at a 5 ms
+// interval left ~60 us after its due time, the DDS clients' figure (same-host run, 2026-10-17). At 1 ns the slack is
+// the 0.1% (5 us at 5 ms), at no cost per wait; arming the timerfd for those waits instead cost a timerfd_settime()
+// or two a round trip, +6-7% client kernel instructions (PC, sched_wake_ab_pc.sh, 2026-10-18). It applies to every
+// timer of that thread, as PR_SET_TIMERSLACK does. 0: leave the thread's slack alone (the A/B control).
+#ifndef TT_RX_TIMER_SLACK_NS
+#define TT_RX_TIMER_SLACK_NS 1
 #endif
 
 #if TT_HAL_EPOLL
@@ -3419,6 +3431,27 @@ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* rea
 }
 #endif
 
+#if TT_RX_TIMER_SLACK_NS > 0
+static _Thread_local bool rx_timer_slack_done = false;
+
+// TT_RX_TIMER_SLACK_NS, once per thread: lowers the thread's timer slack, never raises it (a thread that asked for a
+// smaller one keeps it).
+static __attribute__((noinline)) void rx_timer_slack_set(void) {
+    rx_timer_slack_done = true;
+    const int current = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0); // NOLINT(misc-include-cleaner) - <sys/prctl.h>
+    if (current < 0 || current > TT_RX_TIMER_SLACK_NS) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - PR_SET_TIMERSLACK: <sys/prctl.h>
+        (void)prctl(PR_SET_TIMERSLACK, (unsigned long)TT_RX_TIMER_SLACK_NS, 0, 0, 0);
+    }
+}
+
+static inline void rx_timer_slack_once(void) {
+    if (__builtin_expect(!rx_timer_slack_done, 0)) {
+        rx_timer_slack_set();
+    }
+}
+#endif
+
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
@@ -3438,6 +3471,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         return pending;
     }
     node->hal.rx_idle = 0; // a timeout or an interrupt leaves no readiness to go on
+#if TT_RX_TIMER_SLACK_NS > 0
+    rx_timer_slack_once(); // about to wait: with the thread's timer slack at TT_RX_TIMER_SLACK_NS
+#endif
     node->hal.rx_idle_since_ns = 0;
 #if TT_HAL_UDP_GRO
     gro_maybe_settle(node); // about to wait: what came before was read
