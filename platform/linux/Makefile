@@ -234,6 +234,10 @@ rx_direct_check_raw: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_direct_check.c $(SRC_FILES) \
 	    -lm -lpthread
 
+# A scheduled entry runs at its deadline, not 0.1% of its wait late (sched_wake_check.c). Run by test.sh (test-linux).
+sched_wake_check: sched_wake_check.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
 # No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c says how it forces the race).
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c $(LDLIBS)
@@ -623,6 +627,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
