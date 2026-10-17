@@ -198,12 +198,22 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
 | S18 | client + server us per round trip | RTT P3, 200/s | ✅ **41.9** | ❌ 167.9 | DELIVERY FAILED ◊ (96.6 ‡) | `e521bbba` | [notes](#same-host-notes) |
 | S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | ❌ 46.9 | DELIVERY FAILED ◊ (239.2 ‡) | `e521bbba` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
-| S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | – | `7f127d56` | [notes](#same-host-notes) |
-| S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | 30.8 / 30.8 | – | `7f127d56` | [notes](#same-host-notes) |
+| S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | 49.7 / 70.6, loss 20-33% / 0.07-0.13% † | `7f127d56`, CycloneDDS `e4e090cd` | [notes](#same-host-notes) |
+| S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | ❌ 30.8 / 30.8 | 71.7 / 71.7 † | `7f127d56`, CycloneDDS `e4e090cd` | [notes](#same-host-notes) |
 | | **Bandwidth** | | | | | | |
 | S14 | wire bytes per sample | every cell above | 0 | 0 | 0 | | nothing leaves the host |
 
 ### Same-host notes
+
+- **† S15-S16 CycloneDDS (2026-10-17):** measured at `e4e090cd` (as 4e49ed43 before its rebase onto main; the same
+  harness) by `experiments/mixed_delivery_campaign.sh`, all three frameworks under one hold of the rig lock;
+  `~/rig_results_safe/mixed_4e49ed43_20261017-152135.*`, 4 reps (TickLE and FastDDS 3). CycloneDDS's local subscriber
+  used shared memory (iox-roudi) in every MIXED rep: witness 0.0000-0.0004 IP octets per local payload byte, against
+  1.069-1.075 in the MIXED_NET control with shared memory off. RELIABLE delivered every sample to both subscribers
+  (e.g. 670,482 of 670,482). Its RELIABLE LOCAL_ONLY control was DELIVERY FAILED (33% delivered, e.g. 743,091 of
+  2,257,128, in all 4 reps). The same-day TickLE and FastDDS arms reproduce S15/S16 (TickLE 90.6 / 90.4, FastDDS
+  56.6 / 56.2 and 28.5), so the rig did not move. S15 has no single worst: CycloneDDS is lower locally, FastDDS
+  remotely.
 
 - **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here**, so it is listed with its figure in
   parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
