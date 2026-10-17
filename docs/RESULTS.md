@@ -626,7 +626,8 @@ because kernel IP reassembly fails under loss. (Earlier figures, pinned: 533 Mbp
 KB; 9.9 Mbps with 3,252 of 3,439 delivered.)
 
 **Unpinned against pinned** (same session, `09a0437d`; the pinned figures put each process on cores 1-3, away from the
-Pi's interrupt core). Pinned scores WIN 149, DRAW/TIE 13, LOSE 0 of 162; the
+Pi's interrupt core). Pinned scores WIN 149, DRAW/TIE 13, LOSE 0 of 162 (WIN 137, DRAW/TIE 13 of 150 with throughput
+counted once as goodput, `campaign_summary.py` at `e24894d3`; latency here still from the send stamp); the
 verdicts that differ are `server.loss_pct` in cells 1, 5 and 9 (whether a vendor's range touched zero) and row 5's
 draw, where pinned TickLE is no longer ahead of CycloneDDS (10.4 against 10.2 ms, ranges overlapping). Unpinning costs every
 framework at P1, most of all the two DDS: RELIABLE P1 (row 7) pinned is TickLE 114, FastDDS 37.7, CycloneDDS 89.4 Mbps
@@ -1049,6 +1050,15 @@ and FastDDS lost a few samples in one rep each), cell 5 (P1, 5% loss) TIE -> WIN
 (KEEP_LAST 64) DRAW -> WIN (both vendors lost in every rep; at `3ae721aa` FastDDS's loss printed as 0.0, which the
 unrounded count already made a WIN), cell 6 (P4, 5% loss) DRAW -> WIN, provisional (one FastDDS rep). Pinned: WIN
 135, DRAW/TIE 15 -> WIN 149, DRAW/TIE 13 of 162.
+
+**Correction (2026-10-17): `3ae721aa` A read with every rep's delivery checked.** `campaign_summary.py` compared sent
+with received on a cell's last rep only (it overwrote the counts rep by rep); since `e24894d3` it checks every rep.
+At `3ae721aa`, cell 6 TickLE rep 1 delivered 194,215 of 194,216 samples (one sample written before the reader matched,
+`prematch_window=1 first_seq=2 post_match_lost=0`; this predates the no-send-before-match rule of `46554d68`). Under
+the RELIABLE incomplete-delivery rule (TESTING.md section 4) that makes every metric of cell 6 a LOSE, so `3ae721aa` A
+reads WIN 127, DRAW/TIE 13, LOSE 10, not the WIN 136, DRAW/TIE 14 quoted above. No exemption for a pre-match sample
+was added: it would be a rule change in TickLE's favour made after seeing the data. The `09a0437d` files are unchanged
+by the every-rep check (A WIN 139, DRAW/TIE 11, LOSE 0 of 150; T WIN 18, TIE 2 of 20).
 
 **TickLE's delta against the vendors' (the control).** Since `3ae721aa`, main gained on the cross-host path the
 Heartbeat answer bounded by the measured repair transit (`3355e94d`; its rig A/B gave cell 6 send +4.5%), the writer-owned
