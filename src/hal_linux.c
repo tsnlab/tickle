@@ -3103,9 +3103,10 @@ static void bell_rung(struct tt_Context* node);
 
 // One wait on tt_receive()'s set: ppoll()'s return convention (ready count, 0 on timeout, < 0 with errno), and in
 // *ready the RX_READY_* bits of what is readable. From the kept set when there is one (wait_set_setup()), otherwise
-// from a ppoll() set built for this call, as every wait was until 2026-10-06.
-static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts,
-                                                         uint32_t* ready) {
+// from a ppoll() set built for this call, as every wait was until 2026-10-06. One system call: rx_wait() below is what
+// the HAL waits with.
+static inline __attribute__((always_inline)) int rx_wait_once(struct tt_Context* node,
+                                                              const struct timespec* timeout_ts, uint32_t* ready) {
     *ready = 0;
 #if TT_HAL_EPOLL
     if (node->hal.epoll_fd_plus1 > 0) {
@@ -3163,6 +3164,55 @@ static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node
         *ready |= RX_READY_WRITABLE;
     }
     return count;
+}
+
+// ---- A long wait ends at its deadline (2026-10-17)
+// --------------------------------------------------------------------------------
+//
+// Linux lets a poll()-family timeout - ppoll(), epoll_pwait2() - end late by a slack proportional to the wait
+// (select_estimate_accuracy()): 0.1% of it, 0.5% for a thread with a positive nice value, and never less than the
+// thread's timer slack (50 us by default). clock_nanosleep() and a timerfd take only the thread's timer slack, or none.
+// So the poll loop's wait for a scheduled entry (poll_wait_io()) ran it ~0.5 ms late after a 500 ms wait, and ~5 ms
+// after a 1 s wait at nice 5, where a nanosleep-paced loop runs within ~60 us at any length: the core ping client sent
+// each ping of its 1 s interval ~0.54 ms after it was due on the rig (creation-time round trip, 2026-10-17), the DDS
+// clients within the 50 us. platform/linux/sched_wake_check.c --sweep measures each kind of wait against its deadline.
+//
+// A wait longer than TT_RX_WAIT_SPLIT_NS therefore waits to 1/128 of what is left short of its deadline - more than
+// either proportional slack, so that part never runs past the deadline - and then, if nothing came, the rest, which is
+// short enough that its slack is the thread's own. At or below TT_RX_WAIT_SPLIT_NS the proportional slack is no more
+// than the 50 us default (10 ms x 0.5%), so the wait is one system call as before. A long wait is an idle one, and the
+// second part costs one system call and one wake-up per wait of more than 10 ms: at most 100 a second.
+#ifndef TT_RX_WAIT_SPLIT_NS
+#define TT_RX_WAIT_SPLIT_NS (10LL * 1000000LL)
+#endif
+#define RX_WAIT_LEAD_SHIFT 7U // the first part ends 1/128 of the wait early: past both 0.1% and 0.5%
+
+static __attribute__((noinline)) int rx_wait_long(struct tt_Context* node, const struct timespec* timeout_ts,
+                                                  uint32_t* ready) {
+    const uint64_t until = tt_get_ns() + ((uint64_t)timeout_ts->tv_sec * SEC_NS) + (uint64_t)timeout_ts->tv_nsec;
+    for (;;) {
+        const uint64_t now = tt_get_ns();
+        if (now >= until) {
+            *ready = 0;
+            return 0; // the deadline came while the first part was waking up: a timeout
+        }
+        const uint64_t rest = until - now;
+        const uint64_t part = rest > (uint64_t)TT_RX_WAIT_SPLIT_NS ? rest - (rest >> RX_WAIT_LEAD_SHIFT) : rest;
+        struct timespec part_ts = {(time_t)(part / SEC_NS), (long)(part % SEC_NS)};
+        int count = rx_wait_once(node, &part_ts, ready);
+        if (count != 0 || part == rest) {
+            return count; // something came (or an error), or the last part ended: as the one wait would have
+        }
+    }
+}
+
+// tt_receive()'s wait: rx_wait_once(), in parts when it is long enough for the kernel's proportional slack to show.
+static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts,
+                                                         uint32_t* ready) {
+    if (timeout_ts != NULL && (timeout_ts->tv_sec != 0 || timeout_ts->tv_nsec > TT_RX_WAIT_SPLIT_NS)) {
+        return rx_wait_long(node, timeout_ts, ready);
+    }
+    return rx_wait_once(node, timeout_ts, ready);
 }
 
 #if TT_HAL_EPOLL
