@@ -136,20 +136,28 @@ run() { # <arm> <nice> <block> [strace]
         swrap="perf stat -x, -e task-clock,instructions:u,instructions:k,cycles:u,cycles:k -o $spf"
         cwrap="perf stat -x, -e task-clock,instructions:u,instructions:k,cycles:u,cycles:k -o $cpf"
     fi
+    # SLACK_ARM=<label> SLACK_NS=<ns> (2026-10-18): that arm's client and server start with that timer slack
+    # (/proc/<pid>/timerslack_ns, inherited across fork and exec) instead of the default 50 us - main's own binary with
+    # a slack-free relative timeout, against a fix that changes the wait. The client prints the slack it got (SLACK=).
+    local slack=""
+    if [ "$arm" = "${SLACK_ARM:-}" ]; then slack="echo ${SLACK_NS:-1} > /proc/\$\$/timerslack_ns; "; fi
     # Root inside the namespace, so renice can lower the inherited nice 5 to 0; both processes at the arm's nice.
     # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS2" bash -c "renice -n $nice -p \$\$ >/dev/null; ulimit -v $VMEM_KB; cd $dir && \
+    sudo -n ip netns exec "$NS2" bash -c "${slack}renice -n $nice -p \$\$ >/dev/null; ulimit -v $VMEM_KB; cd $dir && \
         exec $swrap timeout -s INT 17 ./server -d 14 -W 100 -C 100 -I 0.001" >"$slog" 2>&1 &
     local spid=$!
     sleep 1
     # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS1" bash -c "renice -n $nice -p \$\$ >/dev/null; echo NICE=\$(ps -o ni= -p \$\$); \
+    sudo -n ip netns exec "$NS1" bash -c "${slack}renice -n $nice -p \$\$ >/dev/null; echo NICE=\$(ps -o ni= -p \$\$); \
+        echo SLACK=\$(cat /proc/\$\$/timerslack_ns); \
         ulimit -v $VMEM_KB; cd $dir && exec $cwrap timeout -s INT 40 ./client -i $INTERVAL -d 10 -W 100 -C 100 -I 0.001 \
         -T 3" >"$clog" 2>&1
     wait "$spid"
     local res sent measured realnice
     res=$(grep -m1 '^RESULT' "$clog")
     realnice=$(grep -m1 '^NICE=' "$clog" | tr -d ' ' | cut -d= -f2)
+    local realslack
+    realslack=$(grep -m1 '^SLACK=' "$clog" | cut -d= -f2)
     sent=$(field sent "$res")
     measured=$(field measured "$res")
     if [ "$mode" = strace ]; then
@@ -181,7 +189,7 @@ run() { # <arm> <nice> <block> [strace]
     ctc=$(counter task-clock "$cpf"); ccu=$(counter cycles:u "$cpf"); cck=$(counter cycles:k "$cpf")
     scu=$(counter cycles:u "$spf"); sck=$(counter cycles:k "$spf")
     per() { awk -v c="${1:-0}" -v k="$2" -v n="${sent:-1}" 'BEGIN { printf "%.1f", c * k / n }'; }
-    echo "RUN arm=$arm sha=${arm_sha[$arm]} interval_s=$INTERVAL nice=$nice block=$block verdict=$verdict load=$load sent=$sent" \
+    echo "RUN arm=$arm sha=${arm_sha[$arm]} interval_s=$INTERVAL slack_ns=$realslack nice=$nice block=$block verdict=$verdict load=$load sent=$sent" \
         "measured=$measured gap_p50_us=$(field gap_p50_us "$res") gap_p99_us=$(field gap_p99_us "$res")" \
         "crt_p50_ms=$(field crt_p50_ms "$res") crt_p99_ms=$(field crt_p99_ms "$res") rtt_p50_ms=$(field rtt_p50_ms "$res")" \
         "rtt_p99_ms=$(field rtt_p99_ms "$res") cli_cpu_us_per_rtt=$(per "$sc" 1e6) srv_cpu_us_per_rtt=$(per "$srv" 1e3)" \
