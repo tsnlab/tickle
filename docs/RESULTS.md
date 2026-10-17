@@ -37,7 +37,7 @@ from creation time say so.
 
 | scored set | WIN | DRAW | LOSE | of |
 |---|---:|---:|---:|---:|
-| rows S1-S19 (S11 and S14 not scored; latency from the send stamp) | 17 | 0 | 0 | 17 |
+| rows S1-S19 (S14 not scored; latency from the send stamp) | 18 | 0 | 0 | 18 |
 
 | headline | TickLE | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
@@ -115,8 +115,8 @@ from creation time say so.
 - **I4s latency p99 from creation time** (not one of the 80): UNBOUND for every arm. Each arm leaves some offered ticks
   undelivered in a saturating cell.
 
-**Not scored as rows:** rows 5 and 5c (netem dominates), rows 45-47 (every framework detects correctly), S11 (no
-FastDDS receive count), S14 (nothing leaves the host), and zenoh-pico and rmw_zenoh (reference only). Places where
+**Not scored as rows:** rows 5 and 5c (netem dominates), rows 45-47 (every framework detects correctly), S14 (nothing leaves the
+host), and zenoh-pico and rmw_zenoh (reference only). Places where
 TickLE is behind inside a lead:
 
 - rmw_tickle's kernel wake (ppoll, then recvfrom) is ~6 us slower than the vendors' blocking recvmsg, although it is
@@ -190,7 +190,7 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
 | S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.110 | DELIVERY FAILED ◊ (0.067) | `e521bbba` | [notes](#same-host-notes) |
 | S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | DELIVERY FAILED ◊ (0.069) | `e521bbba` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
-| S11 | publisher, us per sample | BEST_EFFORT P4, max rate | 1.071 | 1.694 | – | `e17b4e6f` | cannot be re-scored from existing data (no FastDDS receive count) |
+| S11 | publisher, us per delivered sample | BEST_EFFORT P4, max rate, KEEP_LAST 1 | ✅ **0.898** | ❌ 35,234 | 11.85 ¶ | `228da18d` | [notes](#same-host-notes) |
 | S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | DELIVERY FAILED ◊ (102.2) | `e17b4e6f` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
@@ -218,7 +218,16 @@ and earlier sessions of these rows are in [Corrections and history](#same-host-c
   1,997 Mbps. Until 2026-10-17 this reader applied no delivery check; the cross-host reader always has. No verdict for
   TickLE changes; S19's worst (❌) moves from CycloneDDS to FastDDS. S12 is now per answered round trip: CycloneDDS
   102.1 -> 102.2 us.
-- **S11 cannot be re-scored from existing data:** its file (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`) has
+- **S11 re-measured on goodput (2026-10-17)** at `228da18d` with `experiments/fair_samehost_remeasure.sh`
+  (`CELLS=best_effort_throughput:p4 REPS=5`, free arm, 5 of 5 reps per framework), read by
+  `experiments/s11_publisher_cpu.py` against the `e521bbba` vendor control (publisher CPU per sample sent 0.98x
+  FastDDS, 0.99x CycloneDDS). Raw files `~/rig_results_safe/fair_samehost_228da18d_20261017-144159.*`. Per delivered
+  sample: TickLE 0.898 us (0.896-0.900; delivered 99.99%-100% of 10.0M per rep), FastDDS 35,234 us (its subscriber
+  took 207-377 of ~5.25M samples per rep, the overrun of S1-S3), CycloneDDS 11.85 us (19.9-20.8% delivered). ¶
+  CycloneDDS's figure includes iox-roudi's CPU (0.012 us); its publisher alone is 11.83. Per sample sent (the old
+  metric): 0.898 / 1.715 / 2.383. Pinned arm: 0.897 / 58,305 / 23.13. The paragraph below is the reading before this
+  re-measure.
+- **S11 could not be re-scored from existing data (until 2026-10-17):** its file (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`) has
   no FastDDS receive count, so CPU per delivered sample cannot be formed; the figures stay as measured (per sample
   sent) and are no longer scored. For scale, `e521bbba`'s P4 BEST_EFFORT client + server CPU per delivered sample
   is 1.75 / 87,167 / 31.9 us (another build and another metric, so not a substitute).
