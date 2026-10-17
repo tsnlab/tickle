@@ -31,6 +31,15 @@ HOW TO READ IT - written before the first run, enforced below:
     H3 kernel IPC rmw_tickle does about the same kernel work at a lower IPC (stalls, e.g. a copy into cold memory):
                   instructions:k diff within 10% of fastdds's while cycles:k diff REAL and > 0 and kernel IPC lower
                   by > 10%. FALSIFIED if kernel IPC is not lower by > 5%.
+  H4 (added 2026-10-17 15:30, after the main phase and before the nodirect run; --nodirect <runs>: tickle@head,
+                tickle@nodirect = tickle@head's binary with TT_RX_DIRECT=0, fastdds): the subscriber's extra kernel cycles
+                are the in-place read (direct_recvmsg(): the kernel copies each ~64 KB run straight into the 4 MB sample,
+                memory no core has touched lately, where Fast DDS's recvfrom() fills a buffer it reuses). VOID run: a
+                tickle@nodirect subscriber whose rx line does not read direct=0 and direct_reads=0, or a tickle@head one
+                with direct_reads=0. SUPPORTED if the subscriber's cycles:k per sample falls by at least half of the
+                main phase's head - fastdds cycles:k gap under nodirect; FALSIFIED if it falls by less than a quarter.
+                The fix question is total task-clock: nodirect - head, REAL by the same 2 x SE rule and larger than
+                fastdds's own shift between the two run sets (the drift control).
   ATTRIBUTION   kernel cycles per sample are split by the per-thread table; the extra kernel cycles of rmw_tickle are
                 set against (exc_svc diff) and (exc_irq diff) with each arm's own kernel instructions per syscall and
                 per IRQ printed, so the reader sees which term could carry the gap.
@@ -216,12 +225,28 @@ def run(runs, stem, window):
     return rec, ""
 
 
+def direct_treatment(log):
+    """(direct, direct_reads) from a subscriber log's rx line, or None when it has none."""
+    try:
+        text = log.read_text(errors="replace")
+    except OSError:
+        return None
+    m = re.search(r" rx: .*?\bdirect=(\d+) direct_reads=(\d+)", text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def read_set(runs, window):
     arms, voids = {}, []
     for sub in sorted(runs.glob("*_Array4m_l0_r*_sub.log")):
         stem = sub.name[: -len("_sub.log")]
-        rec, why = run(runs, stem, window)
         arm = stem.split("_Array4m")[0]
+        if arm in ("tickle@head", "tickle@nodirect"):
+            t = direct_treatment(sub)
+            want_off = arm == "tickle@nodirect"
+            if t is None or (want_off and t != (0, 0)) or (not want_off and t[1] == 0):
+                voids.append(f"VOID {stem}: direct treatment {t} for {arm}")
+                continue
+        rec, why = run(runs, stem, window)
         if rec is None:
             voids.append(f"VOID {stem}: {why}")
         else:
@@ -281,6 +306,7 @@ def main():
     ap.add_argument("main")
     ap.add_argument("--pin")
     ap.add_argument("--baseline")
+    ap.add_argument("--nodirect")
     a = ap.parse_args()
     runs = Path(a.main)
     window = window_of(runs)
@@ -388,7 +414,41 @@ def main():
                 v = "UNDECIDED (shrinks by less than half)"
             print(f"  H2 causal {side}: {v} - task-clock gap {g0:+.3f} ms/sample unpinned, {g1:+.3f} pinned; "
                   f"exc_irq gap pinned {i1:+.2f}")
+    if a.nodirect:
+        nodirect(arms, Path(a.nodirect))
     return 0
+
+
+def nodirect(main_arms, runs):
+    arms, voids = read_set(runs, window_of(runs))
+    print(f"\n== nodirect {runs}")
+    for v in voids:
+        print(v)
+    for arm, recs in arms.items():
+        print(f"  {arm}: {len(recs)} usable reps")
+    if not all(len(arms.get(x, [])) >= 3 for x in ("tickle@head", "tickle@nodirect", "fastdds")):
+        print("  H4: VOID (fewer than 3 usable reps of an arm)")
+        return
+    for side in ("sub", "pub"):
+        print(f"  --- {side}: head / nodirect / fastdds, nodirect - head, 2se")
+        for k in METRICS:
+            vals = [med(arms[x], f"{side}_{k}") for x in ("tickle@head", "tickle@nodirect", "fastdds")]
+            d = vals[1] - vals[0]
+            err = math.sqrt(se(arms["tickle@head"], f"{side}_{k}") ** 2
+                            + se(arms["tickle@nodirect"], f"{side}_{k}") ** 2)
+            print(f"    {k:16} " + " / ".join(f"{v:14.1f}" for v in vals)
+                  + f"   diff {d:+14.1f}  2se {2 * err:12.1f}  {'REAL' if abs(d) > 2 * err else 'within 2se'}")
+    gap = med(main_arms["tickle@head"], "sub_cycles:k") - med(main_arms["fastdds"], "sub_cycles:k")
+    fall = med(arms["tickle@head"], "sub_cycles:k") - med(arms["tickle@nodirect"], "sub_cycles:k")
+    v = "SUPPORTED" if fall >= 0.5 * gap else ("FALSIFIED" if fall < 0.25 * gap else "UNDECIDED")
+    print(f"  H4 in-place read {v}: sub cycles:k falls {fall:+,.0f} a sample under nodirect; the main phase's "
+          f"head - fastdds gap {gap:+,.0f}")
+    drift = med(arms["fastdds"], "sub_task-clock") - med(main_arms["fastdds"], "sub_task-clock")
+    d = med(arms["tickle@nodirect"], "sub_task-clock") - med(arms["tickle@head"], "sub_task-clock")
+    err = math.sqrt(se(arms["tickle@head"], "sub_task-clock") ** 2 + se(arms["tickle@nodirect"], "sub_task-clock") ** 2)
+    real = abs(d) > 2 * err and abs(d) > abs(drift)
+    print(f"  H4 fix: sub task-clock nodirect - head {d:+.3f} ms/sample (2se {2 * err:.3f}); fastdds drift between run "
+          f"sets {drift:+.3f}: {'REAL' if real else 'not decided'}")
 
 
 if __name__ == "__main__":

@@ -171,6 +171,9 @@
 #                 at its begin and end, and <stem>_<role>.pplace each thread's state and CPU (stat fields 3 and 39) four
 #                 times a second inside it. Fetched to <stem>_<role>.pstat. Refused with INSN_COUNT=1 (two perfs on one
 #                 process). Read by i4be_perf_attach_read.py, whose header holds the reading rules.
+#   tickle@nodirect  tickle@head's own librmw_tickle.so with TT_RX_DIRECT=0 at both ends: no in-place read of a large
+#                 sample's runs (hal_linux.c direct_recvmsg()); the treatment is the subscriber's rx line, direct=0
+#                 direct_reads=0, which i4be_perf_attach_read.py checks. Cross-host default mode only.
 #   PIN_CPUS=<list>  (diagnostic only, never a headline figure: docs/TESTING.md, no testbed tuning) every perf_test on
 #                 both Pis runs under `taskset -c <list>`; recorded in meta.txt (pin_cpus=) and in each .treat file.
 #   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
@@ -630,6 +633,7 @@ env_for() {
         tickle@head) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@csum0) echo "unset TT_UDP_OFFLOAD; export TT_UDP_CSUM0=1 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@nodirect) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export TT_RX_DIRECT=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@block) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
             echo "export RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
@@ -653,7 +657,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | tickle@block)
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | tickle@block | tickle@nodirect)
             echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
