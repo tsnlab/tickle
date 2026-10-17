@@ -164,6 +164,9 @@ one is still going waits behind it inside core, and a newer one replaces it ther
 `publish()` instead blocks in its own send, and the application stamps its next sample only after it returns. At a
 rate that saturates the link (RESULTS.md L4, I4s: 4 MB at 30 Hz on 1 Gbit/s) the difference is the latency rmw_tickle
 loses there: every sample waits behind the one before it, after it was stamped.
+Nor does the poll thread hold a publish up behind a large send: a discovery reply that finds the send buffer full is
+skipped rather than waited for (DESIGN.md section 5), which removed the ~220 ms publishes seen in
+`test_large_publish_block`'s off scenario on a 100 Mbit link.
 
 `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=<ms>` makes rmw_tickle behave like the vendors: after `rmw_publish()` has handed a
 large sample to core, it waits until that sample has gone into the socket, up to that long.

@@ -248,6 +248,13 @@ Discovery is ordinary traffic on a built-in endpoint: endpoint_id `tt_DISCOVERY_
 | summary, every `tt_CONTEXT_UPDATE_INTERVAL` (1 s), or a sixth of the shortest own lease | HEARTBEAT | broadcast | first = last = the context's **generation** (low 32 bits of `last_modified`) |
 | request for the list | ACKNACK | unicast to the summary's sender | the generation wanted |
 | the list (announce) | DATA, or FRAG_FIRST + FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
+
+**A reply never waits for room** (large-sample builds). The two replies sent from the poll - the announce answering a
+peer's changed summary (`reply_with_own_announce`) and the list answering a request (`answer_discovery_request`) - go
+out non-blocking; if the data socket's send buffer is full (a large sample is draining) the reply is skipped and
+counted (`discovery_replies_skipped`). Waiting there held the state lock until half the buffer drained (~220 ms
+through a 100 Mbit link) and stalled every publish and the whole poll. Skipping is safe: the peer asks again on our
+next summary and converges (`discovery_reply_check`). Requests, summaries, data and repairs still wait for room.
 | a change (endpoint created/destroyed) | the list | broadcast, at once | the new generation |
 
 - The generation changes exactly when the endpoint list does and differs across restarts. A summary with an applied
