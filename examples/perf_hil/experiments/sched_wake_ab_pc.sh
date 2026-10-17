@@ -18,10 +18,10 @@
 #   CONFIRMED at a nice level when |fix - main| on gap_p50 exceeds max(2 x |main - main2|, 20 us) and has the expected
 #            sign; REFUTED when the fix's gap_p50 is not below main's by that much.
 #   RTT      stamp rtt_p50 fix - main within max(2 x A/A, 10 us), else flagged RTT_MOVED.
-#   CPU      client CPU per round trip ((utime+stime)/sent, us): fix - main <= max(2 x A/A, 30 us) - one extra wake-up
+#   CPU      client CPU per round trip (sched_cpu_s/sent, us): fix - main <= max(2 x A/A, 30 us) - one extra wake-up
 #            per round trip at most; more is flagged CPU_RISE (a precise wake must not turn into spinning: a spin to
 #            the deadline would cost the last part of each 100 ms wait, ~0.4-0.8 ms per round trip). The server's CPU
-#            (from /usr/bin/time) is printed beside it under the same bound.
+#            (perf stat task-clock / sent) is printed beside it under the same bound.
 #   VOID     a run with sent=0, or fewer than 80 measured round trips, or loadavg(1 min) above LOAD_MAX at its start,
 #            is marked VOID and left out of the means (the PC is shared with other users' VMs and builds).
 # ARMS: A=main, B=fix, A2=main again (the A/A floor). Order rotated per block. Usage: sched_wake_ab_pc.sh [BLOCKS]
@@ -88,12 +88,13 @@ echo "=== sched_wake_ab_pc $(date -Is) A=${arm_sha[A]} B=${arm_sha[B]} blocks=$B
 field() { grep -oE " $1=[-0-9.]+" <<<"$2" | head -1 | cut -d= -f2; }
 
 run() { # <arm> <nice> <block>
-    local arm=$1 nice=$2 block=$3 dir=${arm_dir[$1]} slog=$WORK/srv.log clog=$WORK/cli.log load
+    local arm=$1 nice=$2 block=$3 dir=${arm_dir[$1]} slog=$WORK/srv.log clog=$WORK/cli.log spf=$WORK/srv_perf.txt load
     load=$(cut -d' ' -f1 /proc/loadavg)
+    rm -f "$spf"
     # Root inside the namespace, so renice can lower the inherited nice 5 to 0; both processes at the arm's nice.
     # shellcheck disable=SC2024
     sudo -n ip netns exec "$NS2" bash -c "renice -n $nice -p \$\$ >/dev/null; ulimit -v $VMEM_KB; cd $dir && \
-        exec /usr/bin/time -f 'SRVTIME u=%U s=%S' timeout -s INT 17 ./server -d 14 -W 100 -C 100 -I 0.001" \
+        exec perf stat -x, -e task-clock -o $spf timeout -s INT 17 ./server -d 14 -W 100 -C 100 -I 0.001" \
         >"$slog" 2>&1 &
     local spid=$!
     sleep 1
@@ -105,18 +106,22 @@ run() { # <arm> <nice> <block>
     local res sent measured realnice srv
     res=$(grep -m1 '^RESULT' "$clog")
     realnice=$(grep -m1 '^NICE=' "$clog" | tr -d ' ' | cut -d= -f2)
-    srv=$(grep -m1 '^SRVTIME' "$slog")
+    # The server's task-clock (ms, from perf stat): its whole run, ns resolution.
+    srv=$(grep -m1 ',task-clock,' "$spf" 2>/dev/null | cut -d, -f1)
     sent=$(field sent "$res")
     measured=$(field measured "$res")
     local verdict=ok
     if [ -z "$sent" ] || [ "$sent" = 0 ] || [ "${measured:-0}" -lt 80 ]; then verdict=VOID_RUN; fi
     if awk -v l="$load" -v m="$LOAD_MAX" 'BEGIN { exit !(l > m) }'; then verdict=VOID_LOAD; fi
     if [ "$realnice" != "$nice" ]; then verdict=VOID_NICE; fi
-    local u s cpu_rtt su ss srv_cpu_rtt
-    u=$(field utime_s "$res"); s=$(field stime_s "$res")
-    su=$(grep -oE 'u=[0-9.]+' <<<"$srv" | cut -d= -f2); ss=$(grep -oE 's=[0-9.]+' <<<"$srv" | cut -d= -f2)
-    cpu_rtt=$(awk -v u="${u:-0}" -v s="${s:-0}" -v n="${sent:-1}" 'BEGIN { printf "%.1f", (u + s) * 1e6 / n }')
-    srv_cpu_rtt=$(awk -v u="${su:-0}" -v s="${ss:-0}" -v n="${sent:-1}" 'BEGIN { printf "%.1f", (u + s) * 1e6 / n }')
+    # CPU from the client's sched_cpu_s (schedstat, a begin-to-end delta in ns) - not utime+stime, whose 10 ms ticks are
+    # 33 us a round trip over 300 round trips, coarser than the 30 us bound (the first run, 2026-10-17 10:05, read
+    # every server row as exactly 33.3 us). A row with either figure missing is VOID_CPU, not a zero.
+    local sc cpu_rtt srv_cpu_rtt
+    sc=$(field sched_cpu_s "$res")
+    if [ -z "$sc" ] || [ -z "$srv" ]; then verdict=VOID_CPU; fi
+    cpu_rtt=$(awk -v c="${sc:-0}" -v n="${sent:-1}" 'BEGIN { printf "%.1f", c * 1e6 / n }')
+    srv_cpu_rtt=$(awk -v c="${srv:-0}" -v n="${sent:-1}" 'BEGIN { printf "%.1f", c * 1e3 / n }')
     echo "RUN arm=$arm sha=${arm_sha[$arm]} nice=$nice block=$block verdict=$verdict load=$load sent=$sent" \
         "measured=$measured gap_p50_us=$(field gap_p50_us "$res") gap_p99_us=$(field gap_p99_us "$res")" \
         "crt_p50_ms=$(field crt_p50_ms "$res") crt_p99_ms=$(field crt_p99_ms "$res") rtt_p50_ms=$(field rtt_p50_ms "$res")" \
