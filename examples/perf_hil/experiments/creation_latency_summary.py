@@ -60,6 +60,9 @@ HOW TO READ IT, written 2026-10-17 before any rig run and enforced below:
      nothing waits: PASS when g <= 0.2 ms (a timer wake, not a sample waiting behind another), no gap below -0.02 ms
      (a stamp before its schedule is a mis-read schedule), every grid check passes and |d - g| <= noise. Printed
      beside: whether |d| <= noise literally ("same within noise"), else "differs by the sender's timer wake g".
+     The core --rtt reading allows |d - g| <= noise + 1 us (RTT_PRINT_RES_MS): its d is the difference of two
+     medians the clients print to 1 us. Changed AFTER the first rig run (2026-10-17, the user agreed): c16 and c17
+     TickLE read |d - g| = 1.1 us against a noise of 1.0 us, below what the printed figures can resolve.
      A vendor arm that delivers nothing in every rep does not run there: listed, not read. The control needs
      tickle@head and at least one vendor read, else it FAILS. A FAILED control makes every creation figure of the
      gated cell NOT READ. (The same "delivered nothing" arm is excluded from R3 and R5 in a cell: a publisher whose
@@ -88,6 +91,7 @@ GAP_BIG_NS = 1_000_000
 GRID_SLOPE_TOL, GRID_RESID_NS = 1e-3, 500_000
 CTL_REPS, CTL_N = 2, 200
 CTL_WAKE_NS, CTL_NEG_NS = 200_000, -20_000
+RTT_PRINT_RES_MS = 0.001  # the reliable_latency clients print rtt_*/crt_* p50 in ms to 3 decimals
 BLOCKING = ("fastdds", "cyclonedds", "tickle@block")
 SUBJECTS = ("tickle@head", "tickle@block")
 INF = float("inf")
@@ -477,8 +481,11 @@ def rtt_campaign(path):
                 why.append(f"median gap {g * 1e3:.1f} us")
             if gmin * 1e6 < CTL_NEG_NS:
                 why.append(f"gap {gmin * 1e3:.1f} us < 0")
-            if abs(d - g) > noise:
-                why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us")
+            # The clients print rtt_p50_ms and crt_p50_ms to 1 us (%.3f ms), so d carries up to 1 us of rounding on
+            # top of the reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4).
+            if abs(d - g) > noise + RTT_PRINT_RES_MS:
+                why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
+                           f"{RTT_PRINT_RES_MS * 1e3:.0f} us")
             same = "same within noise" if abs(d) <= noise else f"differs by the timer wake g = {g * 1e3:.1f} us"
             print(f"  {fw:<10} n {n}  RTT stamp p50 {stamp} creation p50 {crt} ms  d {d * 1e3:+.1f} us g "
                   f"{g * 1e3:.1f} us noise {noise * 1e3:.1f} us: {same}; {'PASS' if not why else 'FAIL ' + str(why)}")
