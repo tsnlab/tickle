@@ -18,7 +18,7 @@ from creation time say so.
 
 | scored set | WIN | DRAW/TIE | LOSE | of |
 |---|---:|---:|---:|---:|
-| campaign `A` (17 cells, `09a0437d`), latency cells from creation time (`4fca013b`, 2026-10-17) | 135 | 12 | 3 | 150 |
+| campaign `A` (17 cells, `09a0437d`), latency cells from creation time (`596e9c9c`, 2026-10-17) | 139 | 11 | 0 | 150 |
 | campaign `T` (FastDDS `maxMessageSize` 1472) | 18 | 2 | 0 | 20 |
 | QoS mechanics (row 44, the one scored row) | 1 | 0 | 0 | 1 |
 | *campaign `A` until 2026-10-17 (latency from the send stamp)* | *139* | *11* | *0* | *150* |
@@ -30,7 +30,7 @@ from creation time say so.
 | client CPU, cpu_s per Msample, P1 throughput | **5.7** | 24.3 | 7.8 | 18 |
 | client peak RSS, KB, P1 throughput | **2,087** | 15,947 | 5,407 | 28 |
 | wire bytes per sample, P1 | **138** | 312 | 183 | 35 |
-| RTT p50 from creation time, P1, ms | 0.315 | 0.345 | **0.311** | 1c |
+| RTT p50 from creation time, P1, ms | **0.211** | 0.346 | 0.312 | 1c |
 | RTT mean from the send stamp, P1, ms (diagnostic) | **0.206** | 0.290 | 0.257 | 1 |
 
 **Same host, core** (shared memory on one Pi; [section 1](#1-same-host-shared-memory))
@@ -85,11 +85,6 @@ from creation time say so.
 
 ### Every LOSE
 
-- **Cross-host core RTT from creation time, P1, P2 and P4, against CycloneDDS** (rows 1c, 3c, 6bc; 4-14 us at the
-  median). TickLE's bench client sends its ping about 111 us after the due time; the DDS clients send it after 59-62 us.
-  TickLE's relative epoll/ppoll wait is given the kernel's 0.1% timer slack. A fix on branch `ab/sched-wake-deadline`
-  cut the gap to about 59 us and creation RTT by about 50 us in a rig A/B. It is not landed: its CPU cost is under
-  review. Against FastDDS TickLE wins four of the five cells and draws at +10 ms netem; on the send stamp it wins.
 - **rmw large messages, I4 best effort (Array4m, 15 Hz), CPU per MB against Fast DDS as shipped.** Subscriber 2.19
   against 2.10 ms/MB (+4%), publisher 3.72 against 3.62 (+3%). TickLE wins both against Fast DDS at 1472 and against
   CycloneDDS. Attributed 2026-10-17 (`experiments/i4be_cpu_gap.sh`, `i4be_cpu_gap2.sh`, perf stat per thread over 600
@@ -104,8 +99,6 @@ from creation time say so.
 
 ### Every DRAW
 
-- **Cross-host core RTT from creation time, P3, against CycloneDDS** (row 6ac). The ranges touch (0.337-0.339 against
-  0.339-0.347 ms). The cause is the late send above.
 - **+10 ms netem** (rows 5 and 5c): a draw by construction, since 10 ms of netem swamps a 0.2 ms RTT. The rows are
   not scored; campaign `A` counts the cell's RTT as one DRAW.
 - **Loss TIEs in the campaigns** (10 in `A`, 2 in `T`): TickLE lost nothing, and every vendor either lost nothing or
@@ -422,11 +415,11 @@ Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
 | | **[Latency from creation time](#latency-from-creation-time-2026-10-17)** (RTT p50, ms) | | | | |  | – | |
-| 1c | RTT p50 from creation | P1 76 B | 0.315 | ❌ 0.345 | ✅ **0.311** | – | – | C |
-| 3c | RTT p50 from creation | P2 1292 B | 0.338 | ❌ 0.366 | ✅ **0.326** | – | – | C |
-| 5c | RTT p50 from creation | +10 ms netem | ⚪ 10.362 | ⚪ 10.438 | ⚪ 10.515 | – | – | C |
-| 6ac | RTT p50 from creation | P3 1424 B | ⚪ 0.337 | ❌ 0.392 | ⚪ 0.341 | – | – | C |
-| 6bc | RTT p50 from creation | P4 2800 B | 0.355 | ❌ 0.417 | ✅ **0.341** | – | – | C |
+| 1c | RTT p50 from creation | P1 76 B | ✅ **0.211** | ❌ 0.346 | 0.312 | – | – | C |
+| 3c | RTT p50 from creation | P2 1292 B | ✅ **0.237** | ❌ 0.378 | 0.328 | – | – | C |
+| 5c | RTT p50 from creation | +10 ms netem | ⚪ 10.445 | ⚪ 10.239 | ⚪ 10.257 | – | – | C |
+| 6ac | RTT p50 from creation | P3 1424 B | ✅ **0.241** | ❌ 0.391 | 0.337 | – | – | C |
+| 6bc | RTT p50 from creation | P4 2800 B | ✅ **0.259** | ❌ 0.403 | 0.347 | – | – | C |
 | | **[Latency from the send stamp](#latency)** (ms; diagnostic since 2026-10-17) | | | | |  | – | |
 | 1 | RTT mean | P1 76 B | ✅ **0.206** | ❌ 0.290 | 0.257 | 0.221 † | – | A |
 | 2 | RTT max (tail) | P1 76 B | ✅ **0.252** | ❌ 0.342 | 0.296 | 0.336 † | – | A |
@@ -518,7 +511,7 @@ Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp
 ### Legend
 
 - **⚪** deliberately not scored: a fair comparison is not possible in that row (5, 5c, 45-47), or, in rows 52-67 and
-  6ac, the first two are within each other's spread (a draw).
+  the first two are within each other's spread (a draw).
 - **zenoh-pico is reference and never scored**: no ✅/❌ toward totals, no WIN/DRAW/LOSE. Its cells come from its own
   session (`Z`, `results/zenoh_cells_31d58011_2026-09-29.txt`), so its margins are looser than a within-row one.
 - **`†`** measured over TCP, the only configuration where zenoh-pico's reliability is real (its RELIABLE means
@@ -541,7 +534,7 @@ Within a row all scored frameworks come from one session; across letters they do
 | meas. | source |
 |---|---|
 | `A` | aligned 17-cell native campaign (`campaign_sweep.sh`), 3 reps, FastDDS as shipped, no pinning, frameworks' order rotated, every framework dropping the same warm-up and cool-down (TESTING.md section 5 item 9); `09a0437d`, 2026-10-08 (`experiments/fair_crosshost_remeasure.sh`; `~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.A_free.txt`, rows from `fair_crosshost_rows.py`). Until 2026-10-08 these rows were the same campaign at `3ae721aa`, 2026-10-06, without the warm-up (`fair_crosshost_3ae721aa_20261006-080418.A_free.txt`), with rows 1, 3, 5, 6, 6a, 6b from the warm-up re-runs at `f40a2adf` and `9b5491e6`; until 2026-10-06 the pinned 12-cell campaign on `9dbffd40` (`results/cmp_A_9dbffd40_2026-09-29.txt`) and, for 6a-6b and 11a-11c, `G` |
-| `C` | creation-time latency, the five latency cells of `A` (c10, c11, c12, c16, c17) again with `campaign_sweep.sh`, 3 reps, FastDDS as shipped, no pinning, TickLE with gate v2's layout-stable flags; main `4fca013b`, 2026-10-17 (`~/rig_results_safe/creation_latency_core_20261017-094944.txt`, read by `creation_latency_summary.py --rtt` at `228da18d`; [Latency from creation time](#latency-from-creation-time-2026-10-17)) |
+| `C` | creation-time latency, the five latency cells of `A` (c10, c11, c12, c16, c17) again with `campaign_sweep.sh`, 3 reps, FastDDS as shipped, no pinning, TickLE with gate v2's layout-stable flags; main `596e9c9c` (with the scheduler wait ending at its deadline), 2026-10-17 (`~/rig_results_safe/creation_latency_core_20261017-204550.txt`, read by `creation_latency_summary.py --rtt` at `596e9c9c`; first run at `4fca013b`, before that fix; [Latency from creation time](#latency-from-creation-time-2026-10-17)) |
 | `T` | P3/P4 cells with FastDDS `maxMessageSize` 1472 (fair-evaluation setting), same session and method as `A` (`...112506.T_free.txt`). Cell 6 (rows 14, 17, 27, 34, 40) was not in the `09a0437d` run and is still `3ae721aa` without the warm-up (`fair_crosshost_3ae721aa_T6.T_free.txt`; row 17's unshaped base is that session's cell 4, 944 / 555 / 871 Mbps) |
 | `G` | p1-p4 gap cells added 2026-09-30 (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, WIN 38 / DRAW 4 / LOSE 0) |
 | `S` | QoS-mechanics sweep 2026-09-24/25 (`experiments/comparison_resweep.sh` at `659013e9`) |
@@ -577,6 +570,31 @@ stamp), and perf_test writes a creation trace in the rmw cells. The queue was
 `experiments/rig_queue_creation_latency.sh`, run 09:49-11:59 KST. It took the rig lock once for every cell
 (`~/rig_results_safe/creation_latency_queue.log`). TickLE was built with the layout-stable flags of gate v2
 (`TICKLE_EXTRA_CFLAGS`, TESTING.md section 6.1). FastDDS ran as shipped, and nothing was pinned.
+
+**Rows 1c-6bc are from the second run, on main `596e9c9c` (2026-10-17 20:45-22:55,
+`~/rig_results_safe/creation_latency_queue2.log`).** That main carries the fix described below (a wait for a scheduler
+entry ends at its deadline, `timerfd`; DESIGN.md section 2), landed after its gate-v2 rig A/B passed
+(`~/rig_results_safe/queue_core_ab_swt.log`, 0 CPU or latency rows WORSE; TickLE's gap 112 -> 13 us, creation RTT
+-98 us). Same queue, harness, flags and reps as the first run; every rep `window=ok`, 100 measured round trips (91 at
++10 ms netem; CycloneDDS at P3 100 / 100 / 99); the control passed (rmw ping-pong and core R4). Reader
+`creation_latency_summary.py --rtt` at `596e9c9c` on `~/rig_results_safe/creation_latency_core_20261017-204550.txt`.
+
+| row | cell | TickLE creation p50 | FastDDS | CycloneDDS | stamp p50, T / F / C | g us, T / F / C | vs FastDDS | vs CycloneDDS |
+|---|---|---:|---:|---:|---:|---:|:-:|:-:|
+| 1c | c10 P1 76 B | 0.211 [0.211-0.214] | 0.346 [0.344-0.350] | 0.312 [0.311-0.314] | 0.200 / 0.284 / 0.254 | 11.2 / 61.3 / 58.1 | WIN | WIN |
+| 3c | c11 P2 1292 B | 0.237 [0.237-0.238] | 0.378 [0.363-0.380] | 0.328 [0.324-0.329] | 0.225 / 0.316 / 0.270 | 11.3 / 61.1 / 58.0 | WIN | WIN |
+| 5c | c12 P1, +10 ms netem | 10.445 [9.960-10.465] | 10.239 [10.229-10.470] | 10.257 [10.036-10.463] | 10.432 / 10.179 / 10.195 | 10.7 / 60.7 / 60.5 | DRAW | DRAW |
+| 6ac | c16 P3 1424 B | 0.241 [0.238-0.242] | 0.391 [0.388-0.407] | 0.337 [0.337-0.344] | 0.229 / 0.331 / 0.280 | 11.4 / 61.4 / 58.2 | WIN | WIN |
+| 6bc | c17 P4 2800 B | 0.259 [0.255-0.262] | 0.403 [0.402-0.413] | 0.347 [0.340-0.349] | 0.248 / 0.342 / 0.288 | 11.7 / 61.2 / 58.4 | WIN | WIN |
+
+- **The reading.** From creation time TickLE now beats both vendors at P1-P4 (by 90-101 us against CycloneDDS) and
+  draws at +10 ms netem; its ping leaves 11-12 us after its due time, the DDS clients' 58-61 us. Campaign `A` is
+  WIN 139, DRAW/TIE 11, LOSE 0 of 150 again. The I4 cells re-measured in the same queue agree with the first run
+  (`creation_latency_{i4s,i4be,i4rel}_20261017-204550.creation.txt`: I4s TickLE 55.55-55.72 ms against 1,842-7,448;
+  I4 BE and RELIABLE WIN on median and p99).
+
+**The first run, on `4fca013b` (before the wait fix).** Its table and reading follow; they were the published rows
+1c-6bc until the second run.
 
 **Samples first.** Each cell has 3 reps per framework. Each rep has 100 measured round trips between 4,096-round-trip
 edges; the exceptions are +10 ms netem (91, both edges ending on the 20 s bound) and CycloneDDS at P3 (100 / 99 / 99).
@@ -968,7 +986,8 @@ old summary quoted is still in the tables above. These are the readings that cha
 - **Cross-host latency.** The summary read: "TickLE is best in every scored row of latency, throughput, CPU, memory
   and bandwidth at P1-P4". Campaign `A` stood at WIN 151, DRAW/TIE 11, LOSE 0, VOID 0 of 162 metric-cells, and WIN 139,
   DRAW/TIE 11 of 150 counted once. That was against WIN 136, DRAW/TIE 14 at `3ae721aa`, or 137 / 13 on the unrounded
-  loss. From the send stamp this still holds. From creation time, TickLE loses rows 1c, 3c and 6bc to CycloneDDS
+  loss. From the send stamp this still holds. From creation time, TickLE lost rows 1c, 3c and 6bc to CycloneDDS on the
+  first run (`4fca013b`) and won them on the second (`596e9c9c`, the scheduler wait fix)
   ([Latency from creation time](#latency-from-creation-time-2026-10-17)).
 - **I4s latency.** The summary and the list "Where TickLE does not come first" read that I4s median latency "is
   behind all three because a DDS `publish()` blocks before it stamps the sample" (55.0 against 37.6-41.6 ms). L4 then
