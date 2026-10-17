@@ -119,6 +119,14 @@ counter() { grep -m1 ",$1," "$2" 2>/dev/null | cut -d, -f1; } # counter <event> 
 run() { # <arm> <nice> <block> [strace]
     local arm=$1 nice=$2 block=$3 mode=${4:-perf} dir=${arm_dir[$1]} slog=$WORK/srv.log clog=$WORK/cli.log
     local spf=$WORK/srv_perf.txt cpf=$WORK/cli_perf.txt sst=$WORK/srv_strace.txt cst=$WORK/cli_strace.txt load swrap cwrap
+    # QUIET_WAIT=<s> (2026-10-18): wait up to that long for loadavg(1 min) to fall to LOAD_MAX before the run, so a
+    # passing burst of the other users' work voids fewer runs. The run is still judged on the load at its start.
+    local waited=0
+    while [ "$waited" -lt "${QUIET_WAIT:-0}" ] && awk -v l="$(cut -d' ' -f1 /proc/loadavg)" -v m="$LOAD_MAX" \
+        'BEGIN { exit !(l > m) }'; do
+        sleep 5
+        waited=$((waited + 5))
+    done
     load=$(cut -d' ' -f1 /proc/loadavg)
     rm -f "$spf" "$cpf" "$sst" "$cst"
     if [ "$mode" = strace ]; then
