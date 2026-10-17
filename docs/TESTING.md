@@ -162,13 +162,15 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 - **Throughput is goodput:** the payload of the samples the receiving application got complete and unique, inside
   the same measured window (section 5 item 9). A partly received large sample counts 0; duplicates and
   retransmissions do not count. Every bench's receiver already counts this way: it counts a sample once, when its
-  application takes it whole (`goodput_rescore.py`'s header gives the reading).
-- **The send rate is diagnostic only.** It is printed beside goodput (`diag_*`, `send Mbps`) and never decides a cell.
+  application takes it whole. `campaign_summary.py` scores it as `server.goodput_mbps`, its header's rules G1-G6
+  (`--selftest` checks them).
+- **The send rate is diagnostic only.** It is printed beside goodput (`diagnostic` rows `client.send_mbps` and
+  `server.recv_mbps` in `campaign_summary.py`; `diag_*`, `send Mbps` elsewhere) and never decides a cell.
 - **CPU and wire bytes are per delivered sample** (or MB delivered, or round trip answered), saturating cells
   included. For CPU this supersedes the offered-ticks denominator of 2026-10-12; delivered % of offered still ranks
   a saturating cell, and ranks it as goodput does.
-- **Incomplete delivery in a RELIABLE cell:** compare received with sent. `loss_pct` cannot see samples that never
-  arrived.
+- **Incomplete delivery in a RELIABLE cell:** compare received with sent, in every repetition (`campaign_summary.py`
+  read only the last one until 2026-10-17). `loss_pct` cannot see samples that never arrived.
   - If a vendor delivers less than it sent, it is excluded from that cell and listed as DELIVERY FAILED, with its
     counts.
   - If TickLE delivers less than it sent, every metric in that cell counts as a LOSE.
@@ -279,7 +281,7 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 | Harness | What it answers |
 |---|---|
 | `campaign_sweep.sh` | The cross-vendor campaign: 12 cells x 3 frameworks x 3 repetitions, interleaved, five metrics |
-| `campaign_summary.py` | Computes the per-cell verdicts (WIN/DRAW/LOSE/VOID) from a sweep's output |
+| `campaign_summary.py` | Computes the per-cell verdicts (WIN/DRAW/LOSE/VOID) from a sweep's output: throughput as goodput, CPU and wire bytes per delivered sample (`--selftest` checks its rules) |
 | `campaign_ab_chain.sh` | Is build B better or worse than build A on the campaign cells? (A P B B P A, gate v2) |
 | `ab_compare.py` | Reads A/B arms per cell and metric; with `--placement`, by gate v2 (`gate_v2.py`, section 6.1) |
 | `layout_flags_cost.sh` | What a code-alignment flag changes in each function's instructions, and what it costs in size (static) |

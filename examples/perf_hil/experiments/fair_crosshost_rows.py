@@ -6,8 +6,10 @@ Usage: fair_crosshost_rows.py <A.txt> <T.txt> [<T6.txt>]
 Each row is one (campaign, cell, metric) of campaign_summary.py's output, which already applies the campaign's reading
 rules (instrument=ok, boundary gate, VOID, win only outside the reps' spread). This only picks the rows the table
 shows, in the table's column order (TickLE, FastDDS, CycloneDDS), and prints the summary's own verdict beside each.
-Rows 16-17 (retention) are the loss cell's send rate over the unshaped cell's, per framework; row 41 is row 35 less
-the 76-byte payload.
+Rows 7-15 are goodput (server.goodput_mbps, since 2026-10-17; the send rate is a diagnostic line the summary never
+scores), and rows 18-27 and 35-40 are per delivered sample, both as campaign_summary.py computes them from the original
+files. Rows 16-17 (retention) are the loss cell's goodput over the unshaped cell's, per framework; row 41 is row 35
+less the 76-byte payload.
 """
 import re
 import subprocess
@@ -20,12 +22,12 @@ ROWS = [
     ('3', 'A', 'c11', 'client.rtt_avg_ms'), ('4', 'A', 'c11', 'client.rtt_max_ms'),
     ('5', 'A', 'c12', 'client.rtt_avg_ms'), ('6', 'A', 'c12', 'client.rtt_max_ms'),
     ('6a', 'A', 'c16', 'client.rtt_avg_ms'), ('6b', 'A', 'c17', 'client.rtt_avg_ms'),
-    ('7', 'A', 'c1', 'client.send_mbps'), ('8', 'A', 'c2', 'client.send_mbps'),
-    ('9', 'T', 'c3', 'client.send_mbps'), ('10', 'T', 'c4', 'client.send_mbps'),
-    ('11', 'A', 'c8', 'client.send_mbps'), ('11a', 'A', 'c13', 'client.send_mbps'),
-    ('11b', 'A', 'c14', 'client.send_mbps'), ('11c', 'A', 'c15', 'client.send_mbps'),
-    ('12', 'A', 'c9', 'client.send_mbps'), ('13', 'A', 'c5', 'client.send_mbps'),
-    ('14', 'T', 'c6', 'client.send_mbps'), ('15', 'A', 'c7', 'client.send_mbps'),
+    ('7', 'A', 'c1', 'server.goodput_mbps'), ('8', 'A', 'c2', 'server.goodput_mbps'),
+    ('9', 'T', 'c3', 'server.goodput_mbps'), ('10', 'T', 'c4', 'server.goodput_mbps'),
+    ('11', 'A', 'c8', 'server.goodput_mbps'), ('11a', 'A', 'c13', 'server.goodput_mbps'),
+    ('11b', 'A', 'c14', 'server.goodput_mbps'), ('11c', 'A', 'c15', 'server.goodput_mbps'),
+    ('12', 'A', 'c9', 'server.goodput_mbps'), ('13', 'A', 'c5', 'server.goodput_mbps'),
+    ('14', 'T', 'c6', 'server.goodput_mbps'), ('15', 'A', 'c7', 'server.goodput_mbps'),
     ('18', 'A', 'c1', 'client.cpu_s_per_Msample'), ('19', 'A', 'c1', 'server.cpu_s_per_Msample'),
     ('20', 'A', 'c2', 'client.cpu_s_per_Msample'), ('21', 'A', 'c2', 'server.cpu_s_per_Msample'),
     ('22', 'T', 'c4', 'client.cpu_s_per_Msample'), ('23', 'T', 'c4', 'server.cpu_s_per_Msample'),

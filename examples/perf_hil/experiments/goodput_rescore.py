@@ -9,9 +9,14 @@ wire bytes per sample are divided by DELIVERED samples, not sent ones.
 Usage: goodput_rescore.py <campaign.txt> <out_dir>
 
 Writes <out_dir>/<basename> - the same file with the client's scored figures replaced by their goodput forms (the
-original send rate kept as diag_*, which no reader scores) - then runs campaign_summary.py on the original and on the
-rewritten file and prints every (cell, metric) whose value or verdict moved, and both totals. The rewritten file can be
-fed to fair_crosshost_rows.py unchanged, so RESULTS.md's rows come out on the goodput basis by the same row map.
+original send rate kept as diag_*) - and prints the notes and the totals of campaign_summary.py on the ORIGINAL file.
+
+SUPERSEDED 2026-10-17 by campaign_summary.py itself, which now scores goodput natively from the original file with
+these same rules (its G1-G6) and refuses a rewritten file (its figures would be rescaled twice). This tool produced the
+75d82c42 goodput figures by rewriting the client's send rate and summarising the rewrite with the summary of that
+time; the native summary was checked against that reading on the 09a0437d A/T files and the 3ae721aa T6 file: every
+scored (cell, metric) has the same value and verdict, the rewrite's client.send_mbps being the native
+server.goodput_mbps and its duplicate server.recv_mbps no longer scored. It is kept to reproduce that rewrite.
 
 Why every receive-side count is goodput as it stands (read from the bench sources at 2026-10-17, not assumed):
 every server (tickle/cyclonedds/fastdds, reliable_ and best_effort_throughput) counts recv= and BenchWindow_add()s once
@@ -192,26 +197,14 @@ def main():
     if os.path.abspath(dst) == os.path.abspath(src):
         sys.exit("out_dir must differ from the source file's directory")
     notes = rewrite(src, dst)
-    old, old_tot = summarise(src)
-    new, new_tot = summarise(dst)
+    native, native_tot = summarise(src)
     print(f"source    {src}\nrewritten {dst}")
     for n in notes:
         print(f"  note: {n}")
-    if not old:
-        sys.exit("no metric lines in the original summary - wrong file")
-    if set(old) != set(new):
-        print(f"  metric-cells only in one summary: {sorted(set(old) ^ set(new))}")
-    print("\nchanged (cell, metric): old -> new")
-    moved = 0
-    for key in old:
-        if key not in new or old[key] == new[key]:
-            continue
-        moved += 1
-        o, n = old[key], new[key]
-        print(f"  {key[0]:<34} {key[1]:<28}\n      old tickle {o[0]:<22} {o[1]:<44} {o[2]}\n"
-              f"      new tickle {n[0]:<22} {n[1]:<44} {n[2]}{'   <- VERDICT CHANGED' if o[2] != n[2] else ''}")
-    print(f"\n{moved} metric-cell(s) moved")
-    print(f"old totals: {old_tot}\nnew totals: {new_tot}")
+    if not native:
+        sys.exit("no metric lines in the summary of the original - wrong file")
+    print(f"\n{len(native)} scored metric-cell(s); campaign_summary.py scores goodput natively from the original:")
+    print(f"totals: {native_tot}")
 
 
 if __name__ == "__main__":
