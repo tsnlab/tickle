@@ -47,6 +47,7 @@
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
 #include "../../tickle/common/CpuFreq.h"
+#include "../../tickle/common/CreationTime.h"
 #include "../../tickle/common/RttQuantiles.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
@@ -70,6 +71,17 @@ namespace {
     // it measures. Identical in all three frameworks' clients, per the fairness rule.
     struct BenchCpuFreq g_rtt_freq;
     struct BenchRtt g_rtt;
+
+    // Creation time (CreationTime.h): every ping follows a sleep, and the time that sleep is due to end is the next
+    // ping's creation time.
+    uint64_t g_next_due_ns = 0;
+    struct BenchCreation g_creation;
+    char g_creation_fields[256];
+
+    void sleep_to_next_ping(double seconds) {
+        g_next_due_ns = harness::now_ns() + harness::seconds_to_ns(seconds);
+        harness::sleep_seconds(seconds);
+    }
 
     // The whole run's counts (transmitted, received) and the measured window's (BenchWindow.h): only a measured round
     // trip enters the RTT statistics.
@@ -156,6 +168,7 @@ namespace {
     }
 
     void ping_once(DataWriter* writer, DataReader* reader, uint32_t seq, bool measured, rtt_stats& stats) {
+        const uint64_t due_ns = g_next_due_ns;
         Bench req;
         req.seq(seq);
         req.send_ns(harness::now_ns());
@@ -171,7 +184,11 @@ namespace {
         }
         Bench resp;
         if (take_newest(reader, resp) && resp.seq() == req.seq()) {
-            record_rtt(stats, static_cast<double>(harness::now_ns() - resp.send_ns()) / harness::ns_per_ms, measured);
+            const uint64_t arrival_ns = harness::now_ns();
+            record_rtt(stats, static_cast<double>(arrival_ns - resp.send_ns()) / harness::ns_per_ms, measured);
+            if (measured) {
+                BenchCreation_add(&g_creation, arrival_ns, due_ns, resp.send_ns());
+            }
         }
     }
 
@@ -189,12 +206,12 @@ namespace {
             stats.warmup_sent++;
             stats.warmup_end = BenchWindow_edge_close(stats.warmup_sent, opts.warmup_rtts, warmup_first_ns,
                                                       harness::now_ns(), opts.edge_max_s);
-            harness::sleep_seconds(stats.warmup_end == nullptr ? opts.edge_interval_s : opts.interval_s);
+            sleep_to_next_ping(stats.warmup_end == nullptr ? opts.edge_interval_s : opts.interval_s);
         }
         const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.duration_s);
         while (!harness::interrupted() && harness::now_ns() < deadline) {
             ping_once(writer, reader, ++seq, true, stats);
-            harness::sleep_seconds(opts.interval_s);
+            sleep_to_next_ping(opts.interval_s);
         }
         const uint64_t cooldown_first_ns = harness::now_ns();
         stats.cooldown_end = opts.cooldown_rtts == 0 ? "count" : nullptr;
@@ -204,7 +221,7 @@ namespace {
             stats.cooldown_end = BenchWindow_edge_close(stats.cooldown_sent, opts.cooldown_rtts, cooldown_first_ns,
                                                         harness::now_ns(), opts.edge_max_s);
             if (stats.cooldown_end == nullptr) {
-                harness::sleep_seconds(opts.edge_interval_s);
+                sleep_to_next_ping(opts.edge_interval_s);
             }
         }
     }
@@ -236,7 +253,7 @@ namespace {
             "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
             "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
             "cooldown_end=%s window=%s "
-            "transport_profile=%s %s\n",
+            "transport_profile=%s %s %s\n",
             static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
             stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
             BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50),
@@ -245,6 +262,7 @@ namespace {
             static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s, opts.edge_max_s,
             BenchWindow_edge_end_name(stats.warmup_end), BenchWindow_edge_end_name(stats.cooldown_end),
             stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
+            BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
             harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
@@ -253,6 +271,7 @@ namespace {
 auto main(int argc, char** argv) -> int {
     bench_stats_begin(&harness::g_bench_stats);
     BenchCpuFreq_init(&g_rtt_freq);
+    BenchCreation_init(&g_creation);
     const client_options opts = parse_options(argc, argv);
 
     harness::install_sigint_handler();

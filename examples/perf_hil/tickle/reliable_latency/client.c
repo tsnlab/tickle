@@ -28,6 +28,7 @@
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
 #include "CpuFreq.h"
+#include "CreationTime.h"
 #include "RttQuantiles.h"
 
 static struct BenchStats g_bench_stats;
@@ -79,6 +80,18 @@ static uint64_t awaiting_until_ns = 0; // when the ping being waited on is given
 static const uint64_t response_wait_ns = 500ULL * 1000ULL * 1000ULL;
 
 static void ping(struct tt_Context* node, uint64_t time, void* param);
+
+// Creation time (CreationTime.h): the time the next ping is due, set wherever it is scheduled - the scheduler hands
+// ping() the time it ran, not the time it was due - and the due time of the ping being waited on.
+static uint64_t g_next_due_ns = 0;
+static uint64_t g_awaiting_due_ns = 0;
+static struct BenchCreation g_creation;
+static char g_creation_fields[256];
+
+static void schedule_ping(struct tt_Context* node, uint64_t due_ns) {
+    g_next_due_ns = due_ns;
+    tt_Context_schedule(node, due_ns, ping, NULL);
+}
 
 // Warm-up and cool-down (BenchWindow.h): -W round trips, then -d seconds of measured ones, then -C round trips. Only
 // the measured round trips enter the RTT statistics; sent= and recv= stay the whole run's. Mirrored in the CycloneDDS
@@ -152,7 +165,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     double rtt_ms = (double)(now - data->send_ns) / ns_per_ms;
     received++;
     if (!awaiting_measured) {
-        tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND), ping, NULL);
+        schedule_ping(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND));
         return; // a warm-up or cool-down round trip: counted in recv=, kept out of every statistic
     }
     measured_recv++;
@@ -165,11 +178,12 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     }
     rtt_sum_ms += rtt_ms;
     BenchRtt_add(&g_rtt, rtt_ms);
+    BenchCreation_add(&g_creation, now, g_awaiting_due_ns, data->send_ns);
     BenchCpuFreq_sample(&g_rtt_freq, tt_get_ns(), 0);
     if (new_max) {
         cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
     }
-    tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND), ping, NULL);
+    schedule_ping(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND));
 }
 
 // No reply within the wait: give this ping up and send the next one an interval later, as the DDS clients do.
@@ -191,7 +205,7 @@ static void ping_timeout(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
     awaiting = 0;
-    tt_Context_schedule(node, time + (uint64_t)(next_interval_s(time) * (double)tt_SECOND), ping, NULL);
+    schedule_ping(node, time + (uint64_t)(next_interval_s(time) * (double)tt_SECOND));
 }
 
 static void ping(struct tt_Context* node, uint64_t time, void* param) {
@@ -208,6 +222,7 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
     struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
+    g_awaiting_due_ns = g_next_due_ns;
     tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
     if (ret == tt_RET_OK) {
         transmitted++;
@@ -237,6 +252,7 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     BenchCpuFreq_init(&g_rtt_freq);
+    BenchCreation_init(&g_creation);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -321,7 +337,7 @@ int main(int argc, char** argv) {
 
     uint64_t start = tt_get_ns();
     // No fixed stop: ping() ends the run once the cool-down is done.
-    tt_Context_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
+    schedule_ping(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND));
 
     // The run ends when ping() says so (cool-down done) or on SIGINT - not on whichever other status the poll returns
     // (2026-10-06: a preflight run ended its cool-down at 36 of 512 round trips with exit 0). poll_ret= says what
@@ -362,7 +378,7 @@ int main(int argc, char** argv) {
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
            "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
-           "cooldown_end=%s window=%s poll_ret=%d "
+           "cooldown_end=%s window=%s poll_ret=%d %s "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
@@ -378,6 +394,7 @@ int main(int argc, char** argv) {
            warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
            edge_max_s, BenchWindow_edge_end_name(warmup_end), BenchWindow_edge_end_name(cooldown_end),
            measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", poll_ret,
+           BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

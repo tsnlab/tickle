@@ -28,6 +28,7 @@
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
 #include "../../tickle/common/CpuFreq.h"
+#include "../../tickle/common/CreationTime.h"
 #include "../../tickle/common/RttQuantiles.h"
 #include "../common.h"
 #include "Bench.h"
@@ -74,8 +75,15 @@ static const double ns_per_ms_real = 1e6;
 static const uint64_t ns_per_s_int = 1000000000ULL;
 static const dds_duration_t response_wait = DDS_MSECS(500);
 
+// Creation time (CreationTime.h): every ping follows a sleep, and the time that sleep is due to end is the next
+// ping's creation time.
+static uint64_t g_next_due_ns = 0;
+static struct BenchCreation g_creation;
+static char g_creation_fields[256];
+
 static void sleep_s(double seconds) {
     uint64_t sleep_ns = (uint64_t)(seconds * ns_per_s_real);
+    g_next_due_ns = now_ns() + sleep_ns;
     struct timespec sleep_ts = {.tv_sec = (time_t)(sleep_ns / ns_per_s_int),
                                 .tv_nsec = (long)(sleep_ns % ns_per_s_int)};
     nanosleep(&sleep_ts, NULL);
@@ -84,6 +92,7 @@ static void sleep_s(double seconds) {
 // One round trip: write a ping, wait up to 500 ms for its own echo.
 static void ping_once(dds_entity_t writer, dds_entity_t reader, dds_entity_t waitset, uint32_t seq, bool measured,
                       struct rtt_stats* stats) {
+    uint64_t due_ns = g_next_due_ns;
     struct Bench req = {.seq = seq, .send_ns = now_ns()};
     dds_write(writer, &req);
     stats->transmitted++;
@@ -102,7 +111,8 @@ static void ping_once(dds_entity_t writer, dds_entity_t reader, dds_entity_t wai
     if (taken <= 0 || !infos[0].valid_data || resp.seq != req.seq) {
         return;
     }
-    double rtt_ms = (double)(now_ns() - resp.send_ns) / ns_per_ms_real;
+    uint64_t arrival_ns = now_ns();
+    double rtt_ms = (double)(arrival_ns - resp.send_ns) / ns_per_ms_real;
     stats->received++;
     if (!measured) {
         return; // a warm-up or cool-down round trip: counted in recv=, kept out of every statistic
@@ -117,6 +127,7 @@ static void ping_once(dds_entity_t writer, dds_entity_t reader, dds_entity_t wai
     }
     stats->sum_ms += rtt_ms;
     BenchRtt_add(&g_rtt, rtt_ms);
+    BenchCreation_add(&g_creation, arrival_ns, due_ns, resp.send_ns);
     BenchCpuFreq_sample(&g_rtt_freq, now_ns(), 0);
     if (new_max) {
         cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
@@ -128,6 +139,7 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     BenchCpuFreq_init(&g_rtt_freq);
+    BenchCreation_init(&g_creation);
     double interval_s = 1.0;
     // -d: the measured window, between warm-up and cool-down.
     double duration_s = 10.0;
@@ -245,13 +257,14 @@ int main(int argc, char** argv) {
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
            "cooldown_end=%s "
-           "window=%s %s\n",
+           "window=%s %s %s\n",
            (unsigned long)stats.transmitted, (unsigned long)stats.received, loss_pct, stats.min_ms, avg, stats.max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
            cpu_mhz_at_rtt_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50), BenchRtt_quantile(&g_rtt, BENCH_RTT_P99),
            (unsigned)g_rtt.count, warmup_sent, cooldown_sent, (unsigned long)stats.measured_recv,
            (unsigned long)stats.measured_sent, edge_interval_s, edge_max_s, BenchWindow_edge_end_name(warmup_end),
            BenchWindow_edge_end_name(cooldown_end), stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
+           BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, stats.transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
