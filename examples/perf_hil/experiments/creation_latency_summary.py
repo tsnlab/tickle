@@ -92,6 +92,7 @@ GRID_SLOPE_TOL, GRID_RESID_NS = 1e-3, 500_000
 CTL_REPS, CTL_N = 2, 200
 CTL_WAKE_NS, CTL_NEG_NS = 200_000, -20_000
 RTT_PRINT_RES_MS = 0.001  # the reliable_latency clients print rtt_*/crt_* p50 in ms to 3 decimals
+FLOAT_EPS_MS = 1e-9  # rtt_r4: float rounding of a difference of decimal ms, not a tolerance
 BLOCKING = ("fastdds", "cyclonedds", "tickle@block")
 SUBJECTS = ("tickle@head", "tickle@block")
 INF = float("inf")
@@ -462,7 +463,10 @@ def rtt_r4(stamp, crt, gap, gap_min, res_ms=RTT_PRINT_RES_MS):
         why.append(f"gap {gap_min * 1e3:.1f} us < 0")
     # The clients print rtt_p50_ms and crt_p50_ms to 1 us (%.3f ms), so d carries up to 1 us of rounding on top of the
     # reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4).
-    if abs(d - g) > noise + res_ms:
+    # FLOAT_EPS_MS: d is a difference of decimal ms read as binary floats, so a |d - g| of exactly the bound (0.061 -
+    # 0.060 = 0.0010000000000000009) must not read as above it (found 2026-10-17 on the same-host p4 cell, printed
+    # "1.0 us > ... 1 us"). It is not a widening of the rule: 1e-9 ms is 1 ps.
+    if abs(d - g) > noise + res_ms + FLOAT_EPS_MS:
         why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
                    f"{res_ms * 1e3:.0f} us")
     same = "same within noise" if abs(d) <= noise else f"differs by the timer wake g = {g * 1e3:.1f} us"
