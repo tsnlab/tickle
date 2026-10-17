@@ -75,14 +75,19 @@ for round in $(seq 1 "$ROUNDS"); do
         verdict=ok
         awk -v l="$load" -v m="$LOAD_MAX" 'BEGIN { exit !(l > m) }' && verdict=VOID_LOAD
         # Root inside the namespace; renice to 0 (the session shells run at nice 5).
-        sudo -n ip netns exec "$NS" bash -c "renice -n 0 -p \$\$ >/dev/null; ulimit -v 2097152; exec ${bin[$label]} --sweep" \
+        # SLACK_LABELS="<label> ...": those labels run with the thread timer slack at SLACK_NS (default 1 ns) instead of
+        # 50 us (2026-10-18); the row says which (slack_ns=, read back from the process before exec).
+        slack=""
+        case " ${SLACK_LABELS:-} " in *" $label "*) slack="echo ${SLACK_NS:-1} > /proc/\$\$/timerslack_ns; " ;; esac
+        sudo -n ip netns exec "$NS" bash -c "${slack}renice -n 0 -p \$\$ >/dev/null; ulimit -v 2097152; \
+            echo SLACK=\$(cat /proc/\$\$/timerslack_ns); exec ${bin[$label]} --sweep" \
             </dev/null >"$WORK/run.log" 2>&1
         code=$?
         [ "$code" -eq 0 ] || verdict=VOID_EXIT$code
         # Whole rows only: the context's log lines (stderr) can land inside a buffered stdout row (2026-10-18: one 500 ms
         # row in 45 read interval_ms=5[2026-..., and a nanosleep median of 0).
         grep -E '^sched_wake_check: arm=[a-z_0-9]+ interval_ms=[0-9]+ n=[0-9]+ late_p50_us=[0-9.]+ late_max_us=[0-9.]+ cpu_per_wait_us=[0-9.]+$' \
-            "$WORK/run.log" | sed "s/^/ROW label=$label round=$round verdict=$verdict load=$load /" |
+            "$WORK/run.log" | sed "s/^/ROW label=$label round=$round verdict=$verdict load=$load slack_ns=$(grep -m1 '^SLACK=' "$WORK/run.log" | cut -d= -f2) /" |
             tee -a "$OUT"
     done
 done
