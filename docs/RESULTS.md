@@ -1,46 +1,161 @@
 # TickLE performance results
 
-TickLE against FastDDS and CycloneDDS, measured on dedicated hardware. zenoh-pico and rmw_zenoh are shown for
-reference. Column order is always **TickLE, FastDDS, CycloneDDS**. Design background is in [DESIGN.md](DESIGN.md),
-the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](TESTING.md), open work in
-[ROADMAP.md](ROADMAP.md). Result file paths below are relative to `examples/perf_hil/` unless they start with `~`.
+TickLE against FastDDS and CycloneDDS, measured on two dedicated Raspberry Pi 5s. zenoh-pico and rmw_zenoh are shown
+for reference and never scored. Columns are always in the order **TickLE, FastDDS, CycloneDDS**. Design background is
+in [DESIGN.md](DESIGN.md), the ROS 2 layer in [RMW.md](RMW.md), the measurement rules in [TESTING.md](TESTING.md), and
+open work in [ROADMAP.md](ROADMAP.md). Result file paths are relative to `examples/perf_hil/` unless they start with
+`~`.
 
-## Summary
+## At a glance
 
-- **Cross-host (two Raspberry Pi 5s over 1 GbE):** TickLE is best in every scored row of latency, throughput, CPU,
-  memory and bandwidth at P1-P4, with and without injected loss, under identical explicit QoS, against FastDDS both
-  as shipped and tuned, with no process pinned to a core. The campaign at `09a0437d` (2026-10-08, every framework
-  dropping the same warm-up and cool-down) scored **WIN 151, DRAW/TIE 11, LOSE 0, VOID 0** (`A`, 17 cells, 162
-  metric-cells) and **WIN 20, TIE 2, LOSE 0** (`T`). On the 150 metric-cells both runs share (the windowed
-  delivered rate `server.recv_mbps` is new, a WIN in all 12 `A` cells and both `T` cells) it is WIN 139, DRAW/TIE
-  11, against WIN 136, DRAW/TIE 14 at `3ae721aa` (137 / 13 on the unrounded loss). All four changes are a
-  `server.loss_pct` verdict, where TickLE lost nothing in either run and only whether a vendor's range touched zero
-  moved (section 2, "Re-measure at `09a0437d`"). **Re-scored on goodput** (2026-10-17, the same raw files,
-  `goodput_rescore.py`): no verdict changes and the totals stand; rows 11-11c and 12 now show the vendors' delivered
-  rate (row 11 FastDDS 44.7 -> 28.8 Mbps). The client throughput metric now carries the same figure as
-  `server.recv_mbps`, so counted once the totals are WIN 139, DRAW/TIE 11 of 150 (`A`) and WIN 18, TIE 2 of 20 (`T`).
-- **The largest margin is RELIABLE under 5% loss:** TickLE keeps 86.9% (P1) and 91.6% (P4) of its throughput;
-  FastDDS 43.1% / 38.9%, CycloneDDS 4.8% / 1.6% (rows 16-17).
-- **Same host (shared memory):** TickLE leads every measured cell, unpinned, with warm-up excluded. At BEST_EFFORT
-  KEEP_LAST 1 (the DDS default) TickLE delivered every sample at max rate, CycloneDDS about a fifth and FastDDS
-  almost none (S1-S3, goodput since 2026-10-17); TickLE's CPU per delivered RELIABLE sample is 1.5 us against
-  FastDDS's 31.7 (S17, `e521bbba`). CycloneDDS (12.0) is listed as DELIVERY FAILED in every same-host RELIABLE cell:
-  it delivered 0.02-0.07% fewer samples than it sent (section 1, "Same-host notes").
-- **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
-  CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss, with the writers' KEEP_ALL bounds made
-  equal, it delivers 41x (Array1k) and 78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times
-  out under its default 100 ms bound and the run ends (rows 72-75).
-- **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
-  peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
-  max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 18k.
-- **rmw large messages** (Array1m and Array4m cross-host, "rmw large messages"; re-measured on main f5fcda06 and, for
-  I1/I1L, dde87857): rmw_tickle wins every scored metric at 5% loss (I1L), where Fast DDS as shipped delivers nothing
-  and CycloneDDS ~3%, and has the smallest subscriber in every cell. At 0% loss it wins or draws every metric against
-  every vendor except I4 best effort, where Fast DDS as shipped spends 4% less subscriber and 3% less publisher CPU per
-  MB, and I4s (a link-saturating cell), where its median latency is behind all three because a DDS `publish()` blocks
-  before it stamps the sample (L4 table: WIN 52, DRAW 23, LOSE 5 of 80 with CPU per MB delivered since 2026-10-17;
-  WIN 53, DRAW 22 per MB published, where I4s publisher CPU against Fast DDS as shipped was a win).
-- **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
+One table per area. A count is a number of scored comparisons: a table row, or one metric of one campaign cell. A row
+or cell is a WIN only when TickLE beats every scored vendor, and a LOSE when any vendor beats it. The large-message
+(L4) table instead scores each vendor separately, one letter each. Latency is measured **from the data's creation time** (its
+scheduled publish time) since 2026-10-17. The older send-stamp figures stay as diagnostics. Rows not yet re-measured
+from creation time say so.
+
+**Cross-host, core** (each framework's native API; [section 2](#2-cross-host-two-pis-over-the-rigs-link))
+
+| scored set | WIN | DRAW/TIE | LOSE | of |
+|---|---:|---:|---:|---:|
+| campaign `A` (17 cells, `09a0437d`), latency cells from creation time (`4fca013b`, 2026-10-17) | 135 | 12 | 3 | 150 |
+| campaign `T` (FastDDS `maxMessageSize` 1472) | 18 | 2 | 0 | 20 |
+| QoS mechanics (row 44, the one scored row) | 1 | 0 | 0 | 1 |
+| *campaign `A` until 2026-10-17 (latency from the send stamp)* | *139* | *11* | *0* | *150* |
+
+| headline | TickLE | FastDDS | CycloneDDS | row |
+|---|---:|---:|---:|---|
+| RELIABLE goodput, P1 76 B, Mbps | **107** | 28.1 | 52.2 | 7 |
+| RELIABLE at 5% loss, share of unshaped throughput kept, P1 / P4 | **86.9% / 91.6%** | 43.1% / 38.9% | 4.8% / 1.6% | 16-17 |
+| client CPU, cpu_s per Msample, P1 throughput | **5.7** | 24.3 | 7.8 | 18 |
+| client peak RSS, KB, P1 throughput | **2,087** | 15,947 | 5,407 | 28 |
+| wire bytes per sample, P1 | **138** | 312 | 183 | 35 |
+| RTT p50 from creation time, P1, ms | 0.315 | 0.345 | **0.311** | 1c |
+| RTT mean from the send stamp, P1, ms (diagnostic) | **0.206** | 0.290 | 0.257 | 1 |
+
+**Same host, core** (shared memory on one Pi; [section 1](#1-same-host-shared-memory))
+
+| scored set | WIN | DRAW | LOSE | of |
+|---|---:|---:|---:|---:|
+| rows S1-S19 (S11 and S14 not scored; latency from the send stamp) | 17 | 0 | 0 | 17 |
+
+| headline | TickLE | FastDDS | CycloneDDS | row |
+|---|---:|---:|---:|---|
+| BEST_EFFORT KEEP_LAST 1 goodput, max rate, P2, Mbps | **20,867** | 0.31 | 934 | S1 |
+| RELIABLE goodput, P2, Mbps | **13,764** | 1,012 | delivery failed | S4 |
+| RTT mean from the send stamp, P2, ms | **0.023** | 0.107 | 0.074 | S7 |
+| client + server CPU per delivered sample, RELIABLE P3, us | **1.53** | 31.65 | delivery failed | S17 |
+
+**rmw, cross-host** (`rclcpp` over each rmw; [rmw layer](#rmw-layer))
+
+| scored set | WIN | DRAW | LOSE | of |
+|---|---:|---:|---:|---:|
+| rows 48-75 (latency from the send stamp) | 20 | 8 | 0 | 28 |
+
+| headline | rmw_tickle | FastDDS | CycloneDDS | row |
+|---|---:|---:|---:|---|
+| RTT mean from the send stamp, block wait, Bench 64 B BEST_EFFORT, ms | **0.246** | 0.320 | 0.269 | 48 |
+| delivered msg/s, RELIABLE KEEP_ALL, Array1k, 5% loss | **74,129** | does not run | 1,808 | 73 |
+| RTT median from creation time, Array1k RELIABLE 100 Hz, ms (the control, not scored) | **0.32** | 0.42 | 0.35 | [control](#latency-from-creation-time-2026-10-17) |
+
+**rmw, same host** ([rmw layer, same host](#rmw-layer-same-host))
+
+| scored set | WIN | DRAW | LOSE | of |
+|---|---:|---:|---:|---:|
+| rows R1-R21 and the 31 cells not shown (latency from the send stamp) | 52 | 0 | 0 | 52 |
+
+| headline | rmw_tickle | FastDDS | CycloneDDS | row |
+|---|---:|---:|---:|---|
+| RTT mean, block wait, Bench 64 B BEST_EFFORT, us | **35.8** | 121.4 | 111.6 | R1 |
+| delivered msg/s, Array1k BEST_EFFORT KEEP_LAST 1, max rate | **140,885** | 17,547 | 70,420 | R14 |
+| peak RSS, larger process, RTT Bench RELIABLE, kB | **13,572** | 26,264 | 15,248 | R12 |
+
+**rmw, large messages** (Array1m and Array4m cross-host; [rmw large messages](#rmw-large-messages-l4-cross-host))
+
+| scored set | WIN | DRAW | LOSE | of |
+|---|---:|---:|---:|---:|
+| L4 table, latency from creation time where measured (I4 cells, 2026-10-17) | 55 | 23 | 2 | 80 |
+| *L4 table until 2026-10-17 (latency from the send stamp)* | *52* | *23* | *5* | *80* |
+
+| headline | rmw_tickle | FastDDS / FastDDS 1472 | CycloneDDS | cell |
+|---|---:|---:|---:|---|
+| delivered, Array1m RELIABLE 30 Hz at 5% loss | **100%** | 0% / 100% | 2.4-4.0% | I1L |
+| latency median from creation time, Array4m 30 Hz (link-saturating), ms | **55.8** | 2,026 / 7,599 | 1,900 | I4s |
+| latency median from creation time, Array4m RELIABLE 15 Hz, ms | **36.68** | 37.59 / 42.35 | 38.73 | I4 |
+
+### Every LOSE
+
+- **Cross-host core RTT from creation time, P1, P2 and P4, against CycloneDDS** (rows 1c, 3c, 6bc; 4-14 us at the
+  median). TickLE's bench client sends its ping about 111 us after the due time; the DDS clients send it after 59-62 us.
+  TickLE's relative epoll/ppoll wait is given the kernel's 0.1% timer slack. A fix on branch `ab/sched-wake-deadline`
+  cut the gap to about 59 us and creation RTT by about 50 us in a rig A/B. It is not landed: its CPU cost is under
+  review. Against FastDDS TickLE wins four of the five cells and draws at +10 ms netem; on the send stamp it wins.
+- **rmw large messages, I4 best effort (Array4m, 15 Hz), CPU per MB against Fast DDS as shipped.** Subscriber 2.19
+  against 2.10 ms/MB (+4%), publisher 3.72 against 3.62 (+3%). Not yet attributed. TickLE wins both against Fast DDS at
+  1472 and against CycloneDDS.
+
+### Every DRAW
+
+- **Cross-host core RTT from creation time, P3, against CycloneDDS** (row 6ac). The ranges touch (0.337-0.339 against
+  0.339-0.347 ms). The cause is the late send above.
+- **+10 ms netem** (rows 5 and 5c): a draw by construction, since 10 ms of netem swamps a 0.2 ms RTT. The rows are
+  not scored; campaign `A` counts the cell's RTT as one DRAW.
+- **Loss TIEs in the campaigns** (10 in `A`, 2 in `T`): TickLE lost nothing, and every vendor either lost nothing or
+  had a range that touched zero.
+- **rmw poll wait, rows 59 and 62-67, against CycloneDDS.** At 100 and 200 us sleeps, half a poll cycle of waiting
+  dominates the round trip, and it is the same for every rmw. In row 67 CycloneDDS's median is lower (0.380 against
+  0.391 ms) but inside the spread.
+- **rmw KEEP_ALL Array4k at 0% loss** (row 74): all three are at the link ceiling.
+- **rmw large messages, 23 of 80:**
+  - delivered % in every complete cell (13), where everyone delivered 100%;
+  - latency against Fast DDS as shipped at I1 and I1 best effort (2, send stamp; one TickLE rep lies inside Fast DDS's
+    range);
+  - subscriber and publisher CPU per MB against Fast DDS as shipped at I1, I1 best effort, I4 RELIABLE and I4s (8).
+    At I4s TickLE's non-blocking `publish()` spends CPU on the ~84 samples per run that it drops at the sender.
+- **I4s latency p99 from creation time** (not one of the 80): UNBOUND for every arm. Each arm leaves some offered ticks
+  undelivered in a saturating cell.
+
+**Not scored as rows:** rows 5 and 5c (netem dominates), rows 45-47 (every framework detects correctly), S11 (no
+FastDDS receive count), S14 (nothing leaves the host), and zenoh-pico and rmw_zenoh (reference only). Places where
+TickLE is behind inside a lead:
+
+- rmw_tickle's kernel wake (ppoll, then recvfrom) is ~6 us slower than the vendors' blocking recvmsg, although it is
+  fastest in every user-space segment of the round trip.
+- On one host, TickLE's segment gains less over its own kernel path than FastDDS's does (9.7x against 11.6x).
+- zenoh-pico has the better figure in rows 5, 6, 7, 18, 19, 24 and 35, and ties at the link ceiling in rows 11b-11c.
+  Its P1 TCP lead (row 7) comes from coalescing about eleven samples into each segment (0.094 packets per sample
+  against TickLE's 1.005), which is a different mechanism from per-sample datagrams.
+- Hybrid transport under loss, TickLE against its own forced modes (ab/hybrid-land d8980f9b, before the receive drain;
+  [Hybrid transport](#hybrid-transport-large-samples-rig)): AUTO's p99 is above forced MTU's, beyond the A/A floor, at
+  0.01% loss (+0.12 ms) and 0.1% loss (+0.025 ms). Its wire bytes per unit are 0.46% higher at 1%. The pre-registered
+  criterion against forced MTU failed at all three rates.
+
+## How to read these numbers
+
+The full rules are in [TESTING.md](TESTING.md) sections 4 and 5. In short:
+
+- **Throughput is goodput.** It counts the samples the receiving application got complete and unique, inside the
+  measured window. A partly received large sample counts as zero, and so do duplicates and retransmissions. A
+  sender's rate is a diagnostic, never a figure, because a reader may have kept up with only a tenth of it.
+- **Latency is measured from creation time.** The clock starts at the time the sample was due to be published (in a
+  fixed-rate cell, start + k / rate) and stops when it arrives. A publisher that falls behind, for example one whose
+  `publish()` blocks on a full link, pays for that wait. Latency measured from the stamp the sender writes just before
+  sending (the *send stamp*) does not include that wait. It stays beside the creation figure as a diagnostic. In a
+  ping-pong where nothing waits, the two differ only by how late the sender's timer wakes.
+- **CPU, memory and wire bytes are per delivered sample** (or per MB delivered, or per round trip answered). Absolute
+  CPU seconds are never compared: a framework that sends more in a fixed time burns more.
+- **Nothing is pinned.** The OS schedules every process, as it does for real users. Figures with processes pinned to
+  cores are labelled notes beside the unpinned headline, never instead of it.
+- **Every figure has its provenance:** the build (a commit), the rate, the arm, and the raw file. The vendors run their
+  distribution packages with their shipped defaults. A tuned vendor arm, such as FastDDS with `maxMessageSize` 1472, is
+  shown beside the shipped one, never instead of it.
+- **WIN, DRAW, LOSE** are decided by the repetitions' ranges. TickLE wins when every one of its repetitions beats every
+  repetition of every scored vendor. It loses when a vendor's repetitions all beat all of TickLE's. Anything else is a
+  draw. ✅ marks the best figure in a row and ❌ the worst.
+- **Incomplete delivery.** A vendor that delivers less than it sent in a RELIABLE cell is listed as DELIVERY FAILED,
+  with its counts, and is not scored. If TickLE does that, it loses the cell. VOID is reported as VOID, never as zero.
+- **A figure belongs to its session.** Compare figures within one session. Day-to-day offsets of about 13 us move
+  every framework.
 
 ## 1. Same host (shared memory)
 
@@ -56,6 +171,9 @@ S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `e521bbba` (2026-10
 `~/rig_results_safe/fair_samehost_e521bbba_20261009-033254.*`, read by `fair_samehost_summary.py`): every
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
 explicitly (the DDS default), and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
+
+The RTT rows (S7-S10, S12, S18) are from the send stamp; they are not yet measured from creation time. Corrections
+and earlier sessions of these rows are in [Corrections and history](#same-host-corrections-and-earlier-sessions).
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
@@ -87,34 +205,29 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 
 ### Same-host notes
 
-- **Corrected 2026-10-17: goodput (TESTING.md section 4), the same raw files re-read.** `fair_samehost_summary.py`
-  on `~/rig_results_safe/fair_samehost_e521bbba_20261009-033254`, `free` arm, medians:
-  - **S1-S3 are now the delivered rate** and absorb S1d-S3d. Until today S1-S3 were the client's send rate (S1 20,867
-    / 6,370 / 4,439, S2 21,982 / 7,006 / 4,882, S3 25,137 / 12,832 / 9,333 Mbps, TickLE / FastDDS / CycloneDDS) and
-    S1d-S3d the subscriber's (20,867 / 0 / 934, 21,982 / 0 / 1,029, 25,137 / 1 / 1,854, with each framework's
-    delivered share of its own published samples: 100% / 0% / 21%, 21%, 20%). The worst framework (❌) moves from
-    CycloneDDS to FastDDS, which took 0.31-0.70 Mbps. The share column is gone: it divided by each framework's own
-    published samples, the denominator the user rejected for saturating cells on 2026-10-12. TickLE's leader verdict
-    does not change.
-  - **S3 TickLE 25,137 (n=2) -> 25,066 (n=3):** the drop-free rule is retired, so the rep with `shm_full_dropped=2690`
-    (9,995,120 of 9,996,465 samples delivered) counts at its goodput, 24,879 Mbps in the window. All other S cells were n=3 already.
-  - **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here**, so it is listed with its figure in
-    parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
-    P2 1,846,706 of 1,847,846, 1,891,539 of 1,892,787, 1,912,083 of 1,912,622; P3 1,899,458 of 1,900,191, 1,914,870
-    of 1,915,270, 1,909,889 of 1,910,394; P4 1,836,739 of 1,837,157, 1,875,547 of 1,876,358, 1,828,471 of 1,829,659
-    (3 of 3 reps each, 0.02-0.07% missing, as sequence gaps mid-stream). RTT (S9, S18 from P3 and S10 from P4): one
-    round trip not answered in 1 of 3 reps (10,133 of 10,134; 10,131 of 10,132). S8 and S12 (`e17b4e6f`,
-    `~/rig_results_safe/s6_latency_p2_20hz_e17b4e6f.txt`): 1,186 of 1,187 in 2 of 3 reps. TickLE and FastDDS
-    delivered everything they sent in every one of these cells. Pinned (the note below): CycloneDDS RELIABLE
-    throughput delivered 33-44% of what it sent (e.g. 769,327 of 2,246,638 at P2), so the pinned CycloneDDS S4-S6
-    figures (2,673 / 2,876 / 5,209) were send rates of an incomplete delivery; its pinned goodput was 912 / 1,035 /
-    1,997 Mbps. Until today this reader applied no delivery check; the cross-host reader always has. No verdict for
-    TickLE changes; S19's worst (❌) moves from CycloneDDS to FastDDS. S12 is now per answered round trip: CycloneDDS
-    102.1 -> 102.2 us.
-  - **S11 cannot be re-scored from existing data:** its file (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`) has
-    no FastDDS receive count, so CPU per delivered sample cannot be formed; the figures stay as measured (per sample
-    sent) and are no longer scored. For scale, `e521bbba`'s P4 BEST_EFFORT client + server CPU per delivered sample
-    is 1.75 / 87,167 / 31.9 us (another build and another metric, so not a substitute).
+- **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here**, so it is listed with its figure in
+  parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
+  P2 1,846,706 of 1,847,846, 1,891,539 of 1,892,787, 1,912,083 of 1,912,622; P3 1,899,458 of 1,900,191, 1,914,870
+  of 1,915,270, 1,909,889 of 1,910,394; P4 1,836,739 of 1,837,157, 1,875,547 of 1,876,358, 1,828,471 of 1,829,659
+  (3 of 3 reps each, 0.02-0.07% missing, as sequence gaps mid-stream). RTT (S9, S18 from P3 and S10 from P4): one
+  round trip not answered in 1 of 3 reps (10,133 of 10,134; 10,131 of 10,132). S8 and S12 (`e17b4e6f`,
+  `~/rig_results_safe/s6_latency_p2_20hz_e17b4e6f.txt`): 1,186 of 1,187 in 2 of 3 reps. TickLE and FastDDS
+  delivered everything they sent in every one of these cells. Pinned (the note below): CycloneDDS RELIABLE
+  throughput delivered 33-44% of what it sent (e.g. 769,327 of 2,246,638 at P2), so the pinned CycloneDDS S4-S6
+  figures (2,673 / 2,876 / 5,209) were send rates of an incomplete delivery; its pinned goodput was 912 / 1,035 /
+  1,997 Mbps. Until 2026-10-17 this reader applied no delivery check; the cross-host reader always has. No verdict for
+  TickLE changes; S19's worst (❌) moves from CycloneDDS to FastDDS. S12 is now per answered round trip: CycloneDDS
+  102.1 -> 102.2 us.
+- **S11 cannot be re-scored from existing data:** its file (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`) has
+  no FastDDS receive count, so CPU per delivered sample cannot be formed; the figures stay as measured (per sample
+  sent) and are no longer scored. For scale, `e521bbba`'s P4 BEST_EFFORT client + server CPU per delivered sample
+  is 1.75 / 87,167 / 31.9 us (another build and another metric, so not a substitute).
+- **‡ CycloneDDS includes iox-roudi**: its RSS adds 212 MB (206 MB of it shared memory) and its CPU 1.6 us per round
+  trip (measured at `9f919c8b`).
+- **Pinned** (the server on core 1, the client on core 2, back to back with the unpinned run): no row's leader changes
+  in any session. At `e521bbba` TickLE's unpinned/pinned ratio is 1.00-1.02x, and the multi-threaded DDS processes
+  gain more from pinning. Each session's pinned medians are in
+  [Corrections and history](#same-host-corrections-and-earlier-sessions).
 - **FastDDS delivers ~0% in S1-S3 (S1d-S3d until 2026-10-17).** At BEST_EFFORT KEEP_LAST 1 (the DDS default; data-sharing on, as shipped)
   its publisher sent ~5.5M samples in 9 s and its subscriber took 105-284 of them, in every rep and at every size.
   Re-run 2026-10-07 (`experiments/fastdds_be_delivery.sh` at `5ac23fbc`, p3, 3 reps;
@@ -124,68 +237,6 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   arm and the arm counting Fast DDS's own discards were VOID (2 of 3 usable reps). TickLE, the control, delivered 100%.
   Reproduced again at `f128f686` (2026-10-08): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each (280-463
   samples taken per rep). And at `e521bbba` (2026-10-09): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each.
-- **2026-10-09 re-measure** (`e521bbba`, same harness, rules and order as `f128f686`; 3 reps per cell, every cell
-  n=3 except **¶ S3/S3d TickLE n=2**: one rep dropped at a full ring and is excluded, as the rule then said; S2/S2d
-  are n=3 again; since 2026-10-17 that rep counts, above). Was at `f128f686` -> now: S1 18,484 -> **20,867** (+12.9%), S2 19,716 -> **21,982** (+11.5%), S3
-  24,696 -> **25,137** (+1.8%), S4 12,613 -> **13,764** (+9.1%), S5 13,539 -> **14,771** (+9.1%), S6 14,900 ->
-  **14,917** (+0.1%) Mbps; S7 0.023 -> **0.023**, S9 0.023 -> **0.023**, S10 0.027 -> **0.027** ms (-0.8%, -1.0%,
-  +2.4% unrounded); S17 1.67 -> **1.53** us (-8.5%); S18 42.3 -> **41.9** us (-0.8%); S19 8.3 -> **8.5** MB (+2.4%).
-  Between the two builds main gained receive-buffer lending with the in-place segment drain (`0be14584`; its rig A/B,
-  `~/rig_results_safe/ab_samehost_lending_20261008-211707.summary.txt`, read +12.1% delivered at BEST_EFFORT p3 and
-  +8.6% RELIABLE p3, IMPROVED 12 of 15, none worse), skip-to-newest for KEEP_LAST readers (`17c825f3`, `03585237`),
-  the reader-wake generation fix (`e6226bbf`), the retry granularity G (`33b2cdfc`), `forget_peer`'s gap fix
-  (`29dff630`) and discovery per entity (`33436ab3`); loaned messages (`7a321d26`) are rmw only and not on this path.
-  The S2 and S5 gains match the lending A/B's p3 figures. The vendor arms, which none of these touch, moved within
-  -6..+1% on throughput (FastDDS S6 the widest) and -12..+10% on RTT (FastDDS S10 -11.6%, CycloneDDS S7 +10.4%),
-  against TickLE's +0..+13% on throughput and -1..+2% on RTT; no row's leader or worst changed. Pinned medians of
-  the same session (TickLE / FastDDS / CycloneDDS): S1-S3 20,715 / 6,385 / 4,510, 21,893 / 6,746 / 4,932, 25,103 / 13,008 / 9,478; S4-S6 13,700 / 899
-  / 2,673, 14,811 / 977 / 2,876, 14,778 / 1,876 / 5,209; S7, S9, S10 0.023 / 0.098 / 0.062, 0.023 / 0.099 / 0.061,
-  0.027 / 0.098 / 0.063 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
-  0.81-0.87x at S4-S6 and 1.10-1.20x RTT, FastDDS's 1.13x at S4 and 1.10-1.11x RTT at S7, S9.
-- **2026-10-08 re-measure** (`f128f686`, same harness, rules and order as `9f919c8b`; 3 reps per cell, every cell
-  n=3 except **S2/S2d TickLE n=2**: one rep dropped 1 sample at a full ring and is excluded, as the rule says).
-  Every TickLE figure moved; was at `9f919c8b` -> now: S1 13,555 -> **18,484**, S2 14,303 -> **19,716**, S3 22,613
-  -> **24,696**, S4 10,146 -> **12,613**, S5 10,556 -> **13,539**, S6 12,333 -> **14,900** Mbps; S7 0.031 ->
-  **0.023**, S9 0.031 -> **0.023**, S10 0.036 -> **0.027** ms; S17 2.13 -> **1.67** us; S18 78.8 † -> **42.3** us
-  (this run's server no longer reads the CPU clock per echo, `8e98ba48`, so the † no longer applies); S19 8.0 ->
-  **8.3** MB. Between the two builds main gained the frag in-order fast path (`bc398ed2`), reader-wake round 4
-  (`8c1e6431`), encode-in-slot (`cd09e895`), the ring-turn starvation fix (`65b37569`) and the `departed_next` fix
-  (`6f4b87d4`). The vendor arms, which none of these touch, moved within -12..+10% (FastDDS S5, the widest;
-  CycloneDDS within 7%), against TickLE's +9..+36% and -25..-26% RTT; no row's leader or worst changed. Pinned
-  medians of the same session (TickLE / FastDDS / CycloneDDS): S1-S3 18,508 / 6,381 / 4,475, 19,530 / 6,999 / 4,947, 24,813 / 13,023 / 9,511; S4-S6 12,649 / 897 /
-  2,597, 13,453 / 977 / 2,880, 14,654 / 2,103 / 5,062; S7, S9, S10 0.023 / 0.097 / 0.061, 0.023 / 0.097 / 0.061,
-  0.027 / 0.100 / 0.062 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
-  0.85-0.92x at S4-S6 and 1.07-1.10x RTT, FastDDS's 1.13x RTT at S10.
-- **2026-10-06 re-measure** (`9f919c8b`): S10 fell from 0.052 to **0.036 ms** - the old figure was a first-lap one,
-  ~16 us of first-touch page faults on the reliable reorder ring before warm-up was excluded (ROADMAP Now 1). The
-  BEST_EFFORT rows now also show what was delivered (S1d-S3d): at KEEP_LAST 1, the DDS default, FastDDS's reader took
-  almost nothing at max rate and CycloneDDS's about a fifth (its bench now takes everything per wake), while TickLE
-  delivered every sample. **‡ CycloneDDS includes iox-roudi**: its RSS adds 212 MB (206 MB of it shared memory) and
-  its CPU 1.6 us per round trip. **† TickLE's latency server read the CPU clock on every echo in this run** (the
-  vendors' servers do not; fixed in `8e98ba48`), so S18's TickLE figure then (78.8) was overstated. Pinned medians
-  of the same session: S1-S3 13,512 / 6,329 / 4,478, 14,197 / 6,932 / 4,893, 22,322 / 12,519 / 9,385; S4-S6 10,062 / 909 / 2,649,
-  10,631 / 987 / 2,842, 12,458 / 1,874 / 5,200; S7, S9, S10 0.030 / 0.098 / 0.061, 0.031 / 0.096 / 0.061, 0.036 /
-  0.099 / 0.061 ms.
-- **Unpinned is the headline; pinned is this note** (2026-10-05, `fair_samehost_remeasure.sh`, `7fb6fabf`, each cell
-  run unpinned and with the server on core 1 and the client on core 2, back to back, order alternating). No row's
-  leader changes. TickLE moves within 3% either way. Pinning to one core each helped the multi-threaded DDS processes,
-  not TickLE: unpinned/pinned is 0.86x / 0.82x / 0.88x for CycloneDDS at S4-S6, 0.83x for FastDDS at S6, and
-  1.06-1.15x RTT for CycloneDDS at S7, S9, S10. Pinned medians (TickLE, FastDDS, CycloneDDS): S1 13,542 / 6,489 /
-  4,539; S2 14,277 / 7,003 / 4,960; S3 22,584 / 13,460 / 9,501; S4 10,026 / 939 / 2,629; S5 10,811 / 1,045 / 2,934;
-  S6 12,701 / 2,049 / 5,235; S7 0.030 / 0.099 / 0.062; S9 0.031 / 0.098 / 0.061; S10 0.052 / 0.099 / 0.063 ms.
-  Raw files `~/rig_results_safe/fair_samehost_7fb6fabf_20261005-190124.*`. S8 and S11-S13 are still the pinned
-  figures of their builds and have not been re-measured unpinned.
-- **S1-S3 compared send rates, not delivery, until 2026-10-17** (corrected above). FastDDS's bench subscriber uses the default reader QoS (KEEP_LAST 1);
-  on one host its writer overwrites what the reader has not taken, and in `mixed_delivery.sh`'s FastDDS LOCAL_ONLY
-  arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million** samples sent. TickLE's figures were
-  drop-free reps, so for it sent equals delivered. A TickLE BEST_EFFORT rep that drops at a full ring reads a *higher*
-  send rate (dropping is cheaper than delivering), which is why such reps were excluded until goodput made the
-  delivered rate the figure (2026-10-17, above).
-- **S6 (RELIABLE p4)** was VOID on `8d1c3712`: a lost-wakeup defect (the writer did not ring a reader that had gone
-  back to sleep) made the application give up 4-7 samples per rep. Fixed in `fe45f276` (the writer now rings each
-  sleep of the reader once) and re-measured there with every rep `write_fail=0`, `lost=0`. That pinned run gave
-  CycloneDDS 5,240 (an earlier one 5,776). S4-S5 were first measured after ACK solicitation stopped being clocked by
-  a 1 ms timer (`8d1c3712`); before that, TickLE lost S4 and S6 to CycloneDDS.
 - **S11 and S13 compare against FastDDS only.** CycloneDDS's memory excludes iceoryx's `iox-roudi` daemon, which
   reserved 216 MB of shared memory before any application connected. TickLE's segment is in-process, no daemon.
 - **S10 is the narrowest RTT lead** (2.5x CycloneDDS at `f128f686` and `e521bbba`; 1.29x when this was investigated): a p4 sample is two datagrams and two slots on TickLE's path.
@@ -283,10 +334,6 @@ against CycloneDDS 15,240-18,344).
 - **R14 rose 132,752 -> 140,885 (+6.1%)**, with the control, CycloneDDS in the same cell, +6.2% (66,291 ->
   70,420). R16 rose +13.1% (166,128 -> 187,965) against CycloneDDS's +5.5% (61,166 -> 64,522). Both compare rmw_tickle
   at `a7e02807` with `06dd78d8`, two builds; the reader correction below moved neither by more than 0.02%.
-- **Corrected 2026-10-10: R14-R21 and the `a7e02807` column.** `perf_test`'s received, sent and lost columns are
-  floor(count / D) per row, not counts; the reader summed them (and divided by the summed T_loop). Corrected by the
-  whole-count reader (`rmw_samehost_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. rmw_tickle
-  moved by under 0.02%, the vendors by up to 0.7% (e.g. R14 CycloneDDS 70,331 -> 70,420, R16 FastDDS 2,313 -> 2,322).
 - **No FastDDS rep refused**, in this run or at `a7e02807` (at `03585237` its tput Array1k RELIABLE r2 ended on
   "failed to publish"; see † below). **§ rmw_zenoh's** Array1k RELIABLE subscriber peaked at 103 MB (1.46 GB at
   `a7e02807`, 123,624 kB at `03585237`); it is a reference arm and not analysed further.
@@ -294,13 +341,6 @@ against CycloneDDS 15,240-18,344).
   (KEEP_ALL under the 100 ms `max_blocking_time`). Per the user's rule it was recorded as "does not run" in that
   rep (REFUSED, excluded, listed) and not analysed further; its R13, R16 and R20 were the median of its other two reps
   (n=2).
-- **R18 was scored DRAW** until 2026-10-08 by the harness's former 2 x SE rule, although rmw_tickle's reps (13.14 /
-  13.73 / 13.17 us) are below every rep of CycloneDDS (32.81-34.45) and FastDDS (171 / 1,006 / 323): FastDDS's
-  scatter made the bound wider than the gap. Scored by the reps' ranges, as TESTING.md section 4 says, it is a WIN;
-  no other verdict in the `03585237` run or at `f128f686` changes.
-- **At `03585237`, R12 and R13 were right as scored.** R12: rmw_tickle 15,252-15,260 kB against CycloneDDS
-  15,232-15,264, the ranges overlap, a DRAW (20 kB apart at the median). R13: rmw_tickle's subscriber 17,536-17,792
-  kB against CycloneDDS's 16,896-17,152, no overlap, a LOSE of ~512 kB (3%).
 - **Accepted cost of skip-to-newest** (the user, 2026-10-08). A KEEP_LAST 1 reader that falls behind now takes the
   newest sample rather than draining in order, which gives R14/R15 their x3.6 / x5.2 over `f128f686` (in the rig A/B
   `~/rig_results_safe/ab_drain_20261008-021000.*`, phases A C C A C A A C: x2.3 at Array1k, x4.9 at Array4k). It
@@ -350,10 +390,17 @@ decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring s
 ## 2. Cross-host (two Pis over the rig's link)
 
 **✅ = best, ❌ = worst** in the row. Lower is better for latency, CPU, memory and bandwidth; higher for throughput.
+Latency is scored from creation time (rows 1c-6bc). Rows 1-6b are the send-stamp figures, kept as diagnostics.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
-| | **[Latency](#latency)** (ms) | | | | |  | – | |
+| | **[Latency from creation time](#latency-from-creation-time-2026-10-17)** (RTT p50, ms) | | | | |  | – | |
+| 1c | RTT p50 from creation | P1 76 B | 0.315 | ❌ 0.345 | ✅ **0.311** | – | – | C |
+| 3c | RTT p50 from creation | P2 1292 B | 0.338 | ❌ 0.366 | ✅ **0.326** | – | – | C |
+| 5c | RTT p50 from creation | +10 ms netem | ⚪ 10.362 | ⚪ 10.438 | ⚪ 10.515 | – | – | C |
+| 6ac | RTT p50 from creation | P3 1424 B | ⚪ 0.337 | ❌ 0.392 | ⚪ 0.341 | – | – | C |
+| 6bc | RTT p50 from creation | P4 2800 B | 0.355 | ❌ 0.417 | ✅ **0.341** | – | – | C |
+| | **[Latency from the send stamp](#latency)** (ms; diagnostic since 2026-10-17) | | | | |  | – | |
 | 1 | RTT mean | P1 76 B | ✅ **0.206** | ❌ 0.290 | 0.257 | 0.221 † | – | A |
 | 2 | RTT max (tail) | P1 76 B | ✅ **0.252** | ❌ 0.342 | 0.296 | 0.336 † | – | A |
 | 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.315 | 0.275 | 0.246 † | – | A |
@@ -443,8 +490,8 @@ decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring s
 
 ### Legend
 
-- **⚪** deliberately not scored: a fair comparison is not possible in that row (5, 45-47), or, in rows 52-67, the
-  first two are within each other's spread (a draw).
+- **⚪** deliberately not scored: a fair comparison is not possible in that row (5, 5c, 45-47), or, in rows 52-67 and
+  6ac, the first two are within each other's spread (a draw).
 - **zenoh-pico is reference and never scored**: no ✅/❌ toward totals, no WIN/DRAW/LOSE. Its cells come from its own
   session (`Z`, `results/zenoh_cells_31d58011_2026-09-29.txt`), so its margins are looser than a within-row one.
 - **`†`** measured over TCP, the only configuration where zenoh-pico's reliability is real (its RELIABLE means
@@ -467,6 +514,7 @@ Within a row all scored frameworks come from one session; across letters they do
 | meas. | source |
 |---|---|
 | `A` | aligned 17-cell native campaign (`campaign_sweep.sh`), 3 reps, FastDDS as shipped, no pinning, frameworks' order rotated, every framework dropping the same warm-up and cool-down (TESTING.md section 5 item 9); `09a0437d`, 2026-10-08 (`experiments/fair_crosshost_remeasure.sh`; `~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.A_free.txt`, rows from `fair_crosshost_rows.py`). Until 2026-10-08 these rows were the same campaign at `3ae721aa`, 2026-10-06, without the warm-up (`fair_crosshost_3ae721aa_20261006-080418.A_free.txt`), with rows 1, 3, 5, 6, 6a, 6b from the warm-up re-runs at `f40a2adf` and `9b5491e6`; until 2026-10-06 the pinned 12-cell campaign on `9dbffd40` (`results/cmp_A_9dbffd40_2026-09-29.txt`) and, for 6a-6b and 11a-11c, `G` |
+| `C` | creation-time latency, the five latency cells of `A` (c10, c11, c12, c16, c17) again with `campaign_sweep.sh`, 3 reps, FastDDS as shipped, no pinning, TickLE with gate v2's layout-stable flags; main `4fca013b`, 2026-10-17 (`~/rig_results_safe/creation_latency_core_20261017-094944.txt`, read by `creation_latency_summary.py --rtt` at `228da18d`; [Latency from creation time](#latency-from-creation-time-2026-10-17)) |
 | `T` | P3/P4 cells with FastDDS `maxMessageSize` 1472 (fair-evaluation setting), same session and method as `A` (`...112506.T_free.txt`). Cell 6 (rows 14, 17, 27, 34, 40) was not in the `09a0437d` run and is still `3ae721aa` without the warm-up (`fair_crosshost_3ae721aa_T6.T_free.txt`; row 17's unshaped base is that session's cell 4, 944 / 555 / 871 Mbps) |
 | `G` | p1-p4 gap cells added 2026-09-30 (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, WIN 38 / DRAW 4 / LOSE 0) |
 | `S` | QoS-mechanics sweep 2026-09-24/25 (`experiments/comparison_resweep.sh` at `659013e9`) |
@@ -490,41 +538,64 @@ as shipped at P4 under 5% loss (cell 6, reps 2-3): its write timed out 86 times 
 run was shorter than its two edges, so cell 6's FastDDS figures rest on one rep and the summary marks them provisional.
 `A_pinned` has the same shape (its VOIDs are the same cell's reps 1-2); `T_free` and `T_pinned` are 18 of 18 `ok`.
 
-Totals over the 150 metric-cells both runs score: WIN 136, DRAW/TIE 14 at `3ae721aa` -> WIN 139, DRAW/TIE 11 (the
-12 + 2 new `server.recv_mbps` cells, the delivered rate in the window, are all WINs, giving 151 / 11 and 20 / 2). Four
-verdicts moved, all `server.loss_pct`, where TickLE lost nothing in either run: cell 1 (P1) TIE -> DRAW (CycloneDDS
-and FastDDS lost a few samples in one rep each), cell 5 (P1, 5% loss) TIE -> WIN (FastDDS lost 0.002-0.016%), cell 9
-(KEEP_LAST 64) DRAW -> WIN (both vendors lost in every rep; at `3ae721aa` FastDDS's loss printed as 0.0, which the
-unrounded count already made a WIN), cell 6 (P4, 5% loss) DRAW -> WIN, provisional (one FastDDS rep). Pinned: WIN
-135, DRAW/TIE 15 -> WIN 149, DRAW/TIE 13 of 162.
+The totals, and how TickLE moved against the vendors since `3ae721aa`, are in [Corrections and
+history](#cross-host-the-09a0437d-re-measure).
 
-**TickLE's delta against the vendors' (the control).** Since `3ae721aa`, main gained on the cross-host path the
-Heartbeat answer bounded by the measured repair transit (`3355e94d`; its rig A/B gave cell 6 send +4.5%), the writer-owned
-VOLATILE match point (`da3029e0`), the in-order fragment fast path (`bc398ed2`) and the `departed_next` fix
-(`6f4b87d4`); the peer-table fix (`29dff630`) came after and is not in this build. The harness change (the window)
-applies to every framework alike, so a TickLE move counts only where it leaves the vendors' moves behind:
+### Latency from creation time (2026-10-17)
 
-- **Moved with the vendors, not a TickLE effect:** latency rows 1, 3, 6a, 6b against the warm-up re-runs
-  (TickLE -1.4% to +0%, FastDDS -2.0% to +2.9%, CycloneDDS -1.2% to +1.0%); P2-P4 throughput (TickLE at the link,
-  +-0.1%); P1 RELIABLE (row 7: TickLE +5.9%, FastDDS -5.1%, CycloneDDS +2.6%, all inside the reps' ranges, TickLE
-  93.6-114 against 93.2-115); P1 under loss and reorder (rows 13, 15: TickLE -1.2% / -4.8%, FastDDS -14% / -11%,
-  CycloneDDS -10% / +15%).
-- **TickLE alone moved, outside its own range:** P4 server CPU per sample (row 23) 8.36 -> 7.63 (-8.7%; reps
-  8.34-8.39 -> 7.58-7.67) while FastDDS and CycloneDDS moved +0.8% and +1.5%; P4 server peak RSS (row 33) 2,971 ->
-  1,987 KB (-33%) while both vendors moved +0.2%, and in all four P4 cells without loss (`A` and `T`, free and pinned).
-  Both are the receive side of in-order fragments, which `bc398ed2` now assembles in `frag_scratch` instead of the
-  reorder ring; under 5% loss, where fragments arrive out of order and still use the ring, the server stays at 3,035
-  KB (was 2,967). KEEP_LAST 64 (row 12) 107 -> 117 (+9.3%; reps 102-117 -> 116-118) while FastDDS and CycloneDDS
-  fell 8.9% and 10.2%. P4 under 5% loss with FastDDS as shipped (`A` cell 6, not a table row) TickLE 860 -> 891 Mbps
-  (+3.6%, reps 843-870 -> 889-893) while CycloneDDS fell 22%, the same direction and size as `3355e94d`'s A/B.
-- **TickLE moved against itself:** P1 server peak RSS (row 32) 1,949 -> 2,057 KB (+5.5%), within CycloneDDS's +11%
-  and FastDDS's +0.3%; P1-P4 client RSS +1.5% to +1.9% (rows 28-30) against the vendors' -1.1% to +0.9%. Retention at
-  P1 (row 16) 93.2% -> 86.9%, the quotient of row 7's rise and row 13's fall, both inside the ranges; the vendors'
-  retention fell by as much or more, relative to its own (47.6% -> 43.1%, 5.5% -> 4.8%).
+The user decided on 2026-10-17 that latency is measured from the data's creation time: the time each ping or sample
+was due (TESTING.md section 4). The send-stamp figures (rows 1-6b, below) stay as diagnostics. Harness `4fca013b`:
+the core `reliable_latency` clients print `crt_*` (RTT from each ping's due time) beside `rtt_*` (RTT from the send
+stamp), and perf_test writes a creation trace in the rmw cells. The queue was
+`experiments/rig_queue_creation_latency.sh`, run 09:49-11:59 KST. It took the rig lock once for every cell
+(`~/rig_results_safe/creation_latency_queue.log`). TickLE was built with the layout-stable flags of gate v2
+(`TICKLE_EXTRA_CFLAGS`, TESTING.md section 6.1). FastDDS ran as shipped, and nothing was pinned.
+
+**Samples first.** Each cell has 3 reps per framework. Each rep has 100 measured round trips between 4,096-round-trip
+edges; the exceptions are +10 ms netem (91, both edges ending on the 20 s bound) and CycloneDDS at P3 (100 / 99 / 99).
+Every rep is `window=ok` and `crt_no_due=0`. With 100 round trips a p50 is read, and no p99 is scored. The reader is
+`experiments/creation_latency_summary.py --rtt` at `228da18d`, on
+`~/rig_results_safe/creation_latency_core_20261017-094944.txt`. Figures are medians of the reps, in ms, with the reps'
+range in brackets. `g` is the median delay from each ping's due time to its send.
+
+| row | cell | TickLE creation p50 | FastDDS | CycloneDDS | stamp p50, T / F / C | g us, T / F / C | vs FastDDS | vs CycloneDDS |
+|---|---|---:|---:|---:|---:|---:|:-:|:-:|
+| 1c | c10 P1 76 B | 0.315 [0.312-0.315] | 0.345 [0.342-0.351] | 0.311 [0.309-0.311] | 0.204 / 0.283 / 0.251 | 111.4 / 62.5 / 59.3 | WIN | LOSE |
+| 3c | c11 P2 1292 B | 0.338 [0.337-0.338] | 0.366 [0.364-0.370] | 0.326 [0.325-0.331] | 0.227 / 0.306 / 0.267 | 111.3 / 62.3 / 59.4 | WIN | LOSE |
+| 5c | c12 P1, +10 ms netem | 10.362 [10.288-10.458] | 10.438 [10.401-10.471] | 10.515 [10.130-10.564] | 10.250 / 10.376 / 10.455 | 110.9 / 62.5 / 60.9 | DRAW | DRAW |
+| 6ac | c16 P3 1424 B | 0.337 [0.337-0.339] | 0.392 [0.389-0.399] | 0.341 [0.339-0.347] | 0.227 / 0.329 / 0.282 | 111.1 / 62.4 / 59.4 | WIN | DRAW |
+| 6bc | c17 P4 2800 B | 0.355 [0.350-0.356] | 0.417 [0.401-0.432] | 0.341 [0.339-0.349] | 0.245 / 0.358 / 0.283 | 111.1 / 62.4 / 59.3 | WIN | LOSE |
+
+- **The reading.** From creation time, TickLE loses to CycloneDDS at P1, P2 and P4 (by 4, 12 and 14 us at the median)
+  and draws at P3. It beats FastDDS in every cell except +10 ms netem, which is a draw. From the send stamp in the
+  same run, TickLE wins every cell against both vendors except +10 ms netem.
+- **The cause is when TickLE's client sends.** It sends each ping about 111 us after the due time, and the DDS clients
+  send after 59-62 us. That ~50 us difference is larger than TickLE's stamp lead over CycloneDDS at P1, P2 and P4
+  (38-47 us), and about the size of it at P3 (55 us). TickLE's scheduler waits with a relative epoll/ppoll timeout,
+  which the kernel lets end up to 0.1% of the timeout late. A fix on branch `ab/sched-wake-deadline` makes a wait
+  longer than 10 ms end at its deadline. A gate-v2 rig A/B compared main `cf815dbb` with the branch, TickLE against
+  TickLE, 6 reps per arm (`~/rig_results_safe/core_ab/coreab_swd/coreab_swd_{A,B}.txt`,
+  `~/rig_results_safe/queue_core_ab_swd.log`). The fix moved the gap from 111 to 59.4-59.7 us and creation RTT p50 by
+  -49 to -54 us at P1-P4; stamp RTT did not move. It is **not landed**: the same A/B read P4 client CPU per round trip
+  +1.07% (WORSE), and that cost is under review. The rows above are the measured LOSE as it stands.
+- **The control passed** (rule R4: where nothing waits at the sender, creation and stamp differ only by the sender's
+  timer wake, `|d - g| <= noise`). This is the core RTT reading, all five cells, every framework. **The rule was changed
+  after this run, with the user's agreement** (`228da18d`): the core reading now allows `|d - g| <= noise + 1 us`,
+  because its `d` is a difference of two medians that the clients print to 1 us. At the run, c16 and c17 TickLE read
+  `|d - g|` = 1.1 us against a noise of 1.0 us, and the reader then printed RTT CONTROL FAIL
+  (`...094944.txt.creation.txt`). Re-read at `228da18d` it prints RTT CONTROL PASS, and no figure or verdict moves.
+- **The rmw ping-pong control** (perf_test Array1k RELIABLE KEEP_LAST 10 at 100 Hz, one Pi to the other, 3 reps of
+  30 s, 2,531-2,534 round trips per rep; `~/rig_results_safe/creation_latency_ctl_20261017-094944.{txt,runs,creation.txt}`)
+  is not a scored row. RTT median from creation, rmw_tickle / FastDDS / CycloneDDS: 0.32 / 0.42 / 0.35 ms. From the
+  stamp: 0.26 / 0.36 / 0.29 ms. `g` is 59.4 / 62.6 / 60.4 us, and the verdict is CONTROL PASS. There the sender is
+  perf_test's own timer, so rmw_tickle sends as promptly as the DDS rmws.
+- **Not yet measured from creation time:** the tails (rows 2, 4, 6), the same-host RTT rows (S7-S10, S12, S18), the
+  rmw RTT rows (48-67, R1-R8) and the Array1m cells of the L4 table. Their figures are from the send stamp.
 
 ### Latency
 
-Rows 1-6b are from the `09a0437d` campaign: 100 measured round trips per rep (91 in cell 12), every rep
+Rows 1-6b, from the send stamp (diagnostic since 2026-10-17; the creation-time rows are above). They are from the
+`09a0437d` campaign: 100 measured round trips per rep (91 in cell 12), every rep
 `window=ok`, `reliable_latency` with one ping in flight, the mean of 3 reps (`campaign_summary.py`; this text said
 median until 2026-10-08, but the figures were always its mean); tails (rows 2, 4, 6) are the median of the reps'
 maxima, each rep's maximum over its measured round trips only. p50 / p99 ms, TickLE, FastDDS, CycloneDDS: P1 0.204 /
@@ -534,18 +605,8 @@ Every tail is a WIN outside the reps' ranges (maxima, TickLE / CycloneDDS / Fast
 0.327-0.355; P2 0.258-0.308, 0.312-0.332, 0.345-0.367; +10 ms 12.18-12.20, 12.23-12.26, 12.24-12.28). Row 5 stays
 unscored (10 ms netem swamps a 0.2 ms RTT, and TickLE's 10.071-10.182 overlaps CycloneDDS's 10.175-10.196).
 
-History. At `3ae721aa` (no warm-up) rows 1-6b were 0.211 / 0.297 / 0.329, tails 0.298 / 0.604 / 10.761, 0.237 /
-0.322 / 0.281, tails 0.356 / 0.622 / 0.830, and so on; CycloneDDS's 10.8 ms P1 tail was one first-lap round trip in a
-hundred and has not recurred in any warm run. Rows 1, 3 and 6b were then re-measured with the warm-up (`f40a2adf`,
-2026-10-07, `~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`: 0.209 / 0.285 / 0.260, 0.231 /
-0.316 / 0.273, 0.249 / 0.348 / 0.293) and rows 5, 6, 6a with the 20 s edge bound (`9b5491e6`,
-`~/rig_results_safe/crosshost_latency_warm2_9b5491e6_20261007-101404.txt`: 10.1 / 10.3 / 10.3, tail 12.1 / 12.3 /
-12.2, 0.235 / 0.344 / 0.288); the `09a0437d` run supersedes both under the same rules and agrees with them within the
-control (above). Rows 24-25 (CPU per round trip) were 159 / 377 / 226 and 156 / 376 / 224 at `3ae721aa`: the process's
-whole CPU over its 100 round trips, start-up included; it is now over all 8,292 round trips of a run, edges included,
-which is why every framework fell by 73-78%. All absolute RTTs were taken under the `ondemand` CPU governor, which adds
-about 10% (19-21 us); ordering and margins are unaffected because all frameworks ran under it in the same sessions.
-zenoh-pico's column here is its TCP arm.
+All absolute RTTs were taken under the `ondemand` CPU governor, which adds about 10% (19-21 us); ordering and margins
+are unaffected because all frameworks ran under it in the same sessions. zenoh-pico's column here is its TCP arm.
 
 ### Throughput
 
@@ -557,19 +618,8 @@ lengths agree in every rep, 4.995 s), then `fair_crosshost_rows.py` on the rewri
 `sent == recv` checked on every side.
 11b and 11c are at the link ceiling (‡). The zenoh-pico column is its own session's figure and was not re-read.
 
-**Corrected 2026-10-17: rows 11, 11a-11c and 12 were send rates** (the client's `send_mbps` in the window), and the
-vendors did not deliver all they sent: rows 11-11c are BEST_EFFORT and row 12 is KEEP_LAST, where a writer may
-replace unacknowledged samples. Was -> now (TickLE / FastDDS / CycloneDDS, Mbps, 3 reps each, `A_free` cells 8, 13,
-14, 15, 9): row 11 115 / 44.7 / 66.6 -> 115 / **28.8** [22.0-33.6] / **62.1** [60.9-64.1]; 11a 938 / 740 / 911 ->
-938 / **575** [481-641] / **906**; 11b 943 / 574 / 828 -> 943 / **560** [497-598] / **654** [640-666]; 11c 944 /
-915 / 938 -> 944 / **902** [895-910] / **937**; row 12 117 / 38.0 / 75.1 -> 117 / 38.0 / **72.6** [66.1-81.2].
-FastDDS in row 11 delivered 457,479 of 657,793, 507,930 of 669,528 and 324,111 of 655,022 samples (64% of its send
-rate). TickLE delivered every sample it sent in every one of these cells (lost 0), so none of its figures moves, nor
-any verdict or ✅/❌. Rows 7-10 and 13-17 do not move: RELIABLE + KEEP_ALL delivered everything it sent. Pinned, row 11
-reads 120 / **33.0** / **67.7** (was 120 / 45.3 / 67.9) and 11a FastDDS **632** (was 735).
-(Before this correction this paragraph read: "Row 11's FastDDS figure is a send rate it did not fully deliver: FastDDS
-lost 15.5% of samples in that cell on a 2026-10-03 run and 22.2% in the QoS sweep.") FastDDS as shipped
-(`maxMessageSize` 65,500) at the `T` cells, for reference (`A` cells 3, 4, 6 at `09a0437d`): P3 465 Mbps and 1,677
+The vendors' BEST_EFFORT and KEEP_LAST rows (11-12) were send rates until 2026-10-17
+([Corrections and history](#cross-host-throughput)). FastDDS as shipped (`maxMessageSize` 65,500) at the `T` cells, for reference (`A` cells 3, 4, 6 at `09a0437d`): P3 465 Mbps and 1,677
 B/sample; P4 734 Mbps, 3,102 B/sample and 14,932 KB; P4 under 5% loss its write timed out 85-86 times per run at the
 100 ms blocking bound, two of three runs ended shorter than their edges (VOID), and the one left sent 3.3 Mbps,
 because kernel IP reassembly fails under loss. (Earlier figures, pinned: 533 Mbps; 786 Mbps, 3,101 B/sample, 14,864
@@ -670,13 +720,6 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   publisher error in any of its 10 runs. Fast DDS's publisher ended on "cannot publish data" in all 10 runs; the
   harness counts 2 Array1k runs as refused and voids the other 8 because the publisher was gone before 2 s, when its
   treatment is read from `/proc` (the launcher's environment shows the profile was set). It does not run these cells.
-  The 0% loss rows 72 and 74 were not re-measured at equal bounds beyond the run's 6 s, one-rep dry run.
-- **History: the first equal-bound runs (2026-10-07) failed rmw_tickle.** At main `f40a2adf`
-  (`~/rig_results_safe/rmw_keepall_equal_20261007-044904.txt`, 3 reps) rmw_tickle's publisher ended in 2 of its 6
-  lossy runs (one per topic) with no sample lost; its usable medians were 71,279 and 26,372/s. Cause: a reader ignored
-  a heartbeat's request for an answer while its own retry for an open gap was armed. Fixed by `2901121e` (answer a heartbeat that asks, also
-  with a retry armed), `e3236048` and `3355e94d` (the answer leaves out repairs still in transit, limited by the
-  measured repair transit); the `Ke` run at `29dff630` includes them.
 - **"Refused" (FastDDS at 5% loss, all runs) means:** Fast DDS's `DataWriter::write()` returned `RETCODE_TIMEOUT`.
   Its KEEP_ALL history (default `max_samples` 5,000) was full, the oldest sample was not yet acknowledged by the
   reader, and 100 ms passed. One lost sample holds the whole 5,000-sample window, and when a repair and the
@@ -694,20 +737,6 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   65,051 and 26,483 at `a8c1cd83` (rows 73, 75 now read 74,129 and 26,897 at equal bounds). So with a normal configuration Fast
   DDS does not run this cell: under 5% loss at max rate its publisher ends, and the one setting that keeps it alive
   delivers 760 / 109 msg/s. That is recorded as the result; the cause inside Fast DDS is not pursued.
-- **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
-  fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
-  (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does
-  not deliver what it wrote before the match. Its `--expected_num_subs` is compiled out in this build, so publishing
-  starts before matching for every arm. The rows count delivered samples per second after the start, which this does
-  not touch, so FastDDS is scored in rows 72 and 74. CycloneDDS's "lost ~106k" in two Array1k 5% runs is the same
-  artefact. At Array1k FastDDS's rate is steady at ~16k/s with ~320 ms latency (its full 5,000-sample history
-  draining at that rate); Array4k is at the link's ceiling for all three (‡).
-- **Corrected 2026-10-10: rows 72-75 and these notes.** `perf_test`'s received, sent and lost columns are
-  floor(count / D) per row, not counts; the reader summed them. Corrected by the whole-count reader
-  (`rmw_keepall_rig_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. Rates moved by under 1/s
-  (row 72 rmw_tickle 90,849 -> 90,850, CycloneDDS 84,445 -> 84,446; row 73 74,128 -> 74,129, CycloneDDS 1,807 ->
-  1,808; row 75 CycloneDDS 346 -> 347); CycloneDDS's subscriber CPU per sample at 5% loss fell 3-4% (45.6 -> 44.0,
-  182.4 -> 176.4 us).
 - rmw_tickle is built at the vendors' level (`-g -O2`, no `NDEBUG`) and lost no sample in any of its 12 runs. At 0%
   loss one of FastDDS's three Array1k runs also ended on a write timeout; row 72 is the median of the other two.
 
@@ -738,33 +767,62 @@ dde87857: first-n3 (68b637f2), no-send-unmatched (a Publisher with no matched re
 with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps, same reader
 (`~/rig_results_safe/l4main3_i1rel_20261016-065517.{txt,runs}`).
 
-| cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS |
-|---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|
-| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.41 / 9.48 | 2.29 / 3.94 | 18,684 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
-| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 10.04 / 15.75 | 4.17 / 3.65 | 18,792 | –D– | –W– | –W– | –W– | –W– |
-| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
-| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | 54.98 / 71.23 | 1.40 / 3.60 | 30,952 | W–W–W | L–L–L | D–W–W | D–W–W | W–W–W |
-| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 36.57 / 36.64 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W |
-| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 36.52 / 36.60 | 2.19 / 3.72 | 30,580 | D–D–D | W–W–W | L–W–W | L–W–W | W–W–W |
+**Latency from creation time** (the user, 2026-10-17; TESTING.md section 4) was measured in the three Array4m cells on
+main `4fca013b` (2026-10-17, harness `rmw_keepall_rig.sh CREATION_TRACE=1`, the same five arms, 5 reps of 60 s, arms
+interleaved). The reader was `experiments/creation_latency_summary.py`, gated by its rmw ping-pong control (CONTROL PASS;
+[Latency from creation time](#latency-from-creation-time-2026-10-17)). The files are
+`~/rig_results_safe/creation_latency_{i4s,i4be,i4rel}_20261017-094944.{txt,runs,creation.txt}`. The `latency` letter is
+the creation-median verdict where it was measured, and the send-stamp median verdict (¹) elsewhere. The send-stamp
+columns are diagnostic. The other columns are from f5fcda06 and dde87857, as above.
 
-- **Corrected 2026-10-17: publisher CPU per MB delivered** (the user's goodput decision, TESTING.md section 4; same
-  raw runs, `experiments/largemsg_goodput.py`, which re-uses `largemsg_rig_summary.py` unchanged and divides the
-  publisher's CPU by the subscriber's delivered MB; its `pub` mode reproduces the previous letters). Only **I4s** moves
-  by more than 0.01 ms/MB: rmw_tickle 3.43 -> **3.60** (reps 3.577-3.615), Fast DDS as shipped 3.57 -> 3.56
-  (3.536-3.579), Fast DDS at 1472 6.87 -> 9.27, CycloneDDS 3.90 -> 3.93; letters **W–W–W -> D–W–W**. Samples first,
-  delivered of published per run: rmw_tickle 1,718-1,720 of 1,802-1,803, Fast DDS 1,690-1,691 of 1,694-1,695, Fast
-  DDS at 1472 999-1,156 of 1,531-1,532, CycloneDDS 1,696-1,699 of 1,699-1,701 (r4 1,140). The cause is rmw_tickle's
-  non-blocking `publish()`: it spends CPU on the ~84 samples per run it drops at the sender, where a DDS publisher
-  blocks. For CPU this supersedes the offered-tick denominator; delivered % of offered still ranks I4s, and ranks it
-  as goodput does. I4 RELIABLE publisher 3.68 -> 3.69; I1, I1L, I1 best effort and I4 best effort unchanged at the
-  table's precision (I4 best effort Fast DDS 3.61 -> 3.62, still L). Subscriber CPU and delivered % were already per
-  delivered sample. L4 totals: WIN 53, DRAW 22, LOSE 5 -> **WIN 52, DRAW 23, LOSE 5** of 80.
-- **Re-measured 2026-10-15 (main f5fcda06 against main 0c9f9a3b, same harness):** subscriber CPU fell 0.19-0.28
-  ms/MB in every 0%-loss cell (I1 RELIABLE 2.56 -> 2.28, I1 best effort 2.38 -> 2.20, I4 RELIABLE 2.45 -> 2.21, I4
-  best effort 2.40 -> 2.19, I4s 1.61 -> 1.40), most of it UDP checksum 0 (its rig A/B: -0.10 to -0.12 ms/MB). Against
-  Fast DDS as shipped it went from LOSE to DRAW in I1 RELIABLE, I1 best effort, I4 RELIABLE and I4s; it still loses at
-  I4 best effort (2.19 against 2.10, +4%), as does the publisher there (3.72 against 3.61, +3%). Latency and
-  subscriber RSS are unchanged or lower.
+| cell | QoS, rate | delivered % | latency from creation, med / p99 ms | latency from send stamp, med / p99 ms (diag.) | CPU sub / pub ms/MB | RSS kB | delivered | latency | latency, stamp (diag.) | CPU sub | CPU pub | RSS |
+|---|---|---:|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|:-:|
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | not measured | 9.41 / 9.48 | 2.29 / 3.94 | 18,684 | D–D–D | D–W–W ¹ | D–W–W | D–W–W | D–W–W | W–W–W |
+| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | not measured | 10.04 / 15.75 | 4.17 / 3.65 | 18,792 | –D– | –W– ¹ | –W– | –W– | –W– | –W– |
+| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | not measured | 9.24 / 9.31 | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W ¹ | D–W–W | D–W–W | D–W–W | W–W–W |
+| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | **55.83** / UNBOUND ² | 54.98 / 71.23 | 1.40 / 3.60 | 30,952 | W–W–W | **W–W–W** | L–L–L | D–W–W | D–W–W | W–W–W |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | **36.68** / 36.77 | 36.57 / 36.64 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | W–W–W | D–W–W | D–W–W | W–W–W |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | **36.60** / 36.66 | 36.52 / 36.60 | 2.19 / 3.72 | 30,580 | D–D–D | W–W–W | W–W–W | L–W–W | L–W–W | W–W–W |
+
+¹ Not yet measured from creation time; this is the send-stamp verdict of the f5fcda06 / dde87857 run.
+² UNBOUND for every arm, so a DRAW against every vendor. In a saturating cell every arm leaves some offered ticks
+undelivered, and the p99 lands on one. It is not one of the 80 letters.
+
+**L4 totals** (80 letters: delivered, latency, CPU sub, CPU pub and RSS per vendor): **WIN 55, DRAW 23, LOSE 2**. Was
+WIN 52, DRAW 23, LOSE 5 with latency from the send stamp; the three I4s latency letters moved from LOSE to WIN.
+This table's earlier corrections (publisher CPU per MB delivered, 2026-10-17; the 2026-10-15 re-measure) are in
+[Corrections and history](#rmw-large-messages).
+
+- **Creation-time latency, the three Array4m cells.** Sample counts come first. In the reader's window on scheduled
+  times (55.0-55.1 s), each run had 1,650-1,652 offered ticks at 30 Hz and 826 at 15 Hz, which is enough for a median
+  and for a p99 (rule R1). Medians of 5 reps, with the reps' range, TickLE / Fast DDS as shipped / Fast DDS at 1472 /
+  CycloneDDS, in ms:
+  - **I4s** (saturating), creation median: **55.83** [55.73-55.89] / 2,026 [1,954-2,054] / 7,599 [6,479-8,965] / 1,900
+    [1,878-2,654]. WIN against all three. On the send stamp it is 54.91 / 37.55 / 41.61 / 38.93, which is LOSE against
+    all three.
+  - **I4 RELIABLE**, creation median 36.68 [36.61-36.72] / 37.59 [37.57-37.61] / 42.35 [42.28-46.26] / 38.73
+    [38.72-41.42]. p99 36.77 [36.76-37.05] / 37.73 [37.70-37.74] / 45.28 [44.88-52.16] / 38.85 [38.83-42.43]. WIN
+    against every vendor on both.
+  - **I4 best effort**, creation median 36.60 [35.91-36.62] / 37.57 [37.53-37.61] / 41.50 [41.47-41.52] / 38.68
+    [38.66-38.71]. p99 36.66 [36.40-36.69] / 37.72 [37.66-37.75] / 43.15 [42.90-43.43] / 38.84 [38.81-38.90]. WIN
+    against every vendor on both.
+  - **Why I4s turns over.** I4s offers more than the link carries. A DDS `publish()` of 4 MB blocks until the sample is
+    in the socket, so a DDS publisher falls further behind every tick. Its stamp is written only after that wait, so
+    the stamp hides it. From the schedule, the DDS arms' realized gap (stamp - schedule) has a median of 1.79-1.97 s
+    (CycloneDDS, Fast DDS) and 4.75-4.81 s (Fast DDS at 1472). rmw_tickle's publish does not block; its gap is
+    0.06 ms, and it drops at the sender the samples that wait behind the one in flight.
+  - **The DDS figures depend on the run's length.** Each DDS arm's creation latency grows across the window: CycloneDDS
+    +3.2 s, Fast DDS +3.5 s and Fast DDS at 1472 +9.7 s over 55 s, against rmw_tickle's +0.0 to +0.7 ms. A longer run
+    gives larger DDS figures. The arms are compared at equal windows (within 1 s, rule R2), and every arm passed the
+    grid check (rule R3).
+  - **`tickle@block`** (`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`, off by default; see the I4s note below) reads 1,516-1,565 ms
+    from creation, against 38.30-38.70 ms on the stamp. It blocks as the DDS publishers do, so it falls behind as they
+    do (+2.6 s over the window). The option improves only the send-stamp figure, and the default stays off.
+  - **The counts are not the scored delivered %.** This reader counts ticks scheduled inside its window. For I4s,
+    delivered of offered per run is: rmw_tickle 1,575-1,576 of 1,651; Fast DDS 1,601-1,603 of 1,650-1,651; Fast DDS at
+    1472 836-1,185; CycloneDDS 1,080-1,608. For a blocking publisher, the ticks it never published by the end are the
+    ones scheduled in the last ~1.5 s of the window. The scored delivered % of offered stays the L4 run's
+    whole-run figure.
 - **I1L (main dde87857, 2026-10-16): TickLE delivered every sample in 5 of 5 runs** and wins every other metric
   against the one vendor arm that runs the cell completely, Fast DDS at 1472 (latency 58.30 / 83.48 ms against 10.04 /
   15.75, subscriber CPU 7.48 against 4.17 ms/MB). Fast DDS as shipped delivered nothing in all 5 runs (does not run),
@@ -785,10 +843,6 @@ with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps
   its 3.99-4.16. Not attributed; the other usable reps read 9.34-9.43 ms.
 - **Memory:** the subscriber is the smallest in every cell. The publisher is too in four of six; at 4 MB best effort
   CycloneDDS's publisher is smaller (28,628 and 28,668 kB against 29,312 and 33,408).
-- **CPU per MB at 0% loss before the re-measure** (f1f2f14d, 2026-10-12): Fast DDS as shipped spent 13.7-15.6% less
-  on the subscriber (18.2% at I4s; means) and 2.0-8.4% less on the publisher at best effort. Against main before the
-  hybrid transport (4fbb8fe1) subscriber CPU fell 2.1-2.5 ms/MB (-46 to -57%). Step A (dc056907) was 0.15-0.19 ms and
-  1.2 ms behind Fast DDS in median latency; TickLE is now ahead at 1 and 4 MB.
 - **Where the 1.2 ms at 4 MB goes** (`experiments/largemsg_wire_budget.py` on the I4 rows, 2026-10-11): 0.52 ms is
   wire - one sample is 4,431,228 B of frames for TickLE (2,889 datagrams; per frame 8 B of UDP header and 16 B of
   framing that IP fragments do not carry) against 4,366,590 B for Fast DDS's 64 KB datagrams, 35.45 against 34.93 ms
@@ -813,12 +867,14 @@ with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps
   (`experiments/largemsg_rig_summary.py`, offered_pct, selftest case 5 on these runs). Step A (dc056907) delivered
   1,655-1,679, below CycloneDDS's 1,699-1,700, and falsified F3; f1f2f14d's 1,715-1,717 holds it. Latency is lost
   (55.66 / 72.02 ms against Fast DDS 37.52 / 37.76): it includes the wait behind the sample in flight, which a DDS
-  publisher spends blocked in `publish()` before it stamps the next sample. The subscriber's socket still drops 57-382
+  publisher spends blocked in `publish()` before it stamps the next sample. **Corrected 2026-10-17:** that is the
+  send-stamp reading. Measured from creation time, the wait counts for every arm, and I4s latency is a WIN against all
+  three (above). The subscriber's socket still drops 57-382
   datagrams a run. Since 2026-10-16 rmw_tickle can block the same way, off by default
   (`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`, RMW.md "Large samples: blocking publish"). Rig, 2026-10-16, branch
   ab/large-publish-block on main dde87857, I4s, 5 reps, arms interleaved (`~/rig_results_safe/block_i4s_20261016-102913.txt`
   and `.runs/`; each `tickle@block` run 1,718-1,719 waits, 0 timeouts, 0 samples dropped at the sender): with the
-  option at 1000 ms, latency median / p99 38.48 / 39.50 ms against 54.92 / 71.23 off, Fast DDS 37.60 / 37.81 and
+  option at 1000 ms, send-stamp latency median / p99 38.48 / 39.50 ms against 54.92 / 71.23 off, Fast DDS 37.60 / 37.81 and
   CycloneDDS 39.00 / 39.67 - a WIN against CycloneDDS, still a LOSE against Fast DDS by 0.3-0.9 ms (ranges
   38.45-38.55 against 37.56-38.17); delivered 95.44% of offered in both modes; publisher CPU 3.61 ms/MB (off 3.44,
   Fast DDS 3.58); publisher peak RSS 25.5 MB, the smallest of the four. The default stays off, so the row above is
@@ -850,27 +906,6 @@ Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; lande
   samples 1,715-1,717 against 1,514-1,644, subscriber CPU 1.70 against 4.00 ms/MB. The pre-registered "no socket drop
   in 4 of 5 runs" failed: 0 of 5 (`hybridDrain_i4s_20261012-130948.drain.txt`).
 
-### Where TickLE does not come first
-
-- **rmw large messages** (L4 above, main f5fcda06, 2026-10-15, 5 reps): at I4 best effort subscriber CPU per MB is
-  behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.62 per MB delivered); the other 0%-loss
-  cells are draws on CPU, I4s publisher CPU included since it is per MB delivered (2026-10-17; it was a win per MB
-  published). I1L (5% loss), lost on incomplete delivery on f5fcda06, is complete and won on main dde87857
-  (2026-10-16). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
-- **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
-  forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
-  at 1%; the pre-registered criterion against forced MTU failed at all three rates.
-- **Poll-wait rows 59 and 62-67 are draws with CycloneDDS**, not wins. In row 67 CycloneDDS's median is lower (0.380
-  against 0.391 ms), within the spread. At 100 and 200 us half a poll cycle of waiting, the same for every rmw,
-  dominates, so the margin is small.
-- **One segment behind, inside a lead:** rmw_tickle's kernel wake (ppoll, then recvfrom) is ~6 us slower than the
-  vendors' blocking recvmsg, although it is fastest in every user-space segment of the round trip.
-- **Row 5** is a draw by construction.
-- **zenoh-pico (reference, unscored) has the better figure in rows 5, 6, 7, 18, 19, 24 and 35**, and ties at the link
-  ceiling in 11b-11c. Its P1 TCP lead (row 7) comes from coalescing about eleven samples into each segment (0.094
-  packets per sample against TickLE's 1.005), a different mechanism from per-sample datagrams.
-- **Same host:** TickLE's segment gains less over its own kernel path than FastDDS's does (9.7x against 11.6x).
-
 ## 3. Methodology
 
 Every figure comes from the rig's two dedicated Raspberry Pi 5s over a point-to-point 1 GbE link (or one of them, for
@@ -882,7 +917,9 @@ the frameworks within each repetition, in an order that rotates; section 1's har
 framework after another within a cell. A cell is VOID when a payload crosses a framework's datagram boundary
 unexpectedly, when history policies differ, or when delivery is incomplete (an incomplete vendor is excluded and
 listed; an incomplete TickLE loses the cell). FastDDS's only tuned parameter is `maxMessageSize` 1472 in the `T` rows.
-Full rules, fairness audit and zenoh-pico configuration: [TESTING.md](TESTING.md).
+Latency is the latency from creation time since 2026-10-17 (the sample's scheduled publish time; for a ping, its due
+time), read with a control in which nothing waits at the sender. The send-stamp latency is printed beside it as a
+diagnostic. Full rules, fairness audit and zenoh-pico configuration: [TESTING.md](TESTING.md).
 
 **Versions** (rig, Ubuntu 24.04, aarch64): the native rows use CycloneDDS 11.0.1 (the `rolling` build, linked by
 `cyclonedds/build.sh`) with iceoryx 2.0.5 for section 1, and Fast DDS 2.14.6 (ROS jazzy); the rmw rows use jazzy's
@@ -890,7 +927,230 @@ Full rules, fairness audit and zenoh-pico configuration: [TESTING.md](TESTING.md
 distribution's packages (CMake build type None, Debian's `-O2`); TickLE's core is built `-O2 -DNDEBUG`. Rows
 measured before 2026-10-05 built rmw_tickle as `Release` (`-O3`); later rmw rows build it with the vendors' `-O2`.
 
-## 4. Open work
+## 4. Corrections and history
+
+A correction stays with its cause, and a superseded figure stays with the reading drawn from it. These notes were
+moved here unchanged from the tables' notes on 2026-10-17.
+
+### Readings superseded on 2026-10-17
+
+On 2026-10-17 the summary became "At a glance", and latency became the latency from creation time. Every figure the
+old summary quoted is still in the tables above. These are the readings that changed:
+
+- **Cross-host latency.** The summary read: "TickLE is best in every scored row of latency, throughput, CPU, memory
+  and bandwidth at P1-P4". Campaign `A` stood at WIN 151, DRAW/TIE 11, LOSE 0, VOID 0 of 162 metric-cells, and WIN 139,
+  DRAW/TIE 11 of 150 counted once. That was against WIN 136, DRAW/TIE 14 at `3ae721aa`, or 137 / 13 on the unrounded
+  loss. From the send stamp this still holds. From creation time, TickLE loses rows 1c, 3c and 6bc to CycloneDDS
+  ([Latency from creation time](#latency-from-creation-time-2026-10-17)).
+- **I4s latency.** The summary and the list "Where TickLE does not come first" read that I4s median latency "is
+  behind all three because a DDS `publish()` blocks before it stamps the sample" (55.0 against 37.6-41.6 ms). L4 then
+  stood at WIN 52, DRAW 23, LOSE 5 of 80 (WIN 53, DRAW 22 per MB published). The cause given was right: it is the wait
+  that creation time now counts. From creation time, I4s latency is a WIN against all three.
+- The rest of "Where TickLE does not come first" is now in "Every LOSE" and "Every DRAW", unchanged. It also said that
+  I1L (5% loss) "lost on incomplete delivery on f5fcda06, is complete and won on main dde87857 (2026-10-16)"; that
+  correction is in the I1L note.
+
+### Same host: corrections and earlier sessions
+
+- **Corrected 2026-10-17: goodput (TESTING.md section 4), the same raw files re-read.** `fair_samehost_summary.py`
+  on `~/rig_results_safe/fair_samehost_e521bbba_20261009-033254`, `free` arm, medians:
+  - **S1-S3 are now the delivered rate** and absorb S1d-S3d. Until 2026-10-17 S1-S3 were the client's send rate (S1 20,867
+    / 6,370 / 4,439, S2 21,982 / 7,006 / 4,882, S3 25,137 / 12,832 / 9,333 Mbps, TickLE / FastDDS / CycloneDDS) and
+    S1d-S3d the subscriber's (20,867 / 0 / 934, 21,982 / 0 / 1,029, 25,137 / 1 / 1,854, with each framework's
+    delivered share of its own published samples: 100% / 0% / 21%, 21%, 20%). The worst framework (❌) moves from
+    CycloneDDS to FastDDS, which took 0.31-0.70 Mbps. The share column is gone: it divided by each framework's own
+    published samples, the denominator the user rejected for saturating cells on 2026-10-12. TickLE's leader verdict
+    does not change.
+  - **S3 TickLE 25,137 (n=2) -> 25,066 (n=3):** the drop-free rule is retired, so the rep with `shm_full_dropped=2690`
+    (9,995,120 of 9,996,465 samples delivered) counts at its goodput, 24,879 Mbps in the window. All other S cells were n=3 already.
+- **S1-S3 compared send rates, not delivery, until 2026-10-17** (corrected above). FastDDS's bench subscriber uses the default reader QoS (KEEP_LAST 1);
+  on one host its writer overwrites what the reader has not taken, and in `mixed_delivery.sh`'s FastDDS LOCAL_ONLY
+  arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million** samples sent. TickLE's figures were
+  drop-free reps, so for it sent equals delivered. A TickLE BEST_EFFORT rep that drops at a full ring reads a *higher*
+  send rate (dropping is cheaper than delivering), which is why such reps were excluded until goodput made the
+  delivered rate the figure (2026-10-17, above).
+- **2026-10-09 re-measure** (`e521bbba`, same harness, rules and order as `f128f686`; 3 reps per cell, every cell
+  n=3 except **¶ S3/S3d TickLE n=2**: one rep dropped at a full ring and is excluded, as the rule then said; S2/S2d
+  are n=3 again; since 2026-10-17 that rep counts, above). Was at `f128f686` -> now: S1 18,484 -> **20,867** (+12.9%), S2 19,716 -> **21,982** (+11.5%), S3
+  24,696 -> **25,137** (+1.8%), S4 12,613 -> **13,764** (+9.1%), S5 13,539 -> **14,771** (+9.1%), S6 14,900 ->
+  **14,917** (+0.1%) Mbps; S7 0.023 -> **0.023**, S9 0.023 -> **0.023**, S10 0.027 -> **0.027** ms (-0.8%, -1.0%,
+  +2.4% unrounded); S17 1.67 -> **1.53** us (-8.5%); S18 42.3 -> **41.9** us (-0.8%); S19 8.3 -> **8.5** MB (+2.4%).
+  Between the two builds main gained receive-buffer lending with the in-place segment drain (`0be14584`; its rig A/B,
+  `~/rig_results_safe/ab_samehost_lending_20261008-211707.summary.txt`, read +12.1% delivered at BEST_EFFORT p3 and
+  +8.6% RELIABLE p3, IMPROVED 12 of 15, none worse), skip-to-newest for KEEP_LAST readers (`17c825f3`, `03585237`),
+  the reader-wake generation fix (`e6226bbf`), the retry granularity G (`33b2cdfc`), `forget_peer`'s gap fix
+  (`29dff630`) and discovery per entity (`33436ab3`); loaned messages (`7a321d26`) are rmw only and not on this path.
+  The S2 and S5 gains match the lending A/B's p3 figures. The vendor arms, which none of these touch, moved within
+  -6..+1% on throughput (FastDDS S6 the widest) and -12..+10% on RTT (FastDDS S10 -11.6%, CycloneDDS S7 +10.4%),
+  against TickLE's +0..+13% on throughput and -1..+2% on RTT; no row's leader or worst changed. Pinned medians of
+  the same session (TickLE / FastDDS / CycloneDDS): S1-S3 20,715 / 6,385 / 4,510, 21,893 / 6,746 / 4,932, 25,103 / 13,008 / 9,478; S4-S6 13,700 / 899
+  / 2,673, 14,811 / 977 / 2,876, 14,778 / 1,876 / 5,209; S7, S9, S10 0.023 / 0.098 / 0.062, 0.023 / 0.099 / 0.061,
+  0.027 / 0.098 / 0.063 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
+  0.81-0.87x at S4-S6 and 1.10-1.20x RTT, FastDDS's 1.13x at S4 and 1.10-1.11x RTT at S7, S9.
+- **2026-10-08 re-measure** (`f128f686`, same harness, rules and order as `9f919c8b`; 3 reps per cell, every cell
+  n=3 except **S2/S2d TickLE n=2**: one rep dropped 1 sample at a full ring and is excluded, as the rule says).
+  Every TickLE figure moved; was at `9f919c8b` -> now: S1 13,555 -> **18,484**, S2 14,303 -> **19,716**, S3 22,613
+  -> **24,696**, S4 10,146 -> **12,613**, S5 10,556 -> **13,539**, S6 12,333 -> **14,900** Mbps; S7 0.031 ->
+  **0.023**, S9 0.031 -> **0.023**, S10 0.036 -> **0.027** ms; S17 2.13 -> **1.67** us; S18 78.8 † -> **42.3** us
+  (this run's server no longer reads the CPU clock per echo, `8e98ba48`, so the † no longer applies); S19 8.0 ->
+  **8.3** MB. Between the two builds main gained the frag in-order fast path (`bc398ed2`), reader-wake round 4
+  (`8c1e6431`), encode-in-slot (`cd09e895`), the ring-turn starvation fix (`65b37569`) and the `departed_next` fix
+  (`6f4b87d4`). The vendor arms, which none of these touch, moved within -12..+10% (FastDDS S5, the widest;
+  CycloneDDS within 7%), against TickLE's +9..+36% and -25..-26% RTT; no row's leader or worst changed. Pinned
+  medians of the same session (TickLE / FastDDS / CycloneDDS): S1-S3 18,508 / 6,381 / 4,475, 19,530 / 6,999 / 4,947, 24,813 / 13,023 / 9,511; S4-S6 12,649 / 897 /
+  2,597, 13,453 / 977 / 2,880, 14,654 / 2,103 / 5,062; S7, S9, S10 0.023 / 0.097 / 0.061, 0.023 / 0.097 / 0.061,
+  0.027 / 0.100 / 0.062 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
+  0.85-0.92x at S4-S6 and 1.07-1.10x RTT, FastDDS's 1.13x RTT at S10.
+- **2026-10-06 re-measure** (`9f919c8b`): S10 fell from 0.052 to **0.036 ms** - the old figure was a first-lap one,
+  ~16 us of first-touch page faults on the reliable reorder ring before warm-up was excluded (ROADMAP Now 1). The
+  BEST_EFFORT rows now also show what was delivered (S1d-S3d): at KEEP_LAST 1, the DDS default, FastDDS's reader took
+  almost nothing at max rate and CycloneDDS's about a fifth (its bench now takes everything per wake), while TickLE
+  delivered every sample. **‡ CycloneDDS includes iox-roudi**: its RSS adds 212 MB (206 MB of it shared memory) and
+  its CPU 1.6 us per round trip. **† TickLE's latency server read the CPU clock on every echo in this run** (the
+  vendors' servers do not; fixed in `8e98ba48`), so S18's TickLE figure then (78.8) was overstated. Pinned medians
+  of the same session: S1-S3 13,512 / 6,329 / 4,478, 14,197 / 6,932 / 4,893, 22,322 / 12,519 / 9,385; S4-S6 10,062 / 909 / 2,649,
+  10,631 / 987 / 2,842, 12,458 / 1,874 / 5,200; S7, S9, S10 0.030 / 0.098 / 0.061, 0.031 / 0.096 / 0.061, 0.036 /
+  0.099 / 0.061 ms.
+- **Unpinned is the headline; pinned is this note** (2026-10-05, `fair_samehost_remeasure.sh`, `7fb6fabf`, each cell
+  run unpinned and with the server on core 1 and the client on core 2, back to back, order alternating). No row's
+  leader changes. TickLE moves within 3% either way. Pinning to one core each helped the multi-threaded DDS processes,
+  not TickLE: unpinned/pinned is 0.86x / 0.82x / 0.88x for CycloneDDS at S4-S6, 0.83x for FastDDS at S6, and
+  1.06-1.15x RTT for CycloneDDS at S7, S9, S10. Pinned medians (TickLE, FastDDS, CycloneDDS): S1 13,542 / 6,489 /
+  4,539; S2 14,277 / 7,003 / 4,960; S3 22,584 / 13,460 / 9,501; S4 10,026 / 939 / 2,629; S5 10,811 / 1,045 / 2,934;
+  S6 12,701 / 2,049 / 5,235; S7 0.030 / 0.099 / 0.062; S9 0.031 / 0.098 / 0.061; S10 0.052 / 0.099 / 0.063 ms.
+  Raw files `~/rig_results_safe/fair_samehost_7fb6fabf_20261005-190124.*`. S8 and S11-S13 are still the pinned
+  figures of their builds and have not been re-measured unpinned.
+- **S6 (RELIABLE p4)** was VOID on `8d1c3712`: a lost-wakeup defect (the writer did not ring a reader that had gone
+  back to sleep) made the application give up 4-7 samples per rep. Fixed in `fe45f276` (the writer now rings each
+  sleep of the reader once) and re-measured there with every rep `write_fail=0`, `lost=0`. That pinned run gave
+  CycloneDDS 5,240 (an earlier one 5,776). S4-S5 were first measured after ACK solicitation stopped being clocked by
+  a 1 ms timer (`8d1c3712`); before that, TickLE lost S4 and S6 to CycloneDDS.
+
+### rmw same host
+
+- **Corrected 2026-10-10: R14-R21 and the `a7e02807` column.** `perf_test`'s received, sent and lost columns are
+  floor(count / D) per row, not counts; the reader summed them (and divided by the summed T_loop). Corrected by the
+  whole-count reader (`rmw_samehost_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. rmw_tickle
+  moved by under 0.02%, the vendors by up to 0.7% (e.g. R14 CycloneDDS 70,331 -> 70,420, R16 FastDDS 2,313 -> 2,322).
+- **R18 was scored DRAW** until 2026-10-08 by the harness's former 2 x SE rule, although rmw_tickle's reps (13.14 /
+  13.73 / 13.17 us) are below every rep of CycloneDDS (32.81-34.45) and FastDDS (171 / 1,006 / 323): FastDDS's
+  scatter made the bound wider than the gap. Scored by the reps' ranges, as TESTING.md section 4 says, it is a WIN;
+  no other verdict in the `03585237` run or at `f128f686` changes.
+- **At `03585237`, R12 and R13 were right as scored.** R12: rmw_tickle 15,252-15,260 kB against CycloneDDS
+  15,232-15,264, the ranges overlap, a DRAW (20 kB apart at the median). R13: rmw_tickle's subscriber 17,536-17,792
+  kB against CycloneDDS's 16,896-17,152, no overlap, a LOSE of ~512 kB (3%).
+
+### Cross-host: the `09a0437d` re-measure
+
+Totals over the 150 metric-cells both runs score: WIN 136, DRAW/TIE 14 at `3ae721aa` -> WIN 139, DRAW/TIE 11 (the
+12 + 2 new `server.recv_mbps` cells, the delivered rate in the window, are all WINs, giving 151 / 11 and 20 / 2). Four
+verdicts moved, all `server.loss_pct`, where TickLE lost nothing in either run: cell 1 (P1) TIE -> DRAW (CycloneDDS
+and FastDDS lost a few samples in one rep each), cell 5 (P1, 5% loss) TIE -> WIN (FastDDS lost 0.002-0.016%), cell 9
+(KEEP_LAST 64) DRAW -> WIN (both vendors lost in every rep; at `3ae721aa` FastDDS's loss printed as 0.0, which the
+unrounded count already made a WIN), cell 6 (P4, 5% loss) DRAW -> WIN, provisional (one FastDDS rep). Pinned: WIN
+135, DRAW/TIE 15 -> WIN 149, DRAW/TIE 13 of 162.
+
+**TickLE's delta against the vendors' (the control).** Since `3ae721aa`, main gained on the cross-host path the
+Heartbeat answer bounded by the measured repair transit (`3355e94d`; its rig A/B gave cell 6 send +4.5%), the writer-owned
+VOLATILE match point (`da3029e0`), the in-order fragment fast path (`bc398ed2`) and the `departed_next` fix
+(`6f4b87d4`); the peer-table fix (`29dff630`) came after and is not in this build. The harness change (the window)
+applies to every framework alike, so a TickLE move counts only where it leaves the vendors' moves behind:
+
+- **Moved with the vendors, not a TickLE effect:** latency rows 1, 3, 6a, 6b against the warm-up re-runs
+  (TickLE -1.4% to +0%, FastDDS -2.0% to +2.9%, CycloneDDS -1.2% to +1.0%); P2-P4 throughput (TickLE at the link,
+  +-0.1%); P1 RELIABLE (row 7: TickLE +5.9%, FastDDS -5.1%, CycloneDDS +2.6%, all inside the reps' ranges, TickLE
+  93.6-114 against 93.2-115); P1 under loss and reorder (rows 13, 15: TickLE -1.2% / -4.8%, FastDDS -14% / -11%,
+  CycloneDDS -10% / +15%).
+- **TickLE alone moved, outside its own range:** P4 server CPU per sample (row 23) 8.36 -> 7.63 (-8.7%; reps
+  8.34-8.39 -> 7.58-7.67) while FastDDS and CycloneDDS moved +0.8% and +1.5%; P4 server peak RSS (row 33) 2,971 ->
+  1,987 KB (-33%) while both vendors moved +0.2%, and in all four P4 cells without loss (`A` and `T`, free and pinned).
+  Both are the receive side of in-order fragments, which `bc398ed2` now assembles in `frag_scratch` instead of the
+  reorder ring; under 5% loss, where fragments arrive out of order and still use the ring, the server stays at 3,035
+  KB (was 2,967). KEEP_LAST 64 (row 12) 107 -> 117 (+9.3%; reps 102-117 -> 116-118) while FastDDS and CycloneDDS
+  fell 8.9% and 10.2%. P4 under 5% loss with FastDDS as shipped (`A` cell 6, not a table row) TickLE 860 -> 891 Mbps
+  (+3.6%, reps 843-870 -> 889-893) while CycloneDDS fell 22%, the same direction and size as `3355e94d`'s A/B.
+- **TickLE moved against itself:** P1 server peak RSS (row 32) 1,949 -> 2,057 KB (+5.5%), within CycloneDDS's +11%
+  and FastDDS's +0.3%; P1-P4 client RSS +1.5% to +1.9% (rows 28-30) against the vendors' -1.1% to +0.9%. Retention at
+  P1 (row 16) 93.2% -> 86.9%, the quotient of row 7's rise and row 13's fall, both inside the ranges; the vendors'
+  retention fell by as much or more, relative to its own (47.6% -> 43.1%, 5.5% -> 4.8%).
+
+### Cross-host latency
+
+History. At `3ae721aa` (no warm-up) rows 1-6b were 0.211 / 0.297 / 0.329, tails 0.298 / 0.604 / 10.761, 0.237 /
+0.322 / 0.281, tails 0.356 / 0.622 / 0.830, and so on; CycloneDDS's 10.8 ms P1 tail was one first-lap round trip in a
+hundred and has not recurred in any warm run. Rows 1, 3 and 6b were then re-measured with the warm-up (`f40a2adf`,
+2026-10-07, `~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`: 0.209 / 0.285 / 0.260, 0.231 /
+0.316 / 0.273, 0.249 / 0.348 / 0.293) and rows 5, 6, 6a with the 20 s edge bound (`9b5491e6`,
+`~/rig_results_safe/crosshost_latency_warm2_9b5491e6_20261007-101404.txt`: 10.1 / 10.3 / 10.3, tail 12.1 / 12.3 /
+12.2, 0.235 / 0.344 / 0.288); the `09a0437d` run supersedes both under the same rules and agrees with them within the
+control (above). Rows 24-25 (CPU per round trip) were 159 / 377 / 226 and 156 / 376 / 224 at `3ae721aa`: the process's
+whole CPU over its 100 round trips, start-up included; it is now over all 8,292 round trips of a run, edges included,
+which is why every framework fell by 73-78%.
+
+### Cross-host throughput
+
+**Corrected 2026-10-17: rows 11, 11a-11c and 12 were send rates** (the client's `send_mbps` in the window), and the
+vendors did not deliver all they sent: rows 11-11c are BEST_EFFORT and row 12 is KEEP_LAST, where a writer may
+replace unacknowledged samples. Was -> now (TickLE / FastDDS / CycloneDDS, Mbps, 3 reps each, `A_free` cells 8, 13,
+14, 15, 9): row 11 115 / 44.7 / 66.6 -> 115 / **28.8** [22.0-33.6] / **62.1** [60.9-64.1]; 11a 938 / 740 / 911 ->
+938 / **575** [481-641] / **906**; 11b 943 / 574 / 828 -> 943 / **560** [497-598] / **654** [640-666]; 11c 944 /
+915 / 938 -> 944 / **902** [895-910] / **937**; row 12 117 / 38.0 / 75.1 -> 117 / 38.0 / **72.6** [66.1-81.2].
+FastDDS in row 11 delivered 457,479 of 657,793, 507,930 of 669,528 and 324,111 of 655,022 samples (64% of its send
+rate). TickLE delivered every sample it sent in every one of these cells (lost 0), so none of its figures moves, nor
+any verdict or ✅/❌. Rows 7-10 and 13-17 do not move: RELIABLE + KEEP_ALL delivered everything it sent. Pinned, row 11
+reads 120 / **33.0** / **67.7** (was 120 / 45.3 / 67.9) and 11a FastDDS **632** (was 735).
+(Before this correction this paragraph read: "Row 11's FastDDS figure is a send rate it did not fully deliver: FastDDS
+lost 15.5% of samples in that cell on a 2026-10-03 run and 22.2% in the QoS sweep.")
+
+### rmw cross-host
+
+- **History: the first equal-bound runs (2026-10-07) failed rmw_tickle.** At main `f40a2adf`
+  (`~/rig_results_safe/rmw_keepall_equal_20261007-044904.txt`, 3 reps) rmw_tickle's publisher ended in 2 of its 6
+  lossy runs (one per topic) with no sample lost; its usable medians were 71,279 and 26,372/s. Cause: a reader ignored
+  a heartbeat's request for an answer while its own retry for an open gap was armed. Fixed by `2901121e` (answer a heartbeat that asks, also
+  with a retry armed), `e3236048` and `3355e94d` (the answer leaves out repairs still in transit, limited by the
+  measured repair transit); the `Ke` run at `29dff630` includes them.
+- **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
+  fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
+  (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does
+  not deliver what it wrote before the match. Its `--expected_num_subs` is compiled out in this build, so publishing
+  starts before matching for every arm. The rows count delivered samples per second after the start, which this does
+  not touch, so FastDDS is scored in rows 72 and 74. CycloneDDS's "lost ~106k" in two Array1k 5% runs is the same
+  artefact. At Array1k FastDDS's rate is steady at ~16k/s with ~320 ms latency (its full 5,000-sample history
+  draining at that rate); Array4k is at the link's ceiling for all three (‡).
+- **Corrected 2026-10-10: rows 72-75 and these notes.** `perf_test`'s received, sent and lost columns are
+  floor(count / D) per row, not counts; the reader summed them. Corrected by the whole-count reader
+  (`rmw_keepall_rig_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. Rates moved by under 1/s
+  (row 72 rmw_tickle 90,849 -> 90,850, CycloneDDS 84,445 -> 84,446; row 73 74,128 -> 74,129, CycloneDDS 1,807 ->
+  1,808; row 75 CycloneDDS 346 -> 347); CycloneDDS's subscriber CPU per sample at 5% loss fell 3-4% (45.6 -> 44.0,
+  182.4 -> 176.4 us).
+
+### rmw large messages
+
+- **Corrected 2026-10-17: publisher CPU per MB delivered** (the user's goodput decision, TESTING.md section 4; same
+  raw runs, `experiments/largemsg_goodput.py`, which re-uses `largemsg_rig_summary.py` unchanged and divides the
+  publisher's CPU by the subscriber's delivered MB; its `pub` mode reproduces the previous letters). Only **I4s** moves
+  by more than 0.01 ms/MB: rmw_tickle 3.43 -> **3.60** (reps 3.577-3.615), Fast DDS as shipped 3.57 -> 3.56
+  (3.536-3.579), Fast DDS at 1472 6.87 -> 9.27, CycloneDDS 3.90 -> 3.93; letters **W–W–W -> D–W–W**. Samples first,
+  delivered of published per run: rmw_tickle 1,718-1,720 of 1,802-1,803, Fast DDS 1,690-1,691 of 1,694-1,695, Fast
+  DDS at 1472 999-1,156 of 1,531-1,532, CycloneDDS 1,696-1,699 of 1,699-1,701 (r4 1,140). The cause is rmw_tickle's
+  non-blocking `publish()`: it spends CPU on the ~84 samples per run it drops at the sender, where a DDS publisher
+  blocks. For CPU this supersedes the offered-tick denominator; delivered % of offered still ranks I4s, and ranks it
+  as goodput does. I4 RELIABLE publisher 3.68 -> 3.69; I1, I1L, I1 best effort and I4 best effort unchanged at the
+  table's precision (I4 best effort Fast DDS 3.61 -> 3.62, still L). Subscriber CPU and delivered % were already per
+  delivered sample. L4 totals: WIN 53, DRAW 22, LOSE 5 -> **WIN 52, DRAW 23, LOSE 5** of 80.
+- **Re-measured 2026-10-15 (main f5fcda06 against main 0c9f9a3b, same harness):** subscriber CPU fell 0.19-0.28
+  ms/MB in every 0%-loss cell (I1 RELIABLE 2.56 -> 2.28, I1 best effort 2.38 -> 2.20, I4 RELIABLE 2.45 -> 2.21, I4
+  best effort 2.40 -> 2.19, I4s 1.61 -> 1.40), most of it UDP checksum 0 (its rig A/B: -0.10 to -0.12 ms/MB). Against
+  Fast DDS as shipped it went from LOSE to DRAW in I1 RELIABLE, I1 best effort, I4 RELIABLE and I4s; it still loses at
+  I4 best effort (2.19 against 2.10, +4%), as does the publisher there (3.72 against 3.61, +3%). Latency and
+  subscriber RSS are unchanged or lower.
+- **CPU per MB at 0% loss before the re-measure** (f1f2f14d, 2026-10-12): Fast DDS as shipped spent 13.7-15.6% less
+  on the subscriber (18.2% at I4s; means) and 2.0-8.4% less on the publisher at best effort. Against main before the
+  hybrid transport (4fbb8fe1) subscriber CPU fell 2.1-2.5 ms/MB (-46 to -57%). Step A (dc056907) was 0.15-0.19 ms and
+  1.2 ms behind Fast DDS in median latency; TickLE is now ahead at 1 and 4 MB.
+
+## 5. Open work
 
 The to-do list (missing same-host CPU/memory cells, loaned messages, and more) is
 in [ROADMAP.md](ROADMAP.md).

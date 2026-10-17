@@ -184,6 +184,23 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 
   Report VOID as VOID, never as zero.
 
+**Latency from creation time** (the user, 2026-10-17)
+- **Latency is the arrival time minus the sample's creation time.** In a fixed-rate cell that is the scheduled
+  publish time, start + k / rate; for a ping it is the ping's due time. The schedule does not slip when the send loop
+  falls behind, so a publisher that blocks in `publish()` or queues behind a sample in flight pays for the wait.
+- **The send-stamp latency is diagnostic only.** It is measured from the stamp the sender writes just before it sends.
+  It is printed beside the creation figure (`rtt_*` beside `crt_*` in the core clients; "stamp" in the rmw reader) and
+  never decides a cell.
+- **Percentiles are over offered ticks.** A tick that was never published or never delivered counts as +inf, so a
+  percentile that lands on one reads UNBOUNDED. Two UNBOUNDED values are equal, which makes a draw.
+- **A saturating cell is compared at equal windows only.** There, a publisher that falls behind has a creation
+  latency that grows with the run's length. The reader prints that growth, and marks arms whose windows differ by
+  more than 1 s NOT COMPARABLE.
+- **Every reading has a control:** a ping-pong where nothing waits at the sender must read the same on both
+  definitions, up to the sender's timer wake. A failed control leaves every creation figure it gates NOT READ.
+- Reader and rules R0-R5: `experiments/creation_latency_summary.py` (its header); the rmw cells take
+  `rmw_keepall_rig.sh CREATION_TRACE=1`.
+
 **Controls and reading**
 - **Every campaign has a control:** an arm the change provably cannot touch, such as a vendor arm, the `rmw_cyclonedds_cpp` acceptance run, or the shared-memory-OFF build. Compare our delta with the control's delta.
 - **Compare a figure with its own previous value**, not with a vendor or with a bare historical point.
