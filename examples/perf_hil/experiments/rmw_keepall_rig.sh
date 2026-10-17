@@ -158,6 +158,21 @@
 #                 Relay (-p 0 -s 1: it republishes every sample it receives with its stamp unchanged). Cross-host
 #                 default mode only (no SAMEHOST, no EQUAL_BOUND, no DRY). Recorded in meta.txt (roundtrip=1). The
 #                 other summaries do not read a round-trip run; creation_latency_summary.py does.
+#
+# Added 2026-10-17 for the I4 best-effort CPU gap (i4be_cpu_gap.sh, i4be_perf_attach_read.py). Off unless set:
+#   PERF_ATTACH="<from> <for>" (or <from>_<for>)  on both Pis, <from> s after the publisher starts (the subscriber's own start is 2 s
+#                 earlier and is allowed for), `perf stat --per-thread -p <perf_test's PID> -- sleep <for>` with
+#                 PERF_EVENTS (default task-clock, context-switches, cpu-migrations, instructions:u/k, cycles:u/k,
+#                 exc_svc - the SVC exceptions taken, one per syscall - and exc_irq - the IRQs taken while one of its
+#                 threads ran, whose handler and softirq time the tick-based accounting charges to that thread's
+#                 stime). Attached after start-up, so the window is steady and no perf_test runs as perf's child; every
+#                 arm runs under it alike, and it is never a headline figure. Around the window <stem>_<role>.psnap
+#                 holds /proc/stat, /proc/softirqs, eth0's /proc/interrupts line and each thread's /proc/PID/task/*/stat
+#                 at its begin and end, and <stem>_<role>.pplace each thread's state and CPU (stat fields 3 and 39) four
+#                 times a second inside it. Fetched to <stem>_<role>.pstat. Refused with INSN_COUNT=1 (two perfs on one
+#                 process). Read by i4be_perf_attach_read.py, whose header holds the reading rules.
+#   PIN_CPUS=<list>  (diagnostic only, never a headline figure: docs/TESTING.md, no testbed tuning) every perf_test on
+#                 both Pis runs under `taskset -c <list>`; recorded in meta.txt (pin_cpus=) and in each .treat file.
 #   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
 #                 "tbf rate 1gbit burst 64kb latency 100ms" - the rig's link, which a veth does not have: without it
 #                 the I4s cell does not saturate on the PC. Lossless cells only; restored to none at the end.
@@ -388,6 +403,21 @@ fi
 printf 'creation_trace=%s\nroundtrip=%s\npf_shape=%s\n' "$CREATION_TRACE" "$ROUNDTRIP" "$PF_SHAPE" >> "$OUT.runs/meta.txt"
 [ "$CREATION_TRACE" = 1 ] && say "creation trace: every perf_test writes /tmp/ka_<role>.ctrace (perf_test_creation_trace.py)"
 [ "$ROUNDTRIP" = 1 ] && say "round trip: client perf_test --roundtrip_mode Main, server --roundtrip_mode Relay"
+# PERF_ATTACH and PIN_CPUS (header, 2026-10-17).
+PERF_ATTACH=${PERF_ATTACH:-}; PIN_CPUS=${PIN_CPUS:-}
+PERF_EVENTS=${PERF_EVENTS:-task-clock,context-switches,cpu-migrations,instructions:u,instructions:k,cycles:u,cycles:k,exc_svc,exc_irq}
+if [ -n "$PERF_ATTACH" ]; then
+    read -r PA_FROM PA_FOR <<<"${PERF_ATTACH//_/ }" # "<from> <for>" or "<from>_<for>" (an env word)
+    case "$PA_FROM:$PA_FOR" in [0-9]*:[0-9]*) ;; *) say "PERF_ATTACH is '<from> <for>' in seconds, not '$PERF_ATTACH'"; exit 64 ;; esac
+    case "$PA_FROM$PA_FOR" in *[!0-9]*) say "PERF_ATTACH is '<from> <for>' in whole seconds, not '$PERF_ATTACH'"; exit 64 ;; esac
+    [ "$INSN_COUNT" = 1 ] && { say "REFUSED: PERF_ATTACH with INSN_COUNT=1 (two perfs on one process)"; exit 64; }
+    [ $((PA_FROM + PA_FOR + 3)) -le "$DUR" ] || { say "REFUSED: PERF_ATTACH window $PA_FROM+$PA_FOR s does not end 3 s before DUR=$DUR"; exit 64; }
+    case "$PERF_EVENTS" in *[!a-z0-9_:,-]*) say "PERF_EVENTS may hold only [a-z0-9_:,-]"; exit 64 ;; esac
+    say "perf attach: both Pis, publisher seconds $PA_FROM..$((PA_FROM + PA_FOR)), events $PERF_EVENTS"
+fi
+case "$PIN_CPUS" in *[!0-9,-]*) say "PIN_CPUS may hold only [0-9,-]"; exit 64 ;; esac
+[ -n "$PIN_CPUS" ] && say "PIN_CPUS=$PIN_CPUS: every perf_test under taskset -c $PIN_CPUS (diagnostic only)"
+printf 'perf_attach=%s\nperf_events=%s\npin_cpus=%s\n' "$PERF_ATTACH" "$PERF_EVENTS" "$PIN_CPUS" >> "$OUT.runs/meta.txt"
 case " $ARMS " in *" tickle@csum0 "*)
     echo "udp_csum0_arms=tickle@head:TT_UDP_CSUM0-unset tickle@csum0:TT_UDP_CSUM0=1(head's binary)" >> "$OUT.runs/meta.txt"
     say "UDP checksum 0 A/B: tickle@csum0 = tickle@head's librmw_tickle.so with TT_UDP_CSUM0=1" ;;
@@ -649,11 +679,13 @@ role=$1; envfile=$2; shift 2
 source "$envfile"
 '"$(remote_child_of_perf)"'
 PT=${KA_PERF_TEST:-$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test}
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start /tmp/ka_$role.pgf /tmp/ka_$role.ctrace
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start /tmp/ka_$role.pgf /tmp/ka_$role.ctrace /tmp/ka_$role.pstat /tmp/ka_$role.psnap /tmp/ka_$role.pplace
 # CREATION_TRACE=1 (header): perf_test writes its creation trace here; unset, it writes nothing.
 if [ "${KA_CTRACE:-0}" = 1 ]; then export PERF_TEST_CREATION_TRACE=/tmp/ka_$role.ctrace; else unset PERF_TEST_CREATION_TRACE; fi
 date +%s%N > /tmp/ka_$role.start
-setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.lpid; exec ${KA_PRE:-} \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
+# PIN_CPUS (header): taskset execs perf_test (or perf), so the PID written below is unchanged.
+pin=""; [ -n "${KA_PIN:-}" ] && pin="taskset -c $KA_PIN"
+setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.lpid; exec $pin ${KA_PRE:-} \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.lpid ] && break; sleep 0.2; done
 p=$(cat /tmp/ka_$role.lpid)
 if [ -n "${KA_PRE:-}" ]; then
@@ -661,6 +693,24 @@ if [ -n "${KA_PRE:-}" ]; then
   for i in $(seq 1 30); do q=$(child_exe "$p" "*/perf_test") && { p=$q; break; }; sleep 0.1; done
 fi
 echo "$p" > /tmp/ka_$role.pid
+# PERF_ATTACH (header): "<from> <for> <events>" - perf stat on the threads of perf_test for <for> s from <from> s on, with
+# the CPU, softirq and IRQ counters of the host and the stat of every thread around it, their placement inside it.
+if [ -n "${KA_PATT:-}" ]; then
+  read -r pa_from pa_for pa_ev <<< "$KA_PATT"
+  psnap() { echo "--- $1 $(date +%s%N)"; cat /proc/stat; echo "--- softirqs"; cat /proc/softirqs
+    echo "--- interrupts"; grep -E "eth0" /proc/interrupts; echo "--- tasks"
+    for t in /proc/$p/task/*; do echo "${t##*/} $(cat $t/stat 2>/dev/null)"; done; }
+  ( sleep "$pa_from"; [ -d /proc/$p ] || exit 0
+    psnap begin > /tmp/ka_$role.psnap
+    ( end=$(( $(date +%s) + pa_for ))
+      while [ "$(date +%s)" -lt "$end" ] && [ -d /proc/$p ]; do
+        for t in /proc/$p/task/*; do read -r st < $t/stat 2>/dev/null || continue
+          rest=${st##*) }; read -r -a f <<< "$rest"; echo "${t##*/} ${f[0]} ${f[36]}"; done
+        echo "."; sleep 0.25; done > /tmp/ka_$role.pplace ) &
+    perf stat --per-thread -x, -e "$pa_ev" -p "$p" -o /tmp/ka_$role.pstat -- sleep "$pa_for"
+    wait
+    psnap end >> /tmp/ka_$role.psnap ) > /dev/null 2>&1 < /dev/null &
+fi
 # PGFAULTS=1 (header): perf_test'"'"'s own page faults while it lives, from its /proc/PID/stat (fields 10 and 12).
 if [ "${KA_PGF:-0}" = 1 ]; then
   ( while [ -r /proc/$p/stat ]; do read -r -a st < /proc/$p/stat 2>/dev/null || break
@@ -675,6 +725,7 @@ env > /tmp/ka_$role.envall; { echo "[launcher env]"; treat /tmp/ka_$role.envall 
   if tr "\0" "\n" < /proc/$p/environ > /tmp/ka_$role.envproc 2>/dev/null && [ -s /tmp/ka_$role.envproc ]; then
     echo "[/proc/$p/environ]"; treat /tmp/ka_$role.envproc < /tmp/ka_$role.envproc
   else echo "[/proc/$p/environ] unreadable: perf_test ended before 2 s"; fi >> /tmp/ka_$role.treat
+  [ -n "${KA_PIN:-}" ] && echo "pin_cpus=$KA_PIN realized: $(taskset -pc $p 2>&1)" >> /tmp/ka_$role.treat
   rm -f /tmp/ka_$role.envall /tmp/ka_$role.envproc ) > /dev/null 2>&1 < /dev/null &
 '
 # ka_net.sh (header): one line of this host's eth0 byte counters and its UDP/IP error counters.
@@ -812,7 +863,11 @@ net_snap() { # $1 file, $2 label: one line per host (header, <stem>_net.txt); "u
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
     [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
-    sh_ "$h" "KA_PRE='$pre' KA_PGF='${PGFAULTS:-0}' KA_CTRACE='$CREATION_TRACE' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
+    local patt=""
+    if [ -n "$PERF_ATTACH" ]; then # the subscriber starts 2 s before the publisher: the same wall window on both
+        if [ "$role" = sub ]; then patt="$((PA_FROM + 2)) $PA_FOR $PERF_EVENTS"; else patt="$PA_FROM $PA_FOR $PERF_EVENTS"; fi
+    fi
+    sh_ "$h" "KA_PRE='$pre' KA_PGF='${PGFAULTS:-0}' KA_CTRACE='$CREATION_TRACE' KA_PATT='$patt' KA_PIN='$PIN_CPUS' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
 }
 # insn_of <host> <role>: that role's counts as RUN-line fields (gate v2 A2), once perf itself has exited (up to 5 s).
 insn_of() {
@@ -861,6 +916,12 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     if [ "$CREATION_TRACE" = 1 ]; then # absent when perf_test has no trace: the summary says so
         fetch_ "$CLIENT" /tmp/ka_pub.ctrace "$dir/${stem}_pub.ctrace"
         fetch_ "$SERVER" /tmp/ka_sub.ctrace "$dir/${stem}_sub.ctrace"
+    fi
+    if [ -n "$PERF_ATTACH" ]; then
+        for x in pstat psnap pplace; do
+            fetch_ "$CLIENT" /tmp/ka_pub.$x "$dir/${stem}_pub.$x"
+            fetch_ "$SERVER" /tmp/ka_sub.$x "$dir/${stem}_sub.$x"
+        done
     fi
     if [ "${PGFAULTS:-0}" = 1 ]; then
         fetch_ "$CLIENT" /tmp/ka_pub.pgf "$dir/${stem}_pub.pgf"
