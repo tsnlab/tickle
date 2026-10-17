@@ -497,6 +497,22 @@ $check: FAIL"
     fi
 done
 
+# A scheduled entry runs at its deadline (sched_wake_check.c): within 150 us of clock_nanosleep()'s lateness at 1 ms and
+# at 500 ms, without spinning. Exit 2 is VOID - the control itself ran over 1 ms late - and is not a pass.
+make sched_wake_check
+# shellcheck disable=SC2024
+sudo ip netns exec "$NS1" ./sched_wake_check </dev/null >sched_wake_check.log 2>&1
+sched_wake_rc=$?
+grep '^sched_wake_check:' sched_wake_check.log
+case "$sched_wake_rc" in
+0) verdict=PASS ;;
+2) verdict="VOID (host too loaded to judge)" ;;
+*) verdict=FAIL ;;
+esac
+SUMMARY="$SUMMARY
+sched_wake_check: $verdict"
+[ "$sched_wake_rc" -eq 0 ] || status=1
+
 # UDP offload (udp_offload_check.sh): the same datagrams on the wire and in core with it on as off. Its own namespaces.
 make udp_offload_check udp_offload_check_flap
 if ./udp_offload_check.sh; then
