@@ -15,6 +15,7 @@ Usage:
         gates this one's creation figures
   creation_latency_summary.py --rtt <campaign_sweep.sh output .txt>               the core RTT cells (reliable_latency),
         whose clients print crt_* (creation) beside rtt_* (stamp) since 2026-10-17
+  creation_latency_summary.py --pc-check <creation_latency_pc.sh OUT>              that dry run's P1-P4
   creation_latency_summary.py --selftest                                          synthetic traces with known answers
 
 PER SAMPLE (one-way cells). From the publisher's trace, P <stamp> <gap_ns> <id>: its schedule is stamp - gap (on
@@ -59,7 +60,11 @@ HOW TO READ IT, written 2026-10-17 before any rig run and enforced below:
      nothing waits: PASS when g <= 0.2 ms (a timer wake, not a sample waiting behind another), no gap below -0.02 ms
      (a stamp before its schedule is a mis-read schedule), every grid check passes and |d - g| <= noise. Printed
      beside: whether |d| <= noise literally ("same within noise"), else "differs by the sender's timer wake g".
-     A FAILED control makes every creation figure of the gated cell NOT READ.
+     A vendor arm that delivers nothing in every rep does not run there: listed, not read. The control needs
+     tickle@head and at least one vendor read, else it FAILS. A FAILED control makes every creation figure of the
+     gated cell NOT READ. (The same "delivered nothing" arm is excluded from R3 and R5 in a cell: a publisher whose
+     samples go nowhere need not block. A subscriber that received nothing opens no trace file; its own log, every
+     row received 0, is what tells that apart from a perf_test without the trace, which is VOID.)
   R5 SCORING (each cell, rmw_tickle tickle@head, and tickle@block when present, against each vendor arm): the range
      rule of docs/TESTING.md section 4 on the creation median (primary) and creation p99: WIN when every rmw_tickle rep
      is below every rep of the vendor, LOSE when every vendor rep is below every rmw_tickle rep, DRAW otherwise; two
@@ -75,7 +80,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from largemsg_rig_summary import SIZES, clock_model, read_meta, wire_floor_ms  # noqa: E402
-from rmw_keepall_rig_summary import INDEX_RE, loaded  # noqa: E402
+from rmw_keepall_rig_summary import INDEX_RE, loaded, rows  # noqa: E402
 
 WARM_S, COOL_S = 3.0, 2.0
 N_MED, N_P99 = 50, 500
@@ -179,6 +184,14 @@ def run_record(runs, stem, fields, meta, rate, roundtrip):
         why.append("no publisher trace (perf_test without the creation trace?)")
     elif not any(g is not None for _s, g, _i in pt["p"]):
         why.append("publisher trace has no scheduled sample (rate 0?)")
+    if st_ is None and not roundtrip:
+        # The trace opens at its first line, so a subscriber that received nothing writes no file. Only its own log
+        # can tell that from a perf_test without the trace: every data row reading received 0 is "delivered nothing"
+        # (every offered tick +inf), anything else is VOID.
+        srows, _stext = rows(runs / f"{stem}_sub.log")
+        if srows and all(r.get("received", 0) == 0 for r in srows):
+            st_ = {"p": [], "s": [], "head": False, "end": None}
+            rec["note"] = "subscriber received nothing (its log: received 0 in every row), so it opened no trace"
     if st_ is None:
         why.append("no subscriber trace")
     for t, who in ((pt, "pub"), (st_, "sub")):
@@ -299,7 +312,7 @@ def print_runs(recs):
               f"{r['offered']:>7} {r['created']:>7} {n:>6} {f2(100 * detect, 10, 3)}% | {f2(r['crt_med'])} "
               f"{f2(r['crt_p99'])} {f2(r['crt_med_deliv'])} | {f2(r['stamp_med'], 9)} {f2(r['stamp_p99'])} | "
               f"{f2(r['gap_med'], 8, 3)} {f2(r['gap_p99'], 8, 3)} {f2(r['gap_max'], 8, 1)} {f2(r['gap_big'], 6, 1)} | "
-              f"{f2(r['growth_ms'])}  [{r['clock']}; {r['grid']}]")
+              f"{f2(r['growth_ms'])}  [{r['clock']}; {r['grid']}]" + (f" NOTE: {r['note']}" if r.get("note") else ""))
 
 
 def range_verdict(subj, other, lower_better=True):
@@ -321,12 +334,17 @@ def usable(recs, arm, topic, loss, key):
 
 def control(recs):
     """R4: (passed, lines)."""
-    lines, passed = [], True
+    lines, passed, read = [], True, []
     arms = sorted({r["arm"] for r in recs})
     for arm in arms:
         rs = [r for r in recs if r["arm"] == arm]
         good = [r for r in rs if not r["void"] and r["delivered"] >= CTL_N and not math.isnan(r["stamp_med"])]
         voids = [r for r in rs if r["void"]]
+        if not voids and rs and all(r["delivered"] == 0 for r in rs) and not arm.startswith("tickle@"):
+            # A vendor that delivers nothing does not run here: listed, not read, and it cannot pass or fail the
+            # instrument. rmw_tickle delivering nothing is a failure.
+            lines.append(f"  {arm}: delivered nothing in {len(rs)} reps - does not run here; not read")
+            continue
         if len(good) < CTL_REPS:
             passed = False
             lines.append(f"  {arm}: NOT READ - {len(good)} reps with >= {CTL_N} round trips (need {CTL_REPS}); "
@@ -348,9 +366,13 @@ def control(recs):
         verdict = "PASS" if not why else "FAIL (" + "; ".join(why) + ")"
         if why:
             passed = False
+        read.append(arm)
         lines.append(f"  {arm}: reps {len(good)}, round trips {[r['delivered'] for r in good]}, stamp RTT medians "
                      f"{[round(m, 4) for m in meds]} ms, d = {d * 1e3:+.1f} us, g = {g * 1e3:.1f} us, noise "
                      f"{noise * 1e3:.1f} us, min gap {gmin * 1e3:+.1f} us: {same}; {verdict}")
+    if "tickle@head" not in read or len(read) < 2:
+        passed = False
+        lines.append(f"  control read for {read or 'no arm'}: it needs tickle@head and at least one vendor")
     return passed, lines
 
 
@@ -385,12 +407,17 @@ def cells(recs, meta, rate, mbps, control_ok):
                            " (saturating: the value depends on the window length)")
         # R3: the treatment applied
         void_cell = False
+        silent = set()
         for arm in sorted({r["arm"] for r in good}):
             gm = [r["gap_med"] for r in good if r["arm"] == arm]
             out.append(f"  treatment {arm:<16} realized gap (stamp - schedule) median per rep "
                        f"{[round(x, 3) for x in gm]} ms, p99 {[round(r['gap_p99'], 3) for r in good if r['arm'] == arm]}"
                        f" ms, share > 1 ms {[round(r['gap_big'], 1) for r in good if r['arm'] == arm]}%")
-            if sat and arm.startswith(BLOCKING) and gm and st.median(gm) * 1e6 <= 1e9 / rate:
+            if all(r["delivered"] == 0 for r in good if r["arm"] == arm):
+                out.append(f"  {arm}: delivered nothing in every usable rep - does not run here (listed with its "
+                           "numbers, not scored, not an R3 check: a publisher whose samples go nowhere need not block)")
+                silent.add(arm)
+            elif sat and arm.startswith(BLOCKING) and gm and st.median(gm) * 1e6 <= 1e9 / rate:
                 out.append(f"  VOID CELL (R3): {arm} blocks on publish but its median gap {st.median(gm):.3f} ms is not"
                            f" above one period {1e3 / rate:.1f} ms - the trace did not see the wait")
                 void_cell = True
@@ -398,7 +425,7 @@ def cells(recs, meta, rate, mbps, control_ok):
             continue
         # R5: scoring
         vendors = sorted({r["arm"] for r in good} - {"tickle@head", "tickle@block", "tickle@aa"}
-                         - {a for a in {r["arm"] for r in good} if a.startswith("tickle@")})
+                         - {a for a in {r["arm"] for r in good} if a.startswith("tickle@")} - silent)
         for subj in [a for a in SUBJECTS if any(r["arm"] == a for r in good)]:
             for key, label in (("crt_med", "creation median (primary)"), ("crt_p99", "creation p99"),
                                ("stamp_med", "send-stamp median (secondary)")):
@@ -589,7 +616,7 @@ def selftest():
         d.mkdir()
         (d / "meta.txt").write_text("qos_args=--reliable\npub_rate=30\nsamehost=0\nclock_probe=1\npc_preflight=1\n"
                                     "creation_trace=1\nroundtrip=1\n")
-        idx = [write_run(d, "tickle@head", r, "rtt", roundtrip=True) for r in (1, 2)]
+        idx = [write_run(d, a, r, "rtt", roundtrip=True) for a in ("tickle@head", "cyclonedds") for r in (1, 2)]
         (d / "index.txt").write_text("\n".join(idx) + "\n")
         _m, _r, rtrip, recs, _mb = load(d)
         print("case 5: the round-trip control (60 us timer wake, nothing waits)")
@@ -597,13 +624,55 @@ def selftest():
         ok, lines = control(recs)
         print("\n".join(lines))
         check("control PASS, and it says the difference is the timer wake", ok and "timer wake" in lines[0])
+        print("case 6: a control read for rmw_tickle alone is not a control")
+        ok1, lines1 = control([r for r in recs if r["arm"] == "tickle@head"])
+        check("FAIL without a vendor read", not ok1 and "needs tickle@head and at least one vendor" in lines1[-1])
     print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
     return 1 if fails else 0
+
+
+def pc_check(out):
+    """creation_latency_pc.sh's pre-registered reading P1-P4 (its header) over <out>/{sat,free,ctl}.runs."""
+    bad = []
+    for tag in ("sat", "free", "ctl"):
+        _meta, rate, _rt, recs, _mbps = load(out / f"{tag}.runs")
+        bad += [f"{tag} VOID {r['arm']} r{r['rep']}: {r['void']}" for r in recs if r["void"]]
+        per = 1e3 / rate
+        for arm in sorted({r["arm"] for r in recs}):
+            g = [r for r in recs if r["arm"] == arm and not r["void"]]
+            if g and all(r["delivered"] == 0 for r in g) and not arm.startswith("tickle@"):
+                print(f"PC_CHECK {tag} {arm}: delivered nothing in {len(g)} reps - does not run here, not read")
+                continue
+            if len(g) < 2:
+                bad.append(f"{tag} {arm}: {len(g)} usable reps (NOT READ)")
+                continue
+            gap = [r["gap_med"] for r in g]
+            diff = [r["crt_med_deliv"] - r["stamp_med"] for r in g]
+            print(f"PC_CHECK {tag} {arm}: gap med {[round(x, 3) for x in gap]} ms, creation - stamp median "
+                  f"{[round(x, 2) for x in diff]} ms, creation (offered) {[round(r['crt_med'], 2) for r in g]}, stamp "
+                  f"{[round(r['stamp_med'], 2) for r in g]}, growth {[round(r['growth_ms'], 1) for r in g]} ms")
+            if tag == "sat" and arm.startswith(BLOCKING):
+                if not all(x > per for x in gap) or not all(x > per for x in diff):
+                    bad.append(f"P1 {arm}: gap {gap} / creation - stamp {diff} not above one period {per:.1f} ms")
+            if tag == "sat" and arm == "tickle@head" and not all(x < 1.0 for x in gap):
+                bad.append(f"P2 tickle@head: gap {gap} not below 1 ms")
+            if tag == "free" and (not all(x < 1.0 for x in gap) or
+                                  any(r["growth_ms"] > max(1.0, 0.1 * r["crt_med_deliv"]) for r in g)):
+                bad.append(f"P3 {arm}: gap {gap} or growth {[r['growth_ms'] for r in g]}")
+        if tag == "ctl":
+            ok, lines = control(recs)
+            print("\n".join(lines))
+            if not ok:
+                bad.append("P4 control FAILED")
+    print("PC_CHECK " + ("PASS" if not bad else "FAIL:\n  " + "\n  ".join(bad)))
+    return 1 if bad else 0
 
 
 def main(argv):
     if argv[1:2] == ["--selftest"]:
         return selftest()
+    if argv[1:2] == ["--pc-check"]:
+        return pc_check(Path(argv[2]))
     if argv[1:2] == ["--rtt"]:
         return rtt_campaign(argv[2])
     if len(argv) < 2:

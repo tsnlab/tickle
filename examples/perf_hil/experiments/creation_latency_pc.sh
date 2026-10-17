@@ -22,6 +22,9 @@
 #   P3 FREE: every arm's median gap below 1 ms and none GROWING: with nothing to wait for, the two definitions agree.
 #   P4 CTL: creation_latency_summary.py's control (R4) PASSES.
 #   Any VOID run (identity, trace, grid, instrument fault) fails the dry run. A rep count under 2 is NOT READ, a fail.
+#   A vendor arm that delivers nothing in every rep does not run on this PC: listed, not read (amended 2026-10-17
+#   after the first full run, in which Fast DDS on this PC delivered nothing in any cell, ping-pong included).
+#   Enforced by creation_latency_summary.py --pc-check.
 # Usage: creation_latency_pc.sh [REPS] [DUR]   (defaults 2, 30)   env: OUT (default
 #   /home/semih/tmp_build/ctl/pc_<ts>), CTL_BUILD (default /home/semih/tmp_build/ctl/perf; built here when it has no
 #   CTL_OK), PERF_TEST_SRC (~/rmw_perf_ws/src/performance_test), PF_BUILD. Detached:
@@ -83,46 +86,5 @@ S=$HERE/creation_latency_summary.py
 python3 "$S" "$OUT/sat.runs" "$DUR" --control "$OUT/ctl.runs" > "$OUT/sat.creation.txt" 2>&1
 python3 "$S" "$OUT/free.runs" "$DUR" > "$OUT/free.creation.txt" 2>&1
 cat "$OUT/sat.creation.txt" "$OUT/free.creation.txt"
-python3 - "$HERE" "$OUT" <<'PY'
-import statistics as st
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-import creation_latency_summary as c  # noqa: E402
-out = Path(sys.argv[2])
-bad = []
-for tag in ("sat", "free", "ctl"):
-    meta, rate, rt, recs, mbps = c.load(out / f"{tag}.runs")
-    for r in recs:
-        if r["void"]:
-            bad.append(f"{tag} VOID {r['arm']} r{r['rep']}: {r['void']}")
-    per = 1e3 / rate
-    arms = sorted({r["arm"] for r in recs})
-    for arm in arms:
-        g = [r for r in recs if r["arm"] == arm and not r["void"]]
-        if len(g) < 2:
-            bad.append(f"{tag} {arm}: {len(g)} usable reps (NOT READ)")
-            continue
-        gap = [r["gap_med"] for r in g]
-        diff = [r["crt_med_deliv"] - r["stamp_med"] for r in g]
-        line = (f"PC_CHECK {tag} {arm}: gap med {[round(x, 3) for x in gap]} ms, creation - stamp median "
-                f"{[round(x, 2) for x in diff]} ms, creation (offered) {[round(r['crt_med'], 2) for r in g]}, stamp "
-                f"{[round(r['stamp_med'], 2) for r in g]}, growth {[round(r['growth_ms'], 1) for r in g]} ms")
-        print(line)
-        if tag == "sat" and arm.startswith(c.BLOCKING):
-            if not all(x > per for x in gap) or not all(x > per for x in diff):
-                bad.append(f"P1 {arm}: gap {gap} / creation - stamp {diff} not above one period {per:.1f} ms")
-        if tag == "sat" and arm == "tickle@head" and not all(x < 1.0 for x in gap):
-            bad.append(f"P2 tickle@head: gap {gap} not below 1 ms")
-        if tag == "free" and (not all(x < 1.0 for x in gap) or
-                              any(r["growth_ms"] > max(1.0, 0.1 * r["crt_med_deliv"]) for r in g)):
-            bad.append(f"P3 {arm}: gap {gap} or growth {[r['growth_ms'] for r in g]}")
-    if tag == "ctl":
-        ok, lines = c.control(recs)
-        print("\n".join(lines))
-        if not ok:
-            bad.append("P4 control FAILED")
-print("PC_CHECK " + ("PASS" if not bad else "FAIL:\n  " + "\n  ".join(bad)))
-sys.exit(1 if bad else 0)
-PY
+python3 "$S" --pc-check "$OUT"
 rc=$?
