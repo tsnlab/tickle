@@ -79,7 +79,10 @@ for round in $(seq 1 "$ROUNDS"); do
             </dev/null >"$WORK/run.log" 2>&1
         code=$?
         [ "$code" -eq 0 ] || verdict=VOID_EXIT$code
-        grep '^sched_wake_check: arm=' "$WORK/run.log" | sed "s/^/ROW label=$label round=$round verdict=$verdict load=$load /" |
+        # Whole rows only: the context's log lines (stderr) can land inside a buffered stdout row (2026-10-18: one 500 ms
+        # row in 45 read interval_ms=5[2026-..., and a nanosleep median of 0).
+        grep -E '^sched_wake_check: arm=[a-z_0-9]+ interval_ms=[0-9]+ n=[0-9]+ late_p50_us=[0-9.]+ late_max_us=[0-9.]+ cpu_per_wait_us=[0-9.]+$' \
+            "$WORK/run.log" | sed "s/^/ROW label=$label round=$round verdict=$verdict load=$load /" |
             tee -a "$OUT"
     done
 done
