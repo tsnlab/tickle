@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
            (unsigned)g_rtt.count, warmup_sent, cooldown_sent, (unsigned long)stats.measured_recv,
            (unsigned long)stats.measured_sent, edge_interval_s, edge_max_s, BenchWindow_edge_end_name(warmup_end),
            BenchWindow_edge_end_name(cooldown_end), stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
-           BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
+           BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, stats.transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

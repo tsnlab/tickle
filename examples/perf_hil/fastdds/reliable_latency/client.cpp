@@ -263,7 +263,7 @@ namespace {
             static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s, opts.edge_max_s,
             BenchWindow_edge_end_name(stats.warmup_end), BenchWindow_edge_end_name(stats.cooldown_end),
             stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
-            BenchCreation_fields(&g_creation, g_creation_fields.data(), g_creation_fields.size()),
+            BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields.data(), g_creation_fields.size()),
             harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 

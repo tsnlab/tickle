@@ -27,7 +27,7 @@
 #include "RttQuantiles.h"
 
 // The RESULT-line fields BenchCreation_fields() writes fit this many bytes.
-#define BENCH_CREATION_FIELDS_MAX 256
+#define BENCH_CREATION_FIELDS_MAX 320
 
 struct BenchCreation {
     struct BenchRtt crt; // arrival - due, ms
@@ -69,17 +69,31 @@ static inline void BenchCreation_add(struct BenchCreation* creation, uint64_t ar
     BenchRtt_add(&creation->gap, gap_ms);
 }
 
-// The RESULT-line fields, after the run (the quantiles sort in place).
-static inline const char* BenchCreation_fields(struct BenchCreation* creation, char* buf, size_t len) {
+// A quantile in us for the RESULT line; -1 (no round trips) stays -1 rather than reading as -1000 us.
+static inline double BenchCreation_quantile_us(struct BenchRtt* rtt, double q) {
+    const double us_per_ms = 1e3;
+    double value_ms = BenchRtt_quantile(rtt, q);
+    return rtt->count > 0 ? value_ms * us_per_ms : value_ms;
+}
+
+// The RESULT-line fields, after the run (the quantiles sort in place). stamp is the client's send-stamp round trips
+// (its rtt_* fields). rtt_p50_us and crt_p50_us repeat rtt_p50_ms and crt_p50_ms to 0.1 us (2026-10-18): the ms
+// fields print to 1 us, and the R4 control (creation_latency_summary.py rtt_r4) compares d = crt_p50 - rtt_p50 with
+// the gap at a 1 us print resolution, so three reps printing the same p50 failed it on rounding alone (same-host S10c
+// at 2579e822, |d - g| 1.1 us). The ms fields stay as they were: the summaries and gates read them.
+static inline const char* BenchCreation_fields(struct BenchCreation* creation, struct BenchRtt* stamp, char* buf,
+                                               size_t len) {
     const double us_per_ms = 1e3;
     uint32_t count = creation->crt.count;
     double avg = count > 0 ? creation->crt_sum_ms / (double)count : -1.0;
     (void)snprintf(buf, len,
                    "crt_p50_ms=%.3f crt_p99_ms=%.3f crt_avg_ms=%.6f crt_kept=%u gap_p50_us=%.1f gap_p99_us=%.1f "
-                   "gap_min_us=%.1f gap_max_us=%.1f crt_no_due=%u",
+                   "gap_min_us=%.1f gap_max_us=%.1f crt_no_due=%u rtt_p50_us=%.1f crt_p50_us=%.1f",
                    BenchRtt_quantile(&creation->crt, BENCH_RTT_P50), BenchRtt_quantile(&creation->crt, BENCH_RTT_P99),
                    avg, (unsigned)count, BenchRtt_quantile(&creation->gap, BENCH_RTT_P50) * us_per_ms,
                    BenchRtt_quantile(&creation->gap, BENCH_RTT_P99) * us_per_ms, creation->gap_min_ms * us_per_ms,
-                   creation->gap_max_ms * us_per_ms, (unsigned)creation->no_due);
+                   creation->gap_max_ms * us_per_ms, (unsigned)creation->no_due,
+                   BenchCreation_quantile_us(stamp, BENCH_RTT_P50),
+                   BenchCreation_quantile_us(&creation->crt, BENCH_RTT_P50));
     return buf;
 }

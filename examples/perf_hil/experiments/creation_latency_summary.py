@@ -63,6 +63,10 @@ HOW TO READ IT, written 2026-10-17 before any rig run and enforced below:
      The core --rtt reading allows |d - g| <= noise + 1 us (RTT_PRINT_RES_MS): its d is the difference of two
      medians the clients print to 1 us. Changed AFTER the first rig run (2026-10-17, the user agreed): c16 and c17
      TickLE read |d - g| = 1.1 us against a noise of 1.0 us, below what the printed figures can resolve.
+     Since 2026-10-18 the core clients also print rtt_p50_us and crt_p50_us to 0.1 us (CreationTime.h), and when
+     every rep of a framework carries both, rtt_p50s() reads those with a 0.1 us resolution term
+     (RTT_PRINT_RES_FINE_MS) instead; a file without them reads exactly as before. Written after the same-host S10c
+     run at 2579e822, whose TickLE reps all printed the same p50s (noise 0) and read |d - g| 1.1 us against 1 us.
      In rtt_r4 (--rtt and the same-host and rmw round-trip readers) noise is the range of the reps' stamp p50s PLUS
      the range of their creation p50s: the median of a sum is not the sum of the medians, so the creation median
      scatters between reps on its own account (rtt_r4's docstring has the reasoning and the evidence). Changed AFTER
@@ -98,6 +102,7 @@ GRID_SLOPE_TOL, GRID_RESID_NS = 1e-3, 500_000
 CTL_REPS, CTL_N = 2, 200
 CTL_WAKE_NS, CTL_NEG_NS = 200_000, -20_000
 RTT_PRINT_RES_MS = 0.001  # the reliable_latency clients print rtt_*/crt_* p50 in ms to 3 decimals
+RTT_PRINT_RES_FINE_MS = 0.0001  # ... and, since 2026-10-18, rtt_p50_us/crt_p50_us to 1 decimal (0.1 us)
 FLOAT_EPS_MS = 1e-9  # rtt_r4: float rounding of a difference of decimal ms, not a tolerance
 BLOCKING = ("fastdds", "cyclonedds", "tickle@block")
 SUBJECTS = ("tickle@head", "tickle@block")
@@ -483,17 +488,30 @@ def rtt_r4(stamp, crt, gap, gap_min, res_ms=RTT_PRINT_RES_MS):
     if gap_min * 1e6 < CTL_NEG_NS:
         why.append(f"gap {gap_min * 1e3:.1f} us < 0")
     # The clients print rtt_p50_ms and crt_p50_ms to 1 us (%.3f ms), so d carries up to 1 us of rounding on top of the
-    # reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4).
+    # reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4). A caller that read the 0.1 us
+    # fields passes RTT_PRINT_RES_FINE_MS (rtt_p50s()).
     # FLOAT_EPS_MS: d is a difference of decimal ms read as binary floats, so a |d - g| of exactly the bound (0.061 -
     # 0.060 = 0.0010000000000000009) must not read as above it (found 2026-10-17 on the same-host p4 cell, printed
     # "1.0 us > ... 1 us"). It is not a widening of the rule: 1e-9 ms is 1 ps.
     if abs(d - g) > noise + res_ms + FLOAT_EPS_MS:
         why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
-                   f"{res_ms * 1e3:.0f} us")
+                   f"{res_ms * 1e3:g} us")
     # The descriptive label keeps its pre-2026-10-18 meaning (|d| within the stamp range); it decides nothing.
     same = "same within noise" if abs(d) <= noise_s else f"differs by the timer wake g = {g * 1e3:.1f} us"
     return not why, (f"d {d * 1e3:+.1f} us g {g * 1e3:.1f} us noise {noise * 1e3:.1f} us (stamp {noise_s * 1e3:.1f} "
                      f"+ creation {noise_c * 1e3:.1f}): {same}; {'PASS' if not why else 'FAIL ' + str(why)}")
+
+
+def rtt_p50s(reps, num=lambda f, k: float(f[k])):
+    """(stamp p50s, creation p50s, print resolution), all in ms, from the RESULT fields of one framework's reps, for
+    rtt_r4. Since 2026-10-18 the core reliable_latency clients print rtt_p50_us and crt_p50_us (0.1 us) beside
+    rtt_p50_ms and crt_p50_ms (1 us); the fine fields are read, with RTT_PRINT_RES_FINE_MS, only when EVERY rep has
+    both, so a file from before them, or a mix, reads the ms fields with RTT_PRINT_RES_MS exactly as before. num(f, k)
+    reads one field as a float."""
+    if reps and all("rtt_p50_us" in f and "crt_p50_us" in f for f in reps):
+        return ([num(f, "rtt_p50_us") / 1e3 for f in reps], [num(f, "crt_p50_us") / 1e3 for f in reps],
+                RTT_PRINT_RES_FINE_MS)
+    return [num(f, "rtt_p50_ms") for f in reps], [num(f, "crt_p50_ms") for f in reps], RTT_PRINT_RES_MS
 
 
 def rtt_campaign(path):
@@ -518,12 +536,12 @@ def rtt_campaign(path):
                 ok_all = False
                 continue
             n = [int(f["measured"]) for f in good]
-            stamp = [float(f["rtt_p50_ms"]) for f in good]
-            crt = [float(f["crt_p50_ms"]) for f in good]
+            stamp, crt, res = rtt_p50s(good)
             gap = [float(f["gap_p50_us"]) / 1e3 for f in good]
             gmin = min(float(f["gap_min_us"]) for f in good) / 1e3
-            ok, text = rtt_r4(stamp, crt, gap, gmin)
-            print(f"  {fw:<10} n {n}  RTT stamp p50 {stamp} creation p50 {crt} ms  {text}")
+            ok, text = rtt_r4(stamp, crt, gap, gmin, res)
+            print(f"  {fw:<10} n {n}  RTT stamp p50 {[round(x, 4) for x in stamp]} creation p50 "
+                  f"{[round(x, 4) for x in crt]} ms  {text}")
             ok_all = ok_all and ok
             meds[fw] = (crt, stamp)
         if "tickle" in meds:
@@ -687,6 +705,33 @@ def selftest():
     ok7e, t7e = rtt_r4([0.110, 0.118, 0.113], [0.172, 0.180, 0.174], [0.062, 0.0615, 0.062], 0.030)
     print("   ", t7e)
     check("a vendor-like spread (stamp range 8 us, creation range 8 us) passes", ok7e)
+    print("case 8: the 0.1 us fields (rtt_p50_us, crt_p50_us) when every rep prints them, the ms fields otherwise")
+    # Same-host S10c TickLE at 2579e822: every rep printed rtt_p50_ms 0.020 and crt_p50_ms 0.036 (noise 0), gap p50
+    # 14.9 us, so |d - g| 1.1 us > 1 us on rounding alone. The fine fields carry what the rounding hid.
+    old = [dict(rtt_p50_ms="0.020", crt_p50_ms="0.036", gap_p50_us=g, gap_min_us="8.0") for g in ("14.9",) * 3]
+    s8, c8, r8 = rtt_p50s(old)
+    ok8a, t8a = rtt_r4(s8, c8, [14.9e-3] * 3, 8e-3, r8)
+    print("   ", t8a)
+    check("absent: the ms fields with a 1 us term, the S10c reading (FAIL, |d - g| 1.1 us) is unchanged",
+          r8 == RTT_PRINT_RES_MS and not ok8a and "|d - g| 1.1 us" in t8a and "print resolution 1 us" in t8a)
+    fine = [dict(f, rtt_p50_us=s, crt_p50_us=c) for f, s, c in
+            zip(old, ("20.4", "20.3", "20.4"), ("35.3", "35.2", "35.2"))]
+    s8, c8, r8 = rtt_p50s(fine)
+    ok8b, t8a = rtt_r4(s8, c8, [14.9e-3] * 3, 8e-3, r8)
+    print("   ", t8a)
+    check("present: the 0.1 us fields, 0.1 us term; d 14.9 us = g, noise 0.2 us: PASS",
+          r8 == RTT_PRINT_RES_FINE_MS and abs(c8[0] - 0.0353) < 1e-12 and ok8b and "d +14.9 us" in t8a)
+    fine_off = [dict(f, crt_p50_us=f"{float(f['crt_p50_us']) + 0.4:.1f}") for f in fine]
+    ok8c, t8c = rtt_r4(*rtt_p50s(fine_off)[:2], [14.9e-3] * 3, 8e-3, rtt_p50s(fine_off)[2])
+    print("   ", t8c)
+    check("present: |d - g| 0.4 us over noise 0.2 us + 0.1 us FAILS (would pass at 1 us: the term is really finer)",
+          not ok8c and "print resolution 0.1 us" in t8c and rtt_r4(*rtt_p50s(fine_off)[:2], [14.9e-3] * 3, 8e-3)[0])
+    mixed = fine[:2] + old[2:]
+    check("a mix of reps with and without the fine fields reads the ms fields (1 us)",
+          rtt_p50s(mixed)[2] == RTT_PRINT_RES_MS and rtt_p50s(mixed)[0] == [0.020] * 3)
+    check("rtt_p50s takes a num(f, k) reader (s6_reps.num)",
+          all(abs(x - y) < 1e-12 for x, y in zip(rtt_p50s(fine, lambda f, k: float(f[k]) if k in f else None)[0],
+                                                  (0.0204, 0.0203, 0.0204))))
     print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
     return 1 if fails else 0
 

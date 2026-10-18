@@ -41,7 +41,9 @@ written 2026-10-17 before its first run and enforced in creation_block():
   C2 CONTROL, creation_latency_summary.py's R4 (rtt_r4) per framework and cell: nothing waits at a ping-pong sender,
      so the creation and stamp p50s differ by the sender's timer wake g: PASS when g <= 0.2 ms, no gap below
      -0.02 ms and |d - g| <= the reps' stamp-p50 range + creation-p50 range + 1 us (the clients print p50 to 1 us;
-     the creation range since 2026-10-18, rtt_r4's docstring). The control needs
+     the creation range since 2026-10-18, rtt_r4's docstring). Since 2026-10-18 the clients also print
+     rtt_p50_us/crt_p50_us to 0.1 us; when every rep of a framework has them they are read with a 0.1 us term
+     instead (rtt_p50s), and older files read as before. The control needs
      TickLE and at least one vendor read; a failed control makes the cell's creation verdicts NOT READ.
   C3 SCORING. S7-S10 are means: the primary figure is the creation mean (crt_avg_ms), median of the reps; TickLE is
      scored against EACH vendor separately by the range rule (TESTING.md section 4: WIN when every TickLE rep is below
@@ -57,7 +59,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import s6_reps  # noqa: E402 - beside this file, found through the path set just above
-from creation_latency_summary import range_verdict, rtt_r4  # noqa: E402 - beside this file, as s6_reps
+from creation_latency_summary import range_verdict, rtt_p50s, rtt_r4  # noqa: E402 - beside this file, as s6_reps
 
 outb = sys.argv[1]
 SCENS = ('best_effort_throughput', 'reliable_throughput', 'reliable_latency')
@@ -206,7 +208,8 @@ def creation_block():
             v = {k: [s6_reps.num(c, k) for c in good]
                  for k in ('crt_avg_ms', 'crt_p50_ms', 'crt_p99_ms', 'rtt_avg_ms', 'rtt_p50_ms', 'gap_p50_us')}
             gmin = min(s6_reps.num(c, 'gap_min_us') for c in good) / 1e3
-            ok, text = rtt_r4(v['rtt_p50_ms'], v['crt_p50_ms'], [g / 1e3 for g in v['gap_p50_us']], gmin)
+            stamp, crt, res = rtt_p50s(good, s6_reps.num)  # the 0.1 us fields when every rep prints them
+            ok, text = rtt_r4(stamp, crt, [g / 1e3 for g in v['gap_p50_us']], gmin, res)
             p99 = (f"{st.median(v['crt_p99_ms']):.4f}" if all(s6_reps.num(c, 'crt_kept') >= N_P99 for c in good)
                    else f'NOT READ (< {N_P99} round trips)')
             print(f'    {fw:<10} creation mean {st.median(v["crt_avg_ms"]):.4f} [{min(v["crt_avg_ms"]):.4f}-'

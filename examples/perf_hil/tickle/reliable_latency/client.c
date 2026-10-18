@@ -394,7 +394,7 @@ int main(int argc, char** argv) {
            warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
            edge_max_s, BenchWindow_edge_end_name(warmup_end), BenchWindow_edge_end_name(cooldown_end),
            measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", poll_ret,
-           BenchCreation_fields(&g_creation, g_creation_fields, sizeof g_creation_fields),
+           BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
