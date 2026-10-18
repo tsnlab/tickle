@@ -173,7 +173,7 @@
 #define tt_TIMER_LATENESS_INITIAL (100 * tt_MICROSECOND) // nanosecond - the measured G before its first sample
 #endif
 #ifndef tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
-#define tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE 64 // the ceiling, in multiples of srtt
+#define tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE 64 // the ceiling, in multiples of max(srtt, G)
 #endif
 // How many of its latest ACKNACK requests a reliable Subscriber remembers per writer (2026-10-07,
 // tt_WriterProxy.requests): what each named and when, so that an answer to the writer's own request leaves out

@@ -111,12 +111,12 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
-    // A custom lease_duration is accepted down to three tt_CONTEXT_TX_INTERVALs. The core honours any lease
-    // above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of life, is checked by a
-    // timer at the expiry, and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a lease, which cannot
-    // go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL
-    // (3 s), when the core checked once a second and cut every lease at its node-level limit. Rejected
-    // below the floor rather than silently rounded up - same "reject, don't silently downgrade"
+    // A custom lease_duration is accepted down to tt_LIVELINESS_LEASE_DIVISOR (6) tt_CONTEXT_TX_INTERVALs, 6 ms
+    // by default. The core honours any lease above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of
+    // life, is checked by a timer at the expiry, and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a
+    // lease, which cannot go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD *
+    // tt_CONTEXT_UPDATE_INTERVAL (3 s), when the core checked once a second and cut every lease at its node-level
+    // limit. Rejected below the floor rather than silently rounded up - same "reject, don't silently downgrade"
     // philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT (unspecified, {0,0}) and
     // an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
     // RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE ({9223372036, 854775806}, one ns short of

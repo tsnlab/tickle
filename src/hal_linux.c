@@ -3388,8 +3388,9 @@ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* rea
     const uint64_t until = hal->timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
     // A long wait takes the timer too (TT_RX_TIMER_LONG_NS): with its timeout it would end up to 0.1-0.5% of it late,
     // which ran a scheduled entry ~0.5 ms late after a 500 ms wait (sched_wake_check.c, 2026-10-17). One wake-up at
-    // the deadline, and a timerfd_settime() only when the deadline is earlier than the one armed or none is. Only for
-    // a wait that ends for a scheduler entry (wait_until_entry): a poll's own budget needs no precision, and the
+    // the deadline, and a timerfd_settime() whenever the deadline differs from the one armed or none is armed
+    // (TT_RX_TIMER_LONG_EXACT, 1 by default; 0, and every shorter wait, re-arms only for an earlier deadline). Only
+    // for a wait that ends for a scheduler entry (wait_until_entry): a poll's own budget needs no precision, and the
     // server's 500 ms budget, moving later at every poll, left an earlier one armed that fired early - ~0.4 more
     // epoll_pwait2() a round trip for the core ping server (PC, 2026-10-17).
     const bool long_wait = TT_RX_TIMER_LONG_NS > 0 && timeout > (int64_t)TT_RX_TIMER_LONG_NS && node->wait_until_entry;

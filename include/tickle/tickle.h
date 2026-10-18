@@ -717,8 +717,8 @@ struct tt_HybridState {
     uint32_t path_cap;
     uint8_t path_backoff;
     bool path_probe;
-    // The control law (DESIGN.md section 8, decision 3): the cap in units; the remembered ceiling n_fail (0: none); the
-    // hold after a collapse, the earliest next probe and the probe in progress
+    // The control law (DESIGN.md section 8, "The objective and the control law", item 3): the cap in units; the
+    // remembered ceiling n_fail (0: none); the hold after a collapse, the earliest next probe and the probe in progress
     // (0: none); tau, the reassembly-queue lifetime; R and p at the anchor of the ceiling's scaling, and the ticks in a
     // row R p has been half (+) or twice (-) that; failed probes in a row.
     uint64_t hold_until_ns;
@@ -3952,7 +3952,7 @@ struct tt_FragFirstLHeader {
     uint16_t frag_count; // 2 .. tt_LARGE_MAX_FRAGMENTS
 } __attribute__((packed));
 
-// The body of a tt_SUBMESSAGE_TYPE_LARGE_REF record, 34 bytes: the sample's header, and where its bytes are - the
+// The body of a tt_SUBMESSAGE_TYPE_LARGE_REF record, 32 bytes: the sample's header, and where its bytes are - the
 // writer's region (named from the record's sender address, the source and data.entity_id) of this incarnation, its
 // chunk `chunk` while that chunk's generation is `generation`.
 struct tt_LargeRefHeader {

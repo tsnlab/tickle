@@ -11797,8 +11797,8 @@ static uint64_t reliable_retry_configured(void) {
 // explicit choice and wins outright. 0 derives it from this proxy's own recovery estimate (see
 // tt_WriterProxy.recovery_srtt_ns): srtt + max(G, 4 * rttvar) - G being `granularity`, the context's
 // reliable_retry_granularity() - at most
-// tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE * srtt, or tt_RELIABLE_RETRY_INITIAL until there is a first
-// sample. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
+// tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE * max(srtt, G), or tt_RELIABLE_RETRY_INITIAL until there is a first
+// sample. See config.h for why the bounds are relative and why the one absolute term remains.
 //
 // The configured value is a parameter rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
