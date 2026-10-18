@@ -94,11 +94,37 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)tt_Context_schedule(node, time, send_one, NULL);
 }
 
+// RELIABLE KEEP_LAST 64 (the Q2 cell's -K 64), VOLATILE, AUTOMATIC, no deadline, lifespan or lease. history.bytes is
+// the arena the hand-built cache had, (DEPTH + 1) records of the one-datagram Bench sample, so the new arena is the
+// same size. The layout is not quite the old one: the index ring is (DEPTH + 1) slots where it was DEPTH, and the
+// cache evicts by sample count (sample_depth DEPTH) where it evicted by ring wrap - both keep DEPTH samples.
+static const struct tt_QosProfile writer_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                .depth = DEPTH,
+                .bytes = tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = 0, .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+// RELIABLE, the builtin ACK window (tracking_words 0), no reorder buffer, as before. KEEP_ALL: keep_last_depth 0,
+// never skips, as the legacy create.
+static const struct tt_QosProfile reader_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                    .tracking_words = 0,
+                    .reorder_slots = tt_QOS_REORDER_NONE,
+                    .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+
 static bool set_up(void) {
-    static struct tt_ReliableCacheIndex cache_index[DEPTH];
-    static uint8_t
-        cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache cache;
+    static const struct tt_PublisherOptions writer_options = {0}; // every option its default, as before
+    static const struct tt_SubscriberOptions reader_options = {.callback = on_sample};
     _tt_CONFIG.context_id = 1;
     if (tt_Context_create(&writer) != tt_RET_OK) {
         return false;
@@ -107,18 +133,17 @@ static bool set_up(void) {
     if (tt_Context_create(&reader) != tt_RET_OK) {
         return false;
     }
-    if (tt_Context_create_publisher(&writer, &pub, &BenchTopic, "bench") != tt_RET_OK ||
-        tt_Context_create_subscriber(&reader, &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
+    size_t writer_bytes = tt_Publisher_storage_size(&BenchTopic, &writer_qos);
+    size_t reader_bytes = tt_Subscriber_storage_size(&BenchTopic, &reader_qos);
+    void* writer_storage = writer_bytes != 0 ? calloc(1, writer_bytes) : NULL; // 8-aligned, kept for the run
+    void* reader_storage = reader_bytes != 0 ? calloc(1, reader_bytes) : NULL;
+    if ((writer_bytes != 0 && writer_storage == NULL) || (reader_bytes != 0 && reader_storage == NULL) ||
+        tt_Node_create_publisher(tt_Context_default_node(&writer), &pub, &BenchTopic, "bench", &writer_qos,
+                                 &writer_options, writer_storage, writer_bytes) != tt_RET_OK ||
+        tt_Node_create_subscriber(tt_Context_default_node(&reader), &sub, &BenchTopic, "bench", &reader_qos,
+                                  &reader_options, reader_storage, reader_bytes) != tt_RET_OK) {
         return false;
     }
-    cache.index = cache_index;
-    cache.capacity = DEPTH;
-    cache.depth = DEPTH;
-    cache.arena = cache_arena;
-    cache.arena_size = sizeof(cache_arena);
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
-    sub.reliable = true;
     uint64_t give_up = now_ns() + (DISCOVERY_GIVE_UP_S * NS_PER_S);
     while (pub.peers[0].context_id != 2 && now_ns() < give_up) {
         (void)tt_Context_poll(&writer, POLL_NS);
