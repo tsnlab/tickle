@@ -125,7 +125,10 @@ int main(int argc, char** argv) {
 
     struct tt_Server server;
 
-    ret = tt_Context_create_server(&node, &server, &SetBoolService, opts.name, (tt_SERVER_CALLBACK)set_bool_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ServerOptions server_options = {.callback = (tt_SERVER_CALLBACK)set_bool_callback};
+    ret = tt_Node_create_server(tt_Context_default_node(&node), &server, &SetBoolService, opts.name, NULL,
+                                &server_options, NULL, 0);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;

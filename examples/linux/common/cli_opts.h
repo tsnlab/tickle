@@ -59,7 +59,7 @@ struct tt_example_cli_options {
     double cooldown;
 
     // -B: perf_client only. Mirrors tt_Publisher.batch (tickle.h) one-to-one - false (this
-    // struct's own zero-init default, matching tt_Context_create_publisher()'s own default) sends
+    // struct's own zero-init default, matching tt_PublisherOptions' own default) sends
     // every tt_Publisher_publish() call immediately, same as a real Publisher would by default;
     // pass -B to instead batch, deferring to node_flush()'s own tt_CONTEXT_TX_INTERVAL tick - the
     // right choice for exactly the case DESIGN.md's own "RPC and Publish flush immediately by
@@ -68,21 +68,15 @@ struct tt_example_cli_options {
     // packets.
     bool batch;
 
-    // -R: perf_client/perf_server only. QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) -
-    // false (this struct's own zero-init default) is best-effort, today's default; pass -R to
-    // opt perf_client's Publisher into a struct tt_ReliableCache (main()'s own static instance)
-    // and perf_server's Subscriber into tt_Subscriber.reliable, so the perf rig can measure
-    // reliable-mode delivery (retransmit-on-loss) alongside best-effort.
+    // -R: perf_client/perf_server only. false (this struct's own zero-init default) creates both endpoints
+    // BEST_EFFORT, as they always were; -R creates them RELIABLE (tt_QosProfile.reliability), so the perf rig can
+    // measure reliable-mode delivery (retransmit-on-loss) alongside best-effort.
     bool reliable;
 
-    // -K <depth>: perf_client only. struct tt_ReliableCache.depth's own real, freely-configurable
-    // value, clamped to perf_client.c's own max_reliable_depth (its backing entries[] array's
-    // actual size, tickle.h's struct tt_ReliableCache doc comment - no longer a single build-wide
-    // tt_MAX_RELIABLE_HISTORY ceiling) - 0 (this struct's own zero-init default) means "unset, use
-    // tt_MAX_RELIABLE_HISTORY itself" (today's exact pre-existing behavior). Lets a HIL run (or any
-    // caller) tune the retention window independently of a rebuild, e.g. to study how RELIABLE's
-    // own recovery rate varies with it under real tc/netem loss (rmw_tickle/PLAN.md's Milestone
-    // 25) - now reaching genuinely past the old 64 default, not just up to it.
+    // -K <depth>: perf_client only. The Publisher's KEEP_LAST history depth with -R, clamped to perf_client.c's
+    // MAX_RELIABLE_DEPTH - 0 (this struct's own zero-init default) means tt_MAX_RELIABLE_HISTORY. Lets a HIL run tune
+    // the retention window without a rebuild, e.g. to study how RELIABLE's recovery rate varies with it under tc/netem
+    // loss.
     uint32_t reliable_depth;
 };
 

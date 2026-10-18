@@ -539,13 +539,24 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BulkTopic, opts.name, (tt_SUBSCRIBER_CALLBACK)bulk_callback);
+    // BEST_EFFORT unless -R (the zeroed profile would be RELIABLE). With -R: RELIABLE with the builtin ACK window and
+    // no reorder buffer, as before the QoS profile existed - so no storage either way. KEEP_ALL: the segment drain
+    // never passes a sample over, as for every Subscriber before the profile (keep_last_depth 0).
+    struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = opts.reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .reorder_slots = tt_QOS_REORDER_NONE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+    };
+    struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)bulk_callback};
+    ret = tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &BulkTopic, opts.name, &qos, &sub_options,
+                                    NULL, 0);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
     }
     if (opts.reliable) {
-        sub.reliable = true; // -R - see tt_Subscriber.reliable's own doc comment (tickle.h)
         printf("RELIABLE delivery\n");
     }
 

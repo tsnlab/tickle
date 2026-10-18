@@ -92,24 +92,11 @@ static void handle_duration_elapsed(struct tt_Context* node, uint64_t time, void
 
 static struct BulkData bulk = {0}; // static: zero-initialized, reused for every publish
 
-// QoS roadmap #5 (RELIABILITY/RELIABLE) - only actually used (pub.reliable_cache pointed at it)
-// when -R is passed; otherwise inert, matching tt_Publisher.reliable_cache's own "NULL costs
-// nothing" default. rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - entries[]/
-// capacity are this file's own backing array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized
-// one (struct tt_ReliableCache's own doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH below,
-// deliberately far past the old 64 default, so -K can reach a genuinely deeper depth than this
-// build's own former hard ceiling to actually test whether that improves RELIABLE's own tc-loss
-// recovery at high throughput, or - per that same doc comment's honest answer - the Subscriber's
-// own fixed-width received_bitmap is the real bottleneck regardless.
+// -K's ceiling: the Publisher's retained-sample depth with -R. Its storage (the cache, its index ring and its byte
+// arena, tt_Publisher_storage_size()) is malloc()ed once at startup for the depth asked - malloc() in an example is
+// fine, the no-malloc rule is TickLE core's own (DESIGN.md), not its callers'.
 #define MAX_RELIABLE_DEPTH 8192
-// B1 (rmw_tickle/PLAN.md) - index slots are fixed-size and cheap (24B each); the byte arena is
-// malloc()ed once at startup instead, sized from this run's own -s payload size. A static arena
-// would have to assume the maximum (-s fills a whole Ethernet frame), i.e. the same ~12MB this
-// file used to burn at MAX_RELIABLE_DEPTH regardless of the payload actually used. malloc() in an
-// example is fine - the no-malloc rule is TickLE core's own (DESIGN.md), not its callers'.
-static struct tt_ReliableCacheIndex reliable_cache_index[MAX_RELIABLE_DEPTH];
-static struct tt_ReliableCache reliable_cache = {0};
-static uint8_t* reliable_cache_arena = NULL;
+static void* pub_storage = NULL;
 
 static uint64_t total_sent_msgs = 0;
 static uint64_t total_sent_bytes = 0;
@@ -305,36 +292,42 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BulkTopic, opts.name);
+    uint32_t depth = opts.reliable_depth != 0 ? opts.reliable_depth : (uint32_t)tt_MAX_RELIABLE_HISTORY;
+    if (depth > (uint32_t)MAX_RELIABLE_DEPTH) {
+        if (opts.reliable) {
+            printf("Requested reliable cache depth %u exceeds this build's own MAX_RELIABLE_DEPTH (%d); clamping.\n",
+                   depth, MAX_RELIABLE_DEPTH);
+        }
+        depth = (uint32_t)MAX_RELIABLE_DEPTH;
+    }
+    // BEST_EFFORT unless -R (the zeroed profile would be RELIABLE). With -R: KEEP_LAST `depth` samples, with no byte
+    // cap on them (history.bytes UINT32_MAX), so -K is the depth kept whatever the payload.
+    struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = depth, .bytes = UINT32_MAX},
+        .reliability = {.kind = opts.reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+    };
+    struct tt_PublisherOptions pub_options = {.batch = opts.batch}; // -B - see tt_Publisher.batch (tickle.h)
+    size_t storage_size = tt_Publisher_storage_size(&BulkTopic, &qos);
+    if (storage_size != 0) {
+        pub_storage = malloc(storage_size); // 8-aligned, as malloc() always is
+        if (pub_storage == NULL) {
+            printf("Cannot allocate a %zu-byte reliable cache\n", storage_size);
+            return 1;
+        }
+    }
+    ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &BulkTopic, opts.name, &qos, &pub_options,
+                                   pub_storage, storage_size);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    pub.batch = opts.batch; // -B - see tt_Publisher.batch's own doc comment (tickle.h)
     if (opts.batch) {
         printf("Batching sends (node_flush()'s own tt_CONTEXT_TX_INTERVAL cadence), not flushing "
                "each one immediately\n");
     }
     if (opts.reliable) {
-        uint32_t depth = opts.reliable_depth != 0 ? opts.reliable_depth : (uint32_t)tt_MAX_RELIABLE_HISTORY;
-        if (depth > (uint32_t)MAX_RELIABLE_DEPTH) {
-            printf("Requested reliable cache depth %u exceeds this build's own MAX_RELIABLE_DEPTH (%d); clamping.\n",
-                   depth, MAX_RELIABLE_DEPTH);
-            depth = (uint32_t)MAX_RELIABLE_DEPTH;
-        }
-        uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, tt_RELIABLE_RECORD_BYTES(opts.message_size));
-        reliable_cache_arena = malloc(arena_bytes);
-        if (reliable_cache_arena == NULL) {
-            printf("Cannot allocate a %u-byte reliable cache arena\n", arena_bytes);
-            return 1;
-        }
-        reliable_cache.index = reliable_cache_index;
-        reliable_cache.capacity = (uint16_t)depth;
-        reliable_cache.depth = (uint16_t)depth;
-        reliable_cache.arena = reliable_cache_arena;
-        reliable_cache.arena_size = arena_bytes;
-        pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
-        pub.reliable = true;                            // -R - see tt_Publisher.reliable's own doc comment
         shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
         printf("RELIABLE delivery (retained-sample cache depth %u)\n", depth);
     }
@@ -369,7 +362,7 @@ int main(int argc, char** argv) {
     print_summary(&node, start_time);
 
     tt_Context_destroy(&node);
-    free(reliable_cache_arena); // NULL unless -R was passed; free(NULL) is a no-op
+    free(pub_storage); // NULL unless -R was passed; free(NULL) is a no-op
 
     return 0;
 }

@@ -174,7 +174,10 @@ int main(int argc, char** argv) {
 
     struct tt_Client client;
 
-    ret = tt_Context_create_client(&node, &client, &SetBoolService, opts.name, (tt_CLIENT_CALLBACK)set_bool_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)set_bool_callback};
+    ret = tt_Node_create_client(tt_Context_default_node(&node), &client, &SetBoolService, opts.name, NULL,
+                                &client_options, NULL, 0);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;
