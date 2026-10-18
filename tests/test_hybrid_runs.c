@@ -161,7 +161,8 @@ static struct tt_Subscriber sub;
 #define REORDER_SLOTS 64
 #define REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
 // A RELIABLE Subscriber's storage: its wide window, then its reorder buffer (tt_Subscriber_storage_size()).
-static uint64_t sub_storage[(tt_MAX_PEER_COUNT * WIDE_WORDS) + (REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t))];
+static uint64_t
+    sub_storage[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) + (REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t))];
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
