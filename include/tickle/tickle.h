@@ -56,6 +56,10 @@ const char* tt_version(void);
 // A node's entry in an announce (CONTEXT_NODE_PLAN.md stage 3): TOPIC and SERVICE together, which no endpoint is.
 #define tt_KIND_NODE (tt_KIND_TOPIC | tt_KIND_SERVICE)
 
+// struct tt_Topic was renamed struct tt_TypeSupport (QoS redesign, 2026-10-18): it describes a message type, and the
+// topic's name is a creation argument. Deprecated alias, kept while callers move to the new creation API.
+#define tt_Topic tt_TypeSupport
+
 struct tt_Endpoint;
 struct tt_Context;
 struct tt_Node;
@@ -3288,7 +3292,9 @@ typedef void (*tt_DATA_FREE)(struct tt_Data* data);
 // topic whose wire layout already matches its in-memory struct in native byte order.
 typedef struct tt_Data* (*tt_DATA_DECODE_INPLACE)(const uint8_t* payload, uint32_t len, bool is_native_endian);
 
-struct tt_Topic {
+// A message type: its name (part of every endpoint id) and its codec. The topic name is not here: it is an argument of
+// tt_Node_create_publisher() / _subscriber(). Was struct tt_Topic, which is now a deprecated alias for this struct.
+struct tt_TypeSupport {
     const char* name;
     uint32_t data_size;
     tt_DATA_ENCODE_SIZE data_encode_size;
@@ -3298,12 +3304,15 @@ struct tt_Topic {
     tt_DATA_DECODE_INPLACE data_decode_inplace; // optional, see typedef
     tt_DATA_FREE data_free;
 
-    // QoS - reserved for a future reliable-delivery release (ACKNACK); ignored in this one, which
-    // is best-effort only. Left in the struct so setting them now stays source-compatible later.
+    // Deprecated and never read: QoS is a creation argument (struct tt_QosProfile). Removed once callers have moved.
     uint16_t history_depth;
     uint32_t deadline_duration;
     uint32_t lifespan_duration;
     tt_DATA_ENCODE_RANGE data_encode_range; // optional, see typedef; last, so no positional initializer moves
+    // The largest CDR data_encode can write for this type, 0 when unbounded. Sizes a Publisher's retained-sample
+    // storage and a Subscriber's reorder slots (tt_Publisher_storage_size(), tt_Subscriber_storage_size()); an
+    // unbounded type is sized for tt_MAX_SAMPLE_LENGTH.
+    uint32_t max_encoded_size;
 };
 
 uint32_t tt_hash_id(const char* type, const char* name);
