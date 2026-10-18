@@ -7038,6 +7038,37 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     return tt_Client_call_id(client, request, NULL);
 }
 
+// The outstanding call made earliest - the largest calls_made - index, which a wrap of the counter does not upset -
+// or NULL when none is outstanding.
+static struct tt_ClientCall* client_oldest_call(struct tt_Client* client) {
+    struct tt_ClientCall* oldest = NULL;
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        struct tt_ClientCall* call = &client->calls[i];
+        if (call->cache != NULL &&
+            (oldest == NULL || client->calls_made - call->index > client->calls_made - oldest->index)) {
+            oldest = call;
+        }
+    }
+    return oldest;
+}
+
+tt_ret_t tt_Client_end_oldest_call(struct tt_Client* client) {
+    if (client == NULL || client->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(client->node);
+    struct tt_ClientCall* oldest = client_oldest_call(client);
+    if (oldest != NULL) {
+        const struct tt_CallRequestHeader* header =
+            (const struct tt_CallRequestHeader*)((void*)oldest->cache + sizeof(struct tt_SubmessageHeader));
+        uint16_t seq_no = header->seq_no;
+        tt_Context_unschedule(client->node, call_retry, oldest); // before the slot can be taken again
+        end_call_unanswered(oldest, seq_no);
+    }
+    state_unlock(client->node);
+    return oldest != NULL ? tt_RET_OK : tt_RET_ILLEGAL_STATUS;
+}
+
 static tt_ret_t client_destroy_locked(struct tt_Client* client) {
     if (client == NULL || client->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;

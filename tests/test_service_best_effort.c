@@ -100,12 +100,16 @@ static uint64_t outcome_at;
 static int executions; // the server's callback runs
 static bool defer_answers;
 static tt_RequestId deferred_id;
+static tt_RequestId deferred_ids[tt_CLIENT_MAX_OUTSTANDING + 1];
+static uint16_t reported_seq_no; // tt_Client.callback_seq_no as the callback ran
+static int reports;              // callback runs
 
 static void on_response(struct tt_Client* c, int8_t code, struct tt_Response* response) {
-    (void)c;
     (void)response;
     outcome = code == tt_CALL_TIMEOUT ? -1 : 1;
     outcome_at = test_mock_now;
+    reported_seq_no = c->callback_seq_no;
+    reports++;
 }
 
 static int8_t on_request(struct tt_Server* s, struct tt_Request* request, struct tt_Response* response,
@@ -116,6 +120,9 @@ static int8_t on_request(struct tt_Server* s, struct tt_Request* request, struct
     executions++;
     if (defer_answers) {
         deferred_id = id;
+        if (executions <= tt_CLIENT_MAX_OUTSTANDING + 1) {
+            deferred_ids[executions - 1] = id;
+        }
         return tt_CALL_DEFERRED;
     }
     return 0;
@@ -384,10 +391,72 @@ static void test_a_late_answer_still_reaches_a_best_effort_call(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Server_destroy(&server));
 }
 
+// tt_Client_end_oldest_call(): with every slot held by a call the server has not answered, one more call is refused;
+// ending the oldest reports it (tt_CALL_TIMEOUT, its own seq_no) and makes room. The answer that comes for it later is
+// ignored, and the call that took its slot runs on its own timer: it is not ended by the one the old call armed.
+static void test_ending_the_oldest_call_makes_room(void) {
+    const struct tt_QosProfile best_effort = {.reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT}};
+    init(&best_effort);
+    sim_loss_per_mille = 0;
+    defer_answers = true;
+    reports = 0;
+    int dummy = 0;
+    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Client_end_oldest_call(&client)); // nothing outstanding
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_end_oldest_call(NULL));
+    uint16_t seq_nos[tt_CLIENT_MAX_OUTSTANDING];
+    for (int k = 0; k < tt_CLIENT_MAX_OUTSTANDING; k++) {
+        sim_acting = CLIENT_ID;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Client_call_id(&client, (struct tt_Request*)&dummy, &seq_nos[k]));
+        sim_drain();
+        test_mock_now += tt_MILLISECOND;
+    }
+    EXPECT_EQ_INT(tt_CLIENT_MAX_OUTSTANDING, executions);
+    sim_acting = CLIENT_ID;
+    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Client_call(&client, (struct tt_Request*)&dummy)); // every slot held
+    EXPECT_EQ_INT(0, reports);
+
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_end_oldest_call(&client));
+    EXPECT_EQ_INT(1, reports);
+    EXPECT_EQ_INT(-1, outcome);
+    EXPECT_EQ_U32(seq_nos[0], reported_seq_no); // the first call made
+    EXPECT_EQ_U32(tt_CLIENT_MAX_OUTSTANDING - 1, tt_Client_outstanding(&client));
+    // The freed slot's timer went with it: left armed, it would run on the call that takes the slot next - a RELIABLE
+    // one would spend a retry early on it.
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        if (client.calls[i].cache == NULL) {
+            EXPECT_TRUE(!tt_Context_unschedule(&client_ctx, call_retry, &client.calls[i]));
+        }
+    }
+    uint64_t made_at = test_mock_now;
+    uint64_t span = call_give_up_span(&client);
+    uint16_t newest = 0;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call_id(&client, (struct tt_Request*)&dummy, &newest)); // room now
+    sim_drain();
+
+    sim_acting = SERVER_ID; // the ended call's answer comes after all: ignored
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_send_response(&server, deferred_ids[0], 0, (struct tt_Response*)&dummy));
+    sim_drain();
+    EXPECT_EQ_INT(1, reports);
+
+    // Run the clock until the newest call ends: the others end first (made earlier), it ends at its own span.
+    while (!(reports > 0 && reported_seq_no == newest) && sim_step()) {
+    }
+    EXPECT_EQ_U32(newest, reported_seq_no);
+    EXPECT_EQ_INT(-1, outcome);
+    EXPECT_TRUE(outcome_at - made_at >= span);
+    EXPECT_EQ_INT(1 + tt_CLIENT_MAX_OUTSTANDING, reports); // each call reported once
+    EXPECT_EQ_U32(1 + tt_CLIENT_MAX_OUTSTANDING, requests_sent);
+    EXPECT_EQ_U32(0, tt_Client_outstanding(&client));
+    test_mock_send_hook = NULL;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_destroy(&client));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_destroy(&server));
+}
+
 int main(void) {
     test_best_effort_sends_once_and_loses_what_the_link_lost();
     test_best_effort_on_a_clean_link_loses_nothing();
     test_a_late_answer_still_reaches_a_best_effort_call();
+    test_ending_the_oldest_call_makes_room();
 
     if (test_result() != 0) {
         return 1;
