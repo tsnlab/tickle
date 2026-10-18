@@ -63,7 +63,8 @@ static struct tt_TypeSupport topic;
 static struct tt_Publisher pub;
 static struct tt_ReliableCacheIndex index_storage[RING];
 static struct tt_ReliableCache cache;
-static uint8_t arenas[4][LIMIT]; // each growth moves to the next, as an owner's allocator would
+static uint8_t arenas[4][LIMIT];        // each growth moves to the next, as an owner's allocator would
+static uint64_t created_storage[16384]; // what the creation carves; the test's own cache replaces it below
 static int arena_in_use;
 static int grows;
 
@@ -101,7 +102,17 @@ static void setup(bool (*hook)(struct tt_Publisher*), bool durable) {
     topic.data_decode = refuse;
     topic.data_free = free_nothing;
     memset(&pub, 0, sizeof(pub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&context, &pub, &topic, "rt/g10"));
+    const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = DEPTH},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE}};
+    size_t storage_size = tt_Publisher_storage_size(&topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(created_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&context), &pub, &topic, "rt/g10", &qos,
+                                                      &(struct tt_PublisherOptions) {.cache_grow = hook},
+                                                      created_storage, storage_size));
+    // White-box: the cache under test starts with room for one sample, which no profile asks for (creation sizes
+    // the arena for `depth`), so the created one is replaced with it.
     memset(index_storage, 0, sizeof(index_storage));
     memset(&cache, 0, sizeof(cache));
     cache.index = index_storage;
@@ -114,9 +125,6 @@ static void setup(bool (*hook)(struct tt_Publisher*), bool durable) {
     arena_in_use = 0;
     grows = 0;
     pub.reliable_cache = &cache;
-    pub.reliable = true;
-    pub.durable = durable;
-    pub.cache_grow = hook;
 }
 
 static void publish_all(void) {
