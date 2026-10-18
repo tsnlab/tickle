@@ -241,14 +241,19 @@ static void setup(void) {
     defer = false;
     requests.count = 0;
     responses.count = 0;
-    service.call_retry_interval = tt_MILLISECOND; // fixed, so the retries are predictable
-    service.call_retry_count = 20;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_server(&server_context, &server, &service, "headroom/echo",
-                                                      (tt_SERVER_CALLBACK)serve));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(
+                                 tt_Context_default_node(&server_context), &server, &service, "headroom/echo", NULL,
+                                 &(struct tt_ServerOptions) {.callback = (tt_SERVER_CALLBACK)serve}, NULL, 0));
+    // A fixed retry interval, so the retries are predictable.
     for (int i = 0; i < CLIENTS; i++) {
         init_context(&client_contexts[i], (uint8_t)(2 + i));
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&client_contexts[i], &clients[i], &service, "headroom/echo",
-                                                          (tt_CLIENT_CALLBACK)answered));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_client(tt_Context_default_node(&client_contexts[i]), &clients[i], &service,
+                                            "headroom/echo", NULL,
+                                            &(struct tt_ClientOptions) {.callback = (tt_CLIENT_CALLBACK)answered,
+                                                                        .call_retry_interval = tt_MILLISECOND,
+                                                                        .call_retry_count = 20},
+                                            NULL, 0));
     }
     test_mock_send_hook = capture;
     log_file = tmpfile();
