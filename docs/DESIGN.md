@@ -58,7 +58,10 @@ Index 0 is the default node, created on first use of a `tt_Context_create_*()` s
   `clock_nanosleep()` does. A wait longer than 10 ms for a scheduler entry instead arms the set's `timerfd` at the
   entry's absolute deadline (`CLOCK_MONOTONIC`, `TFD_TIMER_ABSTIME`, edge-triggered so a fire needs no `read()`),
   whose timer carries no slack: one wake, ~10 us after the deadline (rig: 13 us late; `sched_wake_check`). The timer
-  is re-armed whenever the deadline moves (about two `timerfd_settime` calls per round trip on a ping client). For the
+  is re-armed whenever the deadline moves (`TT_RX_TIMER_LONG_EXACT`): a ping client at a 100 ms interval makes about
+  two `timerfd_settime` calls per round trip, one for the reply's later give-up deadline and one for the next ping's
+  earlier one (PC, `sched_wake_ab_pc.sh`, 2026-10-17: 0.66 per message over 300 sent, 1.98 per measured 100 ms round
+  trip; waits of 10 ms or less never arm the timer, so a faster ping does not pay this). For the
   shorter waits the polling thread's timer slack is lowered to 1 ns at its first wait (`prctl(PR_SET_TIMERSLACK)`,
   never raised; `-DTT_RX_TIMER_SLACK_NS`, a build constant in `src/hal_linux.c`, not an environment variable; 0
   leaves the slack alone), so their relative timeout ends within 0.1% of the wait (5 ms: ~15 us late on
@@ -1163,6 +1166,10 @@ Compile-time `-D` overrides unless noted; times in nanoseconds. A blank rmw colu
 | `tt_RX_BATCH` | 32 (1 if buffer > control) | | datagrams per `recvmmsg()` |
 | `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read |
 | `tt_RX_LOCK_CHUNK` | 8 | | buffered datagrams per lock hold |
+| `TT_RX_TIMER_LONG_NS` | 10 ms | | Linux HAL: a longer wait for a scheduler entry ends on the deadline `timerfd`; 0 = never |
+| `TT_RX_TIMER_LONG_EXACT` | 1 | | Linux HAL: such a wait re-arms the timer whenever its deadline differs (0 = only earlier) |
+| `TT_RX_TIMER_EDGE` | 1 | | Linux HAL: deadline `timerfd` edge-triggered, no `read()` on a fire (0 = level, read) |
+| `TT_RX_TIMER_SLACK_NS` | 1 | | Linux HAL: polling thread's timer slack, set at its first wait; 0 = leave it alone |
 | `tt_HAL_RX_HINT` | AUTO (0) | | io_uring receive hint: AUTO / READ / URING |
 | `tt_HAL_FREERTOS_NETCONN` | 1 | | FreeRTOS HAL on lwIP netconn with an arrival count (receive hint); 0 = BSD sockets |
 | `tt_SOCKET_BUFFER_SIZE` | 1 MiB | 4 MiB | requested SO_SNDBUF/SO_RCVBUF |
