@@ -37,14 +37,14 @@ or not read from creation time say so (the cross-host tails and the Array1m L4 c
 
 | scored set | WIN | DRAW | LOSE | of |
 |---|---:|---:|---:|---:|
-| rows S1-S19 (S14 not scored); S7-S10 latency from creation time (`596e9c9c`, 2026-10-17; S7c read under rule R4 as widened on 2026-10-18) | 18 | 0 | 0 | 18 |
+| rows S1-S19 (S14 not scored); S7c-S9c, S12, S18 from creation time at `2579e822` (2026-10-18), S10c at `596e9c9c` (its `2579e822` control failed) | 18 | 0 | 0 | 18 |
 | *rows S1-S19 until 2026-10-18 (latency from the send stamp)* | *18* | *0* | *0* | *18* |
 
 | headline | TickLE | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
 | BEST_EFFORT KEEP_LAST 1 goodput, max rate, P2, Mbps | **20,867** | 0.31 | 934 | S1 |
 | RELIABLE goodput, P2, Mbps | **13,764** | 1,012 | delivery failed | S4 |
-| RTT mean from creation time, P3, 200/s, ms | **0.082** | 0.164 | 0.129 | S9c |
+| RTT mean from creation time, P3, 200/s, ms | **0.037** | 0.164 | 0.130 | S9c |
 | RTT mean from the send stamp, P2, ms (diagnostic) | **0.023** | 0.107 | 0.074 | S7 |
 | client + server CPU per delivered sample, RELIABLE P3, us | **1.53** | 31.65 | delivery failed | S17 |
 
@@ -139,10 +139,6 @@ TickLE is behind inside a lead:
   [Hybrid transport](#hybrid-transport-large-samples-rig)): AUTO's p99 is above forced MTU's, beyond the A/A floor, at
   0.01% loss (+0.12 ms) and 0.1% loss (+0.025 ms). Its wire bytes per unit are 0.46% higher at 1%. The pre-registered
   criterion against forced MTU failed at all three rates.
-- Same host at 200 pings/s (a 5 ms interval), TickLE's client sends each ping ~60 us after its due time, as the DDS
-  clients do; at 20/s it sends after 11 us. The scheduler's `timerfd` deadline wait (`596e9c9c`) covers only waits
-  longer than 10 ms. A further fix, the polling thread's 1 ns timer slack (`TT_RX_TIMER_SLACK_NS`), is on main since
-  2026-10-18 and not yet measured on the rig. Its creation lead in S7c-S10c holds anyway.
 
 ## How to read these numbers
 
@@ -186,11 +182,10 @@ S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `e521bbba` (2026-10
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
 explicitly (the DDS default), and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
 
-The round-trip rows were re-measured from creation time on main `596e9c9c` (2026-10-17, rows S7c-S10c, and S12 and
-S18 from the same runs; [Same host from creation time](#same-host-from-creation-time-2026-10-17)). Latency is scored
-from creation time in S7c-S10c. S7c was NOT READ under rule R4 until the rule was widened on 2026-10-18 (after the
-run, with the user's agreement); until then S7 was scored on its send-stamp figure. S7-S10 are the send-stamp
-figures, kept as diagnostics. Corrections and earlier sessions of these rows are in [Corrections and
+The round-trip rows were re-measured from creation time on main `2579e822` (2026-10-18, the polling thread's 1 ns
+timer slack on top of the `timerfd` wait; rows S7c-S9c, and S12 and S18 from the same runs; [Same host from creation
+time](#same-host-from-creation-time-2026-10-17)). S10c's control failed in that run, so S10c stays the `596e9c9c`
+reading (2026-10-17). S7-S10 are the send-stamp figures, kept as diagnostics. Corrections and earlier sessions of these rows are in [Corrections and
 history](#same-host-corrections-and-earlier-sessions).
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
@@ -203,10 +198,10 @@ history](#same-host-corrections-and-earlier-sessions).
 | S5 | RELIABLE | P3 1424 B | ✅ **14,771** | ❌ 980 | DELIVERY FAILED ◊ (2,414) | `e521bbba` | [notes](#same-host-notes) |
 | S6 | RELIABLE | P4 2800 B | ✅ **14,917** | ❌ 1,924 | DELIVERY FAILED ◊ (4,542) | `e521bbba` | [notes](#same-host-notes) |
 | | **[Latency from creation time](#same-host-from-creation-time-2026-10-17), RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
-| S7c | RTT from creation | P2 1292 B | ✅ **0.082** | ❌ 0.167 | 0.129 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) (R4 widened 2026-10-18) |
-| S8c | RTT from creation, 20/s (60 s) | P2 1292 B | ✅ **0.039** | ❌ 0.166 | DELIVERY FAILED ◊ (0.141) | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
-| S9c | RTT from creation | P3 1424 B | ✅ **0.082** | ❌ 0.164 | 0.129 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
-| S10c | RTT from creation | P4 2800 B | ✅ **0.086** | ❌ 0.162 | 0.130 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S7c | RTT from creation | P2 1292 B | ✅ **0.036** | ❌ 0.160 | 0.125 | `2579e822` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S8c | RTT from creation, 20/s (60 s) | P2 1292 B | ✅ **0.034** | ❌ 0.172 | 0.142 | `2579e822` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S9c | RTT from creation | P3 1424 B | ✅ **0.037** | ❌ 0.164 | 0.130 | `2579e822` | [creation](#same-host-from-creation-time-2026-10-17) |
+| S10c | RTT from creation | P4 2800 B | ✅ **0.086** | ❌ 0.162 | 0.130 | `596e9c9c` | [creation](#same-host-from-creation-time-2026-10-17) (`2579e822`: NOT READ, control) |
 | | **Latency from the send stamp, RTT mean ms** (diagnostic since 2026-10-17; S7 since 2026-10-18) | | | | | | |
 | S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.107 | 0.074 | `e521bbba` | [notes](#same-host-notes) |
 | S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | DELIVERY FAILED ◊ (0.071) | `e17b4e6f` | [notes](#same-host-notes) |
@@ -214,11 +209,11 @@ history](#same-host-corrections-and-earlier-sessions).
 | S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | DELIVERY FAILED ◊ (0.069) | `e521bbba` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
 | S11 | publisher, us per delivered sample | BEST_EFFORT P4, max rate, KEEP_LAST 1 | ✅ **0.898** | ❌ 35,234 | 11.85 ¶ | `228da18d` | [notes](#same-host-notes) |
-| S12 | client, us per round trip | RTT P2, 20/s | ✅ **22.4** | ❌ 82.9 | DELIVERY FAILED ◊ (49.7) | `596e9c9c` | [notes](#same-host-notes) |
+| S12 | client, us per round trip | RTT P2, 20/s | ✅ **22.4** | ❌ 83.1 | 51.6 | `2579e822` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
 | S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.53** | ❌ 31.65 | DELIVERY FAILED ◊ (12.04) | `e521bbba` | [notes](#same-host-notes) |
-| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **35.5** | ❌ 165.8 | 93.9 ‡ | `596e9c9c` | [notes](#same-host-notes) |
+| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **35.5** | ❌ 167.0 | 95.6 ‡ | `2579e822` | [notes](#same-host-notes) |
 | S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | ❌ 46.9 | DELIVERY FAILED ◊ (239.2 ‡) | `e521bbba` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
 | S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | 49.7 / 70.6, loss 20-33% / 0.07-0.13% † | `7f127d56`, CycloneDDS `e4e090cd` | [notes](#same-host-notes) |
@@ -238,6 +233,8 @@ history](#same-host-corrections-and-earlier-sessions).
   56.6 / 56.2 and 28.5), so the rig did not move. S15 has no single worst: CycloneDDS is lower locally, FastDDS
   remotely.
 
+- **RTT at `2579e822` (2026-10-18, S7c-S10c, S12, S18):** CycloneDDS answered every round trip at P2 and P3, 200/s and
+  20/s, so it is scored in S7c-S9c, S12 and S18; at P4 it is DELIVERY FAILED, 10,138 of 10,139 in 1 of 3 reps.
 - **◊ CycloneDDS DELIVERY FAILED in every RELIABLE cell it ran here except the 200/s round trips (S7, and at `596e9c9c`
   S7c, S9c, S10c and S18), so it is listed with its figure in parentheses and not scored. Throughput (S4-S6, and S17, S19 from the same P3 runs), whole-run delivered of sent:
   P2 1,846,706 of 1,847,846, 1,891,539 of 1,892,787, 1,912,083 of 1,912,622; P3 1,899,458 of 1,900,191, 1,914,870
@@ -309,6 +306,30 @@ history](#same-host-corrections-and-earlier-sessions).
 
 ### Same host from creation time (2026-10-17)
 
+**Re-measured on main `2579e822` (2026-10-18 09:20-10:10),** which adds the polling thread's 1 ns timer slack
+(`TT_RX_TIMER_SLACK_NS`, default on since 2026-10-18) to the `timerfd` wait. Same harness, cells and reps as below
+(queue `experiments/rig_queue_creation_rtt.sh`, log `~/rig_results_safe/creation_rtt_queue_sh2.log`; raw files
+`~/rig_results_safe/creation_rtt_samehost_2579e822_20261018-092008.*`). Read by `fair_samehost_summary.py` at
+`a89aefe2`, which carries R4 as widened in `f2127ec3`; the run's own summary predates that. Samples first: every rep
+has `crt_kept` equal to its measured round trips and `crt_no_due` 0; per rep at 200/s TickLE 1,986 (P4 1,984),
+FastDDS 1,932-1,938, CycloneDDS 1,944-1,951; at 20/s 1,200 / 1,196 / 1,197.
+
+| row | cell | TickLE creation mean | FastDDS | CycloneDDS | g us, T / F / C | control | vs FastDDS | vs CycloneDDS |
+|---|---|---:|---:|---:|---:|:-:|:-:|:-:|
+| S7c | P2, 200/s | 0.0364 [0.0360-0.0366] | 0.1602 [0.1585-0.1603] | 0.1252 [0.1234-0.1336] | 14.6 / 61.0 / 59.7 | PASS | WIN | WIN |
+| S8c | P2, 20/s | 0.0336 [0.0334-0.0338] | 0.1717 [0.1657-0.1834] | 0.1423 [0.1396-0.1457] | 10.6 / 61.5 / 61.5 | PASS | WIN | WIN |
+| S9c | P3, 200/s | 0.0369 [0.0369-0.0369] | 0.1642 [0.1574-0.1685] | 0.1303 [0.1284-0.1316] | 14.6 / 61.3 / 60.0 | PASS | WIN | WIN |
+| S10c | P4, 200/s | 0.0409 [0.0407-0.0409] | 0.1621 [0.1618-0.1726] | DELIVERY FAILED (0.1329) | 14.9 / 61.7 / 60.0 | FAIL (TickLE) | NOT READ | not scored |
+
+- **TickLE's ping now leaves 15 us after its due time at 200/s** (it was ~60 us at `596e9c9c`, as the DDS clients'
+  60-62 us), and 11 us at 20/s. Its creation mean falls from 0.082 to 0.036-0.037 ms at 200/s.
+- **S10c is NOT READ in this run:** TickLE's `|d - g|` is 1.1 us (d +16.0, g 14.9) against a bound of 1 us, because
+  all three reps print the same stamp and creation p50s (noise 0). The row keeps its `596e9c9c` reading (WIN).
+- **CPU, the same runs, reps' ranges:** S12 (P2 20/s, client) TickLE 22.4-22.6, FastDDS 83.1-84.0, CycloneDDS
+  51.2-52.8 us; S18 (P3 200/s, client + server) TickLE 35.5-35.8, FastDDS 162.8-169.5, CycloneDDS 93.8-97.9 us. WIN
+  both. At `596e9c9c` S12 was 22.4 / 82.9 / (49.7, DELIVERY FAILED) and S18 35.5 / 165.8 / 93.9.
+
+**The `596e9c9c` run (2026-10-17),** the published S7c-S10c, S12 and S18 until 2026-10-18, and still S10c.
 Rows S7c-S10c, and S12 and S18 from the same runs. `experiments/fair_samehost_remeasure.sh` on main `596e9c9c` (the
 scheduler wait ending at its deadline), 2026-10-17 22:56-23:46, cells `reliable_latency` P2, P3 and P4 at 200/s and P2
 at 20/s for 60 s, 3 reps per framework, free arm (nothing pinned), TickLE with gate v2's layout-stable flags. Raw files
@@ -343,10 +364,10 @@ the reps' range; `g` is the median delay from each ping's due time to its send.
   traces of the 192 rmw same-host reps of 2026-10-18 that median offset is never above 1.0 us. Re-read under the
   widened rule, no other control verdict changed (same host, the core `C` file, the rmw `Wc`/`Jc` and same-host
   files). S7c: creation mean 0.0815 vs 0.1666 / 0.1287 ms, WIN against both on the mean and on the p50.
-- **When TickLE's ping leaves.** At 200/s (a 5 ms interval) TickLE's client sends each ping ~60 us after its due time,
-  like the DDS clients (60-62 us); at 20/s (50 ms) it sends after 11 us. The `timerfd` deadline wait of `596e9c9c`
-  covers only waits longer than 10 ms. A further fix, the polling thread's 1 ns timer slack (`TT_RX_TIMER_SLACK_NS`,
-  `119d14bd`), is on main since 2026-10-18 and not yet measured on the rig.
+- **When TickLE's ping leaves.** At 200/s (a 5 ms interval) TickLE's client sent each ping ~60 us after its due time,
+  like the DDS clients (60-62 us); at 20/s (50 ms) after 11 us. The `timerfd` deadline wait of `596e9c9c` covers only
+  waits longer than 10 ms. The polling thread's 1 ns timer slack (`119d14bd`) brought it to 15 us (`2579e822`,
+  above).
 - **CPU, the same runs (S12, S18).** Per answered round trip, reps' ranges: S12 (P2 20/s, client) TickLE 22.3-22.6,
   FastDDS 80.0-87.4 us, CycloneDDS DELIVERY FAILED (49.7); S18 (P3 200/s, client + server) TickLE 35.4-35.5, FastDDS
   163.0-177.7, CycloneDDS 93.1-94.7 us (iox-roudi's 1.6 us included). TickLE has the lowest in both. Until 2026-10-18
@@ -380,7 +401,9 @@ preflight 9 usable runs, 0 VOID; every cell n=3 for every arm; 4,992-10,059 meas
 every one with its due time. The R4 control passed for every arm in every cell (`g` 56.9-61.9 us for every rmw: the
 ping's own 1 ms sleep, the same binary for all). Every scored metric of those cells is a WIN from creation time, as it
 was from the send stamp: RTT mean, p50 and p99, CPU per round trip and peak RSS. The send-stamp rows R1-R8 (`06dd78d8`)
-stay as diagnostics; R9-R12 are now the `18f16b85` figures (their `06dd78d8` values are in the notes below).
+stay as diagnostics; R9-R12 are now the `18f16b85` figures (their `06dd78d8` values are in the notes below). The
+re-run on main `d0650110` (2026-10-18 07:53-08:39, `~/rig_results_safe/creation_rtt_rmwsh_d0650110_20261018-062244.*`)
+agrees: all 8 R4 controls PASS and every RTT-cell metric a WIN (e.g. R1c 95.4 against 192.5 and 172.8 us).
 
 | # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `a7e02807` |
 |---|---|---|---|---|---|---|---|---|
@@ -765,7 +788,7 @@ range in brackets. `g` is the median delay from each ping's due time to its send
   perf_test's own timer, so rmw_tickle sends as promptly as the DDS rmws.
 - **Not yet measured from creation time:** the tails (rows 2, 4, 6) and the Array1m cells of the L4 table. Their
   figures are from the send stamp. The same-host RTT rows (S7c-S10c, with S12 and S18) were measured on `596e9c9c` on
-  2026-10-17 and the rmw RTT rows (48c-67c, R1c-R8c) on `18f16b85` on 2026-10-18; S7c, NOT READ under rule R4 as
+  2026-10-17 and again on `2579e822` on 2026-10-18 and the rmw RTT rows (48c-67c, R1c-R8c) on `18f16b85` on 2026-10-18; S7c, NOT READ under rule R4 as
   first written, is read under R4 as widened on 2026-10-18.
 
 ### Latency
@@ -905,7 +928,9 @@ sample. In each, the pong received all 95 pings, but heard the first before its 
 subscriber, so its reply to seq 1 sent nothing (`4fbfe459`: dropped if BEST_EFFORT, kept if RELIABLE, owed to no
 VOLATILE reader). Its `tx_unmatched` counter is 1 in those 10 reps and 0 in the other 102. At `934f90de` that reply
 went out by broadcast. Since then `ping_node` sends seq 1 only after a warm-up round trip (TESTING.md section 5, item
-9). Readable reps, rmw_tickle / FastDDS / CycloneDDS /
+9). The re-run with that warm-up (main `d0650110`, 2026-10-18 06:22-07:53, `W` 3 reps, `J` 3 reps;
+`~/rig_results_safe/creation_rtt_rmw{W,J}_d0650110_20261018-062244.*`) has no VOID(loss) rep:
+`rmw_loss_attribution.py` reports "no lossy rep" on both `J` and `W`. Readable reps, rmw_tickle / FastDDS / CycloneDDS /
 rmw_zenoh, are in the table; no cell falls below 2.
 
 | row | cell | rmw_tickle creation mean | FastDDS | CycloneDDS | rmw_zenoh (ref) | stamp mean T / F / C | g us, T / F / C | reps read T / F / C / Z | vs FastDDS | vs CycloneDDS | stamp verdict F / C (diag.) |
@@ -938,6 +963,9 @@ rmw_zenoh, are in the table; no cell falls below 2.
   6, LOSE 0** of 28, against WIN 20, DRAW 8 from the send stamp at `934f90de`. Rows 59 and 62 moved from DRAW to WIN,
   and the send stamp of the same run moves them the same way, so the move is the session (`18f16b85` against
   `934f90de`), not the definition. No verdict differs between the creation and stamp readings of this run.
+- **The `d0650110` re-run does not agree with these rows everywhere** (20 cells CONTROL PASS; `J` at 3 reps, not 7):
+  against CycloneDDS it reads 63c a LOSE (0.403 [0.402-0.407] against 0.390 [0.389-0.398] ms; LOSE on the send stamp
+  too) and 59c and 61c DRAWs, the other cells as here. The rows stay `18f16b85` (7 reps); not attributed.
 - **Every rmw's ping leaves 58.6-66.5 us after its due time** (`g`): the ping is one binary for all, and its sleep
   overshoots alike, so creation time adds about 60 us to every arm and moves no ranking.
 
@@ -1212,6 +1240,12 @@ changed:
 - **rmw same host (R1-R12).** Every scored metric of the eight round-trip cells reads WIN from creation time at
   `18f16b85`, as it did from the send stamp at `06dd78d8`; WIN 52 of 52 stands. R9-R12's `06dd78d8` values are in the
   [rmw same-host notes](#rmw-layer-same-host).
+
+- **Same host on `2579e822` (2026-10-18).** S7c-S9c, S12 and S18 re-measured with the 1 ns timer slack: TickLE's
+  creation mean 0.082 -> 0.036-0.037 ms at 200/s (its ping's gap ~60 -> 15 us), 0.039 -> 0.034 ms at 20/s;
+  CycloneDDS answered everything at P2 and P3 and is now scored in S8c and S12. S10c's control failed (1.1 us against
+  1 us), so S10c stays the `596e9c9c` reading. Count unchanged, WIN 18 of 18. The README's same-host round trip
+  (S9c) moved from 0.082 / 0.164 / 0.129 to 0.037 / 0.164 / 0.130 ms.
 
 ### Same host: corrections and earlier sessions
 

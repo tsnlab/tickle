@@ -19,7 +19,7 @@ complete. P1-P4 = 76, 1292, 1424, 2800-byte payloads.
 | Cross host, client peak memory, P1 (KB) | **2,087** | 15,947 | 5,407 | row 28, `09a0437d` |
 | Same host, BEST_EFFORT goodput, P4 (Mbps) | **25,066** | 0.70 | 1,854 | S3, `e521bbba` |
 | Same host, RELIABLE goodput, P4 (Mbps) | **14,917** | 1,924 | delivery failed | S6, `e521bbba` |
-| Same host, round trip from creation, P3 (ms) | **0.082** | 0.164 | 0.129 | S9c, `596e9c9c` |
+| Same host, round trip from creation, P3 (ms) | **0.037** | 0.164 | 0.130 | S9c, `2579e822` |
 
 Across the network TickLE scores 139 wins, 11 draws, 0 losses in 150 cells; through ROS 2 it wins all 52 same-host
 rows. It still loses 2 rows: CPU per MB against FastDDS for 4 MB messages at 15 Hz (+3-4%). Every figure, and where TickLE does not come first: [docs/RESULTS.md](docs/RESULTS.md).
