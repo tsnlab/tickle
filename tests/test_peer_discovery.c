@@ -25,6 +25,12 @@
 // Publisher/Client - which nothing else in this test suite covers.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
+// TEST_QOS_UNRELIABLE with a liveliness lease.
+#define TEST_QOS_LEASE(lease)                                                               \
+    ((const struct tt_QosProfile) {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL},            \
+                                   .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT}, \
+                                   .liveliness = {.lease_ns = (lease)}})
+
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
 #define PUB_ENDPOINT_ID 0x11111111
@@ -485,7 +491,8 @@ static void test_publisher_created_after_the_announce_learns_the_peer_from_its_r
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Publisher yet
 
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "late_pub"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "late_pub",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers)); // control: nothing is learned at creation itself
 
     tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
@@ -548,7 +555,9 @@ static void test_client_created_after_the_announce_learns_the_peer_from_its_rese
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Client yet
 
     struct tt_Client client;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node, &client, &service, "late_client", fake_client_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_client(tt_Context_default_node(&node), &client, &service, "late_client", NULL,
+                                        &(struct tt_ClientOptions) {.callback = fake_client_callback}, NULL, 0));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(client.peers));
 
     tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_SERVICE_SERVER, "s", "srv");
@@ -577,8 +586,10 @@ static void test_two_publishers_created_after_the_announce_both_learn_the_peer(v
 
     struct tt_Publisher first;
     struct tt_Publisher second;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &first, &topic, "late_pub"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &second, &topic, "late_pub"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &first, &topic, "late_pub",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &second, &topic, "late_pub",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(first.peers)); // control: nothing is learned at creation itself
     EXPECT_EQ_U32(0, (uint32_t)count_peers(second.peers));
     // The summary path asks for the list as well: the announce is not taken as applied there either.
@@ -768,7 +779,9 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
 
     struct tt_TypeSupport sub_topic = {.name = "duo", .data_size = 4, .data_decode = duo_decode, .data_free = duo_free};
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&two, &sub, &sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&two), &sub, &sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
     duo_run_until(&one, &two, tt_SECOND + (uint64_t)(3.5 * tt_SECOND)); // both know each other, steady state
 
     int periodic_one = duo_sent[1];
@@ -786,7 +799,8 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
                                        .data_encode = fake_encode};
     struct tt_Publisher pub;
     uint64_t created = test_mock_now;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // within 5 ms, where it used to take up to a second
 
@@ -866,8 +880,11 @@ static void test_steady_state_is_summaries_that_keep_the_peer_alive(void) {
     duo_start(&one, &two);
     struct tt_Subscriber sub;
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&two, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&two), &sub, &duo_sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &duo_pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 
@@ -909,7 +926,8 @@ static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&two), &pub, &duo_pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 
@@ -917,7 +935,9 @@ static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
     duo_drop = drop_node_one_broadcast_lists;
     struct tt_Subscriber sub;
     uint64_t created = test_mock_now;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&one), &sub, &duo_sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
     duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, duo_lists_broadcast[1]); // the push happened, and was lost
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
@@ -942,13 +962,16 @@ static void test_requests_are_bounded_per_summary_until_a_list_arrives(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&two), &pub, &duo_pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
 
     duo_reset_counts();
     duo_drop = drop_node_one_lists;
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&one), &sub, &duo_sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (5 * tt_SECOND));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
     EXPECT_TRUE(duo_summaries[1] >= 4);
@@ -1062,13 +1085,16 @@ static void test_a_lost_answer_is_asked_for_again_at_once(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&two), &pub, &duo_pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
 
     duo_reset_counts();
     duo_drop = drop_node_one_broadcast_lists;
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&one), &sub, &duo_sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
     duo_run_until(&one, &two, test_mock_now + (5 * tt_MILLISECOND));
     duo_drop = drop_first_unicast_list_from_one;
     datagrams_to_drop = 1;
@@ -1225,7 +1251,8 @@ static int false_death_trials(int lost, uint64_t late_one, uint64_t late_two) {
         duo_late[1] = late_one;
         duo_late[2] = late_two;
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &duo_pub_topic, "duo_ep",
+                                                          &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
         duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + ((uint64_t)trial * tt_SECOND / 2));
         datagrams_to_drop = lost;
         duo_drop = drop_node_one_summaries_counted;
@@ -1305,7 +1332,9 @@ static void liveliness_duo_start(struct tt_Context* one, struct tt_Context* two,
                                                       .data_decode = duo_decode,
                                                       .data_free = duo_free};
         EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Context_create_subscriber(two, &live_subs[k], &live_sub_topics[k], "live_ep", duo_on_data));
+                      tt_Node_create_subscriber(tt_Context_default_node(two), &live_subs[k], &live_sub_topics[k],
+                                                "live_ep", &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
     }
     duo_run_until(one, two, test_mock_now + (50 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, watched_arrivals[0]);
@@ -1350,8 +1379,8 @@ static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) 
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(tt_SECOND + (tt_SECOND / 2)), NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &pub, NULL);
 
     // Node 1's summaries: the reader's must get through, or node 1 presumes node 2 gone, its Publisher has no matched
@@ -1382,10 +1411,12 @@ static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
     // first departure wrote past departed_acks[] over `batch`, and the assertion below sent one datagram too many.
     memset(&manual, tt_DEPARTED_ACKS, sizeof(manual));
     memset(&automatic, tt_DEPARTED_ACKS, sizeof(automatic));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &manual, &live_topic_a, "live_ep"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &automatic, &live_topic_b, "live_ep"));
-    manual.liveliness_manual = true;
-    manual.liveliness_lease_duration_ns = tt_SECOND;
+    struct tt_QosProfile manual_qos = TEST_QOS_LEASE(tt_SECOND);
+    manual_qos.liveliness.kind = tt_QOS_LIVELINESS_MANUAL_BY_TOPIC;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &manual, &live_topic_a, "live_ep",
+                                                      &manual_qos, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &automatic, &live_topic_b,
+                                                      "live_ep", &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &manual, &automatic);
     uint64_t announced = watched_arrived_at[0];
 
@@ -1414,8 +1445,8 @@ static void test_a_lease_longer_than_the_node_limit_is_not_cut_short(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = 4 * tt_SECOND;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(4 * tt_SECOND), NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &pub, NULL);
     duo_run_until(&one, &two, test_mock_now + (2 * tt_SECOND));
 
@@ -1441,8 +1472,8 @@ static int lease_lapse_trials(int lost, uint64_t late_one, uint64_t late_two) {
         duo_late[1] = late_one;
         duo_late[2] = late_two;
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-        pub.liveliness_lease_duration_ns = tt_SECOND;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                          &TEST_QOS_LEASE(tt_SECOND), NULL, NULL, 0));
         liveliness_duo_start(&one, &two, &pub, NULL);
         duo_run_until(&one, &two, test_mock_now + tt_SECOND + ((uint64_t)trial * tt_SECOND / 20));
         datagrams_to_drop = lost;
@@ -1467,8 +1498,8 @@ static void test_a_node_is_not_kept_alive_past_the_lease_cap(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = 30 * tt_SECOND;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(30 * tt_SECOND), NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &pub, NULL);
     duo_run_until(&one, &two, test_mock_now + tt_SECOND);
 
@@ -1492,8 +1523,8 @@ static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
     duo_late[1] = 100 * tt_MICROSECOND;
     duo_late[2] = 170 * tt_MICROSECOND;
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = tt_SECOND;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(tt_SECOND), NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &pub, NULL);
 
     for (int second = 0; second < 20; second++) {
@@ -1514,8 +1545,8 @@ static void test_short_lease_summaries_give_way_to_traffic(void) {
     static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = tt_SECOND;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(tt_SECOND), NULL, NULL, 0));
     liveliness_duo_start(&one, &two, &pub, NULL);
 
     int before = duo_summaries[1];
@@ -1543,8 +1574,8 @@ static int late_lapses_after_a_kill(void) {
         static struct tt_Context two;
         duo_start(&one, &two);
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
-        pub.liveliness_lease_duration_ns = tt_SECOND;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &live_topic_a, "live_ep",
+                                                          &TEST_QOS_LEASE(tt_SECOND), NULL, NULL, 0));
         liveliness_duo_start(&one, &two, &pub, NULL);
         uint64_t last =
             duo_run_publishing(&one, &two, test_mock_now + (5 * tt_SECOND) + ((uint64_t)phase * 100 * tt_MILLISECOND),
@@ -1580,8 +1611,9 @@ static void test_a_peer_no_data_reaches_keeps_every_summary(void) {
     node.id = 1;
     test_mock_reset();
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &live_topic_a, "live_ep"));
-    pub.liveliness_lease_duration_ns = tt_SECOND; // summaries every lease/6: the skip is armed
+    // A 1 s lease: summaries every lease/6, so the skip is armed.
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &live_topic_a, "live_ep",
+                                                      &TEST_QOS_LEASE(tt_SECOND), NULL, NULL, 0));
     node.update_seen[2] = true;
     node.update_seen[3] = true;
     struct tt_Peer peers[2] = {{.context_id = 2, .ip = 2, .port = 1}, {.context_id = 3, .ip = 3, .port = 1}};
