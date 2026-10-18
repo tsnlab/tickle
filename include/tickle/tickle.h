@@ -82,6 +82,14 @@ struct tt_TCB {
 typedef void (*tt_DISCOVERY_CALLBACK)(struct tt_Context* node, uint8_t context_id, uint32_t endpoint_id, uint8_t kind,
                                       bool departed, void* param);
 
+// Fired once per newly incompatible pair (struct tt_QosIncompatibleStatus, QoS plan D2) for the local `endpoint` - a
+// tt_Publisher or tt_Subscriber - after its status has counted it, with the state lock held: on the polling thread for
+// an announce, on the creating thread for a create. `policy_kind` is an enum tt_QosPolicyKind. Set with
+// tt_Context_set_qos_incompatible_callback().
+struct tt_Endpoint;
+typedef void (*tt_QOS_INCOMPATIBLE_CALLBACK)(struct tt_Context* node, struct tt_Endpoint* endpoint, uint8_t policy_kind,
+                                             void* param);
+
 // How often a node's lock was taken, how often a caller found it already held, and for how long those
 // callers waited in total (2026-09-25). Kept per lock so the rig can say where contention actually is
 // before any lock is split further - see "Threading" at tt_Context_lock(). Updated by whoever holds the
@@ -1556,6 +1564,9 @@ struct tt_Context {
     // Large-message step B (DESIGN.md section 8), last: it came after everything above.
     struct tt_LargeRefState large_ref;
 #endif
+    // tt_Context_set_qos_incompatible_callback()'s (QoS plan D2). After every other field, so none of them moves.
+    tt_QOS_INCOMPATIBLE_CALLBACK qos_incompatible_callback;
+    void* qos_incompatible_callback_param;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -1779,6 +1790,30 @@ tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t ki
                                struct tt_QosProfile* actual);
 // Field by field (the struct has padding, so memcmp() is not a comparison). NULL equals only NULL.
 bool tt_QosProfile_equal(const struct tt_QosProfile* a, const struct tt_QosProfile* b);
+
+// The policy that makes a Publisher and a Subscriber incompatible (QoS plan D2): what the Subscriber requests and the
+// Publisher does not offer. Checked in this order, and the first that fails is the one reported - rmw's order, and
+// its rmw_qos_policy_kind_t names.
+enum tt_QosPolicyKind {
+    tt_QOS_POLICY_INVALID = 0, // compatible
+    tt_QOS_POLICY_RELIABILITY, // RELIABLE requested, BEST_EFFORT offered
+    tt_QOS_POLICY_DURABILITY,  // TRANSIENT_LOCAL requested, VOLATILE offered
+    tt_QOS_POLICY_DEADLINE,    // a period requested, a longer or infinite one offered
+    tt_QOS_POLICY_LIVELINESS,  // MANUAL_BY_TOPIC requested and AUTOMATIC offered, or a longer or infinite lease
+};
+
+// A topic endpoint's incompatible matches (QoS plan D2): decided when an announce of the other side is applied, and
+// when the endpoint is created against the endpoints already known, local ones included. Each incompatible pair counts
+// once - a repeated announce, or a new generation of the same source listing the same endpoint, does not count it
+// again; a new endpoint of the other side (a new entity_id) does. Core-owned; read under tt_Context_lock().
+struct tt_QosIncompatibleStatus {
+    uint32_t total_count;     // incompatible endpoints met since creation, each once
+    uint8_t last_policy_kind; // enum tt_QosPolicyKind of the last one; tt_QOS_POLICY_INVALID before any
+    uint8_t remembered;       // used entries of the two arrays below
+    uint8_t evict_next;       // the entry a full memory replaces when every remembered endpoint is still known
+    uint8_t context_ids[tt_QOS_INCOMPATIBLE_REMEMBERED];
+    uint32_t entity_ids[tt_QOS_INCOMPATIBLE_REMEMBERED];
+};
 
 struct tt_Service;
 struct tt_Client;
@@ -2684,6 +2719,8 @@ struct tt_Publisher { // extends endpoint
     uint32_t qos_history_depth; // the depth retained of the type's largest samples (history.bytes may cap it)
     uint32_t qos_history_bytes;
     uint8_t qos_history_kind; // enum tt_QosHistoryKind
+    // Subscribers requesting what this Publisher does not offer (QoS plan D2). Last, for the reason above.
+    struct tt_QosIncompatibleStatus qos_incompatible;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -3401,6 +3438,8 @@ struct tt_Subscriber { // extends endpoint
     uint32_t qos_history_depth;
     uint32_t qos_history_bytes;
     uint8_t qos_history_kind;
+    // Publishers offering less than this Subscriber requests (QoS plan D2). Last.
+    struct tt_QosIncompatibleStatus qos_incompatible;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -3835,6 +3874,13 @@ void tt_Context_unlock(struct tt_Context* node);
 // yourself instead). Pass `discovery == NULL` to detach again.
 tt_ret_t tt_Context_set_discovery(struct tt_Context* node, struct tt_Discovery* discovery,
                                   tt_DISCOVERY_CALLBACK callback, void* param);
+
+// Sets the callback fired for each newly incompatible Publisher-Subscriber pair (tt_QOS_INCOMPATIBLE_CALLBACK); NULL
+// removes it. The counts in struct tt_QosIncompatibleStatus are kept with or without one. A remote endpoint is known
+// by its announce, which a context without a discovery table (tt_Context_set_discovery()) still applies, but only a
+// table lets a Publisher or Subscriber created later be checked against the remote endpoints already announced.
+tt_ret_t tt_Context_set_qos_incompatible_callback(struct tt_Context* node, tt_QOS_INCOMPATIBLE_CALLBACK callback,
+                                                  void* param);
 
 // Number of currently-alive occupied slots in `discovery` - for iterating/sizing a snapshot
 // without walking the full tt_MAX_DISCOVERED_ENTITIES capacity by hand. Excludes tombstoned
