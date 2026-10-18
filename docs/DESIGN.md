@@ -370,6 +370,24 @@ link without frame CRC. Not on FreeRTOS.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
+**API** (2026-10-18). QoS is given at creation and only then: `tt_Node_create_publisher(node, pub, type, topic, qos,
+options, storage, size)`, and `_subscriber`, `_client`, `_server` alike. `struct tt_QosProfile` holds one struct per
+policy (history, reliability, durability, deadline, lifespan, liveliness): the rmw fields, then TickLE's extensions
+(`history.bytes`; `reliability.tracking_words`, `reorder_slots`, `max_blocking_ns`). Not ROS's struct: core has no
+ROS dependency, and rmw_tickle converts.
+
+| rule | detail |
+|---|---|
+| zero field | the computed default, `rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, infinite |
+| resolution | `tt_QosProfile_resolve()`: SYSTEM_DEFAULT, BEST_AVAILABLE (from the discovery table), and out-of-range values refused, not adjusted |
+| hot path | the resolved profile is written into the endpoint's existing fields; only what none held is appended |
+| storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT |
+| depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()` |
+| not QoS | `tt_PublisherOptions`, `tt_SubscriberOptions`, `tt_ClientOptions` (call retry), `tt_ServerOptions` |
+
+`tt_Topic` is now `tt_TypeSupport`. Deprecated until callers move: `tt_Context_create_*()`, `tt_Node_create_*_legacy()`,
+and QoS written into endpoint fields.
+
 **RxO matching.** `tt_UpdateEntity` carries `qos` bits (reliable, durable, manual liveliness), deadline and lease;
 DATA from an incompatible writer is dropped (`rxo_drops`).
 
@@ -533,6 +551,9 @@ Compile-time `-D` overrides unless noted; blank rmw column = core default.
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | 256 / 8192 | reader window; 8192 holds an 11.3 MiB sample |
 | `tt_IDLE_HEARTBEAT_PERIOD` | 250 ms | | P; a 10 Hz stream never pays it; 0 = off |
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | example cache depth |
+| `tt_QOS_DEPTH_DEFAULT` / `tt_QOS_KEEP_ALL_DEPTH_DEFAULT` | 10 / 256 | | a zero `history.depth`: rmw's / one ACK window |
+| `tt_QOS_HISTORY_BYTES_DEFAULT` / `tt_QOS_KEEP_ALL_BYTES_DEFAULT` | 1 MiB / 512 KiB | | a zero `history.bytes`, as rmw_tickle's |
+| `tt_QOS_MAX_BLOCKING_DEFAULT_NS` / `tt_QOS_REORDER_SLOTS_DEFAULT` | 100 ms / 16 | | zero `max_blocking_ns` / `reorder_slots` |
 | `tt_CLIENT_MAX_OUTSTANDING` | 4 | | calls per Client |
 | `tt_CLIENT_CALL_WINDOW` | 8 | | answers kept per Client (2 x outstanding) |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | seed until a first answer |
