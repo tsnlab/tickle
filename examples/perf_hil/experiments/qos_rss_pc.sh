@@ -100,8 +100,12 @@ run_cell() { # run_cell <rep> <scenario> <size> <arm>
     reliable_latency:*) cargs="-i 0.005" ;;
     *) cargs="-i 0.0002" ;;
     esac
+    # The latency server's -d is the client's measured window, and it adds 15 s and the warm-up and cool-down bounds
+    # before it stops by itself (on the rig run_scenario.sh SIGINTs it; here nothing may signal a root process). So it
+    # gets the client's -d, and the time to reach its own end.
+    [ "$sc" = reliable_latency ] && srv_d=$DUR
     # shellcheck disable=SC2024 # the logs stay ours
-    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 30)) nice -n 19 /usr/bin/time -f "$TIMEFMT" \
+    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 90)) nice -n 19 /usr/bin/time -f "$TIMEFMT" \
         "$bin/server" -d "$srv_d" >"$WORK/srv.log" 2>&1 &
     local srv=$!
     sleep 1

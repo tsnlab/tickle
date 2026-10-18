@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Reads qos_rss_pc.sh's output: peak RSS per cell, role and arm, and the verdict its header pre-registers.
 
-Lines read, tag = 'rep=R cell=C arm=A role=<client|server>': '<tag> RUSAGE ... exit=E maxrss_kb=K' (rusage_run.py,
-wait4()'s ru_maxrss) and '<tag> RESULT: ... lost=L ...'.
+Lines read, tag = 'rep=R cell=C arm=A role=<client|server>': '<tag> RUSAGE exit=E maxrss_kb=K' (GNU time, wait4()'s
+ru_maxrss) and '<tag> RESULT: ... lost=L ... peak_rss_kb=H ...' (the bench's own VmHWM, which the rig scores).
 Rules (the harness header says why):
-  SAMPLES   a process counts only with exit=0 and maxrss_kb > 0, and a throughput server only if its RESULT says lost=0;
+  MEASURE   a process's peak RSS is its own VmHWM (peak_rss_kb), the rig's instrument, wherever it prints one; only the
+            reliable_latency server prints none, and for it ru_maxrss stands in.
+  SAMPLES   a process counts only with exit=0 and a peak > 0, and a throughput server only if its RESULT says lost=0;
             fewer than MIN_REPS per arm in a cell/role -> that row VOID.
-  INSTRUMENT where a RESULT line has the bench's own VmHWM (peak_rss_kb), maxrss_kb must be within 5% of it, or GNU
-            time's floor binds: VOID.
+  INSTRUMENT where a process has both, maxrss_kb must not exceed its VmHWM by more than 5% - else GNU time's own
+            resident set at exec is the floor of ru_maxrss and the stand-in reads it: VOID. (Amended after the first
+            v3 rep, before any verdict was read: the check was two-sided, and maxrss_kb read 5-12% BELOW VmHWM for
+            clients - ru_maxrss misses part of the peak, the opposite of the floor this check exists for. Hence VmHWM
+            as the measure, and the stand-in's under-read stated wherever it is used.)
   TREATMENT pre - main of reliable_latency's client and server >= 300 KB at p1 and >= 4,000 KB at p4; otherwise the
             instrument cannot see what fix A is for and every verdict is VOID.
   CONTROL   floor = max(64, 2 x |median(fix) - median(pre)|) over the control cell's roles.
@@ -30,7 +35,7 @@ HWM = re.compile(r"\bpeak_rss_kb=(\d+)")
 
 
 def read(path):
-    """{(cell, role, arm): [maxrss_kb per counted rep]}, and the reasons reps were not counted."""
+    """{(cell, role, arm): [peak RSS KB per counted rep]}, the reasons reps were not counted, and the instrument check."""
     maxrss, lost, hwm = {}, {}, {}
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
@@ -53,12 +58,13 @@ def read(path):
     for key, own in hwm.items():
         if key in maxrss and maxrss[key][1] > 0:
             compared += 1
-            if abs(maxrss[key][1] - own) > INSTRUMENT_TOLERANCE * own:
-                disagree.append(f"{key}: maxrss_kb {maxrss[key][1]} vs its own VmHWM {own}")
-    for key, (code, kb) in sorted(maxrss.items()):
+            if maxrss[key][1] - own > INSTRUMENT_TOLERANCE * own:
+                disagree.append(f"{key}: maxrss_kb {maxrss[key][1]} above its own VmHWM {own}")
+    for key, (code, stand_in) in sorted(maxrss.items()):
         rep, cell, arm, role = key
+        kb = hwm.get(key, stand_in)
         if code != 0 or kb <= 0:
-            dropped.append(f"{key}: exit={code} maxrss_kb={kb}")
+            dropped.append(f"{key}: exit={code} peak={kb}")
         elif role == "server" and "throughput" in cell and lost.get(key) != 0:
             dropped.append(f"{key}: lost={lost.get(key)}")
         else:
