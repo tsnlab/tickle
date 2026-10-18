@@ -142,6 +142,11 @@ static void test_subscriber_defaults_override_garbage(void) {
     EXPECT_TRUE(sub.tracking_bitmaps == NULL);
     EXPECT_EQ_INT(0, sub.tracking_words);
     EXPECT_TRUE(sub.reorder_storage == NULL);
+    // 2026-10-18, UBSan in test_qos_create: destroy reads every writer's acknack_scheduled, which was left as found.
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        EXPECT_TRUE(!sub.writers[i].acknack_scheduled);
+    }
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub));
 }
 
 int main(void) {
