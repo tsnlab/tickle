@@ -3489,6 +3489,11 @@ struct tt_SubscriberOptions {
     void* accept_callback_param;
 };
 
+// A Client's reliability (its tt_QosProfile, decision D6): RELIABLE, the services default, resends an unanswered
+// request on the retry schedule below; BEST_EFFORT sends each request once, and a call whose request or answer is lost
+// ends with tt_CALL_TIMEOUT when a RELIABLE call of these settings would have given up - so a late answer is still
+// taken. A Server's reliability changes nothing: it keeps its answers for a retrying RELIABLE client either way, which
+// is what keeps a retried request from running its callback twice.
 struct tt_ClientOptions {
     tt_CLIENT_CALLBACK callback;  // required
     uint32_t call_retry_interval; // ns; 0 = adaptive. Replaces tt_Service.call_retry_interval for this Client
