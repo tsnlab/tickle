@@ -25,6 +25,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -105,7 +106,17 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "ping");
+    // BEST_EFFORT and VOLATILE, no DEADLINE, LIFESPAN or LIVELINESS lease: what the deprecated create left. Nothing is
+    // retained, so the history depth is inert; KEEP_LAST 1 says so.
+    static const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "ping", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -113,7 +124,19 @@ int main(int argc, char** argv) {
     g_pub = &pub;
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)pong_callback);
+    // BEST_EFFORT and VOLATILE, no reorder buffer, the builtin tracking window, no DEADLINE or LIVELINESS lease: what
+    // the deprecated create left. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    static const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &sub, "pong", &sub_qos, (tt_SUBSCRIBER_CALLBACK)pong_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;

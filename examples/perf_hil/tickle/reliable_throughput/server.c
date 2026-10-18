@@ -11,7 +11,7 @@
 // HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
 // TickLE core native server/receiver role (no rmw). Same one-way stream shape as
 // best_effort_throughput/server.c (this side is the authoritative one for loss/throughput),
-// `sub.reliable = true` to match the client's own RELIABLE Publisher - no cache is needed on the
+// a RELIABLE Subscriber to match the client's own RELIABLE Publisher - no cache is needed on the
 // Subscriber side (tickle.h: retransmission state lives on the Publisher's own reliable_cache).
 
 #include <signal.h>
@@ -27,6 +27,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 // DATA_FRAG's reassembly pool, reported so that c6 can be read as a number rather than inferred: how
 // many slots this build has, how many samples were put back together, how many partial reassemblies
@@ -65,16 +66,25 @@ static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 // 4096: tt_RELIABLE_BITMAP_MAX_BITS until large-message stage 2 raised it to 8192 (docs/DESIGN.md section 8), pinned
 // so these cells stay the experiment they were - the same ring, warmed the same way.
 #define BENCH_REORDER_SLOTS 4096
-// tt_REORDER_SLOT_SIZE rounds up to a multiple of 8. This was a bare sizeof(...) + 16 = 116, which
-// core then addressed with a 120-byte stride - so the last slots of the array were past its end.
-#define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
+// The slot stride is core's since the QoS redesign: tt_Subscriber_storage_size() sizes it from BenchTopic's
+// max_encoded_size, a datagram's payload at most (docs/DESIGN.md section 9).
+
+// The tracking window this Subscriber asks for, in 64-bit words: -w (or -N's window) rounded down to whole words and
+// capped at tt_RELIABLE_BITMAP_MAX_WORDS, or 0 - core's built-in tt_RELIABLE_BITMAP_WORDS - when none was given or
+// it rounds to nothing.
+static uint16_t tracking_words_for_window(uint32_t window) {
+    uint32_t words = window / tt_RELIABLE_BITMAP_WORD_BITS;
+    if (words > tt_RELIABLE_BITMAP_MAX_WORDS) {
+        words = tt_RELIABLE_BITMAP_MAX_WORDS;
+    }
+    return (uint16_t)words;
+}
 
 // The tracking window a Subscriber actually uses, in samples, as reorder slots - core's own width
-// rule (subscriber_tracking_words(), tickle.c): the caller's tracking_words when it supplied
-// bitmaps, otherwise the built-in tt_RELIABLE_BITMAP_WORDS. Capped at the array's capacity.
-static uint16_t reorder_slots_for_window(const struct tt_Subscriber* sub) {
-    const uint32_t words =
-        (sub->tracking_bitmaps != NULL && sub->tracking_words > 0) ? sub->tracking_words : tt_RELIABLE_BITMAP_WORDS;
+// rule (subscriber_tracking_words(), tickle.c): the tracking_words asked for, otherwise the built-in
+// tt_RELIABLE_BITMAP_WORDS. Capped at BENCH_REORDER_SLOTS.
+static uint16_t reorder_slots_for_window(uint16_t tracking_words) {
+    const uint32_t words = tracking_words > 0 ? tracking_words : tt_RELIABLE_BITMAP_WORDS;
     const uint32_t slots = words * tt_RELIABLE_BITMAP_WORD_BITS;
     return (uint16_t)(slots < BENCH_REORDER_SLOTS ? slots : BENCH_REORDER_SLOTS);
 }
@@ -282,12 +292,9 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
-    if (ret != 0) {
-        printf("Cannot create subscriber: %d\n", ret);
-        return ret;
-    }
-    sub.reliable = true;
+    // RELIABLE, the tracking window of -w, reorder slots as wide as it (below), TRANSIENT_LOCAL with -D and VOLATILE
+    // without, no DEADLINE or LIVELINESS lease. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    //
     // Ordered delivery (2026-09-24) - somewhere to hold a sample that arrives ahead of a gap.
     //
     // Not optional for a benchmark. A RELIABLE Subscriber with no reorder buffer is still correct
@@ -300,30 +307,15 @@ int main(int argc, char** argv) {
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
     //
-    // The ARRAY is sized for the widest window this build allows (-w up to 4096), so any -w runs.
-    // The SLOT COUNT handed to core is set below, after the tracking window is known, to that
-    // window - see the comment there.
-    static uint64_t reorder[BENCH_REORDER_SLOTS * BENCH_REORDER_SLOT_BYTES / sizeof(uint64_t)];
-    sub.reorder_storage = reorder;
-    sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
     // -D: request TRANSIENT_LOCAL, matching the client's own -D. The RxO fix (PLAN.md Milestone 60)
     // keys the first-contact baseline on sub->durable: a durable Subscriber syncs to the
     // Publisher's first_available_seq_no rather than to "whatever arrives next", which is exactly
     // the pre-match window COMPARISON.md §3b documents for the volatile case.
-    sub.durable = durable;
-    // Phase 2 - a wider caller-owned tracking window, one per simultaneously tracked Publisher.
-    // Sized for the widest this build allows; only the requested prefix is actually used.
-    static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
-    if (window_samples > 0) {
-        uint32_t words = window_samples / tt_RELIABLE_BITMAP_WORD_BITS;
-        if (words > tt_RELIABLE_BITMAP_MAX_WORDS) {
-            words = tt_RELIABLE_BITMAP_MAX_WORDS;
-        }
-        if (words > 0) {
-            sub.tracking_bitmaps = tracking;
-            sub.tracking_words = (uint16_t)words;
-        }
-    }
+    //
+    // Phase 2 - a wider tracking window, one per simultaneously tracked Publisher, when -w asks for one; core
+    // carves it from the Subscriber's storage.
+    const uint16_t tracking_words = tracking_words_for_window(window_samples);
+    //
     // Reorder slots = the tracking window this Subscriber actually uses (2026-09-26), mirroring
     // rmw_tickle's own default (RMW_TICKLE_REORDER_SLOTS, "defaulting to the window bound",
     // rmw_subscription.c) so the memory figure is what a user of the product gets.
@@ -336,7 +328,21 @@ int main(int argc, char** argv) {
     // the Subscriber cannot hold a sample further than one window ahead of its oldest gap.
     // Fewer slots than the window is what storms (COMPARISON.md to-do 17); exactly the window is
     // the floor that does not. The width below is core's own rule, subscriber_tracking_words().
-    sub.reorder_slots = reorder_slots_for_window(&sub);
+    const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                        .tracking_words = tracking_words,
+                        .reorder_slots = reorder_slots_for_window(tracking_words)},
+        .durability = {.kind = durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &sub, "stream", &sub_qos, (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    if (ret != 0) {
+        printf("Cannot create subscriber: %d\n", ret);
+        return ret;
+    }
 
     BenchCpuFreq_init(&g_cpu_freq);
     BenchCpuPlace_init(&g_cpu_place);

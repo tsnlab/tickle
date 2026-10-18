@@ -26,6 +26,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -111,12 +112,23 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    // BEST_EFFORT and VOLATILE, no reorder buffer, the builtin tracking window, DEADLINE of -T, no LIVELINESS lease, as
+    // before. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = (uint64_t)(deadline_s * (double)tt_SECOND)},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &sub, "stream", &sub_qos, (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
     }
-    sub.deadline_duration_ns = (uint64_t)(deadline_s * (double)tt_SECOND);
 
     tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND), check_deadline, NULL);
 

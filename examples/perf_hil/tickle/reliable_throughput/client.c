@@ -38,6 +38,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
 
@@ -76,9 +77,9 @@ static const double match_poll_s = 0.01;
 static const double bits_per_byte = 8.0;
 static const double bits_per_megabit = 1e6;
 
-// Compile-time backing-array ceiling for this scenario's own -K flag below - deliberately far
-// past the old tt_MAX_RELIABLE_HISTORY=64 default, since re-measuring at a genuinely deeper depth
-// is this flag's entire purpose (struct tt_ReliableCache's own doc comment, tickle.h).
+// Ceiling for this scenario's own -K flag below (it sized a static backing array until the QoS redesign) - deliberately
+// far past the old tt_MAX_RELIABLE_HISTORY=64 default, since re-measuring at a genuinely deeper depth is this flag's
+// entire purpose (struct tt_ReliableCache's own doc comment, tickle.h).
 #define MAX_RELIABLE_DEPTH 8192
 
 static double interval_s = 0.0; // 0 = as fast as possible, matching best_effort_throughput's own default
@@ -111,7 +112,7 @@ static const double throttle_retry_s = 0.00005; // 50us - short enough to resume
 // paced at tt_CALL_RETRY_INTERVAL=5ms (config.h) - at this scenario's ~180-190K msg/s max send
 // rate that's 900+ new sequence numbers per retry window, so any -T threshold in the low hundreds
 // is blown past within a fraction of one window and the Publisher livelocks in the throttle
-// branch. tt_Publisher_set_ack_solicit_period() (tickle.c) closes that gap by having the core
+// branch. The periodic solicitation (tt_PublisherOptions.ack_solicit_period_ns) closes that gap by having the core
 // periodically call tt_Publisher_request_ack() on this Publisher's own behalf, keeping
 // peer_ack_seq_no[] fresh even on a healthy (gap-free) stream. When -T is given without an
 // explicit -A, default_ack_solicit_us below is used instead of leaving it disabled, since a
@@ -184,8 +185,8 @@ static uint32_t g_peer_acks_min = UINT32_MAX; // low-water mark of matched Subsc
 static void sample_peer_acks(void);
 
 // Depth -Q uses when -K doesn't say otherwise: twice the 1024-sample window the Phase 3 HIL matrix
-// announces, so the Subscriber's window is what bounds blocking rather than this cache. Costs
-// nothing extra - the backing arrays below are statically sized for MAX_RELIABLE_DEPTH regardless.
+// announces, so the Subscriber's window is what bounds blocking rather than this cache.
+// (The backing arrays were statically sized for MAX_RELIABLE_DEPTH until the QoS redesign; core sizes them now.)
 static const uint32_t keep_all_default_depth = 2048;
 // -M <bytes>: KEEP_ALL's byte budget, 0 for the default. The default mirrors rmw_tickle's own
 // RMW_TICKLE_KEEP_ALL_BYTES (512 KiB, 2026-09-25) so that running this harness with no flags measures
@@ -460,22 +461,36 @@ static void parse_args(int argc, char** argv) {
     }
 }
 
-// The arena this run uses: (depth + 1) records, capped for VOLATILE KEEP_ALL at the byte budget and
-// never below one record. The same rule as rmw_tickle's resolve_keep_all_arena_bytes().
+// The byte budget of a VOLATILE KEEP_ALL run without -N: -M, or rmw_tickle's default, never below one record. 0 for
+// every other run, whose arena is not budgeted.
+static uint32_t keep_all_budget_bytes(void) {
+    if (!keep_all || durable || keepall_samples > 0) {
+        return 0;
+    }
+    const uint32_t record = tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData));
+    const uint32_t budget = keep_all_bytes != 0 ? keep_all_bytes : keep_all_default_bytes;
+    return budget < record ? record : budget;
+}
+
+// The arena this run used when it built its cache by hand: (depth + 1) records, capped for VOLATILE KEEP_ALL at the
+// byte budget and never below one record. The same rule as rmw_tickle's resolve_keep_all_arena_bytes().
 static uint32_t keep_all_arena_bytes(void) {
     if (keepall_samples > 0) {
         return (keepall_samples + 1) * tt_sample_cache_bytes((uint32_t)sizeof(struct BenchData));
     }
     const uint32_t record = tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData));
     const uint32_t full = tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, record);
-    if (!keep_all || durable) {
-        return full;
-    }
-    uint32_t budget = keep_all_bytes != 0 ? keep_all_bytes : keep_all_default_bytes;
-    if (budget < record) {
-        budget = record;
-    }
-    return full < budget ? full : budget;
+    const uint32_t budget = keep_all_budget_bytes();
+    return budget != 0 && budget < full ? budget : full;
+}
+
+// history.bytes for `depth` samples: never below the arena above, so a run keeps at least the bytes it kept, and
+// for VOLATILE KEEP_ALL never above the budget, which is what bounds it. Core makes the arena
+// min((depth + 1) records, history.bytes).
+static uint32_t history_bytes(uint32_t depth) {
+    const uint32_t bytes = BenchCreate_history_bytes(depth, keep_all_arena_bytes());
+    const uint32_t budget = keep_all_budget_bytes();
+    return budget != 0 && budget < bytes ? budget : bytes;
 }
 
 // The cache depth this run uses, from -K, -Q and -N; false for a combination that cannot run. Split out of
@@ -528,6 +543,48 @@ static uint32_t keepall_bound_samples(const struct tt_Publisher* pub, const stru
     return by_bytes < samples ? by_bytes : samples;
 }
 
+// scenario "reliable_throughput" - RELIABLE + a caller-chosen HISTORY depth (-K, default 64 - see this file's own doc
+// comment above), KEEP_ALL with -Q, TRANSIENT_LOCAL with -D, no DEADLINE, LIFESPAN or LIVELINESS lease. Split out of
+// main() to keep its cognitive complexity under the project's clang-tidy threshold.
+//
+// The depth is -K's, in the datagrams the hand-built cache counted before the QoS redesign (the same number for every
+// shape that fits one datagram); with -N it is -N's samples. Core sizes the retained samples from the profile: an
+// index slot per datagram of (depth + 1) samples and an arena of min((depth + 1) records, history.bytes). The bytes
+// are never below the arena this file used to declare for the run - only the part a smaller -K can use, and for
+// VOLATILE KEEP_ALL no more than the byte budget (-M), exactly as rmw_tickle sizes it. So a memory figure from this
+// scenario is still a property of the depth and the shape, not of libtickle; it is no longer one of MAX_RELIABLE_DEPTH,
+// which now only bounds -K, since nothing is declared for it.
+static tt_ret_t create_publisher(struct tt_Context* node, struct tt_Publisher* pub) {
+    const uint32_t depth = keepall_samples > 0 ? keepall_samples : reliable_depth;
+    // Phase 3 step 4 - KEEP_ALL's back-pressure. Blocking is bounded by min(cache depth, the
+    // narrowest window any matched Subscriber announced), so a depth below that window would make
+    // this side the binding limit and quietly measure something narrower than the run asked for -
+    // hence keep_all_default_depth above. -B is this file's own retry bound (send_one()); it is
+    // given to core as max_blocking as well, which core only reports.
+    const struct tt_QosProfile qos = {
+        .history = {.kind = keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = depth,
+                    .bytes = history_bytes(depth)},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .max_blocking_ns = max_blocking_ns_value()},
+        .durability = {.kind = durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    // Phase 3 prerequisite (d) - the watermark is off unless -W asked for it, and the periodic solicitation unless -A
+    // (or -T) did, so the default run is byte-for-byte the Phase 1 experiment. The idle HEARTBEAT is core's default.
+    const uint32_t max_pct = 100;
+    const struct tt_PublisherOptions options = {
+        .batch = false,
+        .ack_solicit_period_ns = (uint64_t)ack_solicit_us * tt_MICROSECOND,
+        .ack_solicit_watermark_pct = (uint8_t)(ack_watermark_pct > max_pct ? max_pct : ack_watermark_pct),
+#if !BENCH_KEEP_ALL_POLL
+        .writable_callback = on_writable,
+#endif
+    };
+    return BenchCreate_publisher(node, pub, "stream", &qos, &options);
+}
+
 // The writable event, acted on in the main loop rather than in the callback: outside tt_Context_poll(), TickLE may be
 // called, and send_one goes back on the scheduler only if it was waiting for exactly this.
 static void resume_if_writable(struct tt_Context* node) {
@@ -569,74 +626,12 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = create_publisher(&node, &pub);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // scenario "reliable_throughput" - RELIABLE + a caller-chosen HISTORY depth (-K, default 64 -
-    // see this file's own doc comment above). entries[]/capacity are this file's own backing
-    // array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own
-    // doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH so -K can actually reach past 64.
-    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena, both sized for MAX_RELIABLE_DEPTH
-    // samples of this scenario's own fixed BenchData shape, so -K still reaches 8192.
-    //
-    // The arena scales with the payload shape, and this said "~820KB instead of ~12MB" when P1 was
-    // the only shape there was (2026-09-25). Computed from the macros below, per shape:
-    //
-    //     p1    76 B sample -> record  100 B -> arena    800 KB
-    //     p2  1292 B        -> record 1316 B -> arena 10,529 KB
-    //     p3  1424 B        -> record 1448 B -> arena 11,585 KB
-    //     p4  2800 B        -> record 2824 B -> arena 22,594 KB
-    //
-    // plus a fixed 192 KB of index slots. So the saving over the old embedded cache is real only
-    // at the small shape; at p4 this is nearly twice the ~12MB it replaced. **Read a memory figure
-    // from this scenario as a property of MAX_RELIABLE_DEPTH 8192 and the shape, not of libtickle**
-    // - and note that on a demand-paged host peak RSS tracks the pages actually touched, so most
-    // of that declaration is never resident. On a target without demand paging, all of it is.
-    static struct tt_ReliableCacheIndex pub_cache_index[MAX_RELIABLE_DEPTH];
-    static uint8_t pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(MAX_RELIABLE_DEPTH,
-                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.index = pub_cache_index;
-    pub_cache.capacity = (uint16_t)reliable_depth;
-    pub_cache.depth = (uint16_t)reliable_depth;
-    pub_cache.arena = pub_cache_arena;
-    // Only the part of the arena this run's own -K depth can use, so a smaller -K really is a
-    // smaller retention window in bytes too, not just in slots - and, for VOLATILE KEEP_ALL, no more
-    // than the byte budget (-M), exactly as rmw_tickle sizes it.
-    pub_cache.arena_size = keep_all_arena_bytes();
-    if (pub_cache.arena_size > sizeof(pub_cache_arena)) {
-        printf("-N %u needs a %u-byte arena, more than this build's %zu.\n", keepall_samples, pub_cache.arena_size,
-               sizeof(pub_cache_arena));
-        return 1;
-    }
-    pub.reliable_cache = &pub_cache;
-    pub.reliable = true;
-    // Phase 3 step 4 - KEEP_ALL's back-pressure. Blocking is bounded by min(cache depth, the
-    // narrowest window any matched Subscriber announced), so a depth below that window would make
-    // this side the binding limit and quietly measure something narrower than the run asked for -
-    // hence keep_all_default_depth above.
-    pub.keep_all = keep_all;
-#if !BENCH_KEEP_ALL_POLL
-    pub.writable_callback = on_writable;
-#endif
-    pub.durable = durable;
-    // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
-    // the Phase 1 experiment.
-    if (ack_watermark_pct > 0) {
-        const uint32_t max_pct = 100;
-        pub.ack_solicit_watermark_pct = (uint8_t)(ack_watermark_pct > max_pct ? max_pct : ack_watermark_pct);
-    }
     g_pub = &pub;
-
-    if (ack_solicit_us > 0) {
-        ret = tt_Publisher_set_ack_solicit_period(&pub, (uint64_t)ack_solicit_us * tt_MICROSECOND);
-        if (ret != tt_RET_OK) {
-            printf("Cannot arm ACK solicitation: %d\n", ret);
-            return ret;
-        }
-    }
 
     if (!wait_for_matched_subscriber(&node, &pub)) {
         tt_Context_destroy(&node);
@@ -705,9 +700,9 @@ int main(int argc, char** argv) {
            g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
-           pub.retransmitted, pub_cache.arena_size, keepall_samples, keepall_bound_samples(&pub, &pub_cache),
-           BENCH_KEEP_ALL_POLL ? "poll" : "event", (unsigned long long)keep_all_retries, node.timer_lateness_ns,
-           node.timer_lateness_mean_ns,
+           pub.retransmitted, pub.reliable_cache->arena_size, keepall_samples,
+           keepall_bound_samples(&pub, pub.reliable_cache), BENCH_KEEP_ALL_POLL ? "poll" : "event",
+           (unsigned long long)keep_all_retries, node.timer_lateness_ns, node.timer_lateness_mean_ns,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

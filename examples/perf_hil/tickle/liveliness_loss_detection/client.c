@@ -29,6 +29,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 // Never set any more: this scenario installs no SIGINT handler (see main()). Kept so the
 // send loop reads the same as its sibling scenarios; the loop ends on its own duration cap.
@@ -98,12 +99,21 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
+    // BEST_EFFORT and VOLATILE, AUTOMATIC liveliness with a lease of -T, no DEADLINE or LIFESPAN, as before. Nothing is
+    // retained, so the history depth is inert; KEEP_LAST 1 says so.
+    const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = (uint64_t)(lease_s * (double)tt_SECOND)},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "stream", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    pub.liveliness_lease_duration_ns = (uint64_t)(lease_s * (double)tt_SECOND);
     g_pub = &pub;
 
     printf("Publisher: pid=%d, announcing lease=%.1fs, publishing every %.1fs until killed\n", getpid(), lease_s,

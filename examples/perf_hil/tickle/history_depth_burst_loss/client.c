@@ -32,6 +32,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 #include "BenchFreshness.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -113,28 +114,26 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
+    // scenario "history_depth_burst_loss" - RELIABLE + HISTORY depth=8, matched exactly across
+    // every framework (COMPARISON.md's own design principle 3 / QoS value matrix).
+    // VOLATILE, no DEADLINE, LIFESPAN or LIVELINESS lease. The retained samples are sized by core from the profile;
+    // the history bytes are never below the arena this file used to declare, (8 + 1) records of this shape.
+    const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = 8,
+                    .bytes = BenchCreate_history_bytes(
+                        8, tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "stream", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // scenario "history_depth_burst_loss" - RELIABLE + HISTORY depth=8, matched exactly across
-    // every framework (COMPARISON.md's own design principle 3 / QoS value matrix).
-    // entries[]/capacity are this file's own backing array now, not an embedded
-    // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
-    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own
-    // fixed sizeof(struct BenchData)-byte sample, instead of a 1472-byte buffer per slot.
-    static struct tt_ReliableCacheIndex pub_cache_index[8];
-    static uint8_t
-        pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.index = pub_cache_index;
-    pub_cache.capacity = 8;
-    pub_cache.depth = 8;
-    pub_cache.arena = pub_cache_arena;
-    pub_cache.arena_size = (uint32_t)sizeof(pub_cache_arena);
-    pub.reliable_cache = &pub_cache;
-    pub.reliable = true;
     g_pub = &pub;
 
     uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
