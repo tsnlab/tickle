@@ -22,9 +22,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h> // malloc()/free(), getenv()/strtoull()
+#include <stdio.h>  // fprintf(), fopen(): the pool's line at detach (RMW_TICKLE_LARGE_HUGEPAGE)
+#include <stdlib.h> // malloc()/free(), getenv()/strtoull(), posix_memalign()
 #include <string.h>
 
+#include <sys/mman.h> // madvise(): RMW_TICKLE_LARGE_HUGEPAGE
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
@@ -42,6 +44,15 @@
 // How far past the limit a request may be and still be one for a message within it: the 20 bytes of framing ahead of
 // a sample, and a reassembly's room for a last fragment it may not fill (one datagram).
 #define RMW_TICKLE_LARGE_SLACK 2048U
+// RMW_TICKLE_LARGE_HUGEPAGE=1 (A/B switch, off by default; branch ab/i4be-cpu-candidates): a buffer of at least one
+// transparent huge page is allocated aligned to one and its whole huge pages advised MADV_HUGEPAGE, so the kernel's
+// copy of each datagram run into it (the in-place read) and the take's copy out of it walk 2 MiB pages, not 4 KiB ones.
+// Only the buffer's whole huge pages are advised: rounding it up would fault a further huge page in for its last few
+// hundred bytes. 2 MiB is the PMD size with 4 KiB pages (x86-64, and arm64 as the rig Pis run it); THP "madvise" or
+// "always" honours the advice, "never" ignores it.
+#define RMW_TICKLE_LARGE_HUGEPAGE_BYTES (2U * 1024U * 1024U)
+// Longer than any /proc/self/smaps_rollup line (anon_huge_kb()).
+#define RMW_TICKLE_SMAPS_LINE 128
 
 struct rmw_tickle_large_pool {
     pthread_mutex_t mutex; // NOLINT(misc-include-cleaner) - acquire runs on the publishing or polling thread,
@@ -50,6 +61,9 @@ struct rmw_tickle_large_pool {
     uint32_t free_count;
     uint32_t limit;      // RMW_TICKLE_MAX_SAMPLE_BYTES, capped at core's ceiling
     atomic_uint refused; // acquires refused for passing the limit
+    bool hugepage;       // RMW_TICKLE_LARGE_HUGEPAGE=1
+    uint32_t allocated;  // buffers allocated rather than reused, under mutex
+    uint32_t advised;    // of them, advised MADV_HUGEPAGE without error, under mutex
 };
 
 // The largest message core can carry as a large sample: tt_LARGE_MAX_FRAGMENTS datagrams of payload, fragment 0 short
@@ -103,12 +117,48 @@ static void* large_acquire(void* user, uint32_t bytes) {
         }
     }
     pthread_mutex_unlock(&pool->mutex);
-    uint8_t* block = (uint8_t*)malloc((size_t)bytes + RMW_TICKLE_LARGE_HEADER);
+    size_t total = (size_t)bytes + RMW_TICKLE_LARGE_HEADER;
+    uint8_t* block = NULL;
+    bool advised = false;
+    if (pool->hugepage && total >= (size_t)RMW_TICKLE_LARGE_HUGEPAGE_BYTES) {
+        void* aligned = NULL;
+        if (0 == posix_memalign(&aligned, (size_t)RMW_TICKLE_LARGE_HUGEPAGE_BYTES, total)) {
+            block = (uint8_t*)aligned;
+            size_t whole = total - (total % (size_t)RMW_TICKLE_LARGE_HUGEPAGE_BYTES);
+            advised = 0 == madvise(block, whole, MADV_HUGEPAGE);
+        }
+    } else {
+        block = (uint8_t*)malloc(total);
+    }
     if (NULL == block) {
         return NULL;
     }
+    pthread_mutex_lock(&pool->mutex);
+    pool->allocated++;
+    pool->advised += advised ? 1U : 0U;
+    pthread_mutex_unlock(&pool->mutex);
     memcpy(block, &bytes, sizeof(bytes));
     return block + RMW_TICKLE_LARGE_HEADER;
+}
+
+// This process's AnonHugePages in kB (/proc/self/smaps_rollup), -1 when it cannot be read: the realized treatment of
+// RMW_TICKLE_LARGE_HUGEPAGE, which a madvise() that succeeded does not show by itself.
+static long anon_huge_kb(void) {
+    FILE* file = fopen("/proc/self/smaps_rollup", "re");
+    if (NULL == file) {
+        return -1;
+    }
+    static const char key[] = "AnonHugePages:";
+    char line[RMW_TICKLE_SMAPS_LINE];
+    long huge_kb = -1;
+    while (NULL != fgets(line, (int)sizeof(line), file)) {
+        if (0 == strncmp(line, key, sizeof(key) - 1U)) {
+            huge_kb = strtol(line + sizeof(key) - 1U, NULL, 10);
+            break;
+        }
+    }
+    (void)fclose(file);
+    return huge_kb;
 }
 
 static void large_release(void* user, void* buffer) {
@@ -131,6 +181,8 @@ bool rmw_tickle_large_attach(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_init(&pool->mutex, NULL);
     pool->limit = rmw_tickle_max_sample_bytes();
     atomic_init(&pool->refused, 0U);
+    const char* hugepage = getenv("RMW_TICKLE_LARGE_HUGEPAGE");
+    pool->hugepage = NULL != hugepage && 0 == strcmp(hugepage, "1");
     if (tt_RET_OK != tt_Context_set_large_buffers(&context_impl->tickle_context, large_acquire, large_release, pool)) {
         pthread_mutex_destroy(&pool->mutex);
         free(pool);
@@ -144,6 +196,12 @@ void rmw_tickle_large_detach(rmw_tickle_context_impl_t* context_impl) {
     struct rmw_tickle_large_pool* pool = context_impl->large_pool;
     if (NULL == pool) {
         return;
+    }
+    // One line per context that allocated a large buffer, read while the kept ones are still mapped: the A/B's
+    // treatment check (hugepage=1 with AnonHugePages covering the buffers' whole huge pages, or hugepage=0).
+    if (pool->allocated > 0) {
+        (void)fprintf(stderr, "rmw_tickle: large pool hugepage=%d allocated=%u advised=%u anon_huge_kb=%ld\n",
+                      pool->hugepage ? 1 : 0, (unsigned)pool->allocated, (unsigned)pool->advised, anon_huge_kb());
     }
     for (uint32_t i = 0; i < pool->free_count; i++) {
         free(pool->free_list[i]);
