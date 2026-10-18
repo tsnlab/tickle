@@ -11478,6 +11478,45 @@ static void* qos_carve(void* storage, size_t offset) {
     return (uint8_t*)storage + offset;
 }
 
+// Whether `bytes` bytes from `at` are all zero. Words through memcpy, so the caller's storage is read as bytes whatever
+// it was declared as.
+static bool qos_bytes_zero(const uint8_t* at, size_t bytes) {
+    uint64_t seen = 0;
+    size_t i = 0;
+    for (; i + sizeof(uint64_t) <= bytes; i += sizeof(uint64_t)) {
+        uint64_t word;
+        memcpy(&word, at + i, sizeof(word));
+        seen |= word;
+    }
+    for (; i < bytes; i++) {
+        seen |= at[i];
+    }
+    return seen == 0;
+}
+
+// Clears a part of the caller's storage that core needs zeroed (the reorder slots, the tracking windows, the cache
+// index), a page at a time and only the pages that are not zero already, rather than with one memset. A memset
+// makes every page of it resident at creation, which for a RELIABLE Subscriber's 4,096 reorder slots was ~0.4 MB at p1
+// and ~6 MB at p2-p4 of peak RSS (QoS step 2b), for slots a lossless run never stores into. Reading a page nothing has
+// written yet - a static array in .bss, a fresh calloc() or mmap() - maps the kernel's shared zero page and adds
+// nothing to the resident set, so storage that arrives zeroed, as every caller's before the QoS creation API did, costs
+// what it cost then. A page that holds anything is resident already, and clearing it costs no memory. Correct for any
+// storage; cheapest for zeroed storage.
+#define QOS_ZERO_PAGE 4096U
+
+static void qos_zero_dirty_pages(void* storage, size_t bytes) {
+    uint8_t* at = storage;
+    uint8_t* const end = at + bytes;
+    while (at < end) {
+        size_t chunk = QOS_ZERO_PAGE - (size_t)((uintptr_t)at % QOS_ZERO_PAGE); // to the next page boundary
+        chunk = chunk < (size_t)(end - at) ? chunk : (size_t)(end - at);
+        if (!qos_bytes_zero(at, chunk)) {
+            memset(at, 0, chunk);
+        }
+        at += chunk;
+    }
+}
+
 static uint16_t subscriber_tracking_words(const struct tt_Subscriber* sub); // the window it runs with
 
 static void qos_match_one(struct tt_QosMatched* matched, const struct tt_DiscoveredEntity* entity) {
@@ -11743,7 +11782,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         struct tt_ReliableCacheIndex* index = qos_carve(storage, index_offset);
         uint8_t* arena =
             qos_carve(storage, index_offset + QOS_ALIGN8((size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex)));
-        memset(index, 0, (size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex));
+        qos_zero_dirty_pages(index, (size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex));
         result = tt_ReliableCache_init(cache, index, layout.ring, arena, layout.arena);
         if (result != tt_RET_OK) {
             return result;
@@ -11844,13 +11883,13 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
     if (layout.tracking_bytes != 0) {
         sub->tracking_bitmaps = qos_carve(storage, 0);
         sub->tracking_words = actual.reliability.tracking_words;
-        memset(sub->tracking_bitmaps, 0, layout.tracking_bytes);
+        qos_zero_dirty_pages(sub->tracking_bitmaps, layout.tracking_bytes);
     }
     if (layout.reorder_bytes != 0) {
         sub->reorder_storage = qos_carve(storage, QOS_ALIGN8(layout.tracking_bytes));
         sub->reorder_slots = actual.reliability.reorder_slots;
         sub->reorder_slot_bytes = layout.slot_bytes;
-        memset(sub->reorder_storage, 0, layout.reorder_bytes);
+        qos_zero_dirty_pages(sub->reorder_storage, layout.reorder_bytes);
     }
     return register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
 }
