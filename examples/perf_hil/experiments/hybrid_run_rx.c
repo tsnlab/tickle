@@ -122,13 +122,32 @@ static int receive(const char* broadcast, int context_id, int timeout_s) {
         printf("RESULT: error=create\n");
         return 1;
     }
-    static struct tt_Topic topic;
+    static struct tt_TypeSupport topic;
     topic.name = TOPIC;
     topic.data_size = 8;
     topic.data_decode = checking_decode;
     topic.data_free = free_nothing;
+    topic.max_encoded_size = LARGE_LEN; // the larger of the two samples it is sent
+    // BEST_EFFORT, as the legacy create left it. KEEP_ALL: keep_last_depth 0, never skips in the segment drain, as the
+    // legacy create; no reorder buffer and the builtin ACK window, so the profile needs no storage.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_SubscriberOptions options = {.callback = on_data,
+                                                        .accept_callback = NULL,
+                                                        .accept_callback_param = NULL};
     static struct tt_Subscriber sub;
-    if (tt_Context_create_subscriber(&node, &sub, &topic, ENDPOINT, on_data) != tt_RET_OK ||
+    if (tt_Subscriber_storage_size(&topic, &qos) != 0 ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, ENDPOINT, &qos, &options, NULL, 0) !=
+            tt_RET_OK ||
         tt_Context_set_large_buffers(&node, buffer_acquire, buffer_release, NULL) != tt_RET_OK) {
         printf("RESULT: error=subscriber\n");
         return 1;
