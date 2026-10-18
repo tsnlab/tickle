@@ -139,9 +139,7 @@ static struct tt_Context remote;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 static struct tt_Subscriber remote_sub;
-static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(LARGE))];
-static struct tt_ReliableCache cache;
+static uint64_t pub_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
 
 static void init_context(struct tt_Context* context, uint8_t id) {
     memset(context, 0, sizeof(*context));
@@ -165,6 +163,7 @@ static void setup(void) {
     topic.data_decode = refuse;
     topic.data_decode_inplace = view_payload;
     topic.data_free = free_nothing;
+    topic.max_encoded_size = LARGE;
     memset(&local_record, 0, sizeof(local_record));
     memset(&remote_record, 0, sizeof(remote_record));
     memset(&pub, 0, sizeof(pub));
@@ -172,17 +171,15 @@ static void setup(void) {
     memset(&remote_sub, 0, sizeof(remote_sub));
 }
 
-static void make_durable(struct tt_Publisher* publisher) {
-    memset(cache_index, 0, sizeof(cache_index));
-    memset(&cache, 0, sizeof(cache));
-    cache.index = cache_index;
-    cache.capacity = CACHE_DEPTH;
-    cache.depth = CACHE_DEPTH;
-    cache.arena = cache_arena;
-    cache.arena_size = (uint32_t)sizeof(cache_arena);
-    publisher->reliable_cache = &cache;
-    publisher->reliable = true;
-    publisher->durable = true;
+// The Publisher, RELIABLE TRANSIENT_LOCAL KEEP_LAST CACHE_DEPTH.
+static void create_durable_publisher(void) {
+    const struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = CACHE_DEPTH},
+                                      .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+                                      .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    size_t storage_size = tt_Publisher_storage_size(&topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9", &qos,
+                                                      NULL, pub_storage, storage_size));
 }
 
 static void publish(uint32_t id, uint32_t size) {
@@ -200,8 +197,11 @@ static void carry_captured(struct tt_Context* to, uint32_t ip) {
 
 static void test_a_local_pair(void) {
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9",
+                                                       &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
     for (uint32_t i = 0; i < SAMPLES; i++) {
         publish(i, i == SAMPLES / 2 ? LARGE : SMALL); // one of them fragmented
     }
@@ -218,9 +218,14 @@ static void test_a_local_pair(void) {
 
 static void test_local_and_remote_each_once(void) {
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&remote, &remote_sub, &topic, "rt/g9", on_remote));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9",
+                                                       &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&remote), &remote_sub, &topic, "rt/g9", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = on_remote}, NULL, 0));
     captured_count = 0;
     test_mock_send_hook = capture;
     // The remote Subscriber's announce reaches the Publisher first: a Publisher with no matched reader sends nothing
@@ -248,23 +253,25 @@ static void test_local_and_remote_each_once(void) {
 
 static void test_an_incompatible_local_pair(void) {
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9")); // BEST_EFFORT
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
-    sub.reliable = true;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0)); // BEST_EFFORT
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9",
+                                                       &TEST_QOS_RELIABLE_READER, // RELIABLE
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
     publish(1, SMALL);
     EXPECT_EQ_INT(0, local_record.count);
 }
 
 static void test_a_late_durable_subscriber(void) {
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
-    make_durable(&pub);
+    create_durable_publisher();
     publish(0, SMALL);
     publish(1, LARGE);
     publish(2, SMALL);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
-    sub.reliable = true;
-    sub.durable = true;
+    struct tt_QosProfile durable = TEST_QOS_RELIABLE_READER;
+    durable.durability.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9", &durable,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
     EXPECT_EQ_INT(0, local_record.count); // nothing before the backlog is asked for
     tt_Subscriber_deliver_local_backlog(&sub);
     EXPECT_EQ_INT(3, local_record.count);
@@ -283,16 +290,16 @@ static void test_a_late_durable_subscriber_across_2_32(void) {
     // plain unsigned numbers, the newest (3) is behind the oldest and the walk delivers nothing
     // (tests/mutants_seq_wrap.py: deliver_backlog_from() is compiled only where tt_LOCAL_DELIVERY is).
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
-    make_durable(&pub);
+    create_durable_publisher();
     pub.seq_no = UINT32_MAX - 2U; // the next sample takes seq_no 2^32 - 2
     publish(0, SMALL);
     publish(1, LARGE);
     publish(2, SMALL);
     EXPECT_EQ_U32(3, pub.seq_no); // the run did cross 2^32
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
-    sub.reliable = true;
-    sub.durable = true;
+    struct tt_QosProfile durable = TEST_QOS_RELIABLE_READER;
+    durable.durability.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9", &durable,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
     tt_Subscriber_deliver_local_backlog(&sub);
     EXPECT_EQ_INT(3, local_record.count);
     for (uint32_t i = 0; i < 3; i++) {
@@ -305,7 +312,8 @@ static void test_a_late_durable_subscriber_across_2_32(void) {
 // The same publish from two contexts alike but for a local Subscriber: the same datagrams.
 static void test_a_local_subscriber_changes_nothing_sent(void) {
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     captured_count = 0;
     test_mock_send_hook = capture;
     publish(7, SMALL);
@@ -318,8 +326,11 @@ static void test_a_local_subscriber_changes_nothing_sent(void) {
     memcpy(without_length, captured_length, sizeof(without_length));
 
     setup();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&local), &pub, &topic, "rt/g9",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "rt/g9",
+                                                       &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_local}, NULL, 0));
     captured_count = 0;
     test_mock_send_hook = capture;
     publish(7, SMALL);
