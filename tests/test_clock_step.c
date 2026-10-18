@@ -462,7 +462,10 @@ static void run_round(bool with_sample) {
     (void)tt_Context_poll(&writer, 0);
 }
 
-static void setup(struct tt_ReliableCache* cache) {
+// The writer's retained samples: RELIABLE KEEP_LAST 64.
+static uint64_t pub_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
+
+static void setup(void) {
     memset(queues, 0, sizeof(queues));
     memset(published_date_ns, 0, sizeof(published_date_ns));
     memset(published_mono_ns, 0, sizeof(published_mono_ns));
@@ -485,20 +488,30 @@ static void setup(struct tt_ReliableCache* cache) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&writer));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&reader));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&reader, &reader_discovery, on_discovery, NULL));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &pub, &topic, "clock_step"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&reader, &sub, &topic, "clock_step", on_sample));
+    // RELIABLE KEEP_LAST 64, the writer's lifespan and lease, and its HEARTBEAT; the reader RELIABLE.
+    const struct tt_QosProfile pub_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 64},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+                                          .lifespan = {.duration_ns = LIFESPAN_NS},
+                                          .liveliness = {.lease_ns = LEASE_NS}};
+    size_t pub_storage_size = tt_Publisher_storage_size(&topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&writer), &pub, &topic, "clock_step", &pub_qos,
+                                           &(struct tt_PublisherOptions) {.heartbeat_period_ns = HEARTBEAT_NS},
+                                           pub_storage, pub_storage_size));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&reader), &sub, &topic, "clock_step",
+                                            &TEST_QOS_RELIABLE_READER,
+                                            &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
 #if tt_LOCAL_DELIVERY
     local_delivered = 0;
     local_stamps_wrong = 0;
     local_wrong_count = 0;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&writer, &local_sub, &topic, "clock_step", on_local_sample));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&writer), &local_sub, &topic, "clock_step",
+                                            &TEST_QOS_UNRELIABLE,
+                                            &(struct tt_SubscriberOptions) {.callback = on_local_sample}, NULL, 0));
 #endif
-    pub.reliable = true;
-    pub.reliable_cache = cache;
-    pub.lifespan_duration_ns = LIFESPAN_NS;
-    pub.liveliness_lease_duration_ns = LEASE_NS;
-    sub.reliable = true;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, HEARTBEAT_NS));
     EXPECT_TRUE(tt_Context_schedule(&writer, tt_get_ns() + TICK_NS, tick, NULL));
     for (int round = 0; round < 200; round++) {
         run_round(false);
@@ -512,19 +525,7 @@ static void teardown(void) {
 
 // The case: a stream, one sample lost, the date stepped by `step` (signed) right after it, and the stream on.
 static void stream_across_a_step(const char* name, int64_t step) {
-    struct tt_ReliableCacheIndex index[64];
-    uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(64, tt_RELIABLE_RECORD_BYTES(64))];
-    struct tt_ReliableCache cache;
-    memset(index, 0, sizeof(index));
-    memset(arena, 0, sizeof(arena));
-    memset(&cache, 0, sizeof(cache));
-    cache.index = index;
-    cache.capacity = 64;
-    cache.depth = 64;
-    cache.arena = arena;
-    cache.arena_size = (uint32_t)sizeof(arena);
-
-    setup(&cache);
+    setup();
     const bool matched = count_peers(pub.peers) == 1;
     EXPECT_TRUE(matched); // discovery done: the stream below is unicast to a known reader
 
@@ -697,18 +698,7 @@ static void on_big_local(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no
 #endif
 
 static void test_a_zero_copy_publish_reads_one_clock(void) {
-    struct tt_ReliableCacheIndex index[64];
-    uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(64, tt_RELIABLE_RECORD_BYTES(64))];
-    struct tt_ReliableCache cache;
-    memset(index, 0, sizeof(index));
-    memset(arena, 0, sizeof(arena));
-    memset(&cache, 0, sizeof(cache));
-    cache.index = index;
-    cache.capacity = 64;
-    cache.depth = 64;
-    cache.arena = arena;
-    cache.arena_size = (uint32_t)sizeof(arena);
-    setup(&cache);
+    setup();
 
     static struct tt_TypeSupport big_topic = {
         .name = "clock_step_big",
@@ -724,14 +714,20 @@ static void test_a_zero_copy_publish_reads_one_clock(void) {
     big_delivered = 0;
     big_local_delivered = 0;
     big_local_stamps_wrong = 0;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &big_pub, &big_topic, "clock_step_big"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&reader, &big_sub, &big_topic, "clock_step_big", on_big));
+    struct tt_QosProfile big_qos = TEST_QOS_UNRELIABLE;
+    big_qos.liveliness.lease_ns = LEASE_NS;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&writer), &big_pub, &big_topic,
+                                                      "clock_step_big", &big_qos, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&reader), &big_sub, &big_topic,
+                                                       "clock_step_big", &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_big}, NULL, 0));
 #if tt_LOCAL_DELIVERY
     static struct tt_Subscriber big_local_sub;
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_subscriber(&writer, &big_local_sub, &big_topic, "clock_step_big", on_big_local));
+                  tt_Node_create_subscriber(tt_Context_default_node(&writer), &big_local_sub, &big_topic,
+                                            "clock_step_big", &TEST_QOS_UNRELIABLE,
+                                            &(struct tt_SubscriberOptions) {.callback = on_big_local}, NULL, 0));
 #endif
-    big_pub.liveliness_lease_duration_ns = LEASE_NS;
     for (int round = 0; round < 200; round++) {
         run_round(false);
     }
