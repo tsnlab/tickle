@@ -16,6 +16,10 @@ if ! python3 -c 'import pytest' 2>/dev/null; then
     echo "test-typesupport: no pytest for python3 - refusing to report a pass" >&2
     exit 1
 fi
+# The generator under test is this checkout's, not whatever `pip install` last froze into site-packages: on
+# 2026-10-18 a template change failed the golden test here against a stale ~/.local copy while CI, which installs
+# from the tree, would have passed. PYTHONPATH comes before site-packages, so the import resolves to the tree.
+export PYTHONPATH="$REPO/tools/typesupport${PYTHONPATH:+:$PYTHONPATH}"
 base="$REPO/build/pytest_basetemp"
 mkdir -p "$base"
 printf 'BasedOnStyle: LLVM\n' >"$base/.clang-format"
