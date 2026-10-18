@@ -40,7 +40,8 @@ written 2026-10-17 before its first run and enforced in creation_block():
      than 2 readable reps is NOT READ.
   C2 CONTROL, creation_latency_summary.py's R4 (rtt_r4) per framework and cell: nothing waits at a ping-pong sender,
      so the creation and stamp p50s differ by the sender's timer wake g: PASS when g <= 0.2 ms, no gap below
-     -0.02 ms and |d - g| <= the reps' stamp-p50 range + 1 us (the clients print p50 to 1 us). The control needs
+     -0.02 ms and |d - g| <= the reps' stamp-p50 range + creation-p50 range + 1 us (the clients print p50 to 1 us;
+     the creation range since 2026-10-18, rtt_r4's docstring). The control needs
      TickLE and at least one vendor read; a failed control makes the cell's creation verdicts NOT READ.
   C3 SCORING. S7-S10 are means: the primary figure is the creation mean (crt_avg_ms), median of the reps; TickLE is
      scored against EACH vendor separately by the range rule (TESTING.md section 4: WIN when every TickLE rep is below

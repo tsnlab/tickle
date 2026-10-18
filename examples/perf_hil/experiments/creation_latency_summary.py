@@ -63,6 +63,12 @@ HOW TO READ IT, written 2026-10-17 before any rig run and enforced below:
      The core --rtt reading allows |d - g| <= noise + 1 us (RTT_PRINT_RES_MS): its d is the difference of two
      medians the clients print to 1 us. Changed AFTER the first rig run (2026-10-17, the user agreed): c16 and c17
      TickLE read |d - g| = 1.1 us against a noise of 1.0 us, below what the printed figures can resolve.
+     In rtt_r4 (--rtt and the same-host and rmw round-trip readers) noise is the range of the reps' stamp p50s PLUS
+     the range of their creation p50s: the median of a sum is not the sum of the medians, so the creation median
+     scatters between reps on its own account (rtt_r4's docstring has the reasoning and the evidence). Changed AFTER
+     the same-host S7 run at 596e9c9c (2026-10-18, the user agreed): its TickLE |d - g| 1.3 us against 1 us, noise 0
+     because every rep printed stamp p50 0.020 ms; NOT READ under the old rule. The trace-based control() below,
+     whose medians are not rounded, keeps the stamp range alone: no run has needed more.
      A vendor arm that delivers nothing in every rep does not run there: listed, not read. The control needs
      tickle@head and at least one vendor read, else it FAILS. A FAILED control makes every creation figure of the
      gated cell NOT READ. (The same "delivered nothing" arm is excluded from R3 and R5 in a cell: a publisher whose
@@ -452,10 +458,25 @@ def rtt_r4(stamp, crt, gap, gap_min, res_ms=RTT_PRINT_RES_MS):
     """R4 on one framework's reps of one round-trip cell, from per-rep medians (all in ms): stamp RTT p50s, creation
     RTT p50s, realized-gap p50s, and the smallest gap of any rep. (ok, text). Shared by --rtt and the same-host and rmw
     round-trip readers (fair_samehost_summary.py, rmw_samehost_summary.py, rmw_crosshost_creation.py), so the control
-    is one rule wherever a round trip is read from creation time."""
+    is one rule wherever a round trip is read from creation time.
+
+    noise = range of the reps' stamp p50s + range of the reps' creation p50s. Until 2026-10-18 it was the stamp range
+    alone, which assumed the creation median moves in lockstep with stamp median + gap median. That holds for means
+    and not for medians: creation = stamp + gap per sample, but median(stamp + gap) is not median(stamp) +
+    median(gap), so each rep's crt_p50 - rtt_p50 - gap_p50 carries an offset of its own and the creation median
+    scatters between reps on its own account. d is formed from both medians, and the range of a difference is at most
+    the sum of the two ranges, so both count. Measured on the per-sample traces of the 192 rmw same-host reps of
+    2026-10-18 (18f16b85 and d0650110), that offset is never above 1.0 us. The other candidate, an allowance from the
+    gap's per-sample spread (its IQR), was not taken: the core clients print only the gap's p50/p99/min/max, and the
+    distribution-free bound on the offset needs the quartiles of both stamp and gap (on the poll rows the stamp's
+    half-IQR is ~40 us, which would leave the check no teeth). Changed AFTER the same-host S7 run at 596e9c9c, with
+    the user's agreement (2026-10-18): its TickLE reps all printed stamp p50 0.020 ms (noise 0) and creation p50
+    0.081/0.080/0.081 ms, |d - g| 1.3 us against a 1 us bound, and it was NOT READ under the old rule. The teeth
+    stay: a sender that waits shows as g above 0.2 ms, or as a d - g far beyond both ranges (selftest)."""
     d = st.median(c - s for c, s in zip(crt, stamp))
     g = st.median(gap)
-    noise = max(stamp) - min(stamp)
+    noise_s, noise_c = max(stamp) - min(stamp), max(crt) - min(crt)
+    noise = noise_s + noise_c
     why = []
     if g * 1e6 > CTL_WAKE_NS:
         why.append(f"median gap {g * 1e3:.1f} us")
@@ -469,9 +490,10 @@ def rtt_r4(stamp, crt, gap, gap_min, res_ms=RTT_PRINT_RES_MS):
     if abs(d - g) > noise + res_ms + FLOAT_EPS_MS:
         why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
                    f"{res_ms * 1e3:.0f} us")
-    same = "same within noise" if abs(d) <= noise else f"differs by the timer wake g = {g * 1e3:.1f} us"
-    return not why, (f"d {d * 1e3:+.1f} us g {g * 1e3:.1f} us noise {noise * 1e3:.1f} us: {same}; "
-                     f"{'PASS' if not why else 'FAIL ' + str(why)}")
+    # The descriptive label keeps its pre-2026-10-18 meaning (|d| within the stamp range); it decides nothing.
+    same = "same within noise" if abs(d) <= noise_s else f"differs by the timer wake g = {g * 1e3:.1f} us"
+    return not why, (f"d {d * 1e3:+.1f} us g {g * 1e3:.1f} us noise {noise * 1e3:.1f} us (stamp {noise_s * 1e3:.1f} "
+                     f"+ creation {noise_c * 1e3:.1f}): {same}; {'PASS' if not why else 'FAIL ' + str(why)}")
 
 
 def rtt_campaign(path):
@@ -647,6 +669,24 @@ def selftest():
         print("case 6: a control read for rmw_tickle alone is not a control")
         ok1, lines1 = control([r for r in recs if r["arm"] == "tickle@head"])
         check("FAIL without a vendor read", not ok1 and "needs tickle@head and at least one vendor" in lines1[-1])
+    print("case 7: rtt_r4 from printed per-rep medians (ms)")
+    s7 = ([0.020] * 3, [0.081, 0.080, 0.081], [0.0597, 0.0597, 0.0599], 0.0283)  # same-host S7 TickLE, 596e9c9c
+    ok7, t7 = rtt_r4(*s7)
+    print("   ", t7)
+    check("S7 (stamp range 0, creation range 1 us, |d - g| 1.3 us) PASSES on noise 0 + 1 + print 1 us", ok7)
+    ok7b, t7b = rtt_r4([0.020] * 3, [0.081] * 3, [0.0597, 0.0597, 0.0599], 0.0283)
+    print("   ", t7b)
+    check("the same |d - g| 1.3 us with no creation scatter still FAILS (noise 0 + print 1 us)",
+          not ok7b and "|d - g| 1.3 us" in t7b)
+    ok7c, t7c = rtt_r4([0.100, 0.101, 0.100], [0.360, 0.361, 0.360], [0.200] * 3, 0.190)
+    print("   ", t7c)
+    check("a sender that waits (g 200 us, d 260 us) FAILS on |d - g| although g is not above 200 us",
+          not ok7c and "|d - g| 60.0 us" in t7c and "median gap" not in t7c)
+    ok7d, t7d = rtt_r4([0.100, 0.101, 0.100], [0.420, 0.421, 0.420], [0.320] * 3, 0.300)
+    check("a sender that waits (g 320 us) FAILS on g", not ok7d and "median gap 320.0 us" in t7d)
+    ok7e, t7e = rtt_r4([0.110, 0.118, 0.113], [0.172, 0.180, 0.174], [0.062, 0.0615, 0.062], 0.030)
+    print("   ", t7e)
+    check("a vendor-like spread (stamp range 8 us, creation range 8 us) passes", ok7e)
     print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
     return 1 if fails else 0
 

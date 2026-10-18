@@ -200,6 +200,12 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
   more than 1 s NOT COMPARABLE.
 - **Every reading has a control:** a ping-pong where nothing waits at the sender must read the same on both
   definitions, up to the sender's timer wake. A failed control leaves every creation figure it gates NOT READ.
+  Rule R4: the median gap g must stay at or below 0.2 ms, no gap may fall below -0.02 ms, and d (median over reps of
+  creation p50 minus stamp p50) must equal g within the noise plus 1 us of print resolution. For round trips read
+  from per-rep medians (`rtt_r4`), the noise is the range of the reps' stamp p50s **plus** the range of their creation
+  p50s. The median of a sum is not the sum of the medians, so the creation median scatters between reps on its own.
+  This was widened on 2026-10-18, **after** the same-host S7c run had read NOT READ under the stamp range alone, with
+  the user's agreement. A sender that waits still fails (selftest: g 200 us, d 260 us).
 - Reader and rules R0-R5: `experiments/creation_latency_summary.py` (its header); the rmw cells take
   `rmw_keepall_rig.sh CREATION_TRACE=1`.
 

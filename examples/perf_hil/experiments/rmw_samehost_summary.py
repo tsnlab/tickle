@@ -49,7 +49,8 @@ first run and enforced in creation() and control_line():
      send that differs from the --stamps send (INSTRUMENT FAULT) leaves the run's creation figures unread (crt_why);
      the stamp figures stand. p99 only over >= 500 round trips.
   C2 Control per cell: creation_latency_summary.py's R4 (rtt_r4) per arm over its reps with creation figures: g <=
-     0.2 ms, no gap below -0.02 ms, |d - g| <= the reps' stamp-p50 range + 1 us. It needs rmw_tickle and one scored
+     0.2 ms, no gap below -0.02 ms, |d - g| <= the reps' stamp-p50 range + creation-p50 range + 1 us (the creation
+     range since 2026-10-18). It needs rmw_tickle and one scored
      vendor read; a failed control makes the cell's creation verdicts NOT READ. zenoh is printed, never decides it.
   C3 Scoring: the creation mean (R1-R8 are means), p50 and p99 by the same range rule as every other metric; the
      send-stamp p50/p99/mean are printed beside, as diagnostics.

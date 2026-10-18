@@ -17,7 +17,8 @@ HOW TO READ IT, written 2026-10-17 before the first run and enforced below:
      round trips per rep (the rows have 100), a p99 never (< 500). A framework with fewer than 2 readable reps in a
      cell is NOT READ there.
   C2 CONTROL per cell and rmw: creation_latency_summary.py's R4 (rtt_r4): g <= 0.2 ms, no gap below -0.02 ms, |d - g|
-     <= the reps' stamp-p50 range + 1 us. It needs rmw_tickle and one scored vendor read; rmw_zenoh_cpp is printed and
+     <= the reps' stamp-p50 range + creation-p50 range + 1 us (the creation range since 2026-10-18). It needs
+     rmw_tickle and one scored vendor read; rmw_zenoh_cpp is printed and
      never decides it. A failed control makes the cell's creation verdicts NOT READ.
   C3 SCORING, each scored vendor separately (rmw_fastrtps_cpp, rmw_cyclonedds_cpp; rmw_zenoh_cpp is reference): rows
      48-67 are means, so the primary figure is the creation mean (crt_avg_ms), median of the reps. The verdict uses the
