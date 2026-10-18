@@ -11615,13 +11615,21 @@ static void publisher_layout_of(const struct tt_TypeSupport* type, const struct 
     uint64_t fillable = (2U * ((uint64_t)actual->history.depth + 1U)) + (layout->arena / continuation);
     ring = ring < fillable ? ring : fillable;
     layout->ring = (uint16_t)(ring < UINT16_MAX ? ring : UINT16_MAX);
+    layout->total = QOS_ALIGN8(sizeof(struct tt_ReliableCache)) +
+                    QOS_ALIGN8((size_t)layout->ring * sizeof(struct tt_ReliableCacheIndex)) +
+                    QOS_ALIGN8((size_t)layout->arena);
+    // A type with no bound (max_encoded_size 0) is sized for tt_MAX_SAMPLE_LENGTH, but its samples are as large as each
+    // publish makes them: whether history.bytes keeps history.depth of them is not known until then. So it keeps the
+    // depth asked for here - no creation warning, and get_actual_qos reports that depth - and a sample that does not
+    // fit is counted when it is published (tt_ReliableCache.depth_shortfalls). Every rclcpp node's /rosout and
+    // /parameter_events publishers are such types, and each warned at creation for a shortfall that never happened.
+    if (type->max_encoded_size == 0) {
+        return;
+    }
     // (depth + 1) records hold depth samples: one record's room is the wrap slack (tt_RELIABLE_CACHE_ARENA_BYTES).
     uint32_t fit = layout->arena / layout->record;
     uint32_t kept = fit > 1 ? fit - 1 : 1;
     layout->depth_kept = kept < actual->history.depth ? kept : actual->history.depth;
-    layout->total = QOS_ALIGN8(sizeof(struct tt_ReliableCache)) +
-                    QOS_ALIGN8((size_t)layout->ring * sizeof(struct tt_ReliableCacheIndex)) +
-                    QOS_ALIGN8((size_t)layout->arena);
 }
 
 // A Subscriber's: its ACK tracking window when wider or narrower than the builtin one, and its reorder buffer.

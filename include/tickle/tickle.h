@@ -3588,6 +3588,8 @@ tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* se
 // of every BEST_AVAILABLE. They are 0 when nothing is needed, and for a profile tt_QosProfile_resolve() refuses.
 // A Publisher sizes for history.depth samples of the type's largest (max_encoded_size, or tt_MAX_SAMPLE_LENGTH),
 // capped at history.bytes: when the cap keeps fewer, creation warns and tt_Publisher_get_actual_qos() says how many.
+// A type with no bound (max_encoded_size 0) cannot be judged until its samples are published: it keeps the depth asked
+// for, without a warning, and a sample the bytes cannot keep is counted then (tt_ReliableCache.depth_shortfalls).
 //
 // Returns tt_RET_OK; tt_RET_INVALID_ARGUMENT for a NULL or uncreated node, a NULL argument, a profile the resolution
 // refuses, storage that is missing, short or misaligned, or a periodic HEARTBEAT or solicitation asked of a Publisher

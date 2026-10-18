@@ -22,7 +22,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
+#include <sys/mman.h>
 #include <tickle/tickle.h>
 
 #define TEST_COMMON_DEFINE_STORAGE
@@ -296,6 +298,67 @@ static void test_history_bytes_cap_the_depth(void) {
     EXPECT_EQ_U32(21U * record, actual.history.bytes);
     EXPECT_EQ_INT((int)tt_QOS_DURABILITY_TRANSIENT_LOCAL, (int)actual.durability.kind);
     expect_resolves_to_itself(&actual, tt_KIND_TOPIC_PUBLISHER);
+}
+
+// D10 for a type with no bound (max_encoded_size 0): whether history.bytes keeps `depth` samples depends on how large
+// each published one is, so creation neither warns nor reports fewer than asked - every rclcpp node warned for
+// /rosout and /parameter_events - and a sample that does not fit is counted when it is published. The control is the
+// same profile on the bounded type, which must still warn and report fewer: without it a silent log would only show
+// that nothing was logged at all.
+static long create_logged(const struct tt_QosProfile* qos) {
+    struct tt_Node* node = tt_Context_default_node(&sender);
+    FILE* log = tmpfile();
+    EXPECT_TRUE(log != NULL);
+    if (log == NULL) {
+        return -1;
+    }
+    tt_LogLevel level = tt_current_log_level;
+    tt_log_set_level(TT_LOG_WARNING);
+    tt_log_set_output(log);
+    size_t needed = tt_Publisher_storage_size(&type, qos);
+    EXPECT_TRUE(needed > 0 && needed <= sizeof(storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(node, &pub, &type, TOPIC, qos, NULL, storage, needed));
+    long written = ftell(log);
+    tt_log_set_output(stderr);
+    tt_log_set_level(level);
+    (void)fclose(log);
+    return written;
+}
+
+static void test_unbounded_type_keeps_the_depth(void) {
+    // history.bytes 1: the arena is one record of the largest sample, which a 64-byte sample's depth overruns.
+    const uint32_t fits = tt_sample_cache_bytes(tt_MAX_SAMPLE_LENGTH) / tt_sample_cache_bytes(SAMPLE_BYTES);
+    struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = fits + 10U, .bytes = 1},
+                                .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    struct tt_QosProfile actual;
+
+    init(); // control: bounded at 64 bytes, the same profile keeps fewer, says so, and reports it
+    long bounded_log = create_logged(&qos);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_get_actual_qos(&pub, &actual));
+    EXPECT_TRUE(bounded_log > 0);
+    EXPECT_TRUE(actual.history.depth < qos.history.depth);
+
+    init();
+    type.max_encoded_size = 0;
+    long unbounded_log = create_logged(&qos);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_get_actual_qos(&pub, &actual));
+    printf("test_qos_create: depth %u, history.bytes 1: bounded type logged %ld bytes, unbounded %ld, reports %u\n",
+           (unsigned)qos.history.depth, bounded_log, unbounded_log, (unsigned)actual.history.depth);
+    EXPECT_EQ_INT(0, (int)unbounded_log);
+    EXPECT_EQ_U32(qos.history.depth, actual.history.depth);
+    EXPECT_EQ_U32(qos.history.depth, pub.reliable_cache->sample_depth);
+    expect_resolves_to_itself(&actual, tt_KIND_TOPIC_PUBLISHER);
+
+    // The shortfall is still counted where it happens: publishing `depth` 64-byte samples overruns the arena.
+    EXPECT_EQ_U32(0, pub.reliable_cache->depth_shortfalls);
+    for (uint32_t i = 0; i < qos.history.depth; i++) {
+        next_index = i + 1U;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&next_index));
+    }
+    printf("test_qos_create: unbounded type, %u published: depth_shortfalls %u, %u retained\n",
+           (unsigned)qos.history.depth, (unsigned)pub.reliable_cache->depth_shortfalls,
+           (unsigned)pub.reliable_cache->retained_samples);
+    EXPECT_TRUE(pub.reliable_cache->depth_shortfalls > 0);
 }
 
 // The default Subscriber is RELIABLE with a reorder buffer, which lives in storage; KEEP_LAST tells the segment drain
@@ -587,6 +650,7 @@ int main(void) {
     test_default_publisher_needs_storage();
     test_sensor_data_publisher_needs_none();
     test_history_bytes_cap_the_depth();
+    test_unbounded_type_keeps_the_depth();
     test_subscriber_storage();
     test_best_available_reads_discovery();
     test_client_and_server();

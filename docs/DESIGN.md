@@ -382,7 +382,7 @@ ROS dependency, and rmw_tickle converts.
 | resolution | `tt_QosProfile_resolve()`: SYSTEM_DEFAULT, BEST_AVAILABLE (from the discovery table), and out-of-range values refused, not adjusted |
 | hot path | the resolved profile is written into the endpoint's existing fields; only what none held is appended |
 | storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT |
-| depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()` |
+| depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()`. An unbounded type (`max_encoded_size` 0) keeps the depth asked for; a sample that does not fit is counted at publish (`depth_shortfalls`) |
 | not QoS | `tt_PublisherOptions`, `tt_SubscriberOptions`, `tt_ClientOptions` (call retry), `tt_ServerOptions` |
 
 `tt_Topic` is now `tt_TypeSupport`. Deprecated until callers move: `tt_Context_create_*()`, `tt_Node_create_*_legacy()`,
