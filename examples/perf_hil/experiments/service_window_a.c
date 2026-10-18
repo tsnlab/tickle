@@ -205,6 +205,12 @@ static void note_counters(const struct tt_Context* node, bool server) {
 }
 
 static struct tt_Context s_node;
+// Services take tt_QOS_PROFILE_SERVICES_DEFAULT, which is what the deprecated create gave them. The response cache
+// stays the inline one (max_response_bytes 0), as before: nothing here called tt_Server_set_storage().
+static const struct tt_ServerOptions server_options = {
+    .callback = (tt_SERVER_CALLBACK)serve,
+    .max_response_bytes = 0,
+};
 static struct tt_Server s_servers[CLIENTS];
 
 static int server_main(pid_t child) {
@@ -212,8 +218,9 @@ static int server_main(pid_t child) {
     _tt_CONFIG.context_id = SERVER_ID;
     bool created = tt_Context_create(&s_node) == tt_RET_OK;
     for (int i = 0; i < CLIENTS && created; i++) {
-        created = tt_Context_create_server(&s_node, &s_servers[i], &window_a_service, service_names[i],
-                                           (tt_SERVER_CALLBACK)serve) == tt_RET_OK;
+        created =
+            tt_Node_create_server(tt_Context_default_node(&s_node), &s_servers[i], &window_a_service, service_names[i],
+                                  &tt_QOS_PROFILE_SERVICES_DEFAULT, &server_options, NULL, 0) == tt_RET_OK;
     }
     if (!created) {
         (void)kill(child, SIGKILL);
@@ -310,6 +317,16 @@ static void call_if_idle(int i) {
     }
 }
 
+// The deprecated create left the retry settings to the service's, which window_a_service leaves 0 (adaptive interval,
+// tt_CALL_RETRY_COUNT); the new one takes the Client's own, so they are the same zeros here. Requests stay in the
+// inline cache (max_request_bytes 0), as before: nothing here called tt_Client_set_storage().
+static const struct tt_ClientOptions client_options = {
+    .callback = (tt_CLIENT_CALLBACK)answered,
+    .call_retry_interval = 0,
+    .call_retry_count = 0,
+    .max_request_bytes = 0,
+};
+
 static int client_main(void) {
     _tt_CONFIG.broadcast = BROADCAST;
     _tt_CONFIG.context_id = CLIENT_ID;
@@ -317,8 +334,8 @@ static int client_main(void) {
         return RUN_SETUP_FAILED;
     }
     for (int i = 0; i < CLIENTS; i++) {
-        if (tt_Context_create_client(&c_node, &c_clients[i], &window_a_service, service_names[i],
-                                     (tt_CLIENT_CALLBACK)answered) != tt_RET_OK) {
+        if (tt_Node_create_client(tt_Context_default_node(&c_node), &c_clients[i], &window_a_service, service_names[i],
+                                  &tt_QOS_PROFILE_SERVICES_DEFAULT, &client_options, NULL, 0) != tt_RET_OK) {
             return RUN_SETUP_FAILED;
         }
     }
