@@ -42,6 +42,15 @@
 #endif
 #include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox: the parent's tickle.c, or this tree's
 
+// This tree creates with a QoS profile (DESIGN.md section 9); the parent, built from this same source, predates it and
+// has struct tt_Topic and the deprecated creates only. tt_QOS_REORDER_NONE is a macro of the profile's.
+#ifdef tt_QOS_REORDER_NONE
+#define WIRE_QOS_AT_CREATION 1
+#else
+#define WIRE_QOS_AT_CREATION 0
+#define tt_TypeSupport tt_Topic
+#endif
+
 #ifndef WIRE_GOLDEN
 #define WIRE_GOLDEN "../../tests/wire_identity/largemsg_parent.bin"
 #endif
@@ -140,10 +149,14 @@ static void test_release(void* user, void* buffer) {
 static struct tt_Context node;
 static struct tt_TypeSupport topic;
 static struct tt_Publisher pub;
+#if WIRE_QOS_AT_CREATION
+static uint64_t pub_storage[(size_t)2U * 1024U * 1024U / sizeof(uint64_t)]; // RELIABLE's retained samples
+#else
 #define CACHE_DEPTH 128
 static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
 static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
 static struct tt_ReliableCache cache;
+#endif
 
 static void publish_three(bool reliable) {
     test_mock_reset();
@@ -158,10 +171,20 @@ static void publish_three(bool reliable) {
     topic.data_size = 8;
     topic.data_encode_size = sized_encode_size;
     topic.data_encode = sized_encode;
+#if WIRE_QOS_AT_CREATION
+    // RELIABLE as rmw_tickle creates it: the default profile, KEEP_LAST 10, with its storage.
+    const struct tt_QosProfile* qos = reliable ? &tt_QOS_PROFILE_DEFAULT : &TEST_QOS_UNRELIABLE;
+    size_t storage_size = tt_Publisher_storage_size(&topic, qos);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "wire", qos, NULL,
+                                                      storage_size != 0 ? pub_storage : NULL, storage_size));
+#else
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "wire"));
+#endif
 #if defined(tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) && tt_LARGE_SAMPLES // this tree, built as rmw builds it - not the parent
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&node, test_acquire, test_release, NULL));
 #endif
+#if !WIRE_QOS_AT_CREATION
     if (reliable) {
         memset(cache_index, 0, sizeof(cache_index));
         memset(&cache, 0, sizeof(cache));
@@ -173,6 +196,7 @@ static void publish_three(bool reliable) {
         pub.reliable_cache = &cache;
         pub.reliable = true;
     }
+#endif
     // A Publisher with no matched reader sends nothing (2026-10-15): known peers past the unicast threshold keep the
     // broadcast the golden capture holds - the same datagrams from a parent that broadcast with none.
     for (uint8_t i = 0; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
