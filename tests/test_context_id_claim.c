@@ -238,9 +238,13 @@ static void test_the_third_context_keeps_the_keeper(void) {
     static struct tt_Publisher keeper_pub;
     static struct tt_Publisher newcomer_pub;
     static struct tt_Subscriber third_sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&keeper, &keeper_pub, &topic, "rt/keeper"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&newcomer, &newcomer_pub, &topic, "rt/newcomer"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&third, &third_sub, &topic, "rt/keeper", on_sample));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&keeper), &keeper_pub, &topic,
+                                                      "rt/keeper", &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&newcomer), &newcomer_pub, &topic,
+                                                      "rt/newcomer", &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&third), &third_sub, &topic, "rt/keeper", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
 
     struct tt_Context* to_third[] = {&third};
     struct tt_Context* to_keeper_and_third[] = {&keeper, &third};
@@ -301,7 +305,8 @@ static void test_no_free_id(void) {
     EXPECT_TRUE(newcomer.id_muted);
     // Silent on the wire, never towards its user: each publish fails, and is counted.
     static struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&newcomer, &pub, &topic, "rt/muted"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&newcomer), &pub, &topic, "rt/muted",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     uint32_t value = 0;
     int sent_before = test_mock_send_call_count;
     for (int attempt = 0; attempt < MUTED_ATTEMPTS; attempt++) {

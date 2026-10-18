@@ -161,9 +161,12 @@ static void create_shape(int node_count, int per_node) {
         for (int e = 0; e < per_node; e++) {
             int i = (n * per_node) + e;
             (void)snprintf(endpoint_names[i], sizeof(endpoint_names[i]), "rt/node_%03d/topic_%02d", n, e);
-            tt_ret_t ret = e % 2 == 0 ? tt_Node_create_publisher_legacy(&nodes[n], &pubs[i], &topic, endpoint_names[i])
-                                      : tt_Node_create_subscriber_legacy(&nodes[n], &subs[i], &topic, endpoint_names[i],
-                                                                         on_sample);
+            tt_ret_t ret =
+                e % 2 == 0
+                    ? tt_Node_create_publisher(&nodes[n], &pubs[i], &topic, endpoint_names[i], &TEST_QOS_UNRELIABLE,
+                                               NULL, NULL, 0)
+                    : tt_Node_create_subscriber(&nodes[n], &subs[i], &topic, endpoint_names[i], &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0);
             created += ret == tt_RET_OK ? 1 : 0;
         }
     }
@@ -224,7 +227,8 @@ static void test_only_a_default_node_in_use_is_announced(void) {
     EXPECT_TRUE(remote_node("tickle_2") == NULL);
     EXPECT_TRUE(remote_node("idle") != NULL);
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &pubs[0], &topic, "rt/chatter"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&remote), &pubs[0], &topic, "rt/chatter",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     carry_announce();
     EXPECT_TRUE(remote_node("tickle_2") != NULL);
 }
@@ -236,7 +240,9 @@ static void test_a_node_entry_is_never_an_endpoint(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&remote, &nodes[1], "talker", "/"));
     // A local subscriber whose id equals the remote node entry's id: were the entry taken for a publisher, it would
     // become this subscriber's writer.
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &subs[0], &topic, "rt/x", on_sample));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&local), &subs[0], &topic, "rt/x", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
     subs[0].endpoint.id = nodes[1].entry.id;
     carry_announce();
     EXPECT_TRUE(remote_node("talker") != NULL);

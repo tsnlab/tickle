@@ -72,7 +72,9 @@ static void test_large_fragments_are_skipped_and_counted(void) {
     topic.data_decode = decode_any;
     topic.data_free = free_nothing;
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&node, &sub, &topic, "e", on_data));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, "e", &TEST_QOS_UNRELIABLE,
+                                            &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
 
     uint8_t bytes[256];
     struct {

@@ -124,13 +124,16 @@ static void test_a_context_at_capacity_is_created_found_and_announced(void) {
             int i = (n * PER_NODE) + e;
             (void)snprintf(endpoint_names[i], sizeof(endpoint_names[i]), "rt/navigation_node_%02d/topic_%02d_cmd_vel",
                            n, e);
-            created +=
-                tt_Node_create_publisher_legacy(&nodes[n], &pubs[i], &topic, endpoint_names[i]) == tt_RET_OK ? 1 : 0;
+            created += tt_Node_create_publisher(&nodes[n], &pubs[i], &topic, endpoint_names[i], &TEST_QOS_UNRELIABLE,
+                                                NULL, NULL, 0) == tt_RET_OK
+                           ? 1
+                           : 0;
         }
     }
     EXPECT_EQ_INT(ENDPOINTS, created);
     static struct tt_Publisher one_more;
-    EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Node_create_publisher_legacy(&nodes[0], &one_more, &topic, "rt/one_more"));
+    EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Node_create_publisher(&nodes[0], &one_more, &topic, "rt/one_more",
+                                                                 &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
 
     // Found locally: every endpoint by its own id, on its own node.
     int found = 0;

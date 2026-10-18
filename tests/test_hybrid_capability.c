@@ -138,7 +138,8 @@ static void add_publishers(struct tt_Context* node, uint32_t count) {
         topics[i].data_size = 8;
         topics[i].data_encode_size = encode_size_8;
         topics[i].data_encode = encode_zero;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(node, &pubs[i], &topics[i], "pub"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(node), &pubs[i], &topics[i], "pub",
+                                                          &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     }
 }
 

@@ -98,6 +98,22 @@ extern int test_failures;
     (name).arena = name##_arena_storage;                                                            \
     (name).arena_size = (uint32_t)sizeof(name##_arena_storage)
 
+// The QoS a test passes to tt_Node_create_publisher() / _subscriber() when its subject is not the QoS: what the
+// deprecated creates (tt_Context_create_*(), tt_Node_create_*_legacy()) gave every endpoint - BEST_EFFORT, VOLATILE,
+// AUTOMATIC, no durations, nothing retained, so no storage - and KEEP_ALL, so that a Subscriber's segment drain skips
+// no superseded sample (keep_last_depth 0), as theirs never did. A zeroed profile is RELIABLE KEEP_LAST 10 instead,
+// and needs storage.
+#define TEST_QOS_UNRELIABLE                                                      \
+    ((const struct tt_QosProfile) {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL}, \
+                                   .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT}})
+
+// A Subscriber's RELIABLE counterpart, what a deprecated create followed by `sub.reliable = true` gave: RELIABLE with
+// the builtin tracking window and no reorder buffer (so no storage), and KEEP_ALL as above.
+#define TEST_QOS_RELIABLE_READER                      \
+    ((const struct tt_QosProfile) {                   \
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL}, \
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .reorder_slots = tt_QOS_REORDER_NONE}})
+
 // Returns a process exit status make can use directly: 0 if every EXPECT_* in this binary
 // passed, 1 (with a summary line) otherwise.
 static inline int test_result(void) {

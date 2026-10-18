@@ -114,8 +114,10 @@ static void init_sender(int count, uint64_t last_modified) {
         sender_topics[i].data_size = 8;
         sender_topics[i].data_decode = decode_nothing;
         sender_topics[i].data_free = free_nothing;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&sender, &sender_subs[i], &sender_topics[i],
-                                                              ENDPOINT_NAME, on_data));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_subscriber(tt_Context_default_node(&sender), &sender_subs[i], &sender_topics[i],
+                                                ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
     }
     sender.last_modified = last_modified;
 }
@@ -151,8 +153,9 @@ static void init_receiver(const int* topic_indices, int n) {
         receiver_topics[k].data_size = 8;
         receiver_topics[k].data_encode_size = encode_size_one;
         receiver_topics[k].data_encode = encode_one;
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Context_create_publisher(&receiver, &receiver_pubs[k], &receiver_topics[k], ENDPOINT_NAME));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&receiver), &receiver_pubs[k],
+                                                          &receiver_topics[k], ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                          NULL, NULL, 0));
     }
 }
 

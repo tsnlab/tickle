@@ -176,8 +176,10 @@ static void test_two_publishers_same_topic_both_succeed(void) {
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_a, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_b, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
     EXPECT_EQ_U32(pub_a.endpoint.id, pub_b.endpoint.id); // same name -> same wire id, by design
 }
@@ -194,10 +196,12 @@ static void test_two_subscribers_same_topic_both_succeed(void) {
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_subscriber(&node, &sub_a, &topic, "/test_topic", stub_subscriber_callback));
-    EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_subscriber(&node, &sub_b, &topic, "/test_topic", stub_subscriber_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&node), &sub_a, &topic, "/test_topic", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = stub_subscriber_callback}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&node), &sub_b, &topic, "/test_topic", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = stub_subscriber_callback}, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
@@ -211,9 +215,11 @@ static void test_two_clients_same_service_both_succeed(void) {
     init_service(&service, "/test_service");
 
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_client(&node, &client_a, &service, "/test_service", stub_client_callback));
+                  tt_Node_create_client(tt_Context_default_node(&node), &client_a, &service, "/test_service", NULL,
+                                        &(struct tt_ClientOptions) {.callback = stub_client_callback}, NULL, 0));
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_client(&node, &client_b, &service, "/test_service", stub_client_callback));
+                  tt_Node_create_client(tt_Context_default_node(&node), &client_b, &service, "/test_service", NULL,
+                                        &(struct tt_ClientOptions) {.callback = stub_client_callback}, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
@@ -228,9 +234,11 @@ static void test_two_servers_same_service_both_succeed(void) {
     init_service(&service, "/test_service");
 
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_server(&node, &server_a, &service, "/test_service", stub_server_callback));
+                  tt_Node_create_server(tt_Context_default_node(&node), &server_a, &service, "/test_service", NULL,
+                                        &(struct tt_ServerOptions) {.callback = stub_server_callback}, NULL, 0));
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_server(&node, &server_b, &service, "/test_service", stub_server_callback));
+                  tt_Node_create_server(tt_Context_default_node(&node), &server_b, &service, "/test_service", NULL,
+                                        &(struct tt_ServerOptions) {.callback = stub_server_callback}, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
@@ -244,7 +252,8 @@ static void test_registering_same_pointer_twice_still_fails(void) {
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_INT(tt_RET_IILEGAL_ENDPOINT_ID, add_endpoint_to_node(&node, &pub.endpoint, NULL));
     EXPECT_EQ_U32(1, node.endpoint_count); // the rejected re-registration didn't leak a slot
 }
@@ -260,8 +269,10 @@ static void test_destroying_one_duplicate_leaves_its_sibling_registered(void) {
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_a, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_b, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
 
     EXPECT_TRUE(remove_endpoint_from_node(&node, &pub_a.endpoint));
@@ -308,8 +319,10 @@ static void test_update_registers_peer_on_every_matching_publisher(void) {
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_a, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub_b, &topic, "/test_topic",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_U32(2, node.endpoint_count);
 
     struct tt_Header header;

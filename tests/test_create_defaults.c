@@ -8,8 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// tt_Context_create_publisher()/_subscriber() must set every field an announce or the receive path
-// reads, whatever the struct held before - a caller need not zero it first.
+// tt_Node_create_publisher()/_subscriber() must set every field an announce or the receive path
+// reads, whatever the struct held before - a caller need not zero it first. (Written for the deprecated
+// tt_Context_create_*(), which share the same reset.)
 //
 // Found 2026-09-24 by UBSan while auditing the core at a larger buffer size: "load of value 69,
 // which is not a valid value for type '_Bool'" reading tt_Publisher.liveliness_manual. keep_all,
@@ -93,7 +94,8 @@ static void test_publisher_defaults_override_garbage(void) {
     init();
     static struct tt_Publisher pub;
     memset(&pub, GARBAGE, sizeof(pub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
 
     EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&pub)); // what the announce carries
     EXPECT_TRUE(!pub.reliable && !pub.durable && !pub.keep_all && !pub.liveliness_manual);
@@ -122,7 +124,8 @@ static void test_the_first_departure_lands_inside_the_ring(void) {
     static struct tt_Publisher pub;
     memset(&pub, 0, sizeof(pub));
     pub.departed_next = tt_DEPARTED_ACKS; // one past the end: the 8 CI's stack held
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     forget_peer_ack(&pub, 7, 0, true);
     EXPECT_EQ_INT(7, pub.departed_acks[0].context_id);
     EXPECT_EQ_INT(1, pub.departed_next);
@@ -133,7 +136,9 @@ static void test_subscriber_defaults_override_garbage(void) {
     init();
     static struct tt_Subscriber sub;
     memset(&sub, GARBAGE, sizeof(sub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&node, &sub, &topic, "ep", on_data));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, "ep", &TEST_QOS_UNRELIABLE,
+                                            &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
 
     EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&sub));
     EXPECT_TRUE(!sub.reliable && !sub.durable && !sub.liveliness_manual);

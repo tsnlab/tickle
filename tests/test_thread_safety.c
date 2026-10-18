@@ -670,9 +670,12 @@ static void create_endpoints(void) {
         topics[t].data_encode = sample_encode;
         topics[t].data_decode = sample_decode;
         topics[t].data_free = sample_free;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node_a, &publishers[t], &topics[t], names[t]));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node_a), &publishers[t], &topics[t],
+                                                          names[t], &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
         EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Context_create_subscriber(&node_b, &subscribers[t], &topics[t], names[t], on_sample));
+                      tt_Node_create_subscriber(tt_Context_default_node(&node_b), &subscribers[t], &topics[t], names[t],
+                                                &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
     }
 }
 
@@ -890,8 +893,12 @@ static void create_call_endpoints(void) {
     call_service.response_encode = call_response_encode;
     call_service.response_decode = call_response_decode;
     call_service.response_free = call_response_free;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_server(&node_b, &call_server, &call_service, "call_stress", on_call));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node_a, &call_client, &call_service, "call_stress", on_answer));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_server(tt_Context_default_node(&node_b), &call_server, &call_service, "call_stress",
+                                        NULL, &(struct tt_ServerOptions) {.callback = on_call}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_client(tt_Context_default_node(&node_a), &call_client, &call_service, "call_stress",
+                                        NULL, &(struct tt_ClientOptions) {.callback = on_answer}, NULL, 0));
 }
 
 static bool all_delivered(void) {
