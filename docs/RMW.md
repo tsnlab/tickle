@@ -83,11 +83,11 @@ Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSE
 
 | Policy | Accepted | Note |
 |---|---|---|
-| RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE | Services retry in core |
+| RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE | Services: default `services_default` (RELIABLE, retried in core); a BEST_EFFORT client sends each request once and, with every slot busy, ends its oldest call instead of waiting |
 | DURABILITY | VOLATILE, TRANSIENT_LOCAL, BEST_AVAILABLE | Services: VOLATILE only |
 | HISTORY | KEEP_LAST, KEEP_ALL | KEEP_ALL is bounded in bytes, not samples (no RESOURCE_LIMITS in rmw): a full publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` then times out; a full RELIABLE subscription declines (the writer resends), BEST_EFFORT drops |
 | DEADLINE, LIFESPAN | any finite value | Deadline: one miss per period P with no publish (offered) or no sample received (requested), checked at the last activity + P. Lifespan expires samples in the publisher cache and the subscriber queue |
-| LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE | Lease at least 6 ms |
+| LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE | Lease at least 6 ms. Services: AUTOMATIC only (nothing asserts a service's liveliness) |
 
 RxO matching covers reliability, durability, deadline and liveliness; both sides get the event, once per incompatible
 endpoint, when its announce arrives (no periodic rescan). `rmw_qos_profile_check_compatible()` returns ERROR for those

@@ -223,7 +223,8 @@ later. Silent with nothing unacknowledged, no matched reader, or BEST_EFFORT rea
 | seq_nos | from the context's one counter; each Client of a service has its own `client_tag` (1..255) |
 | retry | `call_retry_interval` if set; else first wait `srtt + max(G, 4 x rttvar)`, doubling, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x max(srtt, G); seed `tt_CALL_RETRY_INTERVAL`; G is twice the reliable one (`tt_CALL_RETRY_GRANULARITY` fixes it) |
 | give-up | after `2^(count+1) - 1` first waits, never later than `(count + 1) x tt_CALL_DEADLINE_PER_SEND`; a timeout doubles srtt once |
-| response cache | `tt_MAX_SERVER_CACHE_COUNT` slots keyed by (source, `client_tag`, seq_no): a retry never runs the callback twice |
+| BEST_EFFORT Client (D6) | sends each request once; a lost call ends with `tt_CALL_TIMEOUT` at the RELIABLE give-up, so a late answer still lands. Decided in `call_retry()`: the call path compiles unchanged. `tt_Client_end_oldest_call()` frees a slot for the next call |
+| response cache | `tt_MAX_SERVER_CACHE_COUNT` slots keyed by (source, `client_tag`, seq_no): a retry never runs the callback twice. Kept by a BEST_EFFORT Server too: the retries come from RELIABLE clients |
 | call window | a Server keeps `tt_CLIENT_CALL_WINDOW` (2 x outstanding) answers per Client; a Client makes no call while one is that many calls old; both ends must agree |
 | answer lifetime | the longer of the client's seed schedule and `tt_SERVER_CACHE_GAP_MULTIPLE` x its longest response-to-retry gap; dropped for a new incarnation; a full cache evicts the oldest-sent |
 | deferred | `tt_CALL_DEFERRED`, then `tt_Server_send_response()` from any thread; reclaimed after `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` |
@@ -385,6 +386,7 @@ ROS dependency, and rmw_tickle converts.
 | per sample | nothing the hand-built caches did not pay: a KEEP_LAST cache whose ring and arena keep the depth for samples of its type's largest shape skips the sample count (`depth_assured_*`) until a sample falls outside it |
 | depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()`. An unbounded type (`max_encoded_size` 0, or a size its binding chose: `max_encoded_size_estimated`) keeps the depth asked for; a sample that does not fit is counted at publish (`depth_shortfalls`) |
 | not QoS | `tt_PublisherOptions`, `tt_SubscriberOptions`, `tt_ClientOptions` (call retry), `tt_ServerOptions` |
+| services | default `tt_QOS_PROFILE_SERVICES_DEFAULT` (RELIABLE, VOLATILE, KEEP_LAST 10); a Client's reliability decides resending (section 7). TRANSIENT_LOCAL and MANUAL liveliness are refused: no call is retained for a late server, and nothing asserts a service's liveliness |
 
 `tt_Topic` is now `tt_TypeSupport`. Deprecated until callers move: `tt_Context_create_*()`, `tt_Node_create_*_legacy()`,
 and QoS written into endpoint fields.
