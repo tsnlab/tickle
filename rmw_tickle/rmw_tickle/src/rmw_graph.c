@@ -1125,15 +1125,44 @@ static rmw_time_t announced_duration(uint64_t duration_ns) {
     return (rmw_time_t) {.sec = duration_ns / GRAPH_NSEC_PER_SEC, .nsec = duration_ns % GRAPH_NSEC_PER_SEC};
 }
 
+// A remote endpoint's QoS, every policy its announce carries.
+static rmw_qos_profile_t remote_endpoint_qos(const struct tt_DiscoveredEntity* entity) {
+    rmw_qos_profile_t qos = rmw_qos_profile_unknown;
+    qos.reliability = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0 ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
+                                                                  : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    qos.durability = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0 ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
+                                                                : RMW_QOS_POLICY_DURABILITY_VOLATILE;
+    // LIVELINESS and the two durations are announced as well (struct tt_DiscoveredEntity's own
+    // qos/deadline_duration_ns/liveliness_lease_duration_ns), and they participate in endpoint
+    // matching, so they are exactly what this API guarantees discovery shares - leaving them
+    // UNKNOWN was not caution, it was a value we do not have to invent being left out.
+    //
+    // It was also incoherent, which is how it was found (RMW_GAPS_PLAN g13, the bag
+    // acceptance). rosbag2 records the publisher's reported QoS into the bag and offers it
+    // again on playback, so `ros2 bag play` asked rmw_tickle to create a publisher with
+    // liveliness UNKNOWN - and rmw_tickle_validate_qos_profile() refuses UNKNOWN, so we
+    // rejected a profile we had ourselves reported. Recording worked, playback published
+    // nothing, and the topic was skipped with a QoS error naming our own validator.
+    qos.liveliness = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0 ? RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC
+                                                                          : RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
+    qos.deadline = announced_duration(entity->deadline_duration_ns);
+    qos.liveliness_lease_duration = announced_duration(entity->liveliness_lease_duration_ns);
+    // Since tt_VERSION 14 (QoS plan D8) the announce carries the history and the lifespan too, so the graph
+    // reports them rather than UNKNOWN: rosbag2 replays a topic with the depth it recorded here.
+    qos.history = (entity->qos & tt_UPDATE_QOS_KEEP_ALL) != 0 ? RMW_QOS_POLICY_HISTORY_KEEP_ALL
+                                                              : RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    qos.depth = entity->history_depth;
+    qos.lifespan = announced_duration(entity->lifespan_duration_ns);
+    return qos;
+}
+
 // The actual scan+build behind rmw_get_publishers_info_by_topic()/_subscriptions_info_by_topic()
 // below - unlike the names_and_types family above, every individual matching endpoint instance
 // (local or remote) gets its own row here, none deduplicated by name. A remote entity's node_name/node_namespace are
 // its node's (stage 3, remote_node_of()), or "" if that node's entry is not known (empty, not NULL - the setters
-// require a real C string). A remote entity's own qos_profile only ever
-// has RELIABILITY/DURABILITY populated for real (struct tt_DiscoveredEntity.qos's own doc comment)
-// - starting from rmw_qos_profile_unknown and overriding just those two matches this API's own
-// documented allowance ("the only QoS policies guaranteed to be shared during discovery are the
-// ones that participate in endpoint matching").
+// require a real C string). A remote entity's qos_profile is every policy its announce carries: all of them since
+// tt_VERSION 14 (QoS plan D8), which added the history, depth and lifespan. It starts from rmw_qos_profile_unknown,
+// so a policy the announce does not carry (avoid_ros_namespace_conventions) stays at its value there.
 static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                   uint8_t kind, rmw_endpoint_type_t endpoint_type,
                                                   rcutils_allocator_t* allocator,
@@ -1170,27 +1199,7 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
             strcmp(entity->name, topic_name) != 0) {
             continue;
         }
-        rmw_qos_profile_t qos = rmw_qos_profile_unknown;
-        qos.reliability = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0 ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
-                                                                      : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-        qos.durability = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0 ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
-                                                                    : RMW_QOS_POLICY_DURABILITY_VOLATILE;
-        // LIVELINESS and the two durations are announced as well (struct tt_DiscoveredEntity's own
-        // qos/deadline_duration_ns/liveliness_lease_duration_ns), and they participate in endpoint
-        // matching, so they are exactly what this API guarantees discovery shares - leaving them
-        // UNKNOWN was not caution, it was a value we do not have to invent being left out.
-        //
-        // It was also incoherent, which is how it was found (RMW_GAPS_PLAN g13, the bag
-        // acceptance). rosbag2 records the publisher's reported QoS into the bag and offers it
-        // again on playback, so `ros2 bag play` asked rmw_tickle to create a publisher with
-        // liveliness UNKNOWN - and rmw_tickle_validate_qos_profile() refuses UNKNOWN, so we
-        // rejected a profile we had ourselves reported. Recording worked, playback published
-        // nothing, and the topic was skipped with a QoS error naming our own validator.
-        qos.liveliness = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0
-                             ? RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC
-                             : RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
-        qos.deadline = announced_duration(entity->deadline_duration_ns);
-        qos.liveliness_lease_duration = announced_duration(entity->liveliness_lease_duration_ns);
+        rmw_qos_profile_t qos = remote_endpoint_qos(entity);
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
         ret = populate_topic_endpoint_info(allocator, owner != NULL ? owner->name : "",
                                            owner != NULL ? owner->type : "", entity->type, endpoint_type,
