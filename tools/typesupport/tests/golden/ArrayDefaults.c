@@ -18,13 +18,14 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic ArrayDefaultsTopic = {
+struct tt_TypeSupport ArrayDefaultsTopic = {
     .name = "ArrayDefaultsTopic",
     .data_size = sizeof(struct ArrayDefaultsData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)ArrayDefaultsData_encode_size,
     .data_encode = (tt_DATA_ENCODE)ArrayDefaultsData_encode,
     .data_decode = (tt_DATA_DECODE)ArrayDefaultsData_decode,
     .data_free = (tt_DATA_FREE)ArrayDefaultsData_free,
+    .max_encoded_size = 14,
 };
 
 void ArrayDefaultsData_init(struct ArrayDefaultsData* data) {

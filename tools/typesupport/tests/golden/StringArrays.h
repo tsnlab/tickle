@@ -39,4 +39,4 @@ void StringArraysData_free(struct StringArraysData* data);
 
 #define StringArraysData_FITS_ONE_DATAGRAM (28 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic StringArraysTopic;
+extern struct tt_TypeSupport StringArraysTopic;

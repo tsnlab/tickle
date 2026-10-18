@@ -34,4 +34,4 @@ void StampedData_free(struct StampedData* data);
 
 #define StampedData_FITS_ONE_DATAGRAM (16 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic StampedTopic;
+extern struct tt_TypeSupport StampedTopic;

@@ -20,7 +20,7 @@
 
 #include "std_msgs__Header.h"
 
-struct tt_Topic StampedTopic = {
+struct tt_TypeSupport StampedTopic = {
     .name = "StampedTopic",
     .data_size = sizeof(struct StampedData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)StampedData_encode_size,

@@ -37,4 +37,4 @@ void StringArrayDefaultsData_free(struct StringArrayDefaultsData* data);
 
 #define StringArrayDefaultsData_FITS_ONE_DATAGRAM (14 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic StringArrayDefaultsTopic;
+extern struct tt_TypeSupport StringArrayDefaultsTopic;

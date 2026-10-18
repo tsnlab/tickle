@@ -19,7 +19,7 @@
 #include "@(nested_name).h"
 @[end for]@
 
-struct tt_Topic @(name)Topic = {
+struct tt_TypeSupport @(name)Topic = {
     .name = "@(name)Topic",
     .data_size = sizeof(struct @(data_name)),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)@(data_name)_encode_size,
@@ -32,6 +32,9 @@ struct tt_Topic @(name)Topic = {
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)@(data_name)_decode_inplace,
 @[end if]@
     .data_free = (tt_DATA_FREE)@(data_name)_free,
+@[if max_encoded_size is not None]@
+    .max_encoded_size = @(max_encoded_size),
+@[end if]@
 };
 
 @(data_struct_c)

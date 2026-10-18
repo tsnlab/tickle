@@ -37,4 +37,4 @@ void ArrayDefaultsData_free(struct ArrayDefaultsData* data);
 
 #define ArrayDefaultsData_FITS_ONE_DATAGRAM (14 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic ArrayDefaultsTopic;
+extern struct tt_TypeSupport ArrayDefaultsTopic;

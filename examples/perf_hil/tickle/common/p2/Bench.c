@@ -19,7 +19,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic BenchTopic = {
+struct tt_TypeSupport BenchTopic = {
     .name = "BenchTopic",
     .data_size = sizeof(struct BenchData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BenchData_encode_size,
@@ -28,6 +28,7 @@ struct tt_Topic BenchTopic = {
     .data_decode = (tt_DATA_DECODE)BenchData_decode,
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)BenchData_decode_inplace,
     .data_free = (tt_DATA_FREE)BenchData_free,
+    .max_encoded_size = 1292,
 };
 
 int32_t BenchData_encode_size(struct BenchData* data) {

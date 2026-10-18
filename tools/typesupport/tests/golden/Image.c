@@ -21,7 +21,7 @@
 
 #include "std_msgs__Header.h"
 
-struct tt_Topic ImageTopic = {
+struct tt_TypeSupport ImageTopic = {
     .name = "ImageTopic",
     .data_size = sizeof(struct ImageData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)ImageData_encode_size,

@@ -1,5 +1,5 @@
 @# A nested dependency's own header (std_msgs__Header.h, say): the struct + codec function
-@# declarations a parent interface's #include reaches into - no tt_Topic/tt_Service wrapper of
+@# declarations a parent interface's #include reaches into - no tt_TypeSupport/tt_Service wrapper of
 @# its own, since a nested message has no independent existence on the wire (DESIGN.md: "no
 @# header, no extra alignment beyond what the first nested field needs").
 #pragma once

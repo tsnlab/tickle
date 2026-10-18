@@ -19,7 +19,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic StringArrayDefaultsTopic = {
+struct tt_TypeSupport StringArrayDefaultsTopic = {
     .name = "StringArrayDefaultsTopic",
     .data_size = sizeof(struct StringArrayDefaultsData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)StringArrayDefaultsData_encode_size,
