@@ -101,10 +101,12 @@ static void ping_task(void* param) {
     }
     printf("ping: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_client(&node, &client, &PingPongService, "ping_pong_server",
-                                   (tt_CLIENT_CALLBACK)ping_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)ping_callback};
+    ret = tt_Node_create_client(tt_Context_default_node(&node), &client, &PingPongService, "ping_pong_server", NULL,
+                                &client_options, NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("ping: tt_Context_create_client failed: %d\n", ret);
+        printf("ping: tt_Node_create_client failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

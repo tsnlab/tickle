@@ -131,9 +131,19 @@ static void perf_server_task(void* param) {
     }
     printf("perf_server: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_subscriber(&node, &sub, &BulkTopic, "bulk_topic", (tt_SUBSCRIBER_CALLBACK)bulk_callback);
+    // BEST_EFFORT, as the publisher's. KEEP_ALL: no sample is passed over unread (keep_last_depth 0), as for every
+    // Subscriber before the QoS profile. No storage.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+    };
+    struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)bulk_callback};
+    ret = tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &BulkTopic, "bulk_topic", &qos, &sub_options,
+                                    NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("perf_server: tt_Context_create_subscriber failed: %d\n", ret);
+        printf("perf_server: tt_Node_create_subscriber failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
