@@ -344,7 +344,7 @@ static void test_rows(void) {
         }
         if (ret == tt_RET_OK) {
             expect_profile(row->what, &row->actual, &got);
-        } else if (memcmp(&got, &untouched, sizeof(got)) != 0) {
+        } else if (!tt_QosProfile_equal(&got, &untouched)) {
             fprintf(stderr, "row \"%s\": refused but wrote the output\n", row->what);
             test_failures++;
         }
