@@ -52,7 +52,6 @@
 #define QUEUE 512
 #define DEPTH 64
 #define REORDER_SLOTS 64
-#define REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + 64)
 #define MAX_DELIVERED 256
 
 #define SMALL 16U
@@ -279,10 +278,8 @@ static struct tt_TypeSupport writer_topic;
 static struct tt_TypeSupport reader_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
-static struct tt_ReliableCacheIndex cache_index[DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(1500))];
-static struct tt_ReliableCache cache;
-static uint64_t reorder_storage[REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)];
+static uint64_t pub_storage[(size_t)2U * 1024U * 1024U / sizeof(uint64_t)]; // history.bytes (1 MiB) and the ring
+static uint64_t reorder_storage[(size_t)REORDER_SLOTS * tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH) / sizeof(uint64_t)];
 
 enum mode { BEST_EFFORT, RELIABLE, DURABLE };
 
@@ -290,7 +287,8 @@ enum mode { BEST_EFFORT, RELIABLE, DURABLE };
 // writer but with no Subscriber yet. Neither context keeps a discovery table (tt_Context_set_discovery() is opt-in):
 // the writer learns its readers from their announces alone. `periodic` false leaves both contexts' periodic tasks off,
 // so that every datagram the writer sends is the Publisher's.
-static void start(enum mode mode, uint16_t depth, bool periodic) {
+// `options` NULL: none.
+static void start(enum mode mode, uint16_t depth, bool periodic, const struct tt_PublisherOptions* options) {
     test_mock_reset();
     test_mock_now = tt_SECOND;
     test_mock_send_hook = capture;
@@ -322,15 +320,20 @@ static void start(enum mode mode, uint16_t depth, bool periodic) {
                                             .data_size = 8,
                                             .data_decode = sample_decode,
                                             .data_free = free_nothing};
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &pub, &writer_topic, "unmatched_ep"));
+    // RELIABLE and TRANSIENT_LOCAL are KEEP_LAST `depth` in samples, as rmw_tickle creates them: the large ring keeps
+    // as many.
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
     if (mode != BEST_EFFORT) {
-        memset(&cache, 0, sizeof(cache));
-        EXPECT_EQ_INT(tt_RET_OK, tt_ReliableCache_init(&cache, cache_index, depth, cache_arena, sizeof(cache_arena)));
-        cache.sample_depth = depth; // KEEP_LAST in samples, as rmw_tickle sets it: the large ring keeps as many
-        pub.reliable_cache = &cache;
-        pub.reliable = true;
-        pub.durable = mode == DURABLE;
+        qos.history.kind = tt_QOS_HISTORY_KEEP_LAST;
+        qos.history.depth = depth;
+        qos.reliability.kind = tt_QOS_RELIABILITY_RELIABLE;
+        qos.durability.kind = mode == DURABLE ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
     }
+    size_t storage_size = tt_Publisher_storage_size(&writer_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&writer), &pub, &writer_topic, "unmatched_ep", &qos,
+                                           options, storage_size != 0 ? pub_storage : NULL, storage_size));
     EXPECT_TRUE(writer.discovery == NULL && reader.discovery == NULL);
     if (periodic) {
         run_until(test_mock_now + (2 * tt_SECOND)); // the two contexts know each other
@@ -339,15 +342,18 @@ static void start(enum mode mode, uint16_t depth, bool periodic) {
 }
 
 static void create_reader(enum mode mode) {
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&reader, &sub, &reader_topic, "unmatched_ep", on_data));
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
     if (mode != BEST_EFFORT) {
-        sub.reliable = true;
-        sub.durable = mode == DURABLE;
-        memset(reorder_storage, 0, sizeof(reorder_storage));
-        sub.reorder_storage = reorder_storage;
-        sub.reorder_slots = REORDER_SLOTS;
-        sub.reorder_slot_bytes = REORDER_SLOT_BYTES;
+        qos = TEST_QOS_RELIABLE_READER;
+        qos.reliability.reorder_slots = REORDER_SLOTS;
+        qos.durability.kind = mode == DURABLE ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
     }
+    size_t storage_size = tt_Subscriber_storage_size(&reader_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(reorder_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&reader), &sub, &reader_topic, "unmatched_ep", &qos,
+                                            &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            storage_size != 0 ? reorder_storage : NULL, storage_size));
 }
 
 static void stop(void) {
@@ -388,11 +394,9 @@ static void fake_readers(uint8_t count) {
 // Publishes `len`-byte samples with no reader and returns what reached the HAL: during the publishes and over the next
 // 50 ms of the writer's own timers (a batch's flush, a large send's resume, the periodic Heartbeat).
 static int sent_with_no_reader(enum mode mode, uint32_t len, bool batch) {
-    start(mode, DEPTH, false);
-    pub.batch = batch;
-    if (mode != BEST_EFFORT) {
-        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 5 * tt_MILLISECOND));
-    }
+    const struct tt_PublisherOptions options = {.batch = batch,
+                                                .heartbeat_period_ns = mode != BEST_EFFORT ? 5 * tt_MILLISECOND : 0};
+    start(mode, DEPTH, false, &options);
     int sent = 0;
     for (uint32_t id = 1; id <= 3; id++) {
         sent += publish_one(id, len);
@@ -418,8 +422,7 @@ static void expect_silent_and_counted(enum mode mode, uint32_t len, bool batch) 
     stop();
 
     // Control: the same with readers known, so a count of 0 above is a count that could have been more.
-    start(mode, DEPTH, false);
-    pub.batch = batch;
+    start(mode, DEPTH, false, &(struct tt_PublisherOptions) {.batch = batch});
     fake_readers(tt_UNICAST_PEER_THRESHOLD + 1);
     int control = 0;
     for (uint32_t id = 1; id <= 3; id++) {
@@ -446,7 +449,7 @@ static void test_a_writer_nobody_reads_sends_nothing(void) {
 // The zero-copy path (publish_zerocopy()), BEST_EFFORT only: it sends from the caller's bytes.
 static void test_the_zero_copy_path_sends_nothing_either(void) {
     for (int arm = 0; arm < 2; arm++) {
-        start(BEST_EFFORT, DEPTH, false);
+        start(BEST_EFFORT, DEPTH, false, NULL);
         writer_topic.data_encode_inplace = sample_encode_inplace;
         if (arm == 1) {
             fake_readers(tt_UNICAST_PEER_THRESHOLD + 1); // control
@@ -462,7 +465,7 @@ static void test_the_zero_copy_path_sends_nothing_either(void) {
 // A match Heartbeat owed to a reader that has since gone is not sent to nobody either.
 static void test_an_owed_match_heartbeat_waits_for_a_reader(void) {
     for (int arm = 0; arm < 2; arm++) {
-        start(RELIABLE, DEPTH, true);
+        start(RELIABLE, DEPTH, true, NULL);
         create_reader(RELIABLE);
         run_until(test_mock_now + (100 * tt_MILLISECOND));
         EXPECT_EQ_INT(1, (int)count_peers(pub.peers));
@@ -481,14 +484,14 @@ static void test_an_owed_match_heartbeat_waits_for_a_reader(void) {
 // --- 2. a VOLATILE reader that joins later ------------------------------------------------------------------------
 
 static void test_a_volatile_reader_gets_samples_from_its_match_on(void) {
-    start(RELIABLE, DEPTH, true);
+    start(RELIABLE, DEPTH, true, NULL);
     int sent = 0;
     for (uint32_t id = 1; id <= 3; id++) {
         sent += publish_one(id, SMALL);
         run_until(test_mock_now + tt_MILLISECOND);
     }
-    EXPECT_EQ_INT(0, sent);                // nobody to send to yet
-    EXPECT_EQ_U32(1, cache.oldest_seq_no); // control: they are retained, so they could have been resent
+    EXPECT_EQ_INT(0, sent);                              // nobody to send to yet
+    EXPECT_EQ_U32(1, pub.reliable_cache->oldest_seq_no); // control: they are retained, so they could have been resent
     EXPECT_EQ_INT(0, (int)tt_Publisher_matched_count(&pub)); // the public accessor says what peers[] says
     EXPECT_EQ_INT(0, (int)tt_Publisher_matched_count(NULL));
     create_reader(RELIABLE);
@@ -507,7 +510,7 @@ static void test_a_volatile_reader_gets_samples_from_its_match_on(void) {
 // --- 3. a TRANSIENT_LOCAL reader that joins later ------------------------------------------------------------------
 
 static void transient_local_history(uint32_t len, uint16_t depth) {
-    start(DURABLE, depth, true);
+    start(DURABLE, depth, true, NULL);
     int sent = 0;
     for (uint32_t id = 1; id <= 6; id++) {
         sent += publish_one(id, len);
@@ -559,7 +562,7 @@ static bool is_reader_list(const struct datagram* datagram, const uint8_t* bytes
 // The writer publishes every millisecond from 100 ms before the Subscriber is created; returns how long after the
 // Subscriber's creation the first sample was delivered, in ns. lose_ns: the reader's lists are lost for this long.
 static uint64_t first_sample_after(enum mode mode, uint64_t lose_ns) {
-    start(mode, DEPTH, true);
+    start(mode, DEPTH, true, NULL);
     drop = is_reader_list;
     lose_reader_lists = lose_ns != 0;
     uint32_t id = 1;
@@ -615,7 +618,7 @@ static void test_a_reader_known_first_gets_data_once_the_writer_learns_it(void) 
 // peers[] full (tt_MAX_PEER_COUNT): a reader whose announce finds no slot is not learned - and does not have to be,
 // since a full table is more than the unicast threshold and the Publisher broadcasts. Unchanged by this rule.
 static void test_a_reader_that_does_not_fit_peers_still_gets_the_broadcast(void) {
-    start(BEST_EFFORT, DEPTH, true);
+    start(BEST_EFFORT, DEPTH, true, NULL);
     fake_readers(tt_MAX_PEER_COUNT);
     create_reader(BEST_EFFORT);
     run_until(test_mock_now + (100 * tt_MILLISECOND));
@@ -642,7 +645,7 @@ static bool reader_silenced(const struct datagram* datagram, const uint8_t* byte
 }
 
 static void test_a_reader_presumed_gone_gets_data_again_after_its_next_summary(void) {
-    start(BEST_EFFORT, DEPTH, true);
+    start(BEST_EFFORT, DEPTH, true, NULL);
     create_reader(BEST_EFFORT);
     run_until(test_mock_now + (100 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, (int)count_peers(pub.peers));
