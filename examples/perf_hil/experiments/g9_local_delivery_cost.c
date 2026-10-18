@@ -80,7 +80,7 @@ static uint64_t now_ns(void) {
 }
 
 static struct tt_Context context;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 static uint8_t sample[SAMPLE];
@@ -93,9 +93,39 @@ static double run(bool with_local) {
     context.tx_size = tt_TX_BUFFER_LENGTH;
     memset(&pub, 0, sizeof(pub));
     memset(&sub, 0, sizeof(sub));
-    (void)tt_Context_create_publisher(&context, &pub, &topic, "rt/cost");
-    if (with_local) {
-        (void)tt_Context_create_subscriber(&context, &sub, &topic, "rt/cost", on_sample);
+    // As the legacy creates made them: BEST_EFFORT VOLATILE, nothing retained, so the Publisher needs no storage and
+    // its history sizes nothing; the Subscriber has no reorder buffer, the builtin ACK window, and never skips a
+    // sample in the segment drain (keep_last_depth 0, which KEEP_ALL gives).
+    static const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_PublisherOptions pub_options; // all defaults: no batching, no periodic HEARTBEAT
+    static const struct tt_SubscriberOptions sub_options = {.callback = on_sample};
+    struct tt_Node* default_node = tt_Context_default_node(&context);
+    if (tt_Node_create_publisher(default_node, &pub, &topic, "rt/cost", &pub_qos, &pub_options, NULL, 0) != tt_RET_OK ||
+        (with_local && tt_Node_create_subscriber(default_node, &sub, &topic, "rt/cost", &sub_qos, &sub_options, NULL,
+                                                 0) != tt_RET_OK)) {
+        fprintf(stderr, "endpoint create failed\n");
+        exit(1);
     }
     uint64_t start = now_ns();
     for (int i = 0; i < PUBLISHES; i++) {
@@ -121,6 +151,7 @@ int main(void) {
     topic.data_decode = refuse;
     topic.data_decode_inplace = view_sample;
     topic.data_free = free_nothing;
+    topic.max_encoded_size = SAMPLE;
     double none[ROUNDS];
     double local[ROUNDS];
     for (int round = 0; round < ROUNDS; round++) {
