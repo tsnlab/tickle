@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include <tickle/config.h> // tt_LOCAL_DELIVERY, tt_TX_BUFFER_LENGTH
+#include <tickle/hal.h>    // tt_RET_OK
 #include <tickle/tickle.h>
 
 #define TEST_MOCK_DEFINE_STORAGE
