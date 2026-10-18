@@ -69,6 +69,7 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `RMW_TICKLE_REORDER_SLOT_PAYLOAD` | largest sample a reorder slot holds | 2 KiB |
 | `RMW_TICKLE_MAX_SAMPLE_BYTES` | largest message (max ~11.3 MiB) | 8 MiB |
 | `RMW_TICKLE_LARGE_REGION` | `0`: no shared region for same-host large messages | on |
+| `RMW_TICKLE_PUBLISH_HUGEPAGE` | `0`: a publisher's large-message buffers of 2 MiB or more stay on ordinary pages (default: 2 MiB-aligned, `MADV_HUGEPAGE`; falls back silently without THP) | on |
 | `RMW_TICKLE_LOANS` | `0`: no loans (as `ROS_DISABLE_LOANED_MESSAGES=1`) | on |
 | `RMW_TICKLE_LOAN_RING_SLOTS` | `1`: lend received samples in their ring slot | off |
 | `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1`: borrow lends the subscriber's ring slot | off |

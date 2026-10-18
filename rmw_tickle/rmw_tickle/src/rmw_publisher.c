@@ -1393,7 +1393,9 @@ static tt_ret_t publish_attempt(rmw_tickle_publisher_t* pub_impl, void* tickle_b
     rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
 
     tt_Context_lock(&context_impl->tickle_context);
+    rmw_tickle_large_publishing(context_impl, true); // a large sample's buffer is a publish's (huge pages)
     tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
+    rmw_tickle_large_publishing(context_impl, false);
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
     // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
     // deadline_period_ns is 0 (unused in that case).
