@@ -262,6 +262,23 @@ static uint32_t datagrams_per_sample(uint32_t size) {
     return size <= 2800 ? 2U : 10U;
 }
 
+// TRANSIENT_LOCAL RELIABLE, KEEP_LAST depth samples, or KEEP_ALL as deep as CACHE_DEPTH datagrams, with a 10 ms
+// HEARTBEAT. history.bytes: no cap below that.
+static void create_writer(const struct late_case* c) {
+    const struct tt_QosProfile qos = {
+        .history = {.kind = c->depth != 0 ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL,
+                    .depth = c->depth != 0 ? c->depth : CACHE_DEPTH / datagrams_per_sample(c->size),
+                    .bytes = UINT32_MAX},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    size_t storage_size = tt_Publisher_storage_size(&sender_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &qos,
+                                           &(struct tt_PublisherOptions) {.heartbeat_period_ns = 10 * tt_MILLISECOND},
+                                           pub_storage, storage_size));
+}
+
 static struct late_outcome run_case(const struct late_case* c, uint32_t first, bool control, uint64_t budget) {
     test_mock_reset();
     heartbeat_first = control;
@@ -277,20 +294,7 @@ static struct late_outcome run_case(const struct late_case* c, uint32_t first, b
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
     sender_topic.max_encoded_size = c->size;
-    // TRANSIENT_LOCAL RELIABLE, KEEP_LAST depth samples, or KEEP_ALL as deep as CACHE_DEPTH datagrams, with a 10 ms
-    // HEARTBEAT. history.bytes: no cap below that.
-    struct tt_QosProfile pub_qos = {
-        .history = {.kind = c->depth != 0 ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL,
-                    .depth = c->depth != 0 ? c->depth : CACHE_DEPTH / datagrams_per_sample(c->size),
-                    .bytes = UINT32_MAX},
-        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
-        .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
-    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
-    EXPECT_TRUE(pub_storage_size <= sizeof(pub_storage));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
-                                 tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &pub_qos,
-                                 &(struct tt_PublisherOptions) {.heartbeat_period_ns = 10 * tt_MILLISECOND},
-                                 pub_storage, pub_storage_size));
+    create_writer(c);
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;

@@ -296,8 +296,8 @@ static struct tt_ReliableCache cache;
 #define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
 // The RELIABLE reader's storage: its wide window, then its reorder buffer when it has one
 // (tt_Subscriber_storage_size()).
-static uint64_t
-    sub_storage[(tt_MAX_PEER_COUNT * WIDE_WORDS) + (MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t))];
+static uint64_t sub_storage[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) +
+                            (MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t))];
 // What the RELIABLE writer's creation carves; the pair's cache (above) replaces it.
 static uint64_t created_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
 

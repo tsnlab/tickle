@@ -398,6 +398,26 @@ static void create_reader(struct tt_Subscriber* s, int r, bool reliable, bool du
     EXPECT_TRUE(!reliable || s->reorder_slot_bytes == SIM_REORDER_SLOT_BYTES); // the buffer the sim was written for
 }
 
+// The writer: RELIABLE KEEP_ALL, KEEP_LAST or TRANSIENT_LOCAL KEEP_ALL with a 10 ms HEARTBEAT, from its profile, or
+// as the deprecated creates made it. White-box: its retained samples are the sim's own cache, whose depth counts
+// datagrams (wrap_case.cache_depth), so sim_run_case() replaces the created one with it.
+static void create_writer(enum wrap_mode mode) {
+    bool reliable = mode != MODE_BEST_EFFORT;
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
+    if (reliable) {
+        qos.reliability.kind = tt_QOS_RELIABILITY_RELIABLE;
+        qos.history.kind = mode == MODE_KEEP_LAST ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL;
+        qos.history.depth = 1;
+        qos.durability.kind = mode == MODE_DURABLE ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
+    }
+    size_t storage_size = tt_Publisher_storage_size(&sender_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(created_storage));
+    const struct tt_PublisherOptions options = {.heartbeat_period_ns = reliable ? 10 * tt_MILLISECOND : 0};
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &qos,
+                                           &options, storage_size != 0 ? created_storage : NULL, storage_size));
+}
+
 // What one run did, for comparing a wrap run with its control.
 struct wrap_outcome {
     int delivered[READERS];
@@ -452,24 +472,8 @@ static struct wrap_outcome sim_run_case(uint32_t first, const struct wrap_case* 
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    // The writer: RELIABLE KEEP_ALL, KEEP_LAST or TRANSIENT_LOCAL KEEP_ALL with a 10 ms HEARTBEAT, from its profile.
-    // White-box: its retained samples are the sim's own cache, whose depth counts datagrams (c->cache_depth), so the
-    // created one is replaced with it below.
     bool reliable = c->mode != MODE_BEST_EFFORT;
-    struct tt_QosProfile pub_qos = TEST_QOS_UNRELIABLE;
-    if (reliable) {
-        pub_qos.reliability.kind = tt_QOS_RELIABILITY_RELIABLE;
-        pub_qos.history.kind = c->mode == MODE_KEEP_LAST ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL;
-        pub_qos.history.depth = 1;
-        pub_qos.durability.kind =
-            c->mode == MODE_DURABLE ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
-    }
-    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
-    EXPECT_TRUE(pub_storage_size <= sizeof(created_storage));
-    const struct tt_PublisherOptions pub_options = {.heartbeat_period_ns = reliable ? 10 * tt_MILLISECOND : 0};
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
-                                 tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &pub_qos,
-                                 &pub_options, pub_storage_size != 0 ? created_storage : NULL, pub_storage_size));
+    create_writer(c->mode);
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;
