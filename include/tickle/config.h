@@ -1291,6 +1291,14 @@
 #define tt_MAX_DISCOVERED_ENTITIES 16
 #endif
 
+// The incompatible remote endpoints each Publisher and Subscriber remembers (struct tt_QosIncompatibleStatus, QoS plan
+// D2), so that a repeated or re-applied announce does not count the same incompatible pair again. Past this many at
+// once, one no longer in the discovery table is forgotten first, then the oldest; a forgotten pair whose announce is
+// applied again counts again. 5 bytes each, per topic endpoint. At most 255.
+#ifndef tt_QOS_INCOMPATIBLE_REMEMBERED
+#define tt_QOS_INCOMPATIBLE_REMEMBERED 4
+#endif
+
 // The discovery table's index (CONTEXT_NODE_PLAN.md 4b): open addressing over (context id, endpoint id). Compiled only
 // for a table large enough to need it (tt_DISCOVERY_INDEXED): at core's default 16 a scan costs no more than a hash
 // (8.9/4.2 ns against 6.8/5.6 per lookup), so that build keeps the scan and its code as it was; rmw_tickle's 2048 gets
@@ -1497,6 +1505,8 @@ static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");
 static_assert(tt_UPDATE_MAX_PARTS >= 1 && tt_UPDATE_MAX_PARTS <= UINT8_MAX,
               "an announce fragment's count is a uint8_t");
+static_assert(tt_QOS_INCOMPATIBLE_REMEMBERED >= 1 && tt_QOS_INCOMPATIBLE_REMEMBERED <= UINT8_MAX,
+              "struct tt_QosIncompatibleStatus counts its remembered pairs in a uint8_t");
 #if tt_DISCOVERY_INDEXED
 static_assert((tt_DISCOVERY_INDEX_SIZE & (tt_DISCOVERY_INDEX_SIZE - 1)) == 0 &&
                   tt_DISCOVERY_INDEX_SIZE >= 2 * tt_MAX_DISCOVERED_ENTITIES && tt_MAX_DISCOVERED_ENTITIES < UINT16_MAX,

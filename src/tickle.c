@@ -4237,6 +4237,197 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
     }
 }
 
+// ---- QoS compatibility as an event (QoS plan D2): decided when an announce is applied and when an endpoint is
+// created, never per sample. Delivery is still refused per sample by subscriber_incompatible_with_writer() and per
+// match by register_subscriber_peer_on_publisher(); this judges by the same rule, so that the pairs an event names are
+// the ones delivery refuses, and says which policy failed.
+
+// What one side of a pair requests or offers, as an announce carries it.
+struct qos_rxo {
+    bool reliable;
+    bool durable;
+    bool manual;
+    uint64_t deadline_ns; // 0: infinite, as on the wire
+    uint64_t lease_ns;    // 0: infinite
+};
+
+// The first policy by which `offered` (a Publisher's) does not meet `requested` (a Subscriber's), in the order of
+// enum tt_QosPolicyKind; tt_QOS_POLICY_INVALID for a compatible pair. Incompatible exactly when
+// writer_qos_incompatible() is (tests/test_qos_incompatible.c checks the two against each other).
+static uint8_t qos_incompatible_policy(const struct qos_rxo* requested, const struct qos_rxo* offered) {
+    if (requested->reliable && !offered->reliable) {
+        return tt_QOS_POLICY_RELIABILITY;
+    }
+    if (requested->durable && !offered->durable) {
+        return tt_QOS_POLICY_DURABILITY;
+    }
+    if (requested->deadline_ns != 0 && (offered->deadline_ns == 0 || offered->deadline_ns > requested->deadline_ns)) {
+        return tt_QOS_POLICY_DEADLINE;
+    }
+    if ((requested->manual && !offered->manual) ||
+        (requested->lease_ns != 0 && (offered->lease_ns == 0 || offered->lease_ns > requested->lease_ns))) {
+        return tt_QOS_POLICY_LIVELINESS;
+    }
+    return tt_QOS_POLICY_INVALID;
+}
+
+static struct qos_rxo qos_rxo_of_announce(uint8_t qos, uint64_t deadline_ns, uint64_t lease_ns) {
+    struct qos_rxo rxo = {.reliable = (qos & tt_UPDATE_QOS_RELIABLE) != 0,
+                          .durable = (qos & tt_UPDATE_QOS_DURABLE) != 0,
+                          .manual = (qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0,
+                          .deadline_ns = deadline_ns,
+                          .lease_ns = lease_ns};
+    return rxo;
+}
+
+static struct qos_rxo qos_rxo_of_endpoint(const struct tt_Endpoint* endpoint) {
+    struct qos_rxo rxo = {0};
+    if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        const struct tt_Publisher* pub = (const struct tt_Publisher*)endpoint;
+        rxo.reliable = pub->reliable;
+        rxo.durable = pub->durable;
+        rxo.manual = pub->liveliness_manual;
+        rxo.deadline_ns = pub->deadline_duration_ns;
+        rxo.lease_ns = pub->liveliness_lease_duration_ns;
+    } else {
+        const struct tt_Subscriber* sub = (const struct tt_Subscriber*)endpoint;
+        rxo.reliable = sub->reliable;
+        rxo.durable = sub->durable;
+        rxo.manual = sub->liveliness_manual;
+        rxo.deadline_ns = sub->deadline_duration_ns;
+        rxo.lease_ns = sub->liveliness_lease_duration_ns;
+    }
+    return rxo;
+}
+
+static struct tt_QosIncompatibleStatus* qos_incompatible_status_of(struct tt_Endpoint* endpoint) {
+    return endpoint->kind == tt_KIND_TOPIC_PUBLISHER ? &((struct tt_Publisher*)endpoint)->qos_incompatible
+                                                     : &((struct tt_Subscriber*)endpoint)->qos_incompatible;
+}
+
+// Which remembered entry a full memory gives up: one whose endpoint the discovery table no longer holds (it left, or
+// the table never had room for it), else the next in turn.
+static uint8_t qos_incompatible_evictee(const struct tt_Context* node, uint32_t endpoint_id,
+                                        struct tt_QosIncompatibleStatus* status) {
+    if (node->discovery != NULL) {
+        for (uint8_t i = 0; i < status->remembered; i++) {
+            if (status->context_ids[i] != node->id &&
+                tt_Discovery_find_entity(node->discovery, status->context_ids[i], endpoint_id, status->entity_ids[i]) ==
+                    NULL) {
+                return i;
+            }
+        }
+    }
+    uint8_t evictee = status->evict_next;
+    status->evict_next = (uint8_t)((evictee + 1U) % tt_QOS_INCOMPATIBLE_REMEMBERED);
+    return evictee;
+}
+
+static const char* qos_policy_name(uint8_t policy_kind) {
+    switch (policy_kind) {
+    case tt_QOS_POLICY_RELIABILITY:
+        return "RELIABILITY";
+    case tt_QOS_POLICY_DURABILITY:
+        return "DURABILITY";
+    case tt_QOS_POLICY_DEADLINE:
+        return "DEADLINE";
+    default:
+        return "LIVELINESS";
+    }
+}
+
+// The pair of local `endpoint` and the other side's endpoint (context_id, entity_id) is incompatible by `policy_kind`:
+// counted and reported once, the first time - every later call for the same pair (a repeated announce, a new
+// generation listing it again, a replay) finds it remembered and does nothing.
+static void qos_incompatible_note(struct tt_Context* node, struct tt_Endpoint* endpoint, uint8_t context_id,
+                                  uint32_t entity_id, uint8_t policy_kind) {
+    struct tt_QosIncompatibleStatus* status = qos_incompatible_status_of(endpoint);
+    for (uint8_t i = 0; i < status->remembered; i++) {
+        if (status->context_ids[i] == context_id && status->entity_ids[i] == entity_id) {
+            return;
+        }
+    }
+    uint8_t slot = status->remembered < tt_QOS_INCOMPATIBLE_REMEMBERED
+                       ? status->remembered++
+                       : qos_incompatible_evictee(node, endpoint->id, status);
+    status->context_ids[slot] = context_id;
+    status->entity_ids[slot] = entity_id;
+    status->total_count++;
+    status->last_policy_kind = policy_kind;
+    TT_LOG_WARNING("Incompatible QoS: %s %08x and node %u entity %08x on endpoint %08x by %s (%u so far)",
+                   endpoint->kind == tt_KIND_TOPIC_PUBLISHER ? "Publisher" : "Subscriber", endpoint->entity_id,
+                   context_id, entity_id, endpoint->id, qos_policy_name(policy_kind), status->total_count);
+    if (node->qos_incompatible_callback != NULL) {
+        node->qos_incompatible_callback(node, endpoint, policy_kind, node->qos_incompatible_callback_param);
+    }
+}
+
+// Judges the pair of local `endpoint` and an endpoint of the other side requesting or offering `other`, and notes it
+// when incompatible. Both sides of a pair judge it, each from the other's announce: the Subscriber's side counts a
+// requested incompatibility, the Publisher's an offered one.
+static void qos_judge_pair(struct tt_Context* node, struct tt_Endpoint* endpoint, const struct qos_rxo* other,
+                           uint8_t context_id, uint32_t entity_id) {
+    struct qos_rxo local = qos_rxo_of_endpoint(endpoint);
+    uint8_t policy_kind = endpoint->kind == tt_KIND_TOPIC_PUBLISHER ? qos_incompatible_policy(other, &local)
+                                                                    : qos_incompatible_policy(&local, other);
+    if (policy_kind != tt_QOS_POLICY_INVALID) {
+        qos_incompatible_note(node, endpoint, context_id, entity_id, policy_kind);
+    }
+}
+
+struct qos_judge_ctx {
+    const struct qos_rxo* other;
+    uint8_t context_id;
+    uint32_t entity_id;
+};
+
+static void qos_judge_visit(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    const struct qos_judge_ctx* ctx = (const struct qos_judge_ctx*)ctx_ptr;
+    qos_judge_pair(node, endpoint, ctx->other, ctx->context_id, ctx->entity_id);
+}
+
+// An announced remote topic endpoint against every local endpoint of the other kind on its topic: from
+// decode_update_entities(), as each entity of an announce is applied.
+static void qos_judge_announced(struct tt_Context* node, uint8_t context_id, uint32_t endpoint_id, uint32_t entity_id,
+                                uint8_t kind, uint8_t qos, uint64_t deadline_ns, uint64_t lease_ns) {
+    if (kind != tt_KIND_TOPIC_PUBLISHER && kind != tt_KIND_TOPIC_SUBSCRIBER) {
+        return;
+    }
+    struct qos_rxo other = qos_rxo_of_announce(qos, deadline_ns, lease_ns);
+    struct qos_judge_ctx ctx = {.other = &other, .context_id = context_id, .entity_id = entity_id};
+    uint8_t local_kind = kind == tt_KIND_TOPIC_PUBLISHER ? tt_KIND_TOPIC_SUBSCRIBER : tt_KIND_TOPIC_PUBLISHER;
+    for_each_endpoint(node, local_kind, endpoint_id, qos_judge_visit, &ctx);
+}
+
+// A topic endpoint just created against what is already there: every remote endpoint of the other kind on its topic
+// that the discovery table holds alive, and every local one in this context, which no announce of ours reaches. A
+// local pair is judged here only - when its second endpoint is created - and noted on both of its endpoints.
+static void qos_judge_created(struct tt_Context* node, struct tt_Endpoint* endpoint) {
+    uint8_t other_kind = endpoint->kind == tt_KIND_TOPIC_PUBLISHER ? tt_KIND_TOPIC_SUBSCRIBER : tt_KIND_TOPIC_PUBLISHER;
+    if (node->discovery != NULL) {
+        for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+            const struct tt_DiscoveredEntity* entity = &node->discovery->entities[i];
+            if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != other_kind ||
+                entity->endpoint_id != endpoint->id) {
+                continue;
+            }
+            struct qos_rxo other =
+                qos_rxo_of_announce(entity->qos, entity->deadline_duration_ns, entity->liveliness_lease_duration_ns);
+            qos_judge_pair(node, endpoint, &other, entity->context_id, entity->entity_id);
+        }
+    }
+    struct qos_rxo created = qos_rxo_of_endpoint(endpoint);
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* local = node->endpoints[i];
+        if (local == NULL || local == endpoint || local->kind != other_kind || local->id != endpoint->id) {
+            continue;
+        }
+        struct qos_rxo existing = qos_rxo_of_endpoint(local);
+        qos_judge_pair(node, endpoint, &existing, node->id, local->entity_id);
+        qos_judge_pair(node, local, &created, node->id, endpoint->entity_id);
+    }
+}
+
 // The discovery-cache counterpart to forget_peers_from_source() - same "authoritative announce
 // supersedes old state" reasoning (a fresh announce means decode_update_entities() is about to
 // re-add whatever `node_id` still actually hosts, so anything not re-added here first must have
@@ -5201,6 +5392,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->discovery = NULL;
     node->discovery_callback = NULL;
     node->discovery_callback_param = NULL;
+    node->qos_incompatible_callback = NULL;
+    node->qos_incompatible_callback_param = NULL;
 
     node->tx_datagrams = 0;
     // The per-transport pair beside their scalars, because they were added without being reset and every read of them
@@ -6207,6 +6400,7 @@ static tt_ret_t publisher_reset(struct tt_Context* node, struct tt_Publisher* pu
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
+    memset(&pub->qos_incompatible, 0, sizeof(pub->qos_incompatible));
     pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
     pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
     pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
@@ -6330,6 +6524,7 @@ static tt_ret_t subscriber_reset(struct tt_Context* node, struct tt_Subscriber* 
     sub->node = node;
     sub->topic = topic;
     sub->callback = callback;
+    memset(&sub->qos_incompatible, 0, sizeof(sub->qos_incompatible));
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
     // As for tt_Context_create_publisher(): everything an announce or the receive path reads. The
     // tracking pair matters most - tickle.h documents NULL/0 as this function's default, meaning
@@ -11929,8 +12124,10 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     }
     if (result != tt_RET_OK) {
         (void)publisher_destroy_locked(pub);
+        return result;
     }
-    return result;
+    qos_judge_created(node, (struct tt_Endpoint*)pub);
+    return tt_RET_OK;
 }
 
 tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_TypeSupport* type,
@@ -11997,7 +12194,11 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
         sub->reorder_slot_bytes = layout.slot_bytes;
         qos_free_reorder_slots(sub->reorder_storage, sub->reorder_slots, sub->reorder_slot_bytes);
     }
-    return register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
+    result = register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
+    if (result == tt_RET_OK) {
+        qos_judge_created(node, (struct tt_Endpoint*)sub);
+    }
+    return result;
 }
 
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, const struct tt_TypeSupport* type,
@@ -15292,6 +15493,8 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         // this node itself can talk to.
         upsert_discovered_entity(node, header->source, endpoint_id, remote_entity_id, update_entity->kind, node_index,
                                  update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns, type, name);
+        qos_judge_announced(node, header->source, endpoint_id, remote_entity_id, update_entity->kind,
+                            update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns);
     }
 
     return true;
@@ -22622,6 +22825,18 @@ tt_ret_t tt_Context_set_discovery(struct tt_Context* node, struct tt_Discovery* 
         state_unlock(locked_node);
     }
     return result;
+}
+
+tt_ret_t tt_Context_set_qos_incompatible_callback(struct tt_Context* node, tt_QOS_INCOMPATIBLE_CALLBACK callback,
+                                                  void* param) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node);
+    node->qos_incompatible_callback = callback;
+    node->qos_incompatible_callback_param = callback != NULL ? param : NULL;
+    state_unlock(node);
+    return tt_RET_OK;
 }
 
 uint32_t tt_Discovery_count(const struct tt_Discovery* discovery) {
