@@ -174,6 +174,8 @@
 #   tickle@nodirect  tickle@head's own librmw_tickle.so with TT_RX_DIRECT=0 at both ends: no in-place read of a large
 #                 sample's runs (hal_linux.c direct_recvmsg()); the treatment is the subscriber's rx line, direct=0
 #                 direct_reads=0, which i4be_perf_attach_read.py checks. Cross-host default mode only.
+# Added 2026-10-18 (pub_hugepage_ab.sh): PRE_SHA = main, so tickle@pre is the baseline build and tickle@head/aa the
+# change; each run's treatment is rmw_tickle's "large pool publish_hugepage=" line, which pub_hugepage_read.py checks.
 #   PIN_CPUS=<list>  (diagnostic only, never a headline figure: docs/TESTING.md, no testbed tuning) every perf_test on
 #                 both Pis runs under `taskset -c <list>`; recorded in meta.txt (pin_cpus=) and in each .treat file.
 #   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
@@ -602,6 +604,7 @@ fi
 env_for() {
     echo "$BASE"
     echo "unset RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS" # tickle@block's treatment, set by that arm alone
+    echo "unset RMW_TICKLE_PUBLISH_HUGEPAGE"       # every arm runs its build's default (pub_hugepage_ab.sh)
     if [ "$SAMEHOST" = 1 ]; then # every vendor at its shipped same-host default (header, SAMEHOST)
         echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
         echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
