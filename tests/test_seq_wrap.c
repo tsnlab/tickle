@@ -326,6 +326,7 @@ _Static_assert(SIM_REORDER_SLOTS >= tt_RELIABLE_BITMAP_BITS, "the reorder ring m
 static struct tt_ReliableCacheIndex sim_cache_index[SIM_CACHE_DEPTH];
 static uint8_t sim_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(SIM_CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
 static struct tt_ReliableCache sim_cache;
+static uint64_t created_storage[8192]; // what the writer's creation carves; replaced by sim_cache
 static uint64_t sim_reorder[READERS][SIM_REORDER_SLOTS * SIM_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 enum wrap_mode { MODE_KEEP_ALL, MODE_KEEP_LAST, MODE_BEST_EFFORT, MODE_DURABLE };
@@ -378,13 +379,23 @@ static bool decline_for_a_while(struct tt_Subscriber* s, uint32_t seq_no, void* 
     return test_mock_now >= second_reader_declining_until;
 }
 
-static void make_reader_reliable(struct tt_Subscriber* s, int r, bool durable) {
-    s->reliable = true;
-    s->durable = durable;
-    memset(sim_reorder[r], 0, sizeof(sim_reorder[r]));
-    s->reorder_storage = sim_reorder[r];
-    s->reorder_slots = SIM_REORDER_SLOTS;
-    s->reorder_slot_bytes = SIM_REORDER_SLOT_BYTES;
+// Reader `r`: RELIABLE (and TRANSIENT_LOCAL when durable) with a SIM_REORDER_SLOTS buffer in sim_reorder[r], or as
+// the deprecated creates made it; `accept` its accept callback, NULL for none.
+static void create_reader(struct tt_Subscriber* s, int r, bool reliable, bool durable,
+                          tt_SUBSCRIBER_ACCEPT_CALLBACK accept) {
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
+    if (reliable) {
+        qos = TEST_QOS_RELIABLE_READER;
+        qos.reliability.reorder_slots = SIM_REORDER_SLOTS;
+        qos.durability.kind = durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
+    }
+    size_t storage_size = tt_Subscriber_storage_size(&receiver_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(sim_reorder[r]));
+    const struct tt_SubscriberOptions options = {.callback = on_data, .accept_callback = accept};
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), s, &receiver_topic, ENDPOINT_NAME, &qos,
+                                            &options, storage_size != 0 ? sim_reorder[r] : NULL, storage_size));
+    EXPECT_TRUE(!reliable || s->reorder_slot_bytes == SIM_REORDER_SLOT_BYTES); // the buffer the sim was written for
 }
 
 // What one run did, for comparing a wrap run with its control.
@@ -441,18 +452,34 @@ static struct wrap_outcome sim_run_case(uint32_t first, const struct wrap_case* 
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    // The writer: RELIABLE KEEP_ALL, KEEP_LAST or TRANSIENT_LOCAL KEEP_ALL with a 10 ms HEARTBEAT, from its profile.
+    // White-box: its retained samples are the sim's own cache, whose depth counts datagrams (c->cache_depth), so the
+    // created one is replaced with it below.
+    bool reliable = c->mode != MODE_BEST_EFFORT;
+    struct tt_QosProfile pub_qos = TEST_QOS_UNRELIABLE;
+    if (reliable) {
+        pub_qos.reliability.kind = tt_QOS_RELIABILITY_RELIABLE;
+        pub_qos.history.kind = c->mode == MODE_KEEP_LAST ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL;
+        pub_qos.history.depth = 1;
+        pub_qos.durability.kind =
+            c->mode == MODE_DURABLE ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
+    }
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(created_storage));
+    const struct tt_PublisherOptions pub_options = {.heartbeat_period_ns = reliable ? 10 * tt_MILLISECOND : 0};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
+                                 tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &pub_qos,
+                                 &pub_options, pub_storage_size != 0 ? created_storage : NULL, pub_storage_size));
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
+    create_reader(&sub, 0, reliable, c->mode == MODE_DURABLE, reliable && c->decline ? decline_once : NULL);
     int readers = c->second_reader ? 2 : 1;
     if (c->second_reader) {
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Context_create_subscriber(&receiver, &sub2, &receiver_topic, ENDPOINT_NAME, on_data));
+        create_reader(&sub2, 1, reliable, c->mode == MODE_DURABLE, reliable ? decline_for_a_while : NULL);
     }
 
     sim_head = sim_tail = 0;
@@ -470,20 +497,8 @@ static struct wrap_outcome sim_run_case(uint32_t first, const struct wrap_case* 
     sim_cache.depth = c->cache_depth != 0 ? c->cache_depth : SIM_CACHE_DEPTH;
     sim_cache.arena = sim_cache_arena;
     sim_cache.arena_size = (uint32_t)sizeof(sim_cache_arena);
-    if (c->mode != MODE_BEST_EFFORT) {
+    if (reliable) {
         pub.reliable_cache = &sim_cache;
-        pub.reliable = true;
-        pub.keep_all = c->mode != MODE_KEEP_LAST;
-        pub.durable = c->mode == MODE_DURABLE;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 10 * tt_MILLISECOND));
-        make_reader_reliable(&sub, 0, c->mode == MODE_DURABLE);
-        if (c->decline) {
-            sub.accept_callback = decline_once;
-        }
-        if (c->second_reader) {
-            make_reader_reliable(&sub2, 1, c->mode == MODE_DURABLE);
-            sub2.accept_callback = decline_for_a_while;
-        }
     }
     pub.seq_no = first - 1U; // the next sample takes seq_no `first`
     if (c->silent == 0) {
