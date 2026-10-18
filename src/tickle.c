@@ -7016,6 +7016,35 @@ static void end_call_unanswered(struct tt_ClientCall* call, uint16_t seq_no) {
     client->callback(client, tt_CALL_TIMEOUT, NULL);
 }
 
+// How long a call is kept for its answer in all: to its deadline on the auto path, and (count + 1) explicit waits
+// otherwise - when a RELIABLE call of these settings gives up. Saturates rather than wraps.
+static uint64_t call_give_up_span(const struct tt_Client* client) {
+    uint64_t deadline = call_deadline(client);
+    if (deadline != UINT64_MAX) {
+        return deadline;
+    }
+    uint64_t sends = (uint64_t)call_retry_count(client) + 1;
+    uint64_t interval = client_retry_interval(client); // not 0: an explicit interval is what has no deadline
+    return sends > UINT64_MAX / interval ? UINT64_MAX : sends * interval;
+}
+
+// A BEST_EFFORT Client's call is sent once (decision D6, docs/DESIGN.md section 7): its timer never resends, and only
+// ends the call unanswered when a RELIABLE call of the same settings would have given up, so an answer as late as that
+// one would wait for is still taken. The call armed its first wake at the first retry interval, as any call does
+// (client_call_locked() is shared and unchanged); that wake moves it to the end.
+static void best_effort_call_timer(struct tt_Context* node, struct tt_ClientCall* call, uint16_t seq_no, uint64_t now) {
+    uint64_t span = call_give_up_span(call->client);
+    uint64_t end = span > UINT64_MAX - call->cache_time ? UINT64_MAX : call->cache_time + span;
+    if (now >= end) {
+        end_call_unanswered(call, seq_no); // lost: the request or its answer
+        return;
+    }
+    if (!tt_Context_schedule(node, end, call_retry, call)) {
+        TT_LOG_ERROR("Cannot schedule call_retry");
+        end_call_unanswered(call, seq_no);
+    }
+}
+
 static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(time);
 
@@ -7032,6 +7061,10 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
     uint64_t now = tt_get_ns();
+    if (client->qos.reliability.kind == tt_QOS_RELIABILITY_BEST_EFFORT) {
+        best_effort_call_timer(node, call, callrequest_header->seq_no, now);
+        return;
+    }
     if (++callrequest_header->retry > call_retry_count(client) || call_past_deadline(call, now)) {
         back_off_retry_interval(call, now);
         end_call_unanswered(call, callrequest_header->seq_no); // every retry went unanswered, or the deadline passed
@@ -12375,8 +12408,8 @@ tt_ret_t tt_Subscriber_get_actual_qos(const struct tt_Subscriber* sub, struct tt
     return tt_RET_OK;
 }
 
-// A service endpoint's QoS changes nothing on its fields yet (D6, plan step 7), so it is kept whole. A deprecated
-// create left it zeroed: that is the services default.
+// A service endpoint's QoS is kept whole, as given resolved; of it only a Client's reliability changes behaviour (a
+// BEST_EFFORT call is not resent, call_retry()). A deprecated create left it zeroed: that is the services default.
 static tt_ret_t service_actual_qos(const struct tt_QosProfile* kept, uint8_t kind, struct tt_QosProfile* out) {
     if (kept->history.kind == tt_QOS_HISTORY_SYSTEM_DEFAULT) {
         return tt_QosProfile_resolve(&tt_QOS_PROFILE_SERVICES_DEFAULT, kind, NULL, out);
