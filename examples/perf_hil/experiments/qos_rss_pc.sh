@@ -30,7 +30,8 @@
 #     LOWER  delta < -floor
 #     HIGHER delta > floor - a rise fix A must explain byte by byte, or it fails.
 #
-# Usage: [MAIN=origin/main] [PRE=<rev>] [FIX=HEAD] [REPS=3] [DUR=6] qos_rss_pc.sh   (all revisions committed)
+# Usage: [MAIN=origin/main] [PRE=<rev>] [FIX=HEAD] [REPS=3] [DUR=6] [CELLS="<scenario>:<pN> ..."] qos_rss_pc.sh
+#   (all revisions committed; CELLS must keep reliable_latency p1 and p4 and the control, or the reading is VOID)
 # Launch detached; results in ~/rig_results_safe/. Never touches the rig. Runs niced: the PC is shared.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -57,7 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CELLS="reliable_throughput:p1 reliable_throughput:p4 reliable_latency:p1 reliable_latency:p4 best_effort_throughput:p1"
+CELLS=${CELLS:-"reliable_throughput:p1 reliable_throughput:p4 reliable_latency:p1 reliable_latency:p4 best_effort_throughput:p1"}
 say "=== QoS peak RSS, PC, main=${REV[main]} pre=${REV[pre]} fix=${REV[fix]} reps=$REPS dur=$DUR $(date -Is) ==="
 for arm in main pre fix; do
     mkdir -p "$WORK/src_$arm" "$WORK/home_$arm"
