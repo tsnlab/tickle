@@ -11478,18 +11478,18 @@ static void* qos_carve(void* storage, size_t offset) {
     return (uint8_t*)storage + offset;
 }
 
-// Whether `bytes` bytes from `at` are all zero. Words through memcpy, so the caller's storage is read as bytes whatever
-// it was declared as.
-static bool qos_bytes_zero(const uint8_t* at, size_t bytes) {
+// Whether `bytes` bytes from `from` are all zero. Words through memcpy, so the caller's storage is read as bytes
+// whatever it was declared as.
+static bool qos_bytes_zero(const uint8_t* from, size_t bytes) {
     uint64_t seen = 0;
     size_t i = 0;
     for (; i + sizeof(uint64_t) <= bytes; i += sizeof(uint64_t)) {
         uint64_t word;
-        memcpy(&word, at + i, sizeof(word));
+        memcpy(&word, from + i, sizeof(word));
         seen |= word;
     }
     for (; i < bytes; i++) {
-        seen |= at[i];
+        seen |= from[i];
     }
     return seen == 0;
 }
@@ -11505,15 +11505,15 @@ static bool qos_bytes_zero(const uint8_t* at, size_t bytes) {
 #define QOS_ZERO_PAGE 4096U
 
 static void qos_zero_dirty_pages(void* storage, size_t bytes) {
-    uint8_t* at = storage;
-    uint8_t* const end = at + bytes;
-    while (at < end) {
-        size_t chunk = QOS_ZERO_PAGE - (size_t)((uintptr_t)at % QOS_ZERO_PAGE); // to the next page boundary
-        chunk = chunk < (size_t)(end - at) ? chunk : (size_t)(end - at);
-        if (!qos_bytes_zero(at, chunk)) {
-            memset(at, 0, chunk);
+    uint8_t* page = storage;
+    uint8_t* const end = page + bytes;
+    while (page < end) {
+        size_t chunk = QOS_ZERO_PAGE - (size_t)((uintptr_t)page % QOS_ZERO_PAGE); // to the next page boundary
+        chunk = chunk < (size_t)(end - page) ? chunk : (size_t)(end - page);
+        if (!qos_bytes_zero(page, chunk)) {
+            memset(page, 0, chunk);
         }
-        at += chunk;
+        page += chunk;
     }
 }
 

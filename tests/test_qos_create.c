@@ -396,9 +396,9 @@ static void test_zeroed_storage_stays_untouched(void) {
            after_clear - before, after_memset - after_clear);
     EXPECT_TRUE(before > 0);
     EXPECT_TRUE(after_clear - before < 512);
-    EXPECT_TRUE(after_memset - after_clear > 7 * 1024);
+    EXPECT_TRUE(after_memset - after_clear > 7L * 1024L);
 
-    fresh[5 * 4096 + 17] = 0x5A; // a dirty page, and a dirty last byte: both cleared, the rest still untouched
+    fresh[(5 * 4096) + 17] = 0x5A; // a dirty page, and a dirty last byte: both cleared, the rest still untouched
     fresh[bytes - 1] = 0x01;
     qos_zero_dirty_pages(fresh, bytes);
     EXPECT_TRUE(qos_bytes_zero(fresh, bytes));
