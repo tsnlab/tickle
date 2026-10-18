@@ -504,9 +504,16 @@ done
 make sched_wake_check
 # shellcheck disable=SC2024
 # At nice 0, whatever this shell runs at: the short case is defined there (sched_wake_check.c judge_short()).
-sudo ip netns exec "$NS1" bash -c 'renice -n 0 -p $$ >/dev/null && exec ./sched_wake_check' </dev/null >sched_wake_check.log 2>&1
-sched_wake_rc=$?
-grep '^sched_wake_check:' sched_wake_check.log
+# A VOID (exit 2) says the host could not show the slack this check needs, not that TickLE was late: a shared CI
+# runner does that now and then. Up to three attempts; a FAIL ends it at once, and three VOIDs in a row still fail.
+for sched_wake_try in 1 2 3; do
+    sudo ip netns exec "$NS1" bash -c 'renice -n 0 -p $$ >/dev/null && exec ./sched_wake_check' </dev/null \
+        >sched_wake_check.log 2>&1
+    sched_wake_rc=$?
+    grep '^sched_wake_check:' sched_wake_check.log
+    [ "$sched_wake_rc" -eq 2 ] || break
+    echo "sched_wake_check: attempt $sched_wake_try VOID"
+done
 case "$sched_wake_rc" in
 0) verdict=PASS ;;
 2) verdict="VOID (host too loaded to judge)" ;;
