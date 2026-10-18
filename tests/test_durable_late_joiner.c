@@ -124,9 +124,7 @@ static struct tt_Subscriber sub;
 #define CACHE_DEPTH 1285 // datagrams: KEEP_ALL's 120 samples of 10 fragments fit
 #define REORDER_SLOTS 257
 #define REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
-static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
-static struct tt_ReliableCache cache;
+static uint64_t pub_storage[(size_t)4U * 1024U * 1024U / sizeof(uint64_t)];
 static uint64_t reorder[REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
@@ -220,7 +218,7 @@ static uint32_t reader_joins(void) {
     sim_mute = false;
     struct tt_Peer reader = {RECEIVER_ID, RECEIVER_IP, PORT};
     sim_acting = SENDER_ID;
-    uint32_t oldest = cache.oldest_seq_no;
+    uint32_t oldest = pub.reliable_cache->oldest_seq_no;
     // Matched as register_subscriber_peer_on_publisher() matches it: its ack entry, then its peer slot. Without the
     // peer the writer sends nothing after the join - a Publisher with no matched reader sends nothing (2026-10-15).
     EXPECT_TRUE(claim_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id) != NULL);
@@ -278,34 +276,37 @@ static struct late_outcome run_case(const struct late_case* c, uint32_t first, b
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    sender_topic.max_encoded_size = c->size;
+    // TRANSIENT_LOCAL RELIABLE, KEEP_LAST depth samples, or KEEP_ALL as deep as CACHE_DEPTH datagrams, with a 10 ms
+    // HEARTBEAT. history.bytes: no cap below that.
+    struct tt_QosProfile pub_qos = {
+        .history = {.kind = c->depth != 0 ? tt_QOS_HISTORY_KEEP_LAST : tt_QOS_HISTORY_KEEP_ALL,
+                    .depth = c->depth != 0 ? c->depth : CACHE_DEPTH / datagrams_per_sample(c->size),
+                    .bytes = UINT32_MAX},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
+                                 tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &pub_qos,
+                                 &(struct tt_PublisherOptions) {.heartbeat_period_ns = 10 * tt_MILLISECOND},
+                                 pub_storage, pub_storage_size));
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
-
-    memset(cache_index, 0, sizeof(cache_index));
-    memset(&cache, 0, sizeof(cache));
-    cache.index = cache_index;
-    cache.capacity = CACHE_DEPTH;
-    cache.depth = (uint16_t)(c->depth != 0 ? c->depth * datagrams_per_sample(c->size) : CACHE_DEPTH);
-    cache.arena = cache_arena;
-    cache.arena_size = (uint32_t)sizeof(cache_arena);
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
-    pub.keep_all = c->depth == 0;
-    pub.durable = true;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 10 * tt_MILLISECOND));
-    sub.reliable = true;
-    sub.durable = true;
-    memset(reorder, 0, sizeof(reorder));
-    sub.reorder_storage = reorder;
-    sub.reorder_slots = REORDER_SLOTS;
-    sub.reorder_slot_bytes = REORDER_SLOT_BYTES;
-    pub.seq_no = first - 1U; // the next sample takes seq_no `first`
+    struct tt_QosProfile sub_qos = TEST_QOS_RELIABLE_READER;
+    sub_qos.reliability.reorder_slots = REORDER_SLOTS;
+    sub_qos.durability.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, &sub_qos);
+    EXPECT_TRUE(sub_storage_size <= sizeof(reorder));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME, &sub_qos,
+                                 &(struct tt_SubscriberOptions) {.callback = on_data}, reorder, sub_storage_size));
+    EXPECT_EQ_U32(REORDER_SLOT_BYTES, sub.reorder_slot_bytes); // the buffer the cases were written for
+    pub.seq_no = first - 1U;                                   // the next sample takes seq_no `first`
 
     sim_head = sim_tail = 0;
     sim_loss_per_mille = 0;
