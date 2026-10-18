@@ -68,13 +68,42 @@ static void sample_free(struct tt_Data* data) {
     (void)data;
 }
 
-static struct tt_Topic topic = {
+static struct tt_TypeSupport topic = {
     .name = "idle_heartbeat_tail",
     .data_size = sizeof(struct sample),
     .data_encode_size = sample_encode_size,
     .data_encode = sample_encode,
     .data_decode = sample_decode,
     .data_free = sample_free,
+    .max_encoded_size = sizeof(struct sample),
+};
+
+// The reader: RELIABLE with a WINDOW_WORDS-word ACK window and REORDER_SLOTS held samples (each slot sized for one
+// sample from max_encoded_size: tt_REORDER_SLOT_SIZE(sizeof(struct sample)), as before); KEEP_ALL, so keep_last_depth
+// stays 0 and the segment drain never skips, as the legacy create left it. VOLATILE, AUTOMATIC, infinite durations.
+static const struct tt_QosProfile sub_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                    .tracking_words = WINDOW_WORDS,
+                    .reorder_slots = REORDER_SLOTS,
+                    .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+
+// The writer: RELIABLE KEEP_LAST DEPTH, its arena the (DEPTH + 1) records the hand-built cache had. VOLATILE,
+// AUTOMATIC, infinite durations.
+static const struct tt_QosProfile pub_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                .depth = DEPTH,
+                .bytes = tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct sample)))},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = 0, .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
 };
 
 static uint32_t tails;
@@ -104,45 +133,39 @@ static void poll_for(struct tt_Context* node, uint64_t span_ns) {
 static int run_sub(uint32_t seconds) {
     static struct tt_Context node;
     static struct tt_Subscriber sub;
-    static uint64_t tracking[tt_MAX_PEER_COUNT * WINDOW_WORDS];
-    static uint64_t reorder[REORDER_SLOTS * tt_REORDER_SLOT_SIZE(sizeof(struct sample)) / sizeof(uint64_t)];
-    if (tt_Context_create(&node) != tt_RET_OK ||
-        tt_Context_create_subscriber(&node, &sub, &topic, "tail", on_sample) != tt_RET_OK) {
+    static const struct tt_SubscriberOptions options = {.callback = on_sample};
+    const size_t storage_size = tt_Subscriber_storage_size(&topic, &sub_qos);
+    void* storage = calloc(1, storage_size); // the ACK window, then the reorder slots
+    if (storage == NULL || tt_Context_create(&node) != tt_RET_OK ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, "tail", &sub_qos, &options, storage,
+                                  storage_size) != tt_RET_OK) {
         fprintf(stderr, "cannot create the subscriber\n");
         return 1;
     }
-    sub.reliable = true;
-    sub.tracking_bitmaps = tracking;
-    sub.tracking_words = WINDOW_WORDS;
-    sub.reorder_storage = reorder;
-    sub.reorder_slots = REORDER_SLOTS;
-    sub.reorder_slot_bytes = (uint32_t)tt_REORDER_SLOT_SIZE(sizeof(struct sample));
     poll_for(&node, (uint64_t)seconds * tt_SECOND);
     printf("SUB: delivered=%u tails=%u\n", delivered, tails);
     tt_Context_destroy(&node);
+    free(storage);
     return 0;
 }
 
 static int run_pub(uint32_t bursts, uint32_t gap_ms, const char* idle) {
     static struct tt_Context node;
     static struct tt_Publisher pub;
-    static struct tt_ReliableCacheIndex index[DEPTH];
-    static uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct sample)))];
-    static struct tt_ReliableCache cache;
-    if (tt_Context_create(&node) != tt_RET_OK ||
-        tt_Context_create_publisher(&node, &pub, &topic, "tail") != tt_RET_OK) {
+    // "default": the build's tt_IDLE_HEARTBEAT_PERIOD (options 0); a number: that period, 0 being off, which the
+    // options spell tt_QOS_DURATION_INFINITE. The PUB line prints the field, 0 when off, as before.
+    struct tt_PublisherOptions options = {.idle_heartbeat_ns = 0};
+    if (strcmp(idle, "default") != 0) {
+        const uint64_t period_ns = strtoull(idle, NULL, 10);
+        options.idle_heartbeat_ns = period_ns == 0 ? tt_QOS_DURATION_INFINITE : period_ns;
+    }
+    const size_t storage_size = tt_Publisher_storage_size(&topic, &pub_qos);
+    void* storage = calloc(1, storage_size); // the cache, its index ring and its arena
+    if (storage == NULL || tt_Context_create(&node) != tt_RET_OK ||
+        tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "tail", &pub_qos, &options, storage,
+                                 storage_size) != tt_RET_OK) {
         fprintf(stderr, "cannot create the publisher\n");
         return 1;
-    }
-    cache.index = index;
-    cache.capacity = DEPTH;
-    cache.depth = DEPTH;
-    cache.arena = arena;
-    cache.arena_size = (uint32_t)sizeof(arena);
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
-    if (strcmp(idle, "default") != 0) {
-        pub.idle_heartbeat_ns = strtoull(idle, NULL, 10);
     }
     uint64_t waited = 0;
     while (tt_Publisher_matched_count(&pub) == 0 && waited < 10U * tt_SECOND) {
@@ -172,6 +195,7 @@ static int run_pub(uint32_t bursts, uint32_t gap_ms, const char* idle) {
            (unsigned long long)pub.idle_heartbeat_ns, bursts, pub.seq_no, refused, pub.idle_heartbeats,
            pub.retransmitted, (unsigned long long)node.tx_datagrams);
     tt_Context_destroy(&node);
+    free(storage);
     return 0;
 }
 
