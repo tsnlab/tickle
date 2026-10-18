@@ -147,31 +147,34 @@ static uint32_t requests_sent;   // CallRequest submessages the Client put on th
 static uint32_t requests_resent; // ... of which a retry (tt_CallRequestHeader.retry != 0)
 
 static void count_request(const uint8_t* call_header) {
-    const struct tt_CallRequestHeader* call = (const struct tt_CallRequestHeader*)(const void*)call_header;
+    struct tt_CallRequestHeader call;
+    memcpy(&call, call_header, sizeof(call));
     requests_sent++;
-    requests_resent += call->retry != 0 ? 1U : 0U;
+    requests_resent += call.retry != 0 ? 1U : 0U;
 }
 
 // Counts the CallRequests in a datagram the Client sends: one in the single-submessage framing (struct
 // tt_SingleHeader), or each of the submessages after a tt_Header, walked by their length.
 static void count_requests(const uint8_t* buf, size_t len) {
     if (len >= sizeof(struct tt_SingleHeader) && (buf[0] == tt_SINGLE_MARKER_LE || buf[0] == tt_SINGLE_MARKER_BE)) {
-        const struct tt_SingleHeader* single = (const struct tt_SingleHeader*)(const void*)buf;
-        if (single->type == tt_SUBMESSAGE_TYPE_CALLREQUEST) {
+        struct tt_SingleHeader single;
+        memcpy(&single, buf, sizeof(single));
+        if (single.type == tt_SUBMESSAGE_TYPE_CALLREQUEST) {
             count_request(buf + sizeof(struct tt_SingleHeader));
         }
         return;
     }
     size_t at = sizeof(struct tt_Header);
     while (at + sizeof(struct tt_SubmessageHeader) <= len) {
-        const struct tt_SubmessageHeader* sub = (const struct tt_SubmessageHeader*)(const void*)(buf + at);
-        if (sub->length < sizeof(struct tt_SubmessageHeader) || at + sub->length > len) {
+        struct tt_SubmessageHeader sub;
+        memcpy(&sub, buf + at, sizeof(sub));
+        if (sub.length < sizeof(struct tt_SubmessageHeader) || at + sub.length > len) {
             break;
         }
-        if (sub->type == tt_SUBMESSAGE_TYPE_CALLREQUEST) {
+        if (sub.type == tt_SUBMESSAGE_TYPE_CALLREQUEST) {
             count_request(buf + at + sizeof(struct tt_SubmessageHeader));
         }
-        at += sub->length;
+        at += sub.length;
     }
 }
 

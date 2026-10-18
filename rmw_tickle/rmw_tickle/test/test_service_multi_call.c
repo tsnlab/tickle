@@ -65,6 +65,7 @@
 #define OTHER_FIRST 500U
 #define BEST_EFFORT_FIRST 600U
 #define WARM_RESEND_POLLS 50 // one second
+#define SETTLE_MS 200L       // how long an answer the ended call should not get is given to arrive
 
 struct pair {
     uint32_t first;
@@ -325,7 +326,7 @@ static void best_effort_ends_the_oldest(rmw_client_t* client, rmw_service_t* ser
         answer(service, &requests[k]); // the first call's answer too: dropped, its call was ended
     }
     assert(N == take_responses(client, &sequences[1], &sent[1], N));
-    struct timespec settle = {.tv_sec = 0, .tv_nsec = 200L * NS_PER_MS};
+    struct timespec settle = {.tv_sec = 0, .tv_nsec = SETTLE_MS * NS_PER_MS};
     nanosleep(&settle, NULL);
     rmw_service_info_t info;
     struct pair response = {0, 0};
