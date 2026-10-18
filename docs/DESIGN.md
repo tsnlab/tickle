@@ -389,7 +389,9 @@ ROS dependency, and rmw_tickle converts.
 and QoS written into endpoint fields.
 
 **RxO matching.** `tt_UpdateEntity` carries `qos` bits (reliable, durable, manual liveliness), deadline and lease;
-DATA from an incompatible writer is dropped (`rxo_drops`).
+DATA from an incompatible writer is dropped (`rxo_drops`). Compatibility is judged when an announce is applied and when
+an endpoint is created, by the same rule: each incompatible pair counts once per endpoint (`tt_QosIncompatibleStatus`,
+first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2, 2026-10-19).
 
 **Liveliness** (v9): a lease runs from the last sign of life.
 

@@ -89,7 +89,9 @@ Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSE
 | DEADLINE, LIFESPAN | any finite value | Deadline: one miss per period P with no publish (offered) or no sample received (requested), checked at the last activity + P. Lifespan expires samples in the publisher cache and the subscriber queue |
 | LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE | Lease at least 6 ms |
 
-RxO matching covers reliability, durability, deadline and liveliness; both sides get the event. BEST_AVAILABLE is
+RxO matching covers reliability, durability, deadline and liveliness; both sides get the event, once per incompatible
+endpoint, when its announce arrives (no periodic rescan). `rmw_qos_profile_check_compatible()` returns ERROR for those
+rules and WARNING for SYSTEM_DEFAULT, UNKNOWN or BEST_AVAILABLE where it decides the outcome. BEST_AVAILABLE is
 resolved at creation against endpoints already discovered.
 
 ## Loaned messages
