@@ -11478,6 +11478,19 @@ static void* qos_carve(void* storage, size_t offset) {
     return (uint8_t*)storage + offset;
 }
 
+// A Publisher's arena starts on a 64-byte boundary of the address, whatever the storage's: a record is copied in at
+// every publish, and a copy's cost follows its destination's alignment - the rig benches' p2 record (1,312 bytes, a
+// multiple of 32) landed misaligned in every slot of an 8-aligned arena and cost ~13-19 instructions a publish more
+// than the 32-aligned static arena it replaced (2026-10-19). The layout reserves the slack for the worst storage, 8-
+// aligned, which creation requires.
+#define QOS_ARENA_ALIGN 64U
+#define QOS_ARENA_SLACK (QOS_ARENA_ALIGN - 8U)
+
+static uint8_t* qos_carve_arena(void* storage, size_t offset) {
+    uintptr_t address = (uintptr_t)storage + offset;
+    return (uint8_t*)storage + offset + ((QOS_ARENA_ALIGN - (address % QOS_ARENA_ALIGN)) % QOS_ARENA_ALIGN);
+}
+
 // Whether `bytes` bytes from `from` are all zero. Words through memcpy, so the caller's storage is read as bytes
 // whatever it was declared as.
 static bool qos_bytes_zero(const uint8_t* from, size_t bytes) {
@@ -11642,7 +11655,7 @@ static void publisher_layout_of(const struct tt_TypeSupport* type, const struct 
     ring = ring < fillable ? ring : fillable;
     layout->ring = (uint16_t)(ring < UINT16_MAX ? ring : UINT16_MAX);
     layout->total = QOS_ALIGN8(sizeof(struct tt_ReliableCache)) +
-                    QOS_ALIGN8((size_t)layout->ring * sizeof(struct tt_ReliableCacheIndex)) +
+                    QOS_ALIGN8((size_t)layout->ring * sizeof(struct tt_ReliableCacheIndex)) + QOS_ARENA_SLACK +
                     QOS_ALIGN8((size_t)layout->arena);
     // A type with no bound (max_encoded_size 0, sized for tt_MAX_SAMPLE_LENGTH; or a size its binding chose,
     // max_encoded_size_estimated) has samples as large as each publish makes them: whether history.bytes keeps
@@ -11815,8 +11828,8 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         const size_t index_offset = QOS_ALIGN8(sizeof(struct tt_ReliableCache));
         struct tt_ReliableCache* cache = qos_carve(storage, 0);
         struct tt_ReliableCacheIndex* index = qos_carve(storage, index_offset);
-        uint8_t* arena =
-            qos_carve(storage, index_offset + QOS_ALIGN8((size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex)));
+        uint8_t* arena = qos_carve_arena(
+            storage, index_offset + QOS_ALIGN8((size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex)));
         qos_zero_dirty_pages(index, (size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex));
         result = tt_ReliableCache_init(cache, index, layout.ring, arena, layout.arena);
         if (result != tt_RET_OK) {
