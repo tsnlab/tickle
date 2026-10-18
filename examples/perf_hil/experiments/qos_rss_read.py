@@ -5,7 +5,9 @@ Lines read, tag = 'rep=R cell=C arm=A role=<client|server>': '<tag> RUSAGE exit=
 ru_maxrss) and '<tag> RESULT: ... lost=L ... peak_rss_kb=H ...' (the bench's own VmHWM, which the rig scores).
 Rules (the harness header says why):
   MEASURE   a process's peak RSS is its own VmHWM (peak_rss_kb), the rig's instrument, wherever it prints one; only the
-            reliable_latency server prints none, and for it ru_maxrss stands in.
+            reliable_latency server prints none, and for it the VmHWM the harness read from /proc (HWM line) stands in,
+            or ru_maxrss when that is missing (runs before the HWM line existed). The /proc reading must lie within 3%
+            below the bench's own wherever both exist (the throughput servers), else VOID.
   SAMPLES   a process counts only with exit=0 and a peak > 0, and a throughput server only if its RESULT says lost=0;
             fewer than MIN_REPS per arm in a cell/role -> that row VOID.
   INSTRUMENT where a process has both, maxrss_kb must not exceed its VmHWM by more than 5% - else GNU time's own
@@ -28,7 +30,8 @@ TREATMENT = {"reliable_latency_p1": 300, "reliable_latency_p4": 4000}  # client 
 INSTRUMENT_TOLERANCE = 0.05
 FLOOR_MIN_KB = 64
 
-TAG = re.compile(r"rep=(\d+) cell=(\S+) arm=(\w+) role=(\w+) (RUSAGE|RESULT)")
+TAG = re.compile(r"rep=(\d+) cell=(\S+) arm=(\w+) role=(\w+) (RUSAGE|RESULT|HWM)")
+FOLLOWED = re.compile(r"\bvmhwm_kb=(\d+)")
 MAXRSS = re.compile(r"\bexit=(-?\d+) maxrss_kb=(\d+)")
 LOST = re.compile(r"\blost=(\d+)")
 HWM = re.compile(r"\bpeak_rss_kb=(\d+)")
@@ -36,7 +39,7 @@ HWM = re.compile(r"\bpeak_rss_kb=(\d+)")
 
 def read(path):
     """{(cell, role, arm): [peak RSS KB per counted rep]}, the reasons reps were not counted, and the instrument check."""
-    maxrss, lost, hwm = {}, {}, {}
+    maxrss, lost, hwm, followed = {}, {}, {}, {}
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             tag = TAG.search(line)
@@ -44,7 +47,11 @@ def read(path):
                 continue
             rep, cell, arm, role, kind = tag.groups()
             key = (rep, cell, arm, role)
-            if kind == "RUSAGE":
+            if kind == "HWM":
+                found = FOLLOWED.search(line)
+                if found:
+                    followed[key] = int(found.group(1))
+            elif kind == "RUSAGE":
                 found = MAXRSS.search(line)
                 maxrss[key] = (int(found.group(1)), int(found.group(2))) if found else (None, 0)
             else:
@@ -55,6 +62,11 @@ def read(path):
                 if found and int(found.group(1)) > 0:
                     hwm[key] = int(found.group(1))
     rss, dropped, disagree, compared = {}, [], [], 0
+    for key, seen in followed.items():  # the outside reading against the bench's own, where both exist
+        if key in hwm:
+            compared += 1
+            if not 0.97 * hwm[key] <= seen <= hwm[key]:
+                disagree.append(f"{key}: VmHWM read from /proc {seen} vs its own {hwm[key]}")
     for key, own in hwm.items():
         if key in maxrss and maxrss[key][1] > 0:
             compared += 1
@@ -62,7 +74,7 @@ def read(path):
                 disagree.append(f"{key}: maxrss_kb {maxrss[key][1]} above its own VmHWM {own}")
     for key, (code, stand_in) in sorted(maxrss.items()):
         rep, cell, arm, role = key
-        kb = hwm.get(key, stand_in)
+        kb = hwm.get(key, followed.get(key, stand_in))
         if code != 0 or kb <= 0:
             dropped.append(f"{key}: exit={code} peak={kb}")
         elif role == "server" and "throughput" in cell and lost.get(key) != 0:
