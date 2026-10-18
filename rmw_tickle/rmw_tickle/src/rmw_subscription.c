@@ -367,16 +367,23 @@ static void release_sample(rmw_tickle_subscriber_t* sub_impl, struct tt_Sample* 
 }
 
 // LIFESPAN (rmw_tickle_subscriber_t.lifespan_ns): the tt_get_ns() from which a sample that arrived at the date
-// `received`, stamped `source` by its writer, is dropped; 0 without a lifespan. The age is judged once, on arrival, as
-// the date's distance from the writer's (the hosts' clocks must agree, as in DDS); from there it runs on the monotonic
-// clock - last_activity_time, read at this arrival - so a later step of the date neither expires the queue nor keeps
-// it. A source stamp ahead of this date is age 0, not an unsigned wrap to "expired".
-static uint64_t lifespan_expiry(const rmw_tickle_subscriber_t* sub_impl, uint64_t received, uint64_t source) {
-    if (sub_impl->lifespan_ns == 0) {
+// `received`, stamped `source` by its writer, is dropped; 0 without a lifespan. The lifespan is the shorter of the
+// writer's announced one and the subscription's own (QoS plan D1, tt_Subscriber_delivering_lifespan()); while no writer
+// with one is known to the subscription (tt_Subscriber.writer_lifespans) it is the subscription's own, and nothing is
+// looked up. The age is judged once, on arrival, as the date's distance from the writer's (the hosts' clocks must
+// agree, as in DDS: across hosts the age is off by their clock offset); from there it runs on the monotonic clock -
+// last_activity_time, read at this arrival - so a later step of the date neither expires the queue nor keeps it. A
+// source stamp ahead of this date is age 0, not an unsigned wrap to "expired". Called from the delivery callback.
+static uint64_t lifespan_expiry(rmw_tickle_subscriber_t* sub_impl, uint64_t received, uint64_t source) {
+    uint64_t lifespan = sub_impl->lifespan_ns;
+    if (sub_impl->tickle_subscriber.writer_lifespans) {
+        lifespan = tt_Subscriber_delivering_lifespan(&sub_impl->tickle_subscriber);
+    }
+    if (lifespan == 0) {
         return 0;
     }
     uint64_t age = received > source ? received - source : 0;
-    uint64_t left = age < sub_impl->lifespan_ns ? sub_impl->lifespan_ns - age : 0;
+    uint64_t left = age < lifespan ? lifespan - age : 0;
     return sub_impl->last_activity_time + left;
 }
 
@@ -715,8 +722,7 @@ static void subscription_adopt_actual_qos(rmw_tickle_subscriber_t* sub_impl, con
     }
 
     // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment: the
-    // subscription's own lifespan, a plain age check rmw_take_with_info() makes on demand (unchanged
-    // by step 3; which lifespan a reader applies is step 6, D1).
+    // subscription's own lifespan; a writer's, when shorter, is applied per sample (lifespan_expiry(), QoS plan D1).
     if (tt_QOS_DURATION_INFINITE != actual.lifespan.duration_ns) {
         sub_impl->lifespan_ns = actual.lifespan.duration_ns;
     }
@@ -1016,9 +1022,10 @@ static bool dequeue_locked(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_
                            struct tt_Sample* expired, size_t* expired_count) {
     // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment. Drops
     // (not returns) any already-expired entries from the front before taking the real head - "as
-    // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
-    // no-op loop when lifespan_ns == 0 (not requested).
-    while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
+    // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. An
+    // entry without a lifespan (expires_ns 0) ends the loop at once. Writers' lifespans differ (QoS plan D1), so an
+    // entry behind the head may expire first: it is dropped when it reaches the head, and never returned.
+    while (sub_impl->queue_count > 0 && sub_impl->queue[sub_impl->queue_head].expires_ns != 0 &&
            tt_get_ns() >= sub_impl->queue[sub_impl->queue_head].expires_ns) {
         rmw_tickle_queued_message_t* head = &sub_impl->queue[sub_impl->queue_head];
         if (NULL != head->in_place) {
