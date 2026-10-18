@@ -92,7 +92,9 @@ Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSE
 RxO matching covers reliability, durability, deadline and liveliness; both sides get the event, once per incompatible
 endpoint, when its announce arrives (no periodic rescan). `rmw_qos_profile_check_compatible()` returns ERROR for those
 rules and WARNING for SYSTEM_DEFAULT, UNKNOWN or BEST_AVAILABLE where it decides the outcome. BEST_AVAILABLE is
-resolved at creation against endpoints already discovered.
+resolved at creation against endpoints already discovered. `rmw_get_publishers_info_by_topic()` and
+`_subscriptions_info_` report a remote endpoint's every policy from its announce, history, depth and lifespan included
+(`tt_VERSION` 14; UNKNOWN before), so `ros2 bag` replays a topic with the depth it recorded.
 
 ## Loaned messages
 

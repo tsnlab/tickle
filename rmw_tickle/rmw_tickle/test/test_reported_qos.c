@@ -53,19 +53,34 @@
 #define FAKE_REMOTE_NODE_ID 7
 #define NS_PER_SEC (1000ULL * 1000ULL * 1000ULL)
 #define ANNOUNCED_LEASE_NS (4ULL * NS_PER_SEC)
+// QoS plan D8's endpoints: a KEEP_LAST 7 publisher with a 250 ms lifespan, a KEEP_ALL subscription with a 1.5 s one.
+#define KEEP_LAST_DEPTH 7
+#define KEEP_LAST_LIFESPAN_NS (NS_PER_SEC / 4U)
+#define KEEP_ALL_DEPTH 256
+#define KEEP_ALL_LIFESPAN_NS (NS_PER_SEC + (NS_PER_SEC / 2U))
+#define CONTROL_DEPTH 3
 
 static int next_discovery_slot = 0;
 
-static void inject_publisher(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t qos_bits,
-                             uint64_t deadline_ns, uint64_t lease_ns) {
+// Since tt_VERSION 14 an announce carries a lifespan and a history depth too (QoS plan D8): what the table holds then.
+struct announced_history {
+    uint64_t lifespan_ns; // 0: infinite, as on the wire
+    uint32_t depth;
+};
+
+static void inject_entity(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind,
+                          uint8_t qos_bits, uint64_t deadline_ns, uint64_t lease_ns, struct announced_history history) {
     tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[next_discovery_slot++];
     entity->context_id = FAKE_REMOTE_NODE_ID;
     entity->endpoint_id = 0;
-    entity->kind = tt_KIND_TOPIC_PUBLISHER;
+    entity->entity_id = (uint32_t)next_discovery_slot; // distinct, so the index holds each
+    entity->kind = kind;
     entity->qos = qos_bits;
     entity->deadline_duration_ns = deadline_ns;
     entity->liveliness_lease_duration_ns = lease_ns;
+    entity->lifespan_duration_ns = history.lifespan_ns;
+    entity->history_depth = history.depth;
     entity->alive = true;
     // An entity that announced a lease is only alive while its node has been heard from and the
     // lease has not run out (node_entity_alive_locked(), tickle.c), and an endpoint-info query
@@ -78,6 +93,12 @@ static void inject_publisher(rmw_tickle_context_impl_t* context_impl, const char
     snprintf(entity->type, sizeof(entity->type), "test_reported_qos/msg/FakeMsg");
     snprintf(entity->name, sizeof(entity->name), "%s", topic_name);
     tt_Context_unlock(&context_impl->tickle_context);
+}
+
+static void inject_publisher(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t qos_bits,
+                             uint64_t deadline_ns, uint64_t lease_ns) {
+    inject_entity(context_impl, topic_name, tt_KIND_TOPIC_PUBLISHER, qos_bits, deadline_ns, lease_ns,
+                  (struct announced_history) {0, 0});
 }
 
 static bool durations_equal(rmw_time_t a, rmw_time_t b) {
@@ -97,13 +118,22 @@ static void reported_profile_must_be_acceptable(const rmw_qos_profile_t* qos, co
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&offered, RMW_TICKLE_ENTITY_SUBSCRIPTION));
 }
 
-static rmw_qos_profile_t reported_qos_of(const char* topic_name, rcutils_allocator_t* allocator, rmw_node_t* node) {
+static rmw_qos_profile_t reported_qos_of_kind(const char* topic_name, rcutils_allocator_t* allocator, rmw_node_t* node,
+                                              bool subscriptions) {
     rmw_topic_endpoint_info_array_t info = rmw_get_zero_initialized_topic_endpoint_info_array();
-    assert(RMW_RET_OK == rmw_get_publishers_info_by_topic(node, allocator, topic_name, false, &info));
+    if (subscriptions) {
+        assert(RMW_RET_OK == rmw_get_subscriptions_info_by_topic(node, allocator, topic_name, false, &info));
+    } else {
+        assert(RMW_RET_OK == rmw_get_publishers_info_by_topic(node, allocator, topic_name, false, &info));
+    }
     assert(1 == info.size);
     rmw_qos_profile_t qos = info.info_array[0].qos_profile;
     assert(RMW_RET_OK == rmw_topic_endpoint_info_array_fini(&info, allocator));
     return qos;
+}
+
+static rmw_qos_profile_t reported_qos_of(const char* topic_name, rcutils_allocator_t* allocator, rmw_node_t* node) {
+    return reported_qos_of_kind(topic_name, allocator, node, false);
 }
 
 int main(void) {
@@ -156,6 +186,34 @@ int main(void) {
     reported_profile_must_be_acceptable(&durable, "durable");
     assert(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == durable.reliability);
     assert(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == durable.durability);
+
+    // QoS plan D8 (tt_VERSION 14): history, depth and lifespan, which were UNKNOWN. A KEEP_LAST 7 publisher with a
+    // 250 ms lifespan, a KEEP_ALL subscription with a 1.5 s one, and - the control - a KEEP_LAST 3 publisher with no
+    // lifespan, which must read back infinite and its own depth, so neither value above is a constant.
+    inject_entity(context_impl, "history_topic", tt_KIND_TOPIC_PUBLISHER, tt_UPDATE_QOS_RELIABLE, 0, 0,
+                  (struct announced_history) {KEEP_LAST_LIFESPAN_NS, KEEP_LAST_DEPTH});
+    inject_entity(context_impl, "history_topic", tt_KIND_TOPIC_SUBSCRIBER, tt_UPDATE_QOS_KEEP_ALL, 0, 0,
+                  (struct announced_history) {KEEP_ALL_LIFESPAN_NS, KEEP_ALL_DEPTH});
+    inject_entity(context_impl, "history_control", tt_KIND_TOPIC_PUBLISHER, 0, 0, 0,
+                  (struct announced_history) {0, CONTROL_DEPTH});
+    rmw_qos_profile_t keep_last = reported_qos_of("history_topic", &allocator, node);
+    rmw_qos_profile_t keep_all = reported_qos_of_kind("history_topic", &allocator, node, true);
+    rmw_qos_profile_t control = reported_qos_of("history_control", &allocator, node);
+    printf("  history: publisher history=%d depth=%zu lifespan=%llu.%09llu; subscription history=%d depth=%zu "
+           "lifespan=%llu.%09llu; control history=%d depth=%zu lifespan infinite=%d\n",
+           (int)keep_last.history, keep_last.depth, (unsigned long long)keep_last.lifespan.sec,
+           (unsigned long long)keep_last.lifespan.nsec, (int)keep_all.history, keep_all.depth,
+           (unsigned long long)keep_all.lifespan.sec, (unsigned long long)keep_all.lifespan.nsec, (int)control.history,
+           control.depth, durations_equal((rmw_time_t)RMW_DURATION_INFINITE, control.lifespan));
+    reported_profile_must_be_acceptable(&keep_last, "keep_last");
+    reported_profile_must_be_acceptable(&keep_all, "keep_all");
+    reported_profile_must_be_acceptable(&control, "control");
+    assert(RMW_QOS_POLICY_HISTORY_KEEP_LAST == keep_last.history && KEEP_LAST_DEPTH == keep_last.depth);
+    assert(0 == keep_last.lifespan.sec && 250000000ULL == keep_last.lifespan.nsec);
+    assert(RMW_QOS_POLICY_HISTORY_KEEP_ALL == keep_all.history);
+    assert(1 == keep_all.lifespan.sec && 500000000ULL == keep_all.lifespan.nsec);
+    assert(RMW_QOS_POLICY_HISTORY_KEEP_LAST == control.history && CONTROL_DEPTH == control.depth);
+    assert(durations_equal((rmw_time_t)RMW_DURATION_INFINITE, control.lifespan));
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));
