@@ -1208,3 +1208,21 @@ A citation of a DESIGN.md heading or criterion not found here resolves there.
 | `.github/scripts/README-rmw-perf.md` | [RMW_PERF_SETUP.md](RMW_PERF_SETUP.md) |
 | `CONTRIBUTING.md`, `CHANGELOG.md` | [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) |
 | `MORNING_2026-09-26.md` | removed (a one-night report) |
+
+## Containers: allowing io_uring
+
+*(Moved from README.md on 2026-10-18.)* Docker (25.0+) and Kubernetes' `RuntimeDefault` seccomp profile block
+io_uring, a frequent source of Linux privilege-escalation bugs whose operations bypass seccomp's per-call filter; Linux
+6.6+ also has `kernel.io_uring_disabled`. With `tt_RX_HINT_AUTO` (section 2) TickLE still works when refused, only
+slower for a busy publisher. Allowing it widens the kernel surface the container reaches, so decide per deployment.
+TickLE needs only `io_uring_setup` and `io_uring_enter`:
+
+```sh
+curl -sSLo seccomp-default.json https://raw.githubusercontent.com/moby/moby/master/profiles/seccomp/default.json
+jq '.syscalls += [{"names": ["io_uring_setup", "io_uring_enter"], "action": "SCMP_ACT_ALLOW"}]' \
+    seccomp-default.json > seccomp-tickle.json
+docker run --security-opt seccomp=seccomp-tickle.json ...
+```
+
+On Kubernetes use the same profile as `seccompProfile: {type: Localhost, localhostProfile: <path>}`. Avoid
+`seccomp=unconfined`.

@@ -370,3 +370,64 @@ The full tables are in [RESULTS.md](RESULTS.md).
 - SROS2 security: parked until the user starts it.
 - Line and branch coverage tracking for rmw_tickle (core has it: `make coverage` and CI's `coverage` job; CI's colcon
   build of rmw_tickle has none; needed for a higher quality level).
+
+## Tuning and differences from DDS
+
+*(Moved from README.md on 2026-10-18.)*
+
+### Options you may tune
+
+The defaults were checked on the test rig (two Raspberry Pi 5s, 1 GbE). They depend on the hardware: derive yours
+rather than copy ours. Core constants are `-D` build overrides (each is `#ifndef`-guarded in
+`include/tickle/config.h`); `(env)` marks an environment variable.
+
+| option | default | derive it as |
+|---|---|---|
+| `tt_SEGMENT_BYTES` (shared-memory ring) | 768 KiB | slots = peak datagram rate x longest reader stall; bytes = slots x (16 + `tt_SEGMENT_SLOT_BYTES`). Slots round **down** to a power of two: 768 KiB is 512 slots of 1472 B. |
+| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | peak receive rate (bytes/s) x longest drain stall. The kernel caps it at `net.core.rmem_max` / `wmem_max`; raise those too. |
+| `tt_RX_BATCH` (Linux HAL) | 32 | datagrams one wake-up drains at peak rate (p95); the rig drained about 30. rmw_tickle uses 1 (64 KB datagrams), not yet measured. |
+| `tt_RX_CLOCK_REFRESH` | 16 | accepted clock staleness of receive stamps / time per datagram (16 x ~85 ns = ~1.4 us on the dev PC). |
+| `tt_RX_LOCK_CHUNK` | 8 | longest accepted wait for a publishing thread while the poll thread receives / time per datagram. |
+| `tt_RELIABLE_RETRY_INITIAL` | 1 ms | about 4 x the link's round trip; used only until the first round trip is measured. |
+| `tt_DISCOVERY_REQUEST_RETRY` | 10 ms | above round trip + `tt_CONTEXT_TX_INTERVAL`; used only until a peer's first list answer is timed. |
+| `RMW_TICKLE_KEEP_ALL_BYTES` (env) | 512 KiB | link rate x the longest acknowledgement stall a KEEP_ALL writer should ride out (42 ms at 100 Mbit/s, 420 ms at 10 Mbit/s). |
+| `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x the samples an application may leave untaken before its writers are pushed back. |
+| `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x time to repair a lost sample. Tracking beyond what the writer retains recovers nothing. |
+| `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | heartbeats piggybacked per tracking window; the interval is window / this (64 at 1,024). Chosen by a rig sweep at max rate and 8% loss (every 64 left 0-1 window jumps a run, as a 1 ms periodic heartbeat did); raise it if a reader still jumps its window under your loss. |
+
+Constants that stand in for a time or a rate are being replaced by algorithms (ROADMAP.md, "Now" 5a) and are not
+listed. The retry timers' granularity G in `srtt + max(G, 4 x rttvar)` (`tt_RELIABLE_RETRY_GRANULARITY`,
+`tt_CALL_RETRY_GRANULARITY`) is measured by the context itself; set one non-zero only to fix G (DESIGN.md,
+"Reliability"). Every core knob: DESIGN.md section 15.
+
+### How TickLE differs from DDS
+
+TickLE borrows DDS/RTPS ideas: writers keep samples, readers report gaps with a NACK (negative acknowledgement), and
+QoS is matched requested-against-offered. But it is its own protocol and does **not** interoperate with any DDS
+vendor. "DDS" below is the default behaviour of Fast DDS and CycloneDDS.
+
+| Behaviour | TickLE | DDS | What to expect |
+|---|---|---|---|
+| Wire protocol | Own UDP framing; payload in TickLE CDR-4 (4-byte max alignment) | RTPS; CDR / XCDR | No mixing with DDS nodes; 20 B framing per sample. |
+| Discovery | Link broadcast, 1 s summaries, endpoint lists pulled on change; UDP even on one host | Multicast SPDP/SEDP | Set `TICKLE_BROADCAST_ADDR` to the link's directed broadcast. |
+| Peer departure | 3.5 s of silence (up to 10 s with long leases) | ~10 s (Cyclone), ~20 s (Fast DDS) | Faster failover; a host stalled for seconds is dropped and re-learned. |
+| Contexts per link | One 8-bit id per process, at most 254 per link | 12-byte GUID prefix | Plan large systems around it. |
+| Several readers | Unicast to up to 2 readers, broadcast to more | Unicast per reader, or multicast | One send reaches many; hosts not subscribed discard it. |
+| RELIABLE readers per publisher | 16; the next is not matched (logged). `-DRMW_TICKLE_MAX_RELIABLE_READERS=N` (core `tt_MAX_ACK_ENTRIES`), 64 B each per publisher | Unlimited | Raise it for topics every node subscribes to, e.g. `/clock`. |
+| RELIABLE heartbeats | While unacknowledged, 250 ms after the last send (`RMW_TICKLE_IDLE_HEARTBEAT_NS`), repeated while unanswered; none at 8 Hz and up. Also every 64th sample, at match, after a large sample | Periodic while unacknowledged (Cyclone 100 ms, Fast DDS 3 s) | A lost **last** sample of a burst is repaired 125-250 ms after sending; below 4 Hz each sample costs a heartbeat and its acknowledgements. |
+| Repair timing | Immediate NACK and resend; retry from the measured round trip | Fixed response delays (ms) | Far better throughput under loss; a few duplicate repairs. |
+| Large samples | MTU-sized units with their own sequence numbers: up to 45 per IP-fragmented datagram on a clean path, one per datagram under loss; only lost units resent. Max 8 MiB in rmw (`RMW_TICKLE_MAX_SAMPLE_BYTES`) | IP-fragmented 64 KB datagrams + DATA_FRAG | Robust under loss, cheap on a clean link. |
+| UDP checksum | 0 on a large sample's IP fragments (Linux default) | On | DESIGN.md, "UDP checksum 0"; `TT_UDP_CSUM0=0` restores it. |
+| KEEP_ALL bound | 512 KiB per publisher and per subscription (`RMW_TICKLE_KEEP_ALL_BYTES`, `RMW_TICKLE_READER_KEEP_ALL_BYTES`) | Samples (`max_samples`: Fast DDS 5,000, Cyclone unlimited) | At the bound a publish blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (100). |
+| KEEP_LAST publisher history | At most 1 MiB (`RMW_TICKLE_CACHE_BYTES`) | `depth` samples | Large samples: fewer than `depth` kept for repair and late joiners (warned). Raise it for latched maps or images. |
+| TRANSIENT_LOCAL | Publisher pushes its history to a new subscriber | Reader pulls it (HEARTBEAT/ACKNACK) | Late joiners get the backlog sooner. No TRANSIENT or PERSISTENT. |
+| LIFESPAN | Publisher's lifespan stops resends and replay; a subscription expires queued samples by **its own** lifespan | Writer's lifespan applies at the reader | Set lifespan on the subscription too. |
+| Source timestamp | 32-bit microseconds; clocks must agree within ±35 minutes | 64-bit, sub-ns | Sync clocks (NTP/PTP) if you use source timestamps or subscription lifespan. Everything else runs on the monotonic clock. |
+| Same-host transport | Automatic shared-memory ring per peer, no daemon; a full ring drops the datagram (RELIABLE repairs it) | Fast DDS SHM / data-sharing; Cyclone via iceoryx (opt-in, RouDi daemon) | Nothing to configure. |
+| Loaned messages | Plain fixed-size types, also lent from socket receive buffers | Plain types, shared memory only | "Loaned messages" above. |
+| Services | 4 requests in flight per client (`tt_CLIENT_MAX_OUTSTANDING`), answered in any order; a 5th waits up to 100 ms, then fails. IP-fragmented above 1472 B, max 64 KB; unanswered after 5 s = dropped | Unbounded, fragmented like topics, no timeout | Raise the constant for more concurrent calls; keep service messages small on lossy links. A client with no known server still finds one. |
+| Unbounded sequences | Fixed capacity per field (e.g. `Image` 64,000 B, `LaserScan` 4,096) unless set in a `.capacities` file | Unbounded | A longer sequence fails to publish. |
+| QoS policies | RELIABILITY, DURABILITY, HISTORY, DEADLINE, LIFESPAN, LIVELINESS (AUTOMATIC, MANUAL_BY_TOPIC; lease ≥ 6 ms) | All | Ownership, partitions, content filters, keyed instances, `wstring` and security return `RMW_RET_UNSUPPORTED`. |
+
+Anything TickLE cannot honour is refused with an error, never silently downgraded. QoS compatibility (reliability,
+durability, deadline, liveliness) is checked as in DDS, and both sides get the incompatible-QoS event.
