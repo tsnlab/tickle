@@ -72,7 +72,8 @@ static struct tt_Publisher pubs[ENDPOINTS];
 static char names[ENDPOINTS][48];
 static uint8_t sample[8];
 
-static void init(int endpoints) {
+// batch: the Publishers batch (tt_PublisherOptions.batch).
+static void init(int endpoints, bool batch) {
     test_mock_reset();
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
@@ -86,7 +87,9 @@ static void init(int endpoints) {
         topics[i].data_size = sizeof(sample);
         topics[i].data_encode_size = sized_encode_size;
         topics[i].data_encode = sized_encode;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pubs[i], &topics[i],
+                                                          "my_robot_node_endpoint", &TEST_QOS_UNRELIABLE,
+                                                          &(struct tt_PublisherOptions) {.batch = batch}, NULL, 0));
         // A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast
         // threshold, so it still broadcasts, the path these datagram-size checks are about.
         for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
@@ -100,8 +103,7 @@ static void init(int endpoints) {
 static void test_batched_samples_stay_within_the_control_limit(void) {
     // Ten 400-byte samples on a batching publisher: 4000 bytes, which the 8192 buffer could send as
     // one datagram. None may exceed 1472, and all ten must still go out.
-    init(1);
-    pubs[0].batch = true;
+    init(1, true);
     sample_size = 400;
     for (int i = 0; i < 10; i++) {
         EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
@@ -123,7 +125,7 @@ static void test_a_large_sample_fragments_at_the_control_limit(void) {
     // control datagram fragments its samples at the control datagram rather than handing the OS one
     // IP-fragmented datagram (config.h, tt_FRAG_ENABLED) - rmw_tickle's configuration. It used to go
     // alone at full size.
-    init(1);
+    init(1, false);
     sample_size = 5000;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     node_flush(&node, 0, NULL);
@@ -172,7 +174,7 @@ static void test_a_large_request_keeps_the_large_datagram(void) {
     // larger buffer - which is why rmw_tickle keeps tt_MAX_BUFFER_LENGTH at 65507 while its samples
     // fragment (rclcpp's parameter services alone carry requests past 1472). Control for the test above:
     // the same size, the other path.
-    init(0);
+    init(0, false);
     static struct tt_Service service;
     static struct tt_Client client;
     memset(&service, 0, sizeof(service));
@@ -183,7 +185,9 @@ static void test_a_large_request_keeps_the_large_datagram(void) {
     service.request_encode = sized_request_encode;
     service.response_decode = ignore_response;
     service.response_free = free_response;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node, &client, &service, "big_client", on_response));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_client(tt_Context_default_node(&node), &client, &service, "big_client", NULL,
+                                        &(struct tt_ClientOptions) {.callback = on_response}, NULL, 0));
     request_size = 5000;
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, (struct tt_Request*)sample));
     node_flush(&node, 0, NULL);
@@ -195,8 +199,7 @@ static void test_a_large_request_keeps_the_large_datagram(void) {
 static void test_large_sample_is_not_joined_by_batched_ones(void) {
     // A batch pending when a large sample arrives goes first, on its own, and nothing is added to the
     // large one's datagrams, its fragments: whatever shares a datagram stays within the control limit.
-    init(1);
-    pubs[0].batch = true;
+    init(1, true);
     sample_size = 200;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     sample_size = 5000;
@@ -217,7 +220,7 @@ static void test_large_sample_is_not_joined_by_batched_ones(void) {
 
 static void test_announce_splits_at_the_control_limit(void) {
     // 30 endpoints (~2.7 KB) would fit one 8192-byte announce; it is split for 1472 anyway.
-    init(ENDPOINTS);
+    init(ENDPOINTS, false);
     EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
     node_flush(&node, 0, NULL);
     EXPECT_TRUE(datagram_count >= 2);
