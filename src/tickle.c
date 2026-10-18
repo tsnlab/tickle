@@ -11517,6 +11517,26 @@ static void qos_zero_dirty_pages(void* storage, size_t bytes) {
     }
 }
 
+// Frees every slot of a reorder buffer by reading one byte of each, and writes only a slot that is not free already.
+// A slot is held exactly while its header's `occupied` is true: every other field of the header, and its payload, is
+// written before that is set (hold_for_reorder(), reorder_store_fragment(), frag_fast_spill(), the segment's store)
+// and read only after it, so a slot whose `occupied` byte is 0 is free whatever the rest of it holds. The byte is read
+// as a byte, not as a bool, because storage that never held a header may hold any value there.
+//
+// Not qos_zero_dirty_pages() over the whole buffer: that reads every byte, ~0.6 M words for the rig benches' 4,096
+// slots at p2-p4, and those words were ~4.6 M of each bench process's user instructions - ~560 a round trip over a
+// latency cell's 8,292, +9 to +15% insn_u (gate v2 core A/B of ab/qos-integrated, 2026-10-19). One byte per slot is
+// 4,096 reads. Storage that arrives zeroed is still only read, never written, so it stays the kernel's zero page.
+static void qos_free_reorder_slots(uint64_t* storage, uint16_t slots, uint16_t slot_bytes) {
+    const size_t stride = (size_t)slot_bytes & ~(sizeof(uint64_t) - 1U); // reorder_stride(): rounded down to 8
+    uint8_t* slot = (uint8_t*)storage;
+    for (uint16_t i = 0; i < slots; i++, slot += stride) {
+        if (slot[offsetof(struct tt_ReorderSlot, occupied)] != 0) {
+            memset(slot, 0, sizeof(struct tt_ReorderSlot));
+        }
+    }
+}
+
 static uint16_t subscriber_tracking_words(const struct tt_Subscriber* sub); // the window it runs with
 
 static void qos_match_one(struct tt_QosMatched* matched, const struct tt_DiscoveredEntity* entity) {
@@ -11898,7 +11918,7 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
         sub->reorder_storage = qos_carve(storage, QOS_ALIGN8(layout.tracking_bytes));
         sub->reorder_slots = actual.reliability.reorder_slots;
         sub->reorder_slot_bytes = layout.slot_bytes;
-        qos_zero_dirty_pages(sub->reorder_storage, layout.reorder_bytes);
+        qos_free_reorder_slots(sub->reorder_storage, sub->reorder_slots, sub->reorder_slot_bytes);
     }
     return register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
 }

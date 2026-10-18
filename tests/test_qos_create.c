@@ -435,6 +435,15 @@ static void test_subscriber_storage(void) {
     EXPECT_EQ_U32((uint32_t)tt_REORDER_SLOT_SIZE(SAMPLE_BYTES), sub.reorder_slot_bytes);
     EXPECT_EQ_U32(10, sub.keep_last_depth);
     EXPECT_EQ_U32(0, sub.reorder_held);
+    // The storage was all GARBAGE (init()), so every slot header said "held": each is free now. A free slot's
+    // payload is never read before it is written, and creation leaves it as it was - clearing it cost the rig
+    // benches ~4.6 M instructions a process at 4,096 slots (qos_free_reorder_slots()).
+    bool all_free = true;
+    for (uint16_t i = 0; i < sub.reorder_slots; i++) {
+        all_free = all_free && !reorder_slot_at(&sub, i)->occupied;
+    }
+    EXPECT_TRUE(all_free);
+    EXPECT_EQ_U32(GARBAGE, reorder_slot_payload(reorder_slot_at(&sub, sub.reorder_slots - 1U))[0]);
     struct tt_QosProfile actual;
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_get_actual_qos(&sub, &actual));
     EXPECT_EQ_U32(tt_RELIABLE_BITMAP_WORDS, actual.reliability.tracking_words);

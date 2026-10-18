@@ -1066,6 +1066,10 @@ static void init_pair_reliable_receiver(uint32_t len, bool with_buffer) {
     if (with_buffer) {
         qos.reliability.reorder_slots = TEST_REORDER_SLOTS;
     }
+    // Zeroed for every pair, as before the creation API: creation frees the slots by their headers only
+    // (qos_free_reorder_slots()), so payload bytes of the last test would stay, and an out-of-order run that writes
+    // the same bytes to the same slots would then read as "untouched" (the control below).
+    memset(test_reorder, 0, sizeof(test_reorder));
     init_pair_with(len, &(struct pair_qos) {.sub_qos = &qos,
                                             .sub_storage = test_reorder,
                                             .sub_storage_capacity = sizeof(test_reorder)});
