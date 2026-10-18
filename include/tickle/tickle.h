@@ -3467,6 +3467,11 @@ struct tt_PublisherOptions {
     tt_PUBLISHER_WRITABLE_CALLBACK writable_callback; // tt_Publisher.writable_callback
     void* writable_callback_param;
     bool (*cache_grow)(struct tt_Publisher* pub); // tt_Publisher.cache_grow
+    // Large samples (DESIGN.md section 8). tt_LARGE_FRAGMENTATION_* (config.h); 0, INHERIT, is the context's setting
+    uint8_t large_fragmentation;
+    uint16_t ip_datagram_max;          // the largest run datagram, bytes; 0 = each peer's advertisement
+    uint32_t large_region_chunks;      // the shared region (tt_Publisher_set_large_region()); 0 = no region
+    uint32_t large_region_chunk_bytes; // tt_LARGE_CHUNK_BYTES() of the largest sample; ignored without chunks
 };
 
 struct tt_SubscriberOptions {

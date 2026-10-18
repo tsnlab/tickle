@@ -11659,6 +11659,34 @@ static bool qos_storage_fits(const void* storage, size_t storage_size, size_t ne
     return storage != NULL && storage_size >= needed && ((uintptr_t)storage % 8U) == 0;
 }
 
+// tt_PublisherOptions' large-sample settings: a known fragmentation mode, and a region tt_Publisher_set_large_region()
+// would accept (none in a build without tt_LARGE_SHM).
+static bool publisher_large_options_valid(const struct tt_PublisherOptions* opts) {
+    if (opts->large_fragmentation > tt_LARGE_FRAGMENTATION_IP) {
+        return false;
+    }
+    if (opts->large_region_chunks == 0) {
+        return true;
+    }
+#if tt_LARGE_SHM
+    return opts->large_region_chunks <= tt_LARGE_REGION_CHUNKS_MAX &&
+           opts->large_region_chunk_bytes >= tt_LARGE_CHUNK_BYTES(tt_MAX_SAMPLE_LENGTH + 1U) &&
+           (opts->large_region_chunk_bytes % LARGE_REGION_ENTRY_BYTES) == 0;
+#else
+    return false;
+#endif
+}
+
+static void publisher_apply_large_options(struct tt_Publisher* pub, const struct tt_PublisherOptions* opts) {
+    pub->large_fragmentation = opts->large_fragmentation;
+    pub->ip_datagram_max = opts->ip_datagram_max;
+#if tt_LARGE_SHM
+    pub->large_region.chunks = opts->large_region_chunks;
+    pub->large_region.chunk_bytes = opts->large_region_chunks != 0 ? opts->large_region_chunk_bytes : 0;
+    pub->large_region.failed = false;
+#endif
+}
+
 static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct tt_Publisher* pub,
                                                  const struct tt_TypeSupport* type, const char* topic_name,
                                                  const struct tt_QosProfile* qos,
@@ -11681,7 +11709,8 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     publisher_layout_of(type, &actual, &layout);
     // D7: no silent fall back to BEST_EFFORT. Periodic HEARTBEAT and solicitation need the cache too.
     if (!qos_storage_fits(storage, storage_size, layout.total) ||
-        (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0))) {
+        (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0)) ||
+        !publisher_large_options_valid(opts)) {
         return tt_RET_INVALID_ARGUMENT;
     }
     result = publisher_reset(node, pub, type, topic_name);
@@ -11733,6 +11762,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     if (opts->idle_heartbeat_ns != 0) {
         pub->idle_heartbeat_ns = opts->idle_heartbeat_ns == tt_QOS_DURATION_INFINITE ? 0 : opts->idle_heartbeat_ns;
     }
+    publisher_apply_large_options(pub, opts);
 
     // Every announced field is final before the endpoint is added: an announce in between would go out with a
     // generation that the corrected one cannot replace (rmw_publisher.c says how that once cost a match).
