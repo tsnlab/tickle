@@ -35,6 +35,12 @@ target_link_libraries(rmw_loan_bench
   rmw_tickle::rmw_tickle
   rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
 )
+# The DEADLINE hot-path harness (../deadline_insn.c, built and run by ../deadline_insn.sh): here for the same reason.
+add_executable(deadline_insn ../deadline_insn.c)
+target_link_libraries(deadline_insn
+  rmw_tickle::rmw_tickle
+  rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+)
 
 add_executable(conv_cost conv_cost.cpp)
 target_link_libraries(conv_cost

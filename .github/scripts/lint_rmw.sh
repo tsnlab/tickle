@@ -230,11 +230,14 @@ for f in "${cpp_files[@]}"; do
     start "$n" check_cpp "$f"
     n=$((n + 1))
 done
-# C outside rmw_tickle that needs ROS (2026-10-08): the loaned-messages bench, built in conv_cost for its database entry
-# and excluded from `make lint`, which has no ROS include path and stops at 'rcutils/allocator.h' file not found.
-files+=(examples/perf_hil/experiments/rmw_loan_bench.c)
-start "$n" check_loan_bench examples/perf_hil/experiments/rmw_loan_bench.c
-n=$((n + 1))
+# C outside rmw_tickle that needs ROS (2026-10-08): the loaned-messages bench, and since 2026-10-18 the DEADLINE harness,
+# built in conv_cost for their database entries and excluded from `make lint`, which has no ROS include path and stops
+# at 'rcutils/allocator.h' file not found.
+for f in examples/perf_hil/experiments/rmw_loan_bench.c examples/perf_hil/experiments/deadline_insn.c; do
+    files+=("$f")
+    start "$n" check_loan_bench "$f"
+    n=$((n + 1))
+done
 wait
 
 fail=0

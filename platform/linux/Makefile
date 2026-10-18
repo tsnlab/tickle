@@ -501,9 +501,9 @@ LINT_EXCLUDE_RE = ^(third_party|platform/freertos|examples/freertos)/|hal_freert
 # clang-format covers both, because that half IS gated the moment one of them is touched - which is
 # how a formatting failure reached main on 2026-09-23.
 #
-#   examples/perf_hil/experiments/rmw_loan_bench.c - rmw API code, needing ROS's headers: lint_rmw.sh tidies it
-#                  against conv_cost's compile database, where CMake builds it for that purpose (and for CI's).
-LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|examples/perf_hil/experiments/rmw_loan_bench\.c
+#   examples/perf_hil/experiments/rmw_loan_bench.c, deadline_insn.c - rmw API code, needing ROS's headers: lint_rmw.sh
+#                  tidies them against conv_cost's compile database, where CMake builds them for that purpose (and CI's).
+LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|examples/perf_hil/experiments/(rmw_loan_bench|deadline_insn)\.c
 
 # rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
 # cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),
