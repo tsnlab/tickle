@@ -174,6 +174,14 @@
 #   tickle@nodirect  tickle@head's own librmw_tickle.so with TT_RX_DIRECT=0 at both ends: no in-place read of a large
 #                 sample's runs (hal_linux.c direct_recvmsg()); the treatment is the subscriber's rx line, direct=0
 #                 direct_reads=0, which i4be_perf_attach_read.py checks. Cross-host default mode only.
+# Added 2026-10-18 for closing that gap (i4be_close_gap.sh, i4be_close_gap_read.py; branch ab/i4be-cpu-candidates).
+# Each is tickle@head's own librmw_tickle.so with one A/B switch at both ends (every other arm runs with all of them
+# unset); cross-host default mode only. The treatment is rmw_tickle's own line in the perf_test log, which the reader
+# checks:
+#   tickle@thp      RMW_TICKLE_LARGE_HUGEPAGE=1 (rmw_large.c): "large pool hugepage=1 ... advised=<n> anon_huge_kb=<kB>"
+#   tickle@ntcopy   RMW_TICKLE_TAKE_COPY=nt     (subscriber: "take_copy=1 take_copies_streamed=<n>")
+#   tickle@revcopy  RMW_TICKLE_TAKE_COPY=rev    ("take_copy=2 ...")
+#   tickle@ntrev    RMW_TICKLE_TAKE_COPY=ntrev  ("take_copy=3 ...")
 #   PIN_CPUS=<list>  (diagnostic only, never a headline figure: docs/TESTING.md, no testbed tuning) every perf_test on
 #                 both Pis runs under `taskset -c <list>`; recorded in meta.txt (pin_cpus=) and in each .treat file.
 #   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
@@ -602,6 +610,7 @@ fi
 env_for() {
     echo "$BASE"
     echo "unset RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS" # tickle@block's treatment, set by that arm alone
+    echo "unset RMW_TICKLE_LARGE_HUGEPAGE RMW_TICKLE_TAKE_COPY" # the I4 BE candidates' switches, likewise
     if [ "$SAMEHOST" = 1 ]; then # every vendor at its shipped same-host default (header, SAMEHOST)
         echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
         echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
@@ -634,6 +643,10 @@ env_for() {
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@csum0) echo "unset TT_UDP_OFFLOAD; export TT_UDP_CSUM0=1 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nodirect) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export TT_RX_DIRECT=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@thp) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_TICKLE_LARGE_HUGEPAGE=1 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@ntcopy) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_TICKLE_TAKE_COPY=nt RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@revcopy) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_TICKLE_TAKE_COPY=rev RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@ntrev) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_TICKLE_TAKE_COPY=ntrev RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@block) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
             echo "export RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
@@ -657,7 +670,8 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | tickle@block | tickle@nodirect)
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | tickle@block | tickle@nodirect | \
+            tickle@thp | tickle@ntcopy | tickle@revcopy | tickle@ntrev)
             echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
