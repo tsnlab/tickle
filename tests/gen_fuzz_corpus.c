@@ -97,7 +97,9 @@ static int announce(int count) {
         topics[i].data_size = 4;
         topics[i].data_decode = decode_nothing;
         topics[i].data_free = free_nothing;
-        if (tt_Context_create_subscriber(&sender, &subs[i], &topics[i], "fuzz_sub", on_data) != tt_RET_OK) {
+        if (tt_Node_create_subscriber(tt_Context_default_node(&sender), &subs[i], &topics[i], "fuzz_sub",
+                                      &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data}, NULL,
+                                      0) != tt_RET_OK) {
             return -1;
         }
     }

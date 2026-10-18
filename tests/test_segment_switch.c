@@ -446,10 +446,14 @@ static void setup(bool with_c) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&node_b));
     if (with_c) {
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&node_c));
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node_c, &pub_c, &topic, "switch"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node_c), &pub_c, &topic, "switch",
+                                                          &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     }
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node_a, &pub_a, &topic, "switch"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&node_b, &sub_b, &topic, "switch", on_sample));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node_a), &pub_a, &topic, "switch",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&node_b), &sub_b, &topic, "switch", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
     for (int step = 0; step < 200; step++) {
         now_ns += STEP_NS;
         poll_all(with_c);
