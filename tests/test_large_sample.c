@@ -290,7 +290,16 @@ static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABL
 static struct tt_ReliableCache cache;
 // The 8192-bit window rmw_tickle gives a subscription whose type can be large (DESIGN.md section 8).
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
-static uint64_t tracking[tt_MAX_PEER_COUNT * WIDE_WORDS];
+// A durable backlog's reader holds each fragment of a small sample that fragments in a slot until its sample is in
+// order (tickle.h, reorder_storage): PAIR_REORDER gives the reader MIXED_REORDER_SLOTS of them.
+#define MIXED_REORDER_SLOTS 256
+#define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
+// The RELIABLE reader's storage: its wide window, then its reorder buffer when it has one
+// (tt_Subscriber_storage_size()).
+static uint64_t
+    sub_storage[(tt_MAX_PEER_COUNT * WIDE_WORDS) + (MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t))];
+// What the RELIABLE writer's creation carves; the pair's cache (above) replaces it.
+static uint64_t created_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
@@ -322,7 +331,14 @@ static void teardown_pair(void) {
 // A Publisher and a Subscriber of one topic, each in its own context with its own large buffers. RELIABLE modes give
 // the Publisher a cache and the Subscriber the wide window, and pre-match the reader on the writer with that window,
 // as its announce would.
-static void init_pair(uint32_t len, enum pair_mode mode) {
+// init_pair_with()'s flags: a TRANSIENT_LOCAL writer, a TRANSIENT_LOCAL reader, a reader with a reorder buffer.
+#define PAIR_DURABLE_WRITER 1U
+#define PAIR_DURABLE_READER 2U
+#define PAIR_REORDER 4U
+
+// `options`: the writer's (NULL: none).
+static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
+                           const struct tt_PublisherOptions* options) {
     teardown_pair();
     test_mock_reset();
     sample_len = len;
@@ -349,7 +365,24 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     range_call_count = 0;
     range_decline_at = UINT32_MAX;
     whole_encode_fails = false;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    // RELIABLE: KEEP_LAST or KEEP_ALL from the profile, and TRANSIENT_LOCAL when asked. White-box: the samples it
+    // retains are the pair's own cache, a ring of CACHE_DEPTH datagrams with no sample depth - which no history.depth
+    // gives (a KEEP_LAST depth would also bound the large ring) - so the created cache is replaced with it below.
+    bool reliable = mode != BEST_EFFORT;
+    struct tt_QosProfile pub_qos = TEST_QOS_UNRELIABLE;
+    if (reliable) {
+        pub_qos.reliability.kind = tt_QOS_RELIABILITY_RELIABLE;
+        pub_qos.history.kind = mode == RELIABLE_KEEP_ALL ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST;
+        pub_qos.history.depth = 1;
+    }
+    if ((flags & PAIR_DURABLE_WRITER) != 0) {
+        pub_qos.durability.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    }
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(created_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
+                                 tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME, &pub_qos,
+                                 options, pub_storage_size != 0 ? created_storage : NULL, pub_storage_size));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, test_acquire, test_release, &sender_alloc));
 
     init_bare_node(&receiver, RECEIVER_ID);
@@ -359,7 +392,25 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_decode_inplace = pair_struct_size > tt_MAX_SAMPLE_LENGTH ? checking_decode_inplace : NULL;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
+    // RELIABLE: the wide window, and the reorder buffer when asked; TRANSIENT_LOCAL when asked.
+    struct tt_QosProfile sub_qos = TEST_QOS_UNRELIABLE;
+    if (reliable) {
+        sub_qos = TEST_QOS_RELIABLE_READER;
+        sub_qos.reliability.tracking_words = WIDE_WORDS;
+        if ((flags & PAIR_REORDER) != 0) {
+            sub_qos.reliability.reorder_slots = MIXED_REORDER_SLOTS;
+        }
+    }
+    if ((flags & PAIR_DURABLE_READER) != 0) {
+        sub_qos.durability.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    }
+    size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, &sub_qos);
+    EXPECT_TRUE(sub_storage_size <= sizeof(sub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME,
+                                            &sub_qos, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            sub_storage_size != 0 ? sub_storage : NULL, sub_storage_size));
+    EXPECT_TRUE((flags & PAIR_REORDER) == 0 || sub.reorder_slot_bytes == MIXED_REORDER_SLOT_BYTES);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, test_acquire, test_release, &receiver_alloc));
 
     if (mode != BEST_EFFORT) {
@@ -371,12 +422,6 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
         cache.arena = cache_arena;
         cache.arena_size = (uint32_t)sizeof(cache_arena);
         pub.reliable_cache = &cache;
-        pub.reliable = true;
-        pub.keep_all = mode == RELIABLE_KEEP_ALL;
-        sub.reliable = true;
-        memset(tracking, 0, sizeof(tracking));
-        sub.tracking_bitmaps = tracking;
-        sub.tracking_words = WIDE_WORDS;
         struct tt_PeerAck* ack = claim_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
         EXPECT_TRUE(ack != NULL);
         if (ack != NULL) {
@@ -390,6 +435,10 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
         (void)upsert_peer(pub.peers, (uint8_t)(100U + i), 0x0a000100U + i, PORT);
     }
     pair_up = true;
+}
+
+static void init_pair(uint32_t len, enum pair_mode mode) {
+    init_pair_with(len, mode, 0, NULL);
 }
 
 // --- the link: a queue of datagrams both ways, with loss
@@ -727,14 +776,19 @@ static void test_a_fixed_size_type_above_a_sample_is_a_large_topic(void) {
     copying.data_decode_inplace = NULL;
     static struct tt_Subscriber refused;
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
-                  tt_Context_create_subscriber(&receiver, &refused, &copying, "copying", on_data));
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &refused, &copying, "copying",
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            NULL, 0));
     // Nor is any struct above the largest sample core can carry.
     struct tt_TypeSupport too_large = sender_topic;
     too_large.data_size = 1446U + (1452U * (tt_LARGE_MAX_FRAGMENTS - 1U)) + 1U;
     static struct tt_Publisher refused_pub;
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_create_publisher(&sender, &refused_pub, &too_large, "too_large"));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
+                  tt_Node_create_publisher(tt_Context_default_node(&sender), &refused_pub, &too_large, "too_large",
+                                           &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     too_large.data_size--;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &refused_pub, &too_large, "largest"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &refused_pub, &too_large,
+                                                      "largest", &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     pair_struct_size = 8;
 }
 
@@ -938,8 +992,7 @@ static void test_a_durable_backlog_of_large_samples_across_2_32(void) {
     // the retained run - small cache and large records - through 2^32 (large_send_backlog_before()). The control is
     // the same from seq_no 1.
     for (int control = 0; control < 2; control++) {
-        init_pair(ONE_MB, RELIABLE_KEEP_LAST);
-        pub.durable = true;
+        init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER | PAIR_DURABLE_READER, NULL);
         sim_start(0);
         uint32_t first = control != 0 ? 1U : 0U - (2U * tt_sample_datagrams(ONE_MB));
         pub.seq_no = first - 1U;
@@ -949,7 +1002,6 @@ static void test_a_durable_backlog_of_large_samples_across_2_32(void) {
             EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
             sim_head = sim_tail; // nobody heard it
         }
-        sub.durable = true;
         struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
         // The initial Heartbeat first, so the reader's baseline is the writer's oldest before any backlog arrives. A
         // match sends it after the backlog, which test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1()
@@ -1525,10 +1577,10 @@ static void test_large_in_flight_answers_and_wakes_once(void) {
     // callback fires exactly once, from the send's own resumption, when the last of them has gone - KEEP_LAST, which
     // never fired it before. A Publisher that did not ask is not called (the control): the callback is the answer to
     // the question, not a new event every large send raises. Mutants: the notify removed (0 calls), or not cleared (2).
-    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
+    init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, 0,
+                   &(struct tt_PublisherOptions) {.writable_callback = count_idle_callback});
     sim_start(0);
     idle_callbacks = 0;
-    pub.writable_callback = count_idle_callback;
     sim_room_per_step = 64;
     sim_acting = SENDER_ID;
     test_mock_nonblocking_room = 64;
@@ -1562,7 +1614,6 @@ static void test_large_in_flight_answers_and_wakes_once(void) {
     sim_settle(3, tt_SECOND);
     EXPECT_EQ_INT(3, delivered_count);
     EXPECT_EQ_INT(1, idle_callbacks);
-    pub.writable_callback = NULL;
 }
 
 // --- L1.7: lending -------------------------------------------------------------------------------------------------
@@ -1615,8 +1666,7 @@ static void test_a_volatile_writer_hands_acknowledged_buffers_back(void) {
     EXPECT_EQ_U32(0, sender_alloc.live);
     EXPECT_EQ_U32(0, pub.large_count);
 
-    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
-    pub.durable = true;
+    init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER, NULL);
     sim_start(0);
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
     sim_settle(1, tt_SECOND);
@@ -1628,14 +1678,12 @@ static void test_a_volatile_writer_hands_acknowledged_buffers_back(void) {
 }
 
 static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(void) {
-    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
-    pub.durable = true;
+    init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER | PAIR_DURABLE_READER, NULL);
     sim_start(0);
     sim_acting = SENDER_ID;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
     sim_head = sim_tail; // nobody heard it the first time
     EXPECT_EQ_INT(0, delivered_count);
-    sub.durable = true;
     struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
     deliver_durability_backlog(&sender, &pub, &late);
     EXPECT_EQ_U32(tt_sample_datagrams(ONE_MB), sim_tail - sim_head);
@@ -1655,8 +1703,7 @@ static void test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1(voi
     static const uint32_t sizes[] = {65508, ONE_MB};
     for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
         for (int control = 1; control >= 0; control--) {
-            init_pair(sizes[s], RELIABLE_KEEP_LAST);
-            pub.durable = true;
+            init_pair_with(sizes[s], RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER | PAIR_DURABLE_READER, NULL);
             sim_start(0);
             pub.seq_no = 100000U - 1U;
             sim_acting = SENDER_ID;
@@ -1665,7 +1712,6 @@ static void test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1(voi
                 EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
                 sim_head = sim_tail; // nobody heard it
             }
-            sub.durable = true;
             struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
             if (control != 0) {
                 send_initial_heartbeat(&sender, &pub, &late);
@@ -1704,11 +1750,6 @@ static void test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1(voi
 static struct tt_ReliableCacheIndex mixed_index[MIXED_RING];
 static uint8_t mixed_arena[tt_RELIABLE_CACHE_ARENA_BYTES(32, tt_RELIABLE_RECORD_BYTES(1472))];
 static struct tt_ReliableCache mixed_cache;
-// The reader's reorder buffer, which a RELIABLE Subscriber of a topic whose small samples fragment must have (tickle.h,
-// reorder_storage): each fragment of SMALL_FRAG is held in a slot until its sample is in order.
-#define MIXED_REORDER_SLOTS 256
-#define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
-static uint64_t mixed_reorder[MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 #define SMALL_ONE 1000U    // one datagram, one seq_no
 #define SMALL_FRAG 5000U   // a fragmented small sample: a seq_no per datagram
@@ -1775,8 +1816,7 @@ static void unmatch_reader(void) {
 // A durable writer of `mode` (KEEP_LAST `depth`) with a cache the whole of either mix fits, and a reader with a reorder
 // buffer, matched as init_pair() matches it.
 static void mixed_pair(uint32_t first_size, enum pair_mode mode, uint16_t depth) {
-    init_pair(first_size, mode);
-    pub.durable = true;
+    init_pair_with(first_size, mode, PAIR_DURABLE_WRITER | PAIR_DURABLE_READER | PAIR_REORDER, NULL);
     memset(mixed_index, 0, sizeof(mixed_index));
     memset(&mixed_cache, 0, sizeof(mixed_cache));
     mixed_cache.index = mixed_index;
@@ -1786,11 +1826,6 @@ static void mixed_pair(uint32_t first_size, enum pair_mode mode, uint16_t depth)
     mixed_cache.arena_size = (uint32_t)sizeof(mixed_arena);
     mixed_cache.sample_depth = mode == RELIABLE_KEEP_LAST ? depth : 0;
     pub.reliable_cache = &mixed_cache;
-    memset(mixed_reorder, 0, sizeof(mixed_reorder));
-    sub.reorder_storage = mixed_reorder;
-    sub.reorder_slots = MIXED_REORDER_SLOTS;
-    sub.reorder_slot_bytes = (uint16_t)MIXED_REORDER_SLOT_BYTES;
-    sub.durable = true; // what its announce will say
 }
 
 static void mixed_backlog(const char* mix, const uint32_t* sizes, int count, enum pair_mode mode, uint16_t depth,
