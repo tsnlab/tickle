@@ -60,6 +60,18 @@ bool rmw_event_type_is_supported(rmw_event_type_t event_type) {
     }
 }
 
+uint64_t rmw_tickle_deadline_check(uint64_t now, uint64_t period_ns, uint64_t last_activity, uint64_t* counted_until,
+                                   uint64_t* missed) {
+    uint64_t from = last_activity > *counted_until ? last_activity : *counted_until;
+    *missed = 0;
+    if (now >= from && now - from >= period_ns) {
+        *missed = (now - from) / period_ns;
+        from += *missed * period_ns;
+        *counted_until = from;
+    }
+    return from + period_ns;
+}
+
 // Fills a plain rmw_tickle_event_status_t-backed status (offered/requested deadline missed,
 // liveliness lost - all three share the exact same {total_count, total_count_change} shape).
 static void take_simple_status(rmw_tickle_event_status_t* status, int32_t* total_count, int32_t* total_count_change) {

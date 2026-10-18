@@ -514,21 +514,24 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     TT_TRACE(tt_TRACE_SIGNALED);
 }
 
-// QoS roadmap #2 (DEADLINE) - see rmw_publisher.c's own check_publisher_deadline() doc comment,
-// same reasoning/threading, for a Subscription's REQUESTED_DEADLINE_MISSED instead.
+// QoS roadmap #2 (DEADLINE), QoS plan D4 - see rmw_publisher.c's own check_publisher_deadline() doc comment, same
+// reasoning/threading, for a Subscription's REQUESTED_DEADLINE_MISSED: the activity is a sample received.
 static void check_subscription_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
-    if (time - sub_impl->last_activity_time >= sub_impl->deadline_period_ns) {
-        atomic_fetch_add(&sub_impl->deadline_missed.total_count, 1);
-        atomic_fetch_add(&sub_impl->deadline_missed.unread_count, 1);
-        wake_wait_cond(sub_impl->node->context_impl);                            // see its own doc comment
-        rmw_tickle_callback_slot_notify(&sub_impl->deadline_missed.callback, 1); // (g2)
+    uint64_t missed = 0;
+    uint64_t next = rmw_tickle_deadline_check(time, sub_impl->deadline_period_ns, sub_impl->last_activity_time,
+                                              &sub_impl->deadline_counted_until, &missed);
+    if (missed > 0) {
+        atomic_fetch_add(&sub_impl->deadline_missed.total_count, (int)missed);
+        atomic_fetch_add(&sub_impl->deadline_missed.unread_count, (int)missed);
+        wake_wait_cond(sub_impl->node->context_impl);                                         // see its own doc comment
+        rmw_tickle_callback_slot_notify(&sub_impl->deadline_missed.callback, (size_t)missed); // (g2)
     }
     // Deadline monitoring simply stops here on a reschedule failure - see rmw_publisher.c's own
     // check_publisher_deadline() doc comment on this same pattern.
-    (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context, time + sub_impl->deadline_period_ns,
-                              check_subscription_deadline, sub_impl);
+    (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context, next, check_subscription_deadline,
+                              sub_impl);
 }
 
 // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED: "how many Publishers on my topic are
@@ -947,7 +950,8 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         tt_Context_lock(&node_impl->context_impl->tickle_context);
         // A failure here just leaves deadline monitoring inactive for this Subscription - see
         // rmw_publisher.c's own check_publisher_deadline() doc comment on this same pattern.
-        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context, tt_get_ns() + sub_impl->deadline_period_ns,
+        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context,
+                                  sub_impl->last_activity_time + sub_impl->deadline_period_ns,
                                   check_subscription_deadline, sub_impl);
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
     }

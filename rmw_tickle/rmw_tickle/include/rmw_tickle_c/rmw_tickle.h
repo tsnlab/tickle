@@ -499,6 +499,14 @@ typedef struct rmw_tickle_event_status_t {
     rmw_tickle_callback_slot_t callback; // (g2) rmw_event_set_callback(); for LIVELINESS_CHANGED, the `alive` one's
 } rmw_tickle_event_status_t;
 
+// DEADLINE (QoS plan D4): one scheduled check of an endpoint's deadline, at `now`. A period is missed when it passes
+// with no activity: the periods are laid from the later of the last activity and the end of the last period already
+// counted (`*counted_until`), so they re-arm on each sample without a scheduler call per sample, and a long silence
+// counts one per period. Sets `*missed` to the periods missed by `now` and returns when the next check is due -
+// computed from the stored times, never from `now`, so a late check does not drift the phase.
+uint64_t rmw_tickle_deadline_check(uint64_t now, uint64_t period_ns, uint64_t last_activity, uint64_t* counted_until,
+                                   uint64_t* missed);
+
 // RMW_EVENT_LIVELINESS_CHANGED's own status (rmw_subscription.c) - two fields wider than plain
 // rmw_tickle_event_status_t above: alive_count/not_alive_count are live snapshots, not deltas.
 typedef struct rmw_tickle_liveliness_changed_status_t {
@@ -818,6 +826,10 @@ typedef struct rmw_tickle_publisher_t {
     // KEEP_ALL Publisher, which core already refuses while a large send is in progress, and for a type that can never
     // be large.
     uint64_t large_block_ns;
+
+    // DEADLINE (QoS plan D4): the end of the last missed period counted, rmw_tickle_deadline_check()'s; poll thread
+    // only. Last in the struct so that the fields the per-sample path reads keep their offsets.
+    uint64_t deadline_counted_until;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -1124,6 +1136,9 @@ typedef struct rmw_tickle_subscriber_t {
     // Counted under queue_mutex, read by tests and the bench: loans read where they arrived, loans of a decoded shell.
     uint64_t loans_in_place;
     uint64_t loans_copied;
+
+    // DEADLINE (QoS plan D4): as rmw_tickle_publisher_t.deadline_counted_until.
+    uint64_t deadline_counted_until;
 } rmw_tickle_subscriber_t;
 
 // The largest ROS_DOMAIN_ID rmw_tickle accepts: the DDS limit, which also keeps _tt_CONTEXT_PORT + id in range.

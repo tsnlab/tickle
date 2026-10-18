@@ -45,20 +45,20 @@
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-// QoS roadmap #2 (DEADLINE) - runs once per pub_impl->deadline_period_ns (rescheduled
-// unconditionally every time, a steady period, matching DDS's own "one miss per elapsed period
-// with no write" semantics), checking whether rmw_publish() updated last_activity_time since the
-// last check. Fires from inside tt_Context_poll() - poll_thread already holds context_impl->
-// the node lock around that whole call (rmw_tickle_context_impl_t's own doc comment) - so last_
-// activity_time is safe to read here without a separate lock, same as rmw_publish() writing it
-// under that same lock.
+// QoS roadmap #2 (DEADLINE), QoS plan D4 - an OFFERED_DEADLINE_MISSED per period that passes with no publish, by
+// rmw_tickle_deadline_check(): the check re-arms at the last publish + P (or at the end of the last missed period), so
+// a gap of more than P is caught at any phase. Fires from inside tt_Context_poll() under the node lock, the lock
+// rmw_publish() writes last_activity_time under, so no other lock is needed.
 static void check_publisher_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
-    if (time - pub_impl->last_activity_time >= pub_impl->deadline_period_ns) {
-        atomic_fetch_add(&pub_impl->deadline_missed.total_count, 1);
-        atomic_fetch_add(&pub_impl->deadline_missed.unread_count, 1);
-        rmw_tickle_callback_slot_notify(&pub_impl->deadline_missed.callback, 1); // (g2)
+    uint64_t missed = 0;
+    uint64_t next = rmw_tickle_deadline_check(time, pub_impl->deadline_period_ns, pub_impl->last_activity_time,
+                                              &pub_impl->deadline_counted_until, &missed);
+    if (missed > 0) {
+        atomic_fetch_add(&pub_impl->deadline_missed.total_count, (int)missed);
+        atomic_fetch_add(&pub_impl->deadline_missed.unread_count, (int)missed);
+        rmw_tickle_callback_slot_notify(&pub_impl->deadline_missed.callback, (size_t)missed); // (g2)
         // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
         // wait_cond subscriber_callback() (rmw_subscription.c) already broadcasts on for a newly
         // queued message, for the identical reason (rmw_tickle_context_impl_t's own doc comment,
@@ -72,8 +72,7 @@ static void check_publisher_deadline(struct tt_Context* node, uint64_t time, voi
     // Deadline monitoring simply stops here on a reschedule failure (tt_MAX_SCHEDULER_LENGTH
     // exhausted) - no logging facility in this package to report it through, and no return path
     // out of a scheduled void callback anyway.
-    (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context, time + pub_impl->deadline_period_ns,
-                              check_publisher_deadline, pub_impl);
+    (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context, next, check_publisher_deadline, pub_impl);
 }
 
 // Milestone 31/28(a) observability follow-on - how often check_publisher_qos_incompatible() below
@@ -1191,8 +1190,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         tt_Context_lock(&node_impl->context_impl->tickle_context);
         // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring
         // inactive for this Publisher - no logging facility in this package to report it through.
-        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context, tt_get_ns() + pub_impl->deadline_period_ns,
-                                  check_publisher_deadline, pub_impl);
+        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context,
+                                  pub_impl->last_activity_time + pub_impl->deadline_period_ns, check_publisher_deadline,
+                                  pub_impl);
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
     }
 
