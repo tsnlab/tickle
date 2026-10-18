@@ -27,6 +27,13 @@
 # byte-identical the flag never arrived, and an arm that ran the same binary twice would "show no difference" for the
 # wrong reason.
 # Usage: s6_witness_check.sh [SHA] [REPS]     Output: $OUT (default /tmp/s6_witness.txt)
+#
+# S6WIT_PHASE (2026-10-18, ROADMAP 0b): s6_transport_cells.sh interleaves the frameworks rep by rep, so it cannot hand
+# this script all of TickLE's reps in one call. It runs it once with S6WIT_PHASE=build (check out, build and verify both
+# arms and the identical-binary check; no rep, no verdict), then once per rep with S6WIT_PHASE=rep, REPS=1 and
+# S6WIT_SHA_ON/S6WIT_SHA_OFF set to the client sha256s the build printed ("built: ON=<x> OFF=<y>"). A rep call builds
+# nothing, refuses unless both saved clients still have those hashes, and prints no verdict (the caller reads every
+# rep together). Unset or "all": build and run every rep, as before.
 set -uo pipefail
 # shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
 # shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
@@ -80,6 +87,17 @@ layout_cflags_default
 # server is perf's child (found by /proc exe), and is what is signalled and snapshotted, and perf is waited for so its
 # counts are written.
 INSN_COUNT=${INSN_COUNT:-1}
+PHASE=${S6WIT_PHASE:-all}
+case "$PHASE" in
+all | build) ;;
+rep)
+    case "${S6WIT_SHA_ON:-}:${S6WIT_SHA_OFF:-}" in
+    [0-9a-f]*:[0-9a-f]*) ;;
+    *) echo "S6WIT_PHASE=rep needs S6WIT_SHA_ON and S6WIT_SHA_OFF (the hashes the build phase printed)" >&2; exit 2 ;;
+    esac
+    ;;
+*) echo "S6WIT_PHASE must be all, build or rep, not '$PHASE'" >&2; exit 2 ;;
+esac
 case "$INSN_COUNT" in 0 | 1) ;; *) echo "INSN_COUNT must be 0 or 1, not '$INSN_COUNT'" >&2; exit 2 ;; esac
 SRV_INSN=/tmp/s6wit_server.insn CLI_INSN=/tmp/s6wit_client.insn
 SRV_PRE="" CLI_PRE=""
@@ -143,9 +161,11 @@ trap kill_server EXIT
 # Which BenchStats.h the arm builds with is decided by instrument_header.sh, the rule rig_preflight.sh also applies:
 # the driver's copy only when it is the arm's or a later version of it. Overwriting a NEWER header with the driver's
 # broke every build of ab_drain's arm C on 2026-10-07 (its bench calls a setter with an argument the old header lacks).
-INSTRUMENT=$("$REPO/examples/perf_hil/experiments/instrument_header.sh" "$REPO" "$SHA") ||
-    { note "FATAL instrument header: $INSTRUMENT"; exit 1; }
-say "  instrument: BenchStats.h = $INSTRUMENT"
+if [ "$PHASE" != rep ]; then
+    INSTRUMENT=$("$REPO/examples/perf_hil/experiments/instrument_header.sh" "$REPO" "$SHA") ||
+        { note "FATAL instrument header: $INSTRUMENT"; exit 1; }
+    say "  instrument: BenchStats.h = $INSTRUMENT"
+fi
 build_arm() { # build_arm <arm> <extra-cflags>; prints the client's sha256 and nothing else on stdout
     local name=$1 extra out words verified
     # Whitespace-normalised, so an arm with no flags passes '' (the plain prefix) and not ' ' (a prefix named _x_).
@@ -260,13 +280,28 @@ child_exe ${srv_pid:-0} '$SAVE/*/server*'" </dev/null)
     say "arm=$name PROC: framework=tickle role=server ${snap:-state=gone}"
 }
 
-sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1
-sha_off=$(build_arm OFF "$BUILD_FLAGS $OFF_FLAG") || exit 1
-say "  built: ON=$sha_on OFF=$sha_off"
-if [ "$sha_on" = "$sha_off" ]; then
-    say "FATAL the OFF arm's binary is identical to ON - '$OFF_FLAG' never reached the compiler."
-    say "  Refusing to report: an arm that ran the same binary twice shows no difference for the wrong reason."
-    exit 1
+if [ "$PHASE" = rep ]; then
+    # The binaries the build phase verified must still be the ones on the host: a rep that ran anything else would
+    # carry the build phase's identity without having earned it.
+    got=$(sh_ "$HOST" "sha256sum $SAVE/ON/client $SAVE/OFF/client 2>&1 | cut -c1-16 | tr '\n' ' '" </dev/null)
+    if [ "$got" != "$S6WIT_SHA_ON $S6WIT_SHA_OFF " ]; then
+        say "FATAL the saved clients are not the ones the build phase verified: want ON=$S6WIT_SHA_ON OFF=$S6WIT_SHA_OFF, got '$got'"
+        exit 1
+    fi
+    say "  rep phase: saved clients ON=$S6WIT_SHA_ON OFF=$S6WIT_SHA_OFF, as built"
+else
+    sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1
+    sha_off=$(build_arm OFF "$BUILD_FLAGS $OFF_FLAG") || exit 1
+    say "  built: ON=$sha_on OFF=$sha_off"
+    if [ "$sha_on" = "$sha_off" ]; then
+        say "FATAL the OFF arm's binary is identical to ON - '$OFF_FLAG' never reached the compiler."
+        say "  Refusing to report: an arm that ran the same binary twice shows no difference for the wrong reason."
+        exit 1
+    fi
+    if [ "$PHASE" = build ]; then
+        say "=== build phase done $(date -Is) ==="
+        exit 0
+    fi
 fi
 
 for r in $(seq 1 "$REPS"); do
@@ -274,6 +309,8 @@ for r in $(seq 1 "$REPS"); do
     for arm in ON OFF; do run_one "$arm"; done
 done
 say "=== done $(date -Is) ==="
+# A rep call's caller reads every rep together; a verdict over this one rep could only say VOID.
+[ "$PHASE" = rep ] && exit 0
 
 python3 - "$OUT" <<'PYEOF' | tee -a "$OUT"
 import re, sys, collections, statistics as st

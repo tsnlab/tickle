@@ -26,7 +26,10 @@
 #   harnesses' PI_HOME). Done in the remote command's private mount namespace: a tmpfs over /home holding a bind of
 #   every entry of the real /home plus <name> -> that host's stand-in home. scp maps the path back. Default: unset,
 #   HOME is the stand-in directory itself.
+#   DRYRUN_PATH=<dir>[:<dir>...] goes in front of the remote commands' PATH (2026-10-18): the Pis' CycloneDDS harness
+#   finds idlc at /opt/ros/rolling/bin, this PC's is in /opt/ros/lyrical/bin, which the plain PATH lacks.
 set -uo pipefail
+case "${DRYRUN_PATH:-}" in *[!A-Za-z0-9_./:-]*) echo "DRYRUN_PATH may hold only [A-Za-z0-9_./:-]" >&2; exit 2 ;; esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 [ "$#" -gt 0 ] || { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -132,7 +135,7 @@ mkdir -p $PIH && mount --bind \"\$home\" $PIH || exit 255
 fi
 sudo -n ip netns exec "\$ns" sh -c "\$pre"'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
     setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \\
-    env HOME="\$home" PYTHONUSERBASE="$HOME/.local" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
+    env HOME="\$home" PYTHONUSERBASE="$HOME/.local" PATH="${DRYRUN_PATH:+$DRYRUN_PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
 rc=\$?
 drain
 exit \$rc

@@ -59,6 +59,10 @@
 # Which depth is fair is the user's decision (ROADMAP); whatever is chosen, every RESULT line must echo
 # history_arg=<what was asked>, and a repetition whose client or server does not is not recorded.
 #
+# INTERLEAVED (2026-10-18): every framework is built once up front, then rep r runs each framework once, in an order
+# rotated by r-1 (A B C, B C A, C A B), so a drift over the session lands on every framework alike. Each turn prints
+# "--- rep <r>/<REPS> order <k>/<n> framework=<fw> ---". Until then each framework's reps ran back to back.
+#
 # Usage: s6_transport_cells.sh            Output: $OUT (default ~/rig_results_safe/s6_transport_cells.txt)
 #   FRAMEWORKS="tickle fastdds"  REPS=3  DUR=5  SCEN=reliable_throughput  SIZE=p1  SHA=<sha>  BE_HISTORY=<depth>
 #
@@ -247,24 +251,52 @@ say "    INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the tickle cell's
 fi
 
 # ---------------------------------------------------------------- tickle: delegate, do not re-implement
-run_tickle_cell() {
-    local sub="$OUT.tickle"
+# INTERLEAVED (2026-10-18, ROADMAP 0b): every framework is set up once (built, checked) before the first rep, and then
+# each rep runs every framework once, the order rotating by one per rep (A B C, B C A, C A B), as campaign_sweep.sh does.
+# Run back to back, a framework's reps took whatever drift the session had (temperature, other load, page cache) on
+# their own. So s6_witness_check.sh is called once to build (S6WIT_PHASE=build) and once per rep (S6WIT_PHASE=rep); each
+# call's output is appended to $OUT.tickle, which therefore holds what the one call used to write, rep by rep.
+tickle_witness() { # tickle_witness <phase> <out> [S6WIT_SHA_ON=.. S6WIT_SHA_OFF=..]
+    local phase=$1 out=$2
+    shift 2
+    env "$@" S6WIT_PHASE="$phase" OUT="$out" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" \
+        BUILD_FLAGS="$BUILD_FLAGS" HISTORY_ARGS="$HISTORY_ARGS" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" INSN_COUNT="$INSN_COUNT" \
+        TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
+        TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
+        "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" 1 >/dev/null 2>&1
+}
+
+TICKLE_SHA_ON="" TICKLE_SHA_OFF=""
+setup_tickle() {
+    local sub="$OUT.tickle.build" rc=0 built
+    : >"$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
-    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
-         HISTORY_ARGS="$HISTORY_ARGS" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" INSN_COUNT="$INSN_COUNT" \
-         TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
-         TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
-         "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
-        say "  tickle cell FAILED to run - see $sub"
+    tickle_witness build "$sub" || rc=$?
+    cat "$sub" >>"$OUT.tickle" 2>/dev/null
+    grep -E '^(FATAL|  arm )' "$sub" 2>/dev/null | sed 's/^/  /' | tee -a "$OUT"
+    built=$(grep -m1 -E '^  built: ON=[0-9a-f]+ OFF=[0-9a-f]+$' "$sub" 2>/dev/null)
+    if [ "$rc" != 0 ] || [ -z "$built" ]; then
+        say "  tickle cell FAILED to build (exit $rc) - see $sub. No tickle rep will run."
+        return 1
     fi
+    TICKLE_SHA_ON=$(sed -E 's/.*ON=([0-9a-f]+).*/\1/' <<<"$built")
+    TICKLE_SHA_OFF=$(sed -E 's/.*OFF=([0-9a-f]+).*/\1/' <<<"$built")
+    say "  tickle built: ON=$TICKLE_SHA_ON OFF=$TICKLE_SHA_OFF"
+}
+
+rep_tickle() { # rep_tickle <rep>
+    local sub="$OUT.tickle.rep$1" rc=0
+    tickle_witness rep "$sub" S6WIT_SHA_ON="$TICKLE_SHA_ON" S6WIT_SHA_OFF="$TICKLE_SHA_OFF" || rc=$?
+    cat "$sub" >>"$OUT.tickle" 2>/dev/null
+    [ "$rc" = 0 ] || say "  tickle rep $1 FAILED to run (exit $rc) - see $sub"
     if [ ! -s "$sub" ]; then
-        say "  tickle cell produced no output at $sub. That is 'could not look', not 'no difference'."
+        say "  tickle rep $1 produced no output at $sub. That is 'could not look', not 'no difference'."
         return 0
     fi
     # The history identity, checked here for TickLE as record_rep() checks it for the vendors: a repetition whose
     # client or server line does not echo it is dropped whole, before anything reads it.
     if [ -n "$WANT_HISTORY" ] && grep -E '^arm=\S+ RESULT:' "$sub" | grep -vqF " $WANT_HISTORY "; then
-        say "  tickle HISTORY IDENTITY FAILED: a RESULT line in $sub does not echo $WANT_HISTORY. The cell is not recorded."
+        say "  tickle HISTORY IDENTITY FAILED: a RESULT line in $sub does not echo $WANT_HISTORY. This rep is not recorded."
         return 0
     fi
     grep -E '^(arm=|FATAL|  arm )' "$sub" | sed 's/^/  /' | tee -a "$OUT" >/dev/null
@@ -330,14 +362,14 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     esac
 }
 
-run_fastdds_cell() {
+setup_fastdds() {
     say "### fastdds cell: ON=fastdds_shm_and_eth0.xml  OFF=fastdds_eth0_only.xml (one binary, profile is the arm) ==="
-    fdds_build || return 1
-    for r in $(seq 1 "$REPS"); do
-        say "--- fastdds rep $r/$REPS $(date -Is) ---"
-        fdds_run ON  fastdds_shm_and_eth0.xml
-        fdds_run OFF fastdds_eth0_only.xml
-    done
+    fdds_build
+}
+
+rep_fastdds() {
+    fdds_run ON fastdds_shm_and_eth0.xml
+    fdds_run OFF fastdds_eth0_only.xml
 }
 
 [ "$ANALYSE_ONLY" = 1 ] && FRAMEWORKS=""   # analyse an existing $OUT: run no cells
@@ -457,7 +489,7 @@ else:
 PYEOF
 }
 
-run_cyclonedds_cell() {
+setup_cyclonedds() {
     say "### cyclonedds cell: ON=SharedMemory+RouDi  OFF=the campaign's own URI (same binary, URI is the arm) ==="
     local out
     out=$(sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$SHA")
@@ -470,28 +502,87 @@ sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
     cdds_paths || return 1
     say "  NOTE: CycloneDDS prints no per-run identity field, unlike FastDDS's transport_profile=. This arm's"
     say "        identity is the daemon bracket - ready before, alive after - and is weaker for it."
-    for r in $(seq 1 "$REPS"); do
-        say "--- cyclonedds rep $r/$REPS $(date -Is) ---"
-        if roudi_on; then
-            local r0 r1
-            r0=$(proc_snap "$roudi_pid" '*/iox-roudi')
-            if cdds_run ON "$CDDS_URI_ON"; then
-                r1=$(proc_snap "$roudi_pid" '*/iox-roudi')
-                say "arm=ON ROUDI: framework=cyclonedds role=roudi $(roudi_fields "$r0" "$r1")"
-            fi
-        fi
-        roudi_off
-        cdds_run OFF "$CDDS_URI_OFF"
-    done
 }
 
+# RouDi still starts and stops inside each rep: its CPU is bracketed per rep, and the OFF arm must run without it.
+rep_cyclonedds() {
+    if roudi_on; then
+        local r0 r1
+        r0=$(proc_snap "$roudi_pid" '*/iox-roudi')
+        if cdds_run ON "$CDDS_URI_ON"; then
+            r1=$(proc_snap "$roudi_pid" '*/iox-roudi')
+            say "arm=ON ROUDI: framework=cyclonedds role=roudi $(roudi_fields "$r0" "$r1")"
+        fi
+    fi
+    roudi_off
+    cdds_run OFF "$CDDS_URI_OFF"
+}
+
+# Between two frameworks' turns, no process of any cell may still be running on $HOST: a server that outlived its rep
+# would take CPU from the next framework's. Identified by /proc/PID/exe - the saved TickLE binaries, the vendors' bench
+# binaries of this cell, iox-roudi - and only in the scanning shell's network namespace (all of the Pi's; on a dry run,
+# the stand-in host's, so another user's process on the PC is never touched). A leftover is named, then stopped by the
+# PID whose exe was just read. The scan ends with "scan=ok"; without it the scan could not look, and says so.
+check_leftovers() { # check_leftovers <label>
+    local out
+    out=$(sh_ "$HOST" "me=\$(readlink /proc/self/ns/net)
+for e in /proc/[0-9]*/exe; do
+    x=\$(readlink \$e 2>/dev/null) || continue
+    case \"\$x\" in
+    /tmp/s6wit/*/server | /tmp/s6wit/*/client | */perf_hil/fastdds/${SCEN}_${SIZE}/server | */perf_hil/fastdds/${SCEN}_${SIZE}/client | \
+    */perf_hil/cyclonedds/${SCEN}_${SIZE}/server | */perf_hil/cyclonedds/${SCEN}_${SIZE}/client | */iox-roudi) ;;
+    *) continue ;;
+    esac
+    p=\${e#/proc/}; p=\${p%/exe}
+    [ \"\$(readlink /proc/\$p/ns/net 2>/dev/null)\" = \"\$me\" ] || continue
+    echo \"LEFTOVER pid=\$p exe=\$x\"
+    [ \"\$(readlink /proc/\$p/exe 2>/dev/null)\" = \"\$x\" ] && kill -TERM \$p
+done
+echo scan=ok" </dev/null 2>&1)
+    case "$out" in
+    *scan=ok*) ;;
+    *) say "  leftovers before $1: the scan could not look ($(printf '%s' "$out" | tail -1))"; return 0 ;;
+    esac
+    if printf '%s\n' "$out" | grep -q '^LEFTOVER'; then
+        say "  leftovers before $1, stopped with TERM:"
+        printf '%s\n' "$out" | grep '^LEFTOVER' | sed 's/^/    /' | tee -a "$OUT"
+    else
+        say "  leftovers before $1: none"
+    fi
+}
+
+# Setup once per framework, TICKLE FIRST whatever FRAMEWORKS says: its build runs `git clean -fdqx` in the Pi's tree,
+# which would delete a vendor's binaries built before it. Built after it, as in the default order they always were, the
+# vendors' binaries stay until their last rep (a rep builds nothing). A framework whose setup failed runs no rep, and
+# every one of its turns says so.
+fws=()
+declare -A READY=()
 for fw in $FRAMEWORKS; do
     case $fw in
-    tickle)  run_tickle_cell ;;
-    fastdds) run_fastdds_cell ;;
-    cyclonedds) run_cyclonedds_cell ;;
+    tickle | fastdds | cyclonedds) fws+=("$fw") ;;
     *) say "### unknown framework '$fw' - ignored, and said so rather than passed over silently" ;;
     esac
+done
+for fw in tickle fastdds cyclonedds; do
+    case " ${fws[*]} " in *" $fw "*) ;; *) continue ;; esac
+    if "setup_$fw"; then READY[$fw]=1; else READY[$fw]=0; fi
+done
+# The reps, interleaved: rep r runs every framework once, the order rotated by r-1 (A B C, B C A, C A B, A B C, ...).
+# Each turn's header names the rep, the framework and its place in that rep's order - the treatment check that the
+# interleave happened, readable in $OUT without trusting this loop.
+[ "${#fws[@]}" -gt 0 ] && say "### interleaved reps: the framework order rotates by one per rep ==="
+for r in $(seq 1 "$REPS"); do
+    [ "${#fws[@]}" -gt 0 ] || break
+    for k in "${!fws[@]}"; do
+        fw=${fws[$(((k + r - 1) % ${#fws[@]}))]}
+        say "--- rep $r/$REPS order $((k + 1))/${#fws[@]} framework=$fw $(date -Is) ---"
+        if [ "${READY[$fw]}" != 1 ]; then
+            say "  $fw: SKIPPED, its setup failed above"
+            continue
+        fi
+        check_leftovers "$fw rep $r"
+        "rep_$fw" "$r"
+    done
 done
 [ "$ANALYSE_ONLY" = 1 ] || say "=== done $(date -Is) ==="
 
