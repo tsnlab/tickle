@@ -87,10 +87,8 @@ static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, str
     delivered[s - subs]++;
 }
 
-#define CACHE_DEPTH 64
-static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(64))];
-static struct tt_ReliableCache cache;
+#define CACHE_DEPTH 64 // samples retained: one datagram each
+static uint64_t pub_storage[(size_t)64U * 1024U / sizeof(uint64_t)];
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
@@ -224,26 +222,29 @@ int main(void) {
     sender_topic.data_size = sizeof(uint32_t);
     sender_topic.data_encode_size = u32_encode_size;
     sender_topic.data_encode = u32_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
-    cache.index = cache_index;
-    cache.capacity = CACHE_DEPTH;
-    cache.depth = CACHE_DEPTH;
-    cache.arena = cache_arena;
-    cache.arena_size = (uint32_t)sizeof(cache_arena);
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
+    sender_topic.max_encoded_size = sizeof(uint32_t);
+    const struct tt_QosProfile pub_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = CACHE_DEPTH},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, &pub_qos, NULL, pub_storage, pub_storage_size));
 
     init_bare_node(&receiver, RECEIVER_ID);
     receiver_topic.name = TOPIC_NAME;
     receiver_topic.data_size = sizeof(uint32_t);
     receiver_topic.data_decode = u32_decode;
     receiver_topic.data_free = free_nothing;
+    receiver_topic.max_encoded_size = sizeof(uint32_t);
+    struct tt_QosProfile sub_qos = TEST_QOS_RELIABLE_READER;
+    sub_qos.reliability.tracking_words = WORDS;
+    size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, &sub_qos);
+    EXPECT_TRUE(sub_storage_size <= sizeof(tracking[0]));
     for (int i = 0; i < READERS; i++) {
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Context_create_subscriber(&receiver, &subs[i], &receiver_topic, ENDPOINT_NAME, on_data));
-        subs[i].reliable = true;
-        subs[i].tracking_bitmaps = tracking[i];
-        subs[i].tracking_words = WORDS;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                     tt_Context_default_node(&receiver), &subs[i], &receiver_topic, ENDPOINT_NAME,
+                                     &sub_qos, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                     sub_storage_size != 0 ? tracking[i] : NULL, sub_storage_size));
     }
     test_mock_send_hook = sim_capture;
     sim_run_until(test_mock_now + tt_MILLISECOND); // whatever creation scheduled
