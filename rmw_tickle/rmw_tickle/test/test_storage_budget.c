@@ -205,7 +205,7 @@ static uint32_t keep_all_arena_with(rmw_tickle_publisher_payload_t* payload, boo
     assert(NULL != pub);
     const struct tt_ReliableCache* cache = ((const rmw_tickle_publisher_t*)pub->data)->reliable_cache;
     uint32_t arena = cache->arena_limit;
-    *depth = cache->depth - 1U; // the ring of a one-datagram type: depth + 1 samples (QoS redesign step 3)
+    *depth = cache->depth; // the ring of a one-datagram type: depth samples
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     return arena;
 }

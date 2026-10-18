@@ -513,7 +513,7 @@ static void check_rosout_shape(void) {
     assert(NULL != cache);
     printf("/rosout shape (unbounded type, depth 1000): index %u slots, arena %u of %u bytes reserved up front\n",
            (unsigned)cache->capacity, (unsigned)cache->arena_size, (unsigned)cache->arena_limit);
-    // (depth + 1) x 45 datagrams would be 45,045; what a 1 MiB arena can fill is 2 x 1001 + 1 MiB / 1,4xx.
+    // depth x 45 datagrams would be 45,000; what a 1 MiB arena can fill is 2 x 1001 + 1 MiB / 1,4xx.
     assert(cache->capacity < 3000U);
     assert(cache->arena_size < cache->arena_limit); // lazily: the first slice
     assert(cache->arena == pub_impl->arena_base);

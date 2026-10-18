@@ -52,9 +52,10 @@
 // is unreachable memory. See RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE's own comment for the coupling.
 #define EXPECTED_KEEP_ALL_DEPTH_DURABLE 8192
 #define EXPECTED_KEEP_ALL_DEPTH_VOLATILE 2048
-// The index ring of a one-datagram type: since core lays the cache out (QoS redesign step 3, 2026-10-18) it indexes
-// depth + 1 samples - one sample's slack, as the arena's (depth + 1) records - where rmw_tickle indexed depth.
-#define EXPECTED_KEEP_ALL_RING_VOLATILE (EXPECTED_KEEP_ALL_DEPTH_VOLATILE + 1)
+// The index ring of a one-datagram type: depth samples, as rmw_tickle indexed before core laid the cache out (QoS
+// redesign step 3). KEEP_ALL's count bound is the ring, and one more slot than the arena keeps made every refusal an
+// arena one, after encoding (2026-10-19).
+#define EXPECTED_KEEP_ALL_RING_VOLATILE EXPECTED_KEEP_ALL_DEPTH_VOLATILE
 
 // What a generated typesupport reports for a type the generator can bound. 76 is BenchData's own
 // figure (examples/perf_hil/tickle/common/p1/Bench.msg), i.e. a realistic fixed-layout telemetry type
@@ -236,7 +237,7 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(EXPECTED_KEEP_ALL_DEPTH_DURABLE + 1 == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_DEPTH_DURABLE == pub_impl->reliable_cache->capacity);
         assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }

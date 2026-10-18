@@ -826,8 +826,8 @@ static int32_t encode_range_with_psn(struct tt_Data* data, uint8_t* payload, uin
 //   - the record a sample reserves: the type's sizing bound (tt_TypeSupport.max_encoded_size, cdr_for_record());
 //   - the arena: history.bytes, the budget resolve_keep_last_budget_bytes() / resolve_keep_all_budget_bytes() give.
 //
-// Core counts the index ring the same way rmw_tickle did (datagrams, capped at what the arena can fill), plus one
-// sample's slack. The arena is still reserved lazily: see grow_reliable_cache().
+// Core counts the index ring the same way rmw_tickle did (datagrams, capped at what the arena can fill). The arena is
+// still reserved lazily: see grow_reliable_cache().
 
 // The largest CDR - rmw_tickle's per-message header included - whose cached record fits `record` bytes: what
 // tt_TypeSupport.max_encoded_size tells core, so it reserves per sample exactly what resolve_record_bytes() and

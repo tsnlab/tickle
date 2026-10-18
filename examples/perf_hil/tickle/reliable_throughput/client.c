@@ -549,7 +549,7 @@ static uint32_t keepall_bound_samples(const struct tt_Publisher* pub, const stru
 //
 // The depth is -K's, in the datagrams the hand-built cache counted before the QoS redesign (the same number for every
 // shape that fits one datagram); with -N it is -N's samples. Core sizes the retained samples from the profile: an
-// index slot per datagram of (depth + 1) samples and an arena of min((depth + 1) records, history.bytes). The bytes
+// index slot per datagram of depth samples and an arena of min((depth + 1) records, history.bytes). The bytes
 // are never below the arena this file used to declare for the run - only the part a smaller -K can use, and for
 // VOLATILE KEEP_ALL no more than the byte budget (-M), exactly as rmw_tickle sizes it. So a memory figure from this
 // scenario is still a property of the depth and the shape, not of libtickle; it is no longer one of MAX_RELIABLE_DEPTH,

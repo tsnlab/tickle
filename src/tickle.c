@@ -11604,7 +11604,7 @@ static uint64_t qos_from_field(uint64_t field_ns) {
 struct publisher_layout {
     bool cached;         // RELIABLE or TRANSIENT_LOCAL: the Publisher retains samples
     uint32_t record;     // arena bytes one sample of the largest size takes
-    uint16_t ring;       // index slots: datagrams, (depth + 1) of the largest sample's
+    uint16_t ring;       // index slots: datagrams, depth of the largest sample's
     uint32_t arena;      // history.bytes, never below one record and never above (depth + 1) records
     uint32_t depth_kept; // samples of the largest size the arena keeps: depth, or fewer when history.bytes caps it
     size_t total;        // bytes of caller storage, 0 when nothing is retained
@@ -11624,10 +11624,16 @@ static void publisher_layout_of(const struct tt_TypeSupport* type, const struct 
     uint64_t full = ((uint64_t)actual->history.depth + 1U) * layout->record;
     uint64_t arena = full < actual->history.bytes ? full : actual->history.bytes;
     layout->arena = (uint32_t)(arena > layout->record ? arena : layout->record);
-    uint64_t ring = ((uint64_t)actual->history.depth + 1U) * tt_sample_datagrams(max_cdr);
+    // depth samples' datagrams, as the hand-built caches before the QoS creation API had (rmw_tickle's
+    // resolve_ring_slots(), the rig benches' capacity = depth): KEEP_LAST evicts by count before it reserves
+    // (reliable_cache_admit_sample()), so depth - 1 samples and the new one are all the ring holds; KEEP_ALL's count
+    // bound is the ring (keep_all_bound()). One more sample's slots made that bound depth + 1 while the arena holds
+    // depth: every KEEP_ALL refusal then came from the arena, after the sample was encoded, instead of from the count
+    // before it - +1.0 to +1.4% instructions a sample on the rig's reliable_throughput cells (2026-10-19).
+    uint64_t ring = (uint64_t)actual->history.depth * tt_sample_datagrams(max_cdr);
     // No more slots than the arena can fill: per sample its first record and a short last one, plus one full
     // continuation per fragment payload the arena holds. Without the cap an unbounded type indexes every fragment of
-    // samples its arena can never keep - /rosout, depth 1000, would take 45,045 slots (1 MB) for the ~2,700 it can use.
+    // samples its arena can never keep - /rosout, depth 1000, would take 45,000 slots (1 MB) for the ~2,700 it can use.
     // rmw_tickle's rule (resolve_ring_slots(), 2026-09) until the creation moved into core.
     const uint64_t continuation =
         (uint64_t)tt_CONTROL_MAX_LENGTH -
