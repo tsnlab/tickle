@@ -215,6 +215,101 @@ uint32_t rmw_tickle_large_limit(const rmw_tickle_context_impl_t* context_impl) {
     return NULL != context_impl->large_pool ? context_impl->large_pool->limit : 0;
 }
 
+uint8_t rmw_tickle_take_copy_mode(void) {
+    const char* env = getenv("RMW_TICKLE_TAKE_COPY");
+    if (NULL == env) {
+        return RMW_TICKLE_TAKE_COPY_DECODE;
+    }
+    if (0 == strcmp(env, "nt")) {
+        return RMW_TICKLE_TAKE_COPY_NT;
+    }
+    if (0 == strcmp(env, "rev")) {
+        return RMW_TICKLE_TAKE_COPY_REV;
+    }
+    if (0 == strcmp(env, "ntrev")) {
+        return RMW_TICKLE_TAKE_COPY_NTREV;
+    }
+    return RMW_TICKLE_TAKE_COPY_DECODE;
+}
+
+// The block rmw_tickle_large_copy_out() walks backwards in ("rev"): large enough for the hardware prefetchers to follow
+// each block forwards, small against a 2 MB last-level cache.
+#define RMW_TICKLE_COPY_BLOCK (64U * 1024U)
+#define RMW_TICKLE_COPY_LINE 64U
+
+// `bytes` with ordinary loads and non-temporal stores, 64 at a time once dst is 64-byte aligned; the ragged ends with
+// memcpy(). Without a non-temporal store this compiler knows of, memcpy() throughout.
+static void copy_nt(uint8_t* dst, const uint8_t* src, size_t bytes) {
+#if defined(__x86_64__) || defined(__aarch64__)
+    size_t head = (RMW_TICKLE_COPY_LINE - ((uintptr_t)dst % RMW_TICKLE_COPY_LINE)) % RMW_TICKLE_COPY_LINE;
+    if (head > bytes) {
+        head = bytes;
+    }
+    memcpy(dst, src, head);
+    dst += head;
+    src += head;
+    bytes -= head;
+    size_t lines = bytes / RMW_TICKLE_COPY_LINE;
+    for (size_t i = 0; i < lines; i++) {
+#if defined(__x86_64__)
+        __asm__ volatile("movdqu (%1), %%xmm0\n\t"
+                         "movdqu 16(%1), %%xmm1\n\t"
+                         "movdqu 32(%1), %%xmm2\n\t"
+                         "movdqu 48(%1), %%xmm3\n\t"
+                         "movntdq %%xmm0, (%0)\n\t"
+                         "movntdq %%xmm1, 16(%0)\n\t"
+                         "movntdq %%xmm2, 32(%0)\n\t"
+                         "movntdq %%xmm3, 48(%0)\n\t"
+                         :
+                         : "r"(dst), "r"(src)
+                         : "xmm0", "xmm1", "xmm2", "xmm3", "memory");
+#else
+        __asm__ volatile("ldp q0, q1, [%1]\n\t"
+                         "ldp q2, q3, [%1, #32]\n\t"
+                         "stnp q0, q1, [%0]\n\t"
+                         "stnp q2, q3, [%0, #32]\n\t"
+                         :
+                         : "r"(dst), "r"(src)
+                         : "v0", "v1", "v2", "v3", "memory");
+#endif
+        dst += RMW_TICKLE_COPY_LINE;
+        src += RMW_TICKLE_COPY_LINE;
+    }
+    memcpy(dst, src, bytes % RMW_TICKLE_COPY_LINE);
+#if defined(__x86_64__)
+    __asm__ volatile("sfence" ::: "memory"); // non-temporal stores are weakly ordered: visible before the take returns
+#else
+    __asm__ volatile("dmb ishst" ::: "memory");
+#endif
+#else
+    memcpy(dst, src, bytes);
+#endif
+}
+
+static void copy_block(uint8_t* dst, const uint8_t* src, size_t bytes, bool streaming) {
+    if (streaming) {
+        copy_nt(dst, src, bytes);
+    } else {
+        memcpy(dst, src, bytes);
+    }
+}
+
+void rmw_tickle_large_copy_out(void* dst, const void* src, size_t bytes, uint8_t mode) {
+    uint8_t* dest = (uint8_t*)dst;
+    const uint8_t* source = (const uint8_t*)src;
+    bool streaming = RMW_TICKLE_TAKE_COPY_NT == mode || RMW_TICKLE_TAKE_COPY_NTREV == mode;
+    if (RMW_TICKLE_TAKE_COPY_REV != mode && RMW_TICKLE_TAKE_COPY_NTREV != mode) {
+        copy_block(dest, source, bytes, streaming);
+        return;
+    }
+    size_t end = bytes;
+    while (end > 0) {
+        size_t start = end > (size_t)RMW_TICKLE_COPY_BLOCK ? end - (size_t)RMW_TICKLE_COPY_BLOCK : 0;
+        copy_block(dest + start, source + start, end - start, streaming);
+        end = start;
+    }
+}
+
 uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
     if (NULL != callbacks &&
         (ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == callbacks->tickle_max_encoded_size ||

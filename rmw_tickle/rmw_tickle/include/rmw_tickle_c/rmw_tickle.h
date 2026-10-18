@@ -1124,6 +1124,10 @@ typedef struct rmw_tickle_subscriber_t {
     // Counted under queue_mutex, read by tests and the bench: loans read where they arrived, loans of a decoded shell.
     uint64_t loans_in_place;
     uint64_t loans_copied;
+    // RMW_TICKLE_TAKE_COPY (A/B switch, off by default; rmw_tickle_large_copy_out()): how rmw_take() copies a sample
+    // kept where it arrived (in its large buffer) out to the caller's message, and how many takes did so.
+    uint8_t take_copy;
+    uint64_t take_copies_streamed; // guarded by nothing: rmw_take() of one subscription is not called concurrently
 } rmw_tickle_subscriber_t;
 
 // The largest ROS_DOMAIN_ID rmw_tickle accepts: the DDS limit, which also keeps _tt_CONTEXT_PORT + id in range.
@@ -1308,6 +1312,20 @@ bool rmw_tickle_large_attach(rmw_tickle_context_impl_t* context_impl);
 void rmw_tickle_large_detach(rmw_tickle_context_impl_t* context_impl);
 // The limit the context's buffers enforce, for an error message; 0 before rmw_tickle_large_attach().
 uint32_t rmw_tickle_large_limit(const rmw_tickle_context_impl_t* context_impl);
+// RMW_TICKLE_TAKE_COPY (A/B switch, off by default; branch ab/i4be-cpu-candidates): how rmw_take() copies out a sample
+// of an in-place type kept in its large buffer, when it is at least RMW_TICKLE_TAKE_COPY_MIN_BYTES. Unset, "0" or
+// anything else: the type's own decoder (RMW_TICKLE_TAKE_COPY_DECODE), as before. "nt": non-temporal stores, so the
+// copy's 4 MB destination does not displace the large buffer from the last-level cache (x86-64 MOVNTDQ, arm64 STNP);
+// "rev": ordinary stores, the buffer walked from its end to its start in 64 KiB blocks, so what stays cached is its
+// start - where the kernel writes the next sample's first runs; "ntrev": both.
+#define RMW_TICKLE_TAKE_COPY_DECODE 0U
+#define RMW_TICKLE_TAKE_COPY_NT 1U
+#define RMW_TICKLE_TAKE_COPY_REV 2U
+#define RMW_TICKLE_TAKE_COPY_NTREV 3U
+#define RMW_TICKLE_TAKE_COPY_MIN_BYTES (1024U * 1024U)
+uint8_t rmw_tickle_take_copy_mode(void);
+// Copies `bytes` from src to dst as `mode` (one of the above other than DECODE) says.
+void rmw_tickle_large_copy_out(void* dst, const void* src, size_t bytes, uint8_t mode);
 // The RELIABLE tracking window, in 64-bit words, a subscription of this type gets: RMW_TICKLE_TRACKING_WORDS, or for
 // a type with no bound on its size - one whose sample can be large - the widest window core allows, since all of one
 // large sample's datagrams must fit it (DESIGN.md section 8: 8192 bits, 1 KiB per tracked writer).

@@ -857,6 +857,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->rmw_subscription.topic_name = rcutils_strdup(topic_name, *allocator);
     sub_impl->rmw_subscription.options = *subscription_options;
     sub_impl->rmw_subscription.can_loan_messages = setup_loans(sub_impl);
+    sub_impl->take_copy = rmw_tickle_take_copy_mode();
     sub_impl->rmw_subscription.is_cft_enabled = false;
     if (NULL == sub_impl->rmw_subscription.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
@@ -1046,6 +1047,12 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
                       sub_impl->rmw_subscription.topic_name, (unsigned long long)sub_impl->loans_in_place,
                       (unsigned long long)sub_impl->loans_copied);
     }
+    // RMW_TICKLE_TAKE_COPY's realized treatment, for the A/B: the mode and how many takes used it.
+    if (RMW_TICKLE_TAKE_COPY_DECODE != sub_impl->take_copy || sub_impl->take_copies_streamed > 0) {
+        (void)fprintf(stderr, "rmw_tickle: subscription %s take_copy=%u take_copies_streamed=%llu\n",
+                      sub_impl->rmw_subscription.topic_name, (unsigned)sub_impl->take_copy,
+                      (unsigned long long)sub_impl->take_copies_streamed);
+    }
     if (sub_impl->loans_out_count > 0) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle", "subscription %s destroyed with %zu loaned message(s) not returned",
                                sub_impl->rmw_subscription.topic_name, sub_impl->loans_out_count);
@@ -1206,9 +1213,21 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     //
     // Loaned messages: an entry kept where it arrived is copied out - the one copy an ordinary take of it costs - with
     // the same decoder (for an in-place type, field-wise copies), and released.
+    //
+    // RMW_TICKLE_TAKE_COPY (A/B switch, off by default; rmw_tickle_large_copy_out()): a large one is copied as the
+    // switch says instead. The same bytes either way: an in-place type's wire bytes are its first inplace_bytes in
+    // memory, which is all its decoder reads; only padding holes, which nothing reads, may differ.
     if (NULL != entry.in_place) {
-        int32_t decoded = sub_impl->callbacks->direct_decode(ros_message, (const uint8_t*)entry.in_place,
-                                                             (uint32_t)sub_impl->callbacks->inplace_bytes, true);
+        int32_t decoded = 0;
+        if (RMW_TICKLE_TAKE_COPY_DECODE != sub_impl->take_copy &&
+            sub_impl->callbacks->inplace_bytes >= (size_t)RMW_TICKLE_TAKE_COPY_MIN_BYTES) {
+            rmw_tickle_large_copy_out(ros_message, entry.in_place, sub_impl->callbacks->inplace_bytes,
+                                      sub_impl->take_copy);
+            sub_impl->take_copies_streamed++;
+        } else {
+            decoded = sub_impl->callbacks->direct_decode(ros_message, (const uint8_t*)entry.in_place,
+                                                         (uint32_t)sub_impl->callbacks->inplace_bytes, true);
+        }
         release_sample(sub_impl, &entry.sample);
         if (decoded < 0) {
             RMW_SET_ERROR_MSG("direct_decode() failed on a sample that was received whole");
