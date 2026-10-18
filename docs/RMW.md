@@ -154,7 +154,17 @@ does the same from above.
 reading rule can see, in either direction, between loans and plain publish/take - the PC's own scatter (other jobs
 running) is wider than any effect. Medians: BEST_EFFORT with ring slots lent +8% delivered and -10% subscriber CPU per
 message, RELIABLE -5% and +6%; the default loan arm (decoded shells) within a few percent of plain take, its
-publisher's median CPU +10% (RELIABLE) and +33% (BEST_EFFORT). A rig A/B is what would decide it.
+publisher's median CPU +10% (RELIABLE) and +33% (BEST_EFFORT).
+
+**Rig A/B** (same host, one rig Pi, `ab_loans.sh`, phases A B B A B A A B, rclcpp perf_test and ping; raw files
+`~/rig_results_safe/ab_loans_<stamp>.*`). Two questions each time: D, the shipped defaults, where rclcpp takes no
+loan; L, `ROS_DISABLE_LOANED_MESSAGES=0`, where it takes them.
+- Loans (the `ab/loans2` head, landed as `7a321d26`..`e521bbba`) against main `9d924607`, 2026-10-09
+  (`20261009-011554`): D PASS on all 12 metrics; L IMPROVED, from RELIABLE Array4k throughput +14.3% and CPU per
+  sample -10.3%, the other 10 PASS. Control (RadarDetection, not loanable) held.
+- Slot loans (`324f6ced`) against the loans build `d5ec0a38`, 2026-10-10 (`20261010-092329`), the ping publishing in
+  the ring slot (98.4-100% of its publishes in every RTT run of B): D PASS, L PASS, no metric IMPROVED or WORSE.
+  Slot loans stay off by default (the user, 2026-10-10) for the two limits above, not for cost.
 
 ### Large samples: blocking publish
 
@@ -310,9 +320,15 @@ says so when it does.
 | `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | longest a KEEP_LAST publish of a large sample waits for it to be sent ("Large samples: blocking publish") | 0 (off) |
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |
 | `RMW_TICKLE_KEEP_ALL_BYTES` / `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget, and the space reserved per sample | 512 KiB / 1472 B |
-| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples a subscription may hold | the tracking window |
+| `RMW_TICKLE_READER_KEEP_ALL_BYTES` | what one KEEP_ALL subscription may hold untaken; when full it declines arriving samples (a RELIABLE writer sends them again, BEST_EFFORT ones are dropped and counted) | 512 KiB |
+| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples a subscription may hold | the tracking window (1024) |
+| `RMW_TICKLE_REORDER_BYTES` | reorder buffer budget per RELIABLE subscription; slots are the fewer of the above and this / slot size | 1024 x (24 + 1472) B, ~1.5 MiB |
+| `RMW_TICKLE_REORDER_SLOT_PAYLOAD` | largest sample a reorder slot holds; a larger one out of order is requested again instead | 2 KiB (never above one datagram) |
+| `RMW_TICKLE_MAX_SAMPLE_BYTES` | largest message published or received; a larger publish fails naming the limit | 8 MiB (at most ~11.3 MiB, one reader window of datagrams) |
+| `RMW_TICKLE_LARGE_REGION` | `0` turns off the shared region for same-host large messages (they then go as fragments through the ring) | on |
 | `RMW_TICKLE_LOANS` | `0` turns loaned messages off | on |
 | `RMW_TICKLE_LOAN_RING_SLOTS` | `1` lends samples in their shared-memory ring slot; a held one then stops the ring a lap later | off |
+| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1` lets a publisher lend the subscriber's ring slot for a publish without a copy ("Loaned messages") | off |
 
 The two publisher storage budgets can also be set per publisher, with `rmw_tickle_publisher_payload_t`
 (`rmw_tickle_c/publisher_payload.h`) passed through `rmw_publisher_options_t.rmw_specific_publisher_payload`.
@@ -360,8 +376,12 @@ The full tables are in [RESULTS.md](RESULTS.md).
   `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
   `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes.
 - `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
-- Shared-memory tests: the kill test (S5), the fair same-host comparison against both vendors (S6), a CI arm with the
-  module on (S8), and both mixed-stream windows (S9).
+- Shared-memory tests. Done: a writer leaves a reader killed with SIGKILL at its next revalidation and attaches its
+  successor (`test_segment_owner`, real HAL, 2026-10-09); the same-host comparison against both vendors on their
+  shipped transports (RESULTS.md R1-R21 and the core same-host rows); CI's `linux-netns` job runs with shared memory
+  on, `linux-netns-shm-off` is its control; both windows where one stream takes two paths were measured (pre-attach:
+  257 datagrams, 0 out of order, 2026-09-30, `RMW_GAPS_PLAN.md` S9 at `3c0c505b`; service oversize: 2026-10-09,
+  ROADMAP "Done"). Open: a kill test at the rmw level, two ROS processes with the subscriber killed mid-stream.
 - rmw behaviour tests still CI-only: the upstream conformance suite (`test_rmw_implementation`), the interface
   workspace controls and the direct-codec identity harness. The ctest suite and `check_ros2_interfaces.sh`'s
   pub/sub, rclcpp and action cases run locally in a private netns (`make test-rmw-behaviour`, and the
