@@ -69,7 +69,8 @@ int main(void) {
     qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
-    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
+    // ... but not for a service or client: nothing asserts a service endpoint's liveliness (D6).
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     // QoS roadmap #3 (LIVELINESS) - done, every kind this rmw_qos_policy_liveliness_t still
     // defines. A custom liveliness_lease_duration is accepted down to tt_LIVELINESS_LEASE_DIVISOR *

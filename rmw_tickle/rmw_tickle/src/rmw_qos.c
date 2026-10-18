@@ -100,14 +100,17 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // own per-writer liveliness protocol can.
     // BEST_AVAILABLE mirrors MANUAL_BY_TOPIC's own service/client exclusion, same reasoning as
     // reliability/durability above (DDS QoS policy coverage inventory gap 1).
+    // MANUAL_BY_TOPIC is refused for services/clients too, here rather than only by core's tt_Node_create_client(),
+    // which refuses it as well (D6): nothing asserts a service endpoint's liveliness (rmw's assert call is a
+    // publisher's), so a manual lease could only ever expire.
     bool liveliness_ok = RMW_QOS_POLICY_LIVELINESS_AUTOMATIC == qos_profile->liveliness ||
-                         RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness ||
                          RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT == qos_profile->liveliness ||
-                         (RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE == qos_profile->liveliness &&
+                         ((RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness ||
+                           RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE == qos_profile->liveliness) &&
                           RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT != entity_kind);
     if (!liveliness_ok) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC/"
-                          "MANUAL_BY_TOPIC and (for publishers/subscriptions) BEST_AVAILABLE - see "
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC and (for "
+                          "publishers/subscriptions) MANUAL_BY_TOPIC/BEST_AVAILABLE - see "
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
