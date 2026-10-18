@@ -209,8 +209,8 @@ static void free_nothing(struct tt_Data* data) {
 
 static struct tt_Context sender;
 static struct tt_Context receiver;
-static struct tt_Topic sender_topic;
-static struct tt_Topic receiver_topic;
+static struct tt_TypeSupport sender_topic;
+static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;  // the reader every case has
 static struct tt_Subscriber sub2; // a second reader on the same node, for the cases that ask for one

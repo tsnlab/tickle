@@ -136,7 +136,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     test_mock_reset();
     sub_calls = 0;
 
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     memset(&topic, 0, sizeof(topic));
     topic.name = "t";
     topic.data_size = sizeof(uint32_t);
@@ -191,7 +191,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
 static void test_reverse_endian_update_matches_and_learns_peer(void) {
     test_mock_reset();
 
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     memset(&topic, 0, sizeof(topic));
     topic.name = "t";
 

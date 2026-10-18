@@ -90,7 +90,7 @@ static struct tt_Context local;
 static struct tt_Discovery discovery;
 static struct tt_Node nodes[NODES];
 static char node_names[NODES][NAME_LENGTH];
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static char endpoint_names[ENDPOINTS][NAME_LENGTH];
 static struct tt_Publisher pubs[ENDPOINTS];
 

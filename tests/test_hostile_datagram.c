@@ -288,7 +288,7 @@ static void capture_data(const void* buf, size_t len) {
 
 static struct tt_Context remote;
 static struct tt_Context local;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Publisher remote_pub;
 static struct tt_Subscriber local_sub;
 

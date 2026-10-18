@@ -177,8 +177,8 @@ struct rig {
     struct tt_Context owner;
     struct tt_Context owner2; // a second receiving context with a ring of its own
     struct tt_Context sender;
-    struct tt_Topic topic;       // the sender's
-    struct tt_Topic owner_topic; // the receivers'
+    struct tt_TypeSupport topic;       // the sender's
+    struct tt_TypeSupport owner_topic; // the receivers'
     struct tt_Publisher pub;
     struct tt_Subscriber sub;
     struct tt_Subscriber sub_b; // another Subscriber of the owner, on topic B
@@ -186,7 +186,7 @@ struct rig {
 };
 static struct rig rig;
 
-static void init_topic(struct tt_Topic* topic, const char* name) {
+static void init_topic(struct tt_TypeSupport* topic, const char* name) {
     memset(topic, 0, sizeof(*topic));
     topic->name = name;
     topic->data_size = sizeof(uint32_t);

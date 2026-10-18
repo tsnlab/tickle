@@ -75,7 +75,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     subscriber_callback_count++;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -92,7 +92,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
 }
 
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
-                                               struct tt_Topic* topic) {
+                                               struct tt_TypeSupport* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub->endpoint.id = ENDPOINT_ID;
@@ -144,7 +144,7 @@ static void test_two_different_nodes_same_endpoint_track_independently(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -189,7 +189,7 @@ static void test_two_entity_ids_on_same_node_track_independently(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -222,7 +222,7 @@ static void test_gap_on_one_writer_does_not_affect_another(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);

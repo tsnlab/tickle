@@ -350,7 +350,7 @@ static void sample_free(struct tt_Data* data) {
 
 static struct tt_Context writer;
 static struct tt_Context reader;
-static struct tt_Topic topic = {
+static struct tt_TypeSupport topic = {
     .name = "clock_step",
     .data_size = sizeof(struct sample),
     .data_encode_size = sample_encode_size,
@@ -710,7 +710,7 @@ static void test_a_zero_copy_publish_reads_one_clock(void) {
     cache.arena_size = (uint32_t)sizeof(arena);
     setup(&cache);
 
-    static struct tt_Topic big_topic = {
+    static struct tt_TypeSupport big_topic = {
         .name = "clock_step_big",
         .data_size = sizeof(struct sample),
         .data_encode_size = big_encode_size,

@@ -71,7 +71,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     (void)data;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -87,7 +87,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
     topic->data_free = stub_data_free;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_Topic* topic) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -102,7 +102,7 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, st
 // incoming-packet dispatch) - same helper shape as test_durability_pubsub.c's own identically-
 // named one.
 static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Context* node,
-                                              struct tt_Topic* topic) {
+                                              struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -122,7 +122,7 @@ static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct t
 static uint64_t test_reorder_storage[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
-                                               struct tt_Topic* topic) {
+                                               struct tt_TypeSupport* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub->endpoint.id = ENDPOINT_ID;
@@ -235,7 +235,7 @@ static uint32_t write_update_one_subscriber(struct tt_Context* node, uint64_t la
 // reliable_cache set - nothing for it to ever announce.
 static void test_heartbeat_set_period_requires_reliable_cache(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -248,7 +248,7 @@ static void test_heartbeat_set_period_requires_reliable_cache(void) {
 // disabling (period_ns == 0) removes it again.
 static void test_heartbeat_set_period_arms_and_disarms(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -272,7 +272,7 @@ static void test_heartbeat_send_derives_range_correctly(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -316,7 +316,7 @@ static void test_heartbeat_send_skips_when_nothing_retained_yet(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -344,7 +344,7 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -378,7 +378,7 @@ static void test_data_first_contact_durable_subscriber_keeps_baseline(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -415,7 +415,7 @@ static void test_data_first_contact_volatile_subscriber_pins_baseline(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic); // sub.durable stays false
@@ -443,7 +443,7 @@ static void test_data_first_contact_durable_terminates_on_eviction(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -478,7 +478,7 @@ static void test_heartbeat_first_contact_volatile_subscriber_skips_backlog(void)
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -562,7 +562,7 @@ static void test_heartbeat_first_available_advances_existing_proxy(void) {
 #endif
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -609,7 +609,7 @@ static void test_heartbeat_stale_first_available_is_ignored(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -642,7 +642,7 @@ static void test_heartbeat_durable_late_joiner_backlog_not_skipped(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -693,7 +693,7 @@ static void test_heartbeat_oversized_gap_jumps_baseline(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -721,7 +721,7 @@ static void test_heartbeat_gap_within_window_widens_request_without_jumping(void
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -751,7 +751,7 @@ static void test_heartbeat_ignored_for_besteffort_subscriber(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -776,7 +776,7 @@ static void test_heartbeat_final_flag_clear_forces_acknack_without_gap(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -803,7 +803,7 @@ static void test_heartbeat_final_flag_set_stays_silent_without_gap(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -826,7 +826,7 @@ static void test_publisher_request_ack_sends_to_matched_peers(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -857,7 +857,7 @@ static void test_publisher_request_ack_noop_with_no_peers(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -876,7 +876,7 @@ static void test_publisher_request_ack_noop_with_no_peers(void) {
 // A best-effort Publisher (reliable_cache == NULL) has no ack state to solicit in the first place.
 static void test_publisher_request_ack_requires_reliable_cache(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -890,7 +890,7 @@ static void test_publisher_destroy_cancels_armed_heartbeat(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -909,7 +909,7 @@ static void test_publisher_destroy_cancels_armed_heartbeat(void) {
 // reasoning as tt_Publisher_set_heartbeat_period()'s own identical guard.
 static void test_ack_solicit_set_period_requires_reliable_cache(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -923,7 +923,7 @@ static void test_ack_solicit_set_period_requires_reliable_cache(void) {
 // own entry, leaving the other one untouched.
 static void test_ack_solicit_set_period_arms_and_disarms(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -949,7 +949,7 @@ static void test_ack_solicit_fires_request_ack_periodically(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -988,7 +988,7 @@ static void test_ack_solicit_reschedules_with_nothing_to_solicit(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1013,7 +1013,7 @@ static void test_publisher_destroy_cancels_armed_ack_solicit(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1036,7 +1036,7 @@ static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void)
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1075,7 +1075,7 @@ static void test_heartbeat_discovery_skipped_for_besteffort_publisher(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1100,7 +1100,7 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1137,7 +1137,7 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1172,7 +1172,7 @@ static void test_publisher_peer_ack_survives_announce_refresh(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1204,7 +1204,7 @@ static void test_publisher_peer_ack_dropped_when_announce_drops_match(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1249,7 +1249,7 @@ static void test_ack_watermark_off_by_default_sends_nothing(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1274,7 +1274,7 @@ static void test_ack_watermark_solicits_once_then_throttles(void) {
     test_mock_now = 1000000; // non-zero: last_ack_solicit_ns == 0 means "never solicited"
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1304,7 +1304,7 @@ static void test_ack_watermark_not_triggered_while_peer_keeps_up(void) {
     test_mock_now = 1000000;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -1331,7 +1331,7 @@ static void test_ack_watermark_silent_without_peers(void) {
     test_mock_now = 1000000;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);

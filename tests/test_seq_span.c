@@ -95,7 +95,7 @@ static void span_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
 #define SPAN_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + BIG_SAMPLE_BYTES)
 static uint64_t span_reorder_storage[SPAN_REORDER_SLOTS * SPAN_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
-static void init_sender(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub) {
+static void init_sender(struct tt_Context* node, struct tt_TypeSupport* topic, struct tt_Publisher* pub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -129,7 +129,7 @@ static void init_sender(struct tt_Context* node, struct tt_Topic* topic, struct 
 // measuring the publish path rather than the seq space.
 static void test_without_a_segment_the_span_is_the_wire_count(void) {
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_sender(&sender, &topic, &pub);
     pub.peers[0].context_id = OWNER_ID;
@@ -149,7 +149,7 @@ static void test_without_a_segment_the_span_is_the_wire_count(void) {
 static void test_a_wide_slot_does_not_shrink_the_span(void) {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
 
     memset(&owner, 0, sizeof(owner));
@@ -212,7 +212,7 @@ static void test_a_wide_slot_does_not_shrink_the_span(void) {
 // plus i, and the span reserved exactly that many.
 static void test_a_whole_record_the_target_cannot_take_is_refragmented(void) {
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_sender(&sender, &topic, &pub);
     test_mock_reset();
@@ -270,7 +270,7 @@ static void test_a_whole_record_the_target_cannot_take_is_refragmented(void) {
 // which is what makes this a property rather than a convention.
 static void test_a_span_does_not_outlive_its_datagram(void) {
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_sender(&sender, &topic, &pub);
 
@@ -344,8 +344,8 @@ static void test_a_span_outside_the_wire_bound_is_refused(void) {
 static void test_a_whole_record_advances_the_reader_by_its_span(void) {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher pub;
     struct tt_Subscriber sub;
 
@@ -472,8 +472,8 @@ static void test_a_whole_record_advances_the_reader_by_its_span(void) {
 static void test_each_fragment_carries_its_own_seq_position(void) {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher pub;
     struct tt_Subscriber sub;
 

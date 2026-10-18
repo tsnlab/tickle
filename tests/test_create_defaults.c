@@ -71,7 +71,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
 }
 
 static struct tt_Context node;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 
 static void init(void) {
     test_mock_reset();

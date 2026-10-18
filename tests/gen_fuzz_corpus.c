@@ -73,7 +73,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
 }
 
 static struct tt_Context sender;
-static struct tt_Topic topics[MAX_ENDPOINTS];
+static struct tt_TypeSupport topics[MAX_ENDPOINTS];
 static struct tt_Subscriber subs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][48];
 

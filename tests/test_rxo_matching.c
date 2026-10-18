@@ -78,7 +78,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     subscriber_callback_count++;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -95,7 +95,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
 }
 
 static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Context* node,
-                                              struct tt_Topic* topic) {
+                                              struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -111,7 +111,7 @@ static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct t
 }
 
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
-                                               struct tt_Topic* topic) {
+                                               struct tt_TypeSupport* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub->endpoint.id = ENDPOINT_ID;
@@ -195,7 +195,7 @@ static void test_reliable_subscriber_drops_data_from_besteffort_publisher(void) 
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -224,7 +224,7 @@ static void test_reliable_subscriber_receives_data_from_reliable_publisher(void)
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -251,7 +251,7 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -279,7 +279,7 @@ static void test_no_discovery_attached_delivers_regardless(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -303,7 +303,7 @@ static void test_publisher_not_yet_discovered_delivers(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -330,7 +330,7 @@ static void test_publisher_side_gate_skips_incompatible_subscriber(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -351,7 +351,7 @@ static void test_publisher_side_gate_accepts_compatible_subscriber(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -374,7 +374,7 @@ static void test_deadline_subscriber_drops_data_from_looser_publisher(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -402,7 +402,7 @@ static void test_deadline_subscriber_receives_data_from_tighter_publisher(void) 
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -431,7 +431,7 @@ static void test_liveliness_manual_subscriber_drops_data_from_automatic_publishe
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -459,7 +459,7 @@ static void test_liveliness_manual_subscriber_receives_data_from_manual_publishe
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -487,7 +487,7 @@ static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(vo
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -516,7 +516,7 @@ static void test_publisher_side_gate_skips_subscriber_requesting_tighter_deadlin
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -536,7 +536,7 @@ static void test_publisher_side_gate_skips_subscriber_requesting_manual_liveline
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);

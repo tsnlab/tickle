@@ -108,7 +108,7 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
 static struct tt_Context remote;
 static struct tt_Context local;
 static struct tt_Discovery discovery;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Publisher kept;   // offers a deadline the subscriber accepts
 static struct tt_Publisher missed; // offers one it refuses
 static struct tt_Subscriber sub;

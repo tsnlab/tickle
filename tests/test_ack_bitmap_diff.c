@@ -128,7 +128,7 @@ static int model_highest(const struct model* m) {
 
 struct rig {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
 };

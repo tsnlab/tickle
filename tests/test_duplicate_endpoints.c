@@ -136,7 +136,7 @@ static void init_node(struct tt_Context* node) {
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 }
 
-static void init_topic(struct tt_Topic* topic, const char* name) {
+static void init_topic(struct tt_TypeSupport* topic, const char* name) {
     memset(topic, 0, sizeof(*topic));
     topic->name = name;
     topic->data_size = sizeof(uint32_t);
@@ -170,7 +170,7 @@ static void init_service(struct tt_Service* service, const char* name) {
 // TestGraphAPI.count_clients_and_services in real CI.
 static void test_two_publishers_same_topic_both_succeed(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);
@@ -188,7 +188,7 @@ static void test_two_publishers_same_topic_both_succeed(void) {
 // what real CI found first.
 static void test_two_subscribers_same_topic_both_succeed(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub_a;
     struct tt_Subscriber sub_b;
     init_node(&node);
@@ -239,7 +239,7 @@ static void test_two_servers_same_service_both_succeed(void) {
 // genuinely distinct second instance sharing a name.
 static void test_registering_same_pointer_twice_still_fails(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node(&node);
     init_topic(&topic, "/test_topic");
@@ -254,7 +254,7 @@ static void test_registering_same_pointer_twice_still_fails(void) {
 // but it's the one invariant this whole milestone's design depends on staying true.
 static void test_destroying_one_duplicate_leaves_its_sibling_registered(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);
@@ -302,7 +302,7 @@ static void test_update_registers_peer_on_every_matching_publisher(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);

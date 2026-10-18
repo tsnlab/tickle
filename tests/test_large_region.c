@@ -172,8 +172,8 @@ static void on_best_effort(struct tt_Subscriber* sub, uint64_t time, uint16_t se
 
 static struct tt_Context owner;
 static struct tt_Context sender;
-static struct tt_Topic sender_topic;
-static struct tt_Topic owner_topic;
+static struct tt_TypeSupport sender_topic;
+static struct tt_TypeSupport owner_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub_reliable;
 static struct tt_Subscriber sub_best_effort;

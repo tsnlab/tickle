@@ -63,7 +63,7 @@ static void free_nothing(struct tt_Data* data) {
 }
 
 static struct tt_Context context;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Publisher pub;
 static struct tt_ReliableCacheIndex index_storage[RING];
 static struct tt_ReliableCache cache;

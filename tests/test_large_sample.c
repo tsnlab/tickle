@@ -280,8 +280,8 @@ static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, str
 
 static struct tt_Context sender;
 static struct tt_Context receiver;
-static struct tt_Topic sender_topic;
-static struct tt_Topic receiver_topic;
+static struct tt_TypeSupport sender_topic;
+static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 
 #define CACHE_DEPTH 256
@@ -723,13 +723,13 @@ static void test_a_fixed_size_type_above_a_sample_is_a_large_topic(void) {
     round_trip(ONE_MB, BEST_EFFORT, false);
     round_trip(ONE_MB, RELIABLE_KEEP_LAST, false);
     // A Subscriber of it without an in-place decode is refused: the copying decode puts the struct on the stack.
-    struct tt_Topic copying = receiver_topic;
+    struct tt_TypeSupport copying = receiver_topic;
     copying.data_decode_inplace = NULL;
     static struct tt_Subscriber refused;
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
                   tt_Context_create_subscriber(&receiver, &refused, &copying, "copying", on_data));
     // Nor is any struct above the largest sample core can carry.
-    struct tt_Topic too_large = sender_topic;
+    struct tt_TypeSupport too_large = sender_topic;
     too_large.data_size = 1446U + (1452U * (tt_LARGE_MAX_FRAGMENTS - 1U)) + 1U;
     static struct tt_Publisher refused_pub;
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_create_publisher(&sender, &refused_pub, &too_large, "too_large"));

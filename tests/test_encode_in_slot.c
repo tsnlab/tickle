@@ -92,7 +92,7 @@ static void sample_free(struct tt_Data* data) {
 struct arm {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     struct tt_ReliableCacheIndex index[CACHE_DEPTH];
     uint8_t arena[ARENA_MAX];

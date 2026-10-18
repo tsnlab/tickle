@@ -66,7 +66,7 @@ static void test_large_fragments_are_skipped_and_counted(void) {
     node.id = 2;
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = sizeof(node.tx_buffer);
-    struct tt_Topic topic = {0};
+    struct tt_TypeSupport topic = {0};
     topic.name = "t";
     topic.data_size = 8;
     topic.data_decode = decode_any;

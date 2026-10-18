@@ -67,7 +67,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     (void)data;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -88,7 +88,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
 // init_publisher() (which most of its own tests reach through tt_Publisher_publish() directly,
 // never through incoming-packet dispatch).
 static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Context* node,
-                                              struct tt_Topic* topic) {
+                                              struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -188,7 +188,7 @@ static void test_durability_publish_caches_and_evicts(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -226,7 +226,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -272,7 +272,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -327,7 +327,7 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -369,7 +369,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -425,7 +425,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -469,7 +469,7 @@ static void test_durability_ignored_for_volatile_publisher(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
@@ -511,7 +511,7 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);

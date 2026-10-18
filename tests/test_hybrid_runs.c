@@ -153,8 +153,8 @@ static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, str
 
 static struct tt_Context sender;
 static struct tt_Context receiver;
-static struct tt_Topic sender_topic;
-static struct tt_Topic receiver_topic;
+static struct tt_TypeSupport sender_topic;
+static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)

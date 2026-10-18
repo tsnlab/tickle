@@ -133,7 +133,7 @@ static void init_node(struct tt_Context* node) {
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 }
 
-static void init_topic(struct tt_Topic* topic, const char* name) {
+static void init_topic(struct tt_TypeSupport* topic, const char* name) {
     memset(topic, 0, sizeof(*topic));
     topic->name = name;
     topic->data_size = sizeof(uint32_t);
@@ -158,7 +158,7 @@ static void init_service(struct tt_Service* service, const char* name) {
     service->response_free = stub_response_free;
 }
 
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Service service;
 
 static void setup(struct tt_Context* context, uint8_t id) {

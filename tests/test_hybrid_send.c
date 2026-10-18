@@ -108,7 +108,7 @@ static int32_t sized_encode_range(struct tt_Data* data, uint8_t* payload, uint32
 
 struct reader {
     struct tt_Context ctx;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     uint32_t ip;
     int delivered;
@@ -185,7 +185,7 @@ static void test_release(void* user, void* buffer) {
 // --- the writer ------------------------------------------------------------------------------------------------------
 
 static struct tt_Context sender;
-static struct tt_Topic sender_topic;
+static struct tt_TypeSupport sender_topic;
 static struct tt_Publisher pub;
 #define CACHE_DEPTH 1024
 static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];

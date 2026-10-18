@@ -33,7 +33,7 @@
 // Only ->name matters for these tests - reply_with_own_announce()'s encode_update_entities() call
 // (see build_and_send_update()) reads topic->name/service->name and endpoint->name for every
 // registered endpoint, including these, once a node with one registered actually replies.
-static struct tt_Topic test_topic = {.name = "test_topic"};
+static struct tt_TypeSupport test_topic = {.name = "test_topic"};
 static struct tt_Service test_service = {.name = "test_service"};
 
 static void init_node(struct tt_Context* node) {
@@ -473,10 +473,10 @@ static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_
 static void test_publisher_created_after_the_announce_learns_the_peer_from_its_resend(void) {
     struct tt_Context node;
     init_node(&node);
-    struct tt_Topic topic = {.name = "late_topic",
-                             .data_size = 4,
-                             .data_encode_size = fake_encode_size,
-                             .data_encode = fake_encode};
+    struct tt_TypeSupport topic = {.name = "late_topic",
+                                   .data_size = 4,
+                                   .data_encode_size = fake_encode_size,
+                                   .data_encode = fake_encode};
     const uint32_t endpoint_id = tt_hash_id("late_topic", "late_pub");
 
     struct tt_Header header;
@@ -564,10 +564,10 @@ static void test_client_created_after_the_announce_learns_the_peer_from_its_rese
 static void test_two_publishers_created_after_the_announce_both_learn_the_peer(void) {
     struct tt_Context node;
     init_node(&node);
-    struct tt_Topic topic = {.name = "late_topic",
-                             .data_size = 4,
-                             .data_encode_size = fake_encode_size,
-                             .data_encode = fake_encode};
+    struct tt_TypeSupport topic = {.name = "late_topic",
+                                   .data_size = 4,
+                                   .data_encode_size = fake_encode_size,
+                                   .data_encode = fake_encode};
     const uint32_t endpoint_id = tt_hash_id("late_topic", "late_pub");
 
     struct tt_Header header;
@@ -766,7 +766,7 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&one));
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&two));
 
-    struct tt_Topic sub_topic = {.name = "duo", .data_size = 4, .data_decode = duo_decode, .data_free = duo_free};
+    struct tt_TypeSupport sub_topic = {.name = "duo", .data_size = 4, .data_decode = duo_decode, .data_free = duo_free};
     struct tt_Subscriber sub;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&two, &sub, &sub_topic, "duo_ep", duo_on_data));
     duo_run_until(&one, &two, tt_SECOND + (uint64_t)(3.5 * tt_SECOND)); // both know each other, steady state
@@ -780,10 +780,10 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
 
     int before_one = duo_sent[1];
     int before_two = duo_sent[2];
-    struct tt_Topic pub_topic = {.name = "duo",
-                                 .data_size = 4,
-                                 .data_encode_size = fake_encode_size,
-                                 .data_encode = fake_encode};
+    struct tt_TypeSupport pub_topic = {.name = "duo",
+                                       .data_size = 4,
+                                       .data_encode_size = fake_encode_size,
+                                       .data_encode = fake_encode};
     struct tt_Publisher pub;
     uint64_t created = test_mock_now;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &pub_topic, "duo_ep"));
@@ -829,14 +829,14 @@ static void duo_stop(void) {
     test_mock_send_hook = NULL;
 }
 
-static struct tt_Topic duo_sub_topic = {.name = "duo",
-                                        .data_size = 4,
-                                        .data_decode = duo_decode,
-                                        .data_free = duo_free};
-static struct tt_Topic duo_pub_topic = {.name = "duo",
-                                        .data_size = 4,
-                                        .data_encode_size = fake_encode_size,
-                                        .data_encode = fake_encode};
+static struct tt_TypeSupport duo_sub_topic = {.name = "duo",
+                                              .data_size = 4,
+                                              .data_decode = duo_decode,
+                                              .data_free = duo_free};
+static struct tt_TypeSupport duo_pub_topic = {.name = "duo",
+                                              .data_size = 4,
+                                              .data_encode_size = fake_encode_size,
+                                              .data_encode = fake_encode};
 
 static bool drop_summaries(const struct duo_datagram* datagram) {
     return datagram->summaries > 0;
@@ -1296,14 +1296,14 @@ static void liveliness_duo_start(struct tt_Context* one, struct tt_Context* two,
     watched_ids[1] = second != NULL ? second->endpoint.id : 0;
     // Node 2 also reads what it watches: a Publisher with no matched reader sends nothing (2026-10-15), so the DATA
     // these tests keep a lease alive with would not leave node 1 otherwise.
-    static struct tt_Topic live_sub_topics[2];
+    static struct tt_TypeSupport live_sub_topics[2];
     static struct tt_Subscriber live_subs[2];
     const struct tt_Publisher* watched[2] = {first, second};
     for (int k = 0; k < 2 && watched[k] != NULL; k++) {
-        live_sub_topics[k] = (struct tt_Topic) {.name = watched[k]->topic->name,
-                                                .data_size = 4,
-                                                .data_decode = duo_decode,
-                                                .data_free = duo_free};
+        live_sub_topics[k] = (struct tt_TypeSupport) {.name = watched[k]->topic->name,
+                                                      .data_size = 4,
+                                                      .data_decode = duo_decode,
+                                                      .data_free = duo_free};
         EXPECT_EQ_INT(tt_RET_OK,
                       tt_Context_create_subscriber(two, &live_subs[k], &live_sub_topics[k], "live_ep", duo_on_data));
     }
@@ -1311,14 +1311,14 @@ static void liveliness_duo_start(struct tt_Context* one, struct tt_Context* two,
     EXPECT_EQ_INT(1, watched_arrivals[0]);
 }
 
-static struct tt_Topic live_topic_a = {.name = "live_a",
-                                       .data_size = 4,
-                                       .data_encode_size = fake_encode_size,
-                                       .data_encode = fake_encode};
-static struct tt_Topic live_topic_b = {.name = "live_b",
-                                       .data_size = 4,
-                                       .data_encode_size = fake_encode_size,
-                                       .data_encode = fake_encode};
+static struct tt_TypeSupport live_topic_a = {.name = "live_a",
+                                             .data_size = 4,
+                                             .data_encode_size = fake_encode_size,
+                                             .data_encode = fake_encode};
+static struct tt_TypeSupport live_topic_b = {.name = "live_b",
+                                             .data_size = 4,
+                                             .data_encode_size = fake_encode_size,
+                                             .data_encode = fake_encode};
 
 // Runs both nodes until `until`, node 1 publishing `pub` every `period` from now on. Returns when it
 // published last.
