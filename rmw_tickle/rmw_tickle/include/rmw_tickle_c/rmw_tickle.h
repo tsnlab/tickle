@@ -1308,6 +1308,20 @@ bool rmw_tickle_large_attach(rmw_tickle_context_impl_t* context_impl);
 void rmw_tickle_large_detach(rmw_tickle_context_impl_t* context_impl);
 // The limit the context's buffers enforce, for an error message; 0 before rmw_tickle_large_attach().
 uint32_t rmw_tickle_large_limit(const rmw_tickle_context_impl_t* context_impl);
+// Marks the acquires core makes from now on as a publish's (true) or not (false): a buffer a large sample is encoded
+// into and sent from gets transparent huge pages (RMW_TICKLE_PUBLISH_HUGEPAGE, rmw_large.c), a reassembly's does not.
+// Call with the context locked, around tt_Publisher_publish(): core acquires with the context locked, so the mark and
+// every acquire it covers are serialised.
+void rmw_tickle_large_publishing(rmw_tickle_context_impl_t* context_impl, bool publishing);
+// What the context's large buffers did, for tests and the line at detach: buffers allocated (not reused), of them for a
+// publish, and of those advised MADV_HUGEPAGE without error; publish_hugepage is the switch as read at attach.
+struct rmw_tickle_large_stats {
+    uint32_t allocated;
+    uint32_t publish_allocated;
+    uint32_t advised;
+    bool publish_hugepage;
+};
+void rmw_tickle_large_stats(rmw_tickle_context_impl_t* context_impl, struct rmw_tickle_large_stats* stats);
 // The RELIABLE tracking window, in 64-bit words, a subscription of this type gets: RMW_TICKLE_TRACKING_WORDS, or for
 // a type with no bound on its size - one whose sample can be large - the widest window core allows, since all of one
 // large sample's datagrams must fit it (DESIGN.md section 8: 8192 bits, 1 KiB per tracked writer).
