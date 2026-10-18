@@ -36,7 +36,6 @@
 #include "rmw/event.h"
 #include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
 #include "rmw/message_sequence.h"    // rmw_message_sequence_t, rmw_message_info_sequence_t - rmw_take_sequence() (g5)
-#include "rmw/qos_policy_kind.h"     // rmw_qos_policy_kind_t - check_subscription_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/serialized_message.h"
@@ -560,12 +559,6 @@ void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* s
     status->last_alive_count = (int)current;
 }
 
-// Milestone 31/28(a) observability follow-on - how often check_subscription_qos_incompatible()
-// below re-scans the discovery table. See rmw_publisher.c's own identically-named/valued macro
-// for the full reasoning (shared cadence, not a shared symbol - each file defines its own, the
-// same convention RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS already uses).
-#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_CONTEXT_UPDATE_INTERVAL
-
 // Bytes one reorder slot needs, for a subscription on this type.
 //
 // Same two sources, same precedence, and for the same reason as the publisher's own
@@ -652,41 +645,6 @@ static uint16_t resolve_reorder_slots(uint16_t slot_bytes) {
         slots = affordable > 0 ? affordable : 1;
     }
     return (uint16_t)slots;
-}
-
-// Milestone 31/28(a) observability follow-on - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own
-// periodic check, the Subscription-side counterpart to rmw_publisher.c's own check_publisher_qos_
-// incompatible() - see its own doc comment for the full reasoning (no wire-level trigger exists,
-// so this periodically re-derives a live count from the existing discovery table instead, the
-// same pattern check_subscription_liveliness() above already established).
-static void check_subscription_qos_incompatible(struct tt_Context* node, uint64_t time, void* param) {
-    (void)node;
-    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
-    rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
-    size_t current = rmw_tickle_count_incompatible_publishers_locked(
-        sub_impl->node->context_impl, sub_impl->rmw_subscription.topic_name, sub_impl->tickle_subscriber.reliable,
-        sub_impl->tickle_subscriber.durable, sub_impl->tickle_subscriber.liveliness_manual,
-        sub_impl->tickle_subscriber.deadline_duration_ns, sub_impl->tickle_subscriber.liveliness_lease_duration_ns,
-        &last_kind);
-    rmw_tickle_qos_incompatible_status_t* status = &sub_impl->requested_qos_incompatible;
-    if ((int)current > status->last_incompatible_count) {
-        int delta = (int)current - status->last_incompatible_count;
-        atomic_fetch_add(&status->base.total_count, delta);
-        atomic_fetch_add(&status->base.unread_count, delta);
-        status->last_policy_kind = last_kind;
-        wake_wait_cond(sub_impl->node->context_impl);
-        rmw_tickle_callback_slot_notify(&status->base.callback, (size_t)delta); // (g2)
-    }
-    // See check_publisher_qos_incompatible()'s own identical comment - deliberately never
-    // decrements total_count/unread_count on a drop, only tracks the high-water mark to detect a
-    // later re-appearance as a genuinely new incompatible match.
-    status->last_incompatible_count = (int)current;
-
-    // Monitoring simply stops here on a reschedule failure - same reasoning as check_subscription_
-    // deadline()'s own identical pattern above.
-    (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context,
-                              time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_subscription_qos_incompatible,
-                              sub_impl);
 }
 
 // The profile rmw_create_subscription() hands core (QoS redesign step 3): rmw_tickle's queue depth, tracking window
@@ -943,12 +901,6 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     // unschedule() just finds nothing matching).
     if (sub_impl->deadline_period_ns != 0) {
         tt_Context_unschedule(&sub_impl->node->context_impl->tickle_context, check_subscription_deadline, sub_impl);
-    }
-    // The QoS-incompatible check reschedules itself every period once its event is initialised; left armed,
-    // it ran on this freed subscription - a SIGSEGV in test_events one run in twenty (test_event_teardown.c).
-    if (sub_impl->requested_qos_incompatible_monitoring_started) {
-        tt_Context_unschedule(&sub_impl->node->context_impl->tickle_context, check_subscription_qos_incompatible,
-                              sub_impl);
     }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
     // (g3) The Publishers it was matched with, and those it had another type from, recount without it.
@@ -1268,24 +1220,7 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
             tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
         }
         return RMW_RET_OK;
-    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
-        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
-        rmw_event->data = sub_impl;
-        rmw_event->event_type = event_type;
-        // Lazy, idempotent start - see rmw_tickle_subscriber_t.requested_qos_incompatible_
-        // monitoring_started's own doc comment (rmw_tickle.h), same pattern as LIVELINESS_CHANGED
-        // just above.
-        if (!sub_impl->requested_qos_incompatible_monitoring_started) {
-            sub_impl->requested_qos_incompatible_monitoring_started = true;
-            tt_Context_lock(&sub_impl->node->context_impl->tickle_context);
-            // A failure here just leaves this monitoring inactive for this Subscription - same
-            // reasoning as the deadline/liveliness scheduling above.
-            (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context,
-                                      tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
-                                      check_subscription_qos_incompatible, sub_impl);
-            tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
-        }
-        return RMW_RET_OK;
+    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:     // counted by core from creation (QoS plan D2)
     case RMW_EVENT_SUBSCRIPTION_MATCHED:           // (g3) counted from creation, whether asked for or not
     case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE: // (g3)
     case RMW_EVENT_MESSAGE_LOST:                   // (g3)

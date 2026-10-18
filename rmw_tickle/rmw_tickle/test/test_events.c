@@ -30,8 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_CONTEXT_ID_INVALID, tt_MILLISECOND
-#include <tickle/hal.h>    // tt_get_ns()
+#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_CONTEXT_ID_INVALID
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
 #include "rcutils/allocator.h"
@@ -45,7 +44,6 @@
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/publisher_options.h"
-#include "rmw/qos_policy_kind.h" // RMW_QOS_POLICY_RELIABILITY
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/subscription_options.h"
@@ -131,36 +129,6 @@ static const rosidl_message_type_support_t* fake_type_support(void) {
 // Arbitrary, != tt_CONTEXT_ID_INVALID - see the injected struct tt_DiscoveredEntity.context_id's own
 // comment below for why the exact value is otherwise inconsequential.
 #define FAKE_REMOTE_NODE_ID 99
-
-// The two QoS-incompatible waits below failed intermittently on 2026-09-26 (23:41-23:45 on every run, again
-// twice at 00:10), with old and new rmw code alike, and did not reproduce under 16 busy cores or beside a
-// second TickLE process; the core's check ran 0.1-0.3 ms after it was due throughout. So a timeout here
-// reports what the wait was looking at before failing: how long it waited, the injected entity as rmw sees
-// it, and every occupied discovery slot - an entity overwritten or forgotten by traffic from another node
-// would show there. The wait itself is left at 2 s: nothing found so far says the margin is the problem.
-static rmw_ret_t wait_or_explain(rmw_events_t* events, rmw_wait_set_t* wait_set, const rmw_time_t* timeout,
-                                 rmw_tickle_context_impl_t* context_impl, const struct tt_DiscoveredEntity* slot,
-                                 const char* label) {
-    uint64_t start = tt_get_ns();
-    rmw_ret_t ret = rmw_wait(NULL, NULL, NULL, NULL, events, wait_set, timeout);
-    if (RMW_RET_OK == ret) {
-        return ret;
-    }
-    tt_Context_lock(&context_impl->tickle_context);
-    (void)fprintf(stderr,
-                  "%s: rmw_wait returned %d after %llu ms; injected slot node=%u alive=%d kind=%u qos=%u name=%s\n",
-                  label, (int)ret, (unsigned long long)((tt_get_ns() - start) / tt_MILLISECOND), slot->context_id,
-                  slot->alive ? 1 : 0, slot->kind, slot->qos, slot->name);
-    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
-        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->context_id != tt_CONTEXT_ID_INVALID) {
-            (void)fprintf(stderr, "  slot %u: node=%u alive=%d kind=%u name=%s\n", i, entity->context_id,
-                          entity->alive ? 1 : 0, entity->kind, entity->name);
-        }
-    }
-    tt_Context_unlock(&context_impl->tickle_context);
-    return ret;
-}
 
 static rmw_qos_profile_t base_qos(void) {
     rmw_qos_profile_t qos;
@@ -282,159 +250,38 @@ int main(void) {
 
     assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));
 
-    // -- RMW_EVENT_OFFERED_QOS_INCOMPATIBLE / RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE (Milestone
-    // 31/28(a) observability follow-on) - a real transition, not just a smoke test. Both events
-    // fundamentally need a *discovered* remote entity, the same real limit this file's own module
-    // doc comment already documents for LIVELINESS_CHANGED (this rmw's own one-node-per-process
-    // limit rules out a genuinely separate node) - but struct tt_Discovery/tt_DiscoveredEntity are
-    // public (rmw_tickle_c/rmw_tickle.h), the same header Milestone 30's own test_liveliness_lost_
-    // watchdog.c already reaches into directly for an equivalent reason (proving something no
-    // black-box rmw API call alone can induce). Injecting one synthetic discovered entity per
-    // event, straight into context_impl->discovery.entities[] under the node lock (the exact same
-    // table process_announce()/decode_update_entities() would populate from a real remote announce,
-    // tickle.c), is that same technique applied here: check_publisher_qos_incompatible()/check_
-    // subscription_qos_incompatible() (rmw_publisher.c/rmw_subscription.c) can't tell the
-    // difference between this and a genuine remote announce - both just read this same table.
-    // `pub` (created for RMW_EVENT_OFFERED_DEADLINE_MISSED above) is already destroyed by this
-    // point - a fresh Publisher for this block, same base_qos() (neither bit offered).
+    // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE / RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE. Since QoS plan D2 core judges a pair
+    // when the other side's announce is applied (or the local endpoint is created), so an entity written straight
+    // into the discovery table, as the matched count below does, raises nothing - and until D2 it was such an entity
+    // these blocks tested, read by a 1 s rescan that is gone. test_qos_incompatible_events.c checks the events between
+    // two processes. Here only the wiring: both initialise, and an endpoint that met no other side has counted nothing.
     rmw_qos_profile_t offered_pub_qos = base_qos();
     rmw_publisher_t* offered_pub =
         rmw_create_publisher(node, type_support, "offered_qos_pub_topic", &offered_pub_qos, &pub_opts);
     assert(NULL != offered_pub);
-
-    rmw_tickle_publisher_t* offered_pub_impl = (rmw_tickle_publisher_t*)offered_pub->data;
-    rmw_tickle_context_impl_t* context_impl = offered_pub_impl->node->context_impl;
-    // >= RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (rmw_publisher.c / rmw_subscription.c, both
-    // defined as tt_CONTEXT_UPDATE_INTERVAL) so the periodic check's own first firing after
-    // event_init() below has time to actually run.
-    //
-    // Derived rather than written as a number. It used to be a bare `{2, 0}` under a comment that
-    // named the constant it depends on and then did not use it, leaving exactly one period of
-    // slack: the wait has to cover a whole check period plus whatever that first firing costs, and
-    // at a 1 s period two seconds is two periods. test_liveliness_lost_watchdog.c carried the same
-    // shape and a check-gates run failed on it on 2026-10-04; the only difference here is that
-    // this one has not been seen to fail yet.
-    //
-    // Four periods is a bound on patience, not on the behaviour: a check that never fires fails
-    // this assertion however long it waits, and a passing run never reaches the bound, so the wall
-    // time does not change.
-    const uint64_t qos_wait_ns = 4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
-    rmw_time_t qos_wait_timeout = {qos_wait_ns / tt_SECOND, qos_wait_ns % tt_SECOND};
-
-    // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE: this Publisher offers neither RELIABLE nor TRANSIENT_
-    // LOCAL (base_qos()) - a discovered remote Subscriber requesting RELIABLE is incompatible.
+    rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_publisher_t*)offered_pub->data)->node->context_impl;
     rmw_event_t offered_qos_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_publisher_event_init(&offered_qos_event, offered_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
-
-    tt_Context_lock(&context_impl->tickle_context);
-    struct tt_DiscoveredEntity* sub_slot = &context_impl->discovery.entities[0];
-    sub_slot->context_id = FAKE_REMOTE_NODE_ID; // any value other than tt_CONTEXT_ID_INVALID - discovery never records
-                                                // this process's own local entities, so which remote id it names is
-                                                // inconsequential to the comparison itself (rmw_graph.c's own qos_
-                                                // incompatible(), matched purely by kind + topic name + qos bits)
-    sub_slot->endpoint_id = 0;                  // unused by the comparison - see rmw_graph.c
-    sub_slot->kind = tt_KIND_TOPIC_SUBSCRIBER;
-    sub_slot->qos = tt_UPDATE_QOS_RELIABLE;
-    sub_slot->alive = true;
-    snprintf(sub_slot->type, sizeof(sub_slot->type), "test_events/msg/FakeMsg");
-    snprintf(sub_slot->name, sizeof(sub_slot->name), "offered_qos_pub_topic");
-    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
-    tt_Context_unlock(&context_impl->tickle_context);
-
-    events_storage[0] = &offered_qos_event;
-    events.event_count = 1;
-    assert(RMW_RET_OK ==
-           wait_or_explain(&events, wait_set, &qos_wait_timeout, context_impl, sub_slot, "offered QoS incompatible"));
-    assert(NULL != events.events[0]);
-
     rmw_offered_qos_incompatible_event_status_t offered_qos_status;
     taken = false;
     assert(RMW_RET_OK == rmw_take_event(&offered_qos_event, &offered_qos_status, &taken));
-    assert(taken);
-    assert(offered_qos_status.total_count >= 1);
-    assert(offered_qos_status.total_count_change >= 1);
-    assert(RMW_QOS_POLICY_RELIABILITY == offered_qos_status.last_policy_kind);
-
+    assert(taken && 0 == offered_qos_status.total_count && 0 == offered_qos_status.total_count_change);
+    assert(RMW_RET_OK == rmw_event_fini(&offered_qos_event));
     assert(RMW_RET_OK == rmw_destroy_publisher(node, offered_pub));
 
-    // Milestone 49 (LIVELINESS RxO) - a fresh Publisher, offering AUTOMATIC (base_qos()) and
-    // otherwise compatible (RELIABLE/DURABLE both left at BEST_EFFORT/VOLATILE on both sides), but
-    // a discovered remote Subscriber requiring MANUAL_BY_TOPIC specifically must still be
-    // incompatible - this exercises rmw_graph.c's own new offered_manual/requested_manual
-    // comparison path, not just the RELIABILITY one the block above already proved end to end.
-    rmw_publisher_t* liveliness_pub =
-        rmw_create_publisher(node, type_support, "offered_liveliness_pub_topic", &offered_pub_qos, &pub_opts);
-    assert(NULL != liveliness_pub);
-
-    rmw_event_t liveliness_offered_event = rmw_get_zero_initialized_event();
-    assert(RMW_RET_OK ==
-           rmw_publisher_event_init(&liveliness_offered_event, liveliness_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
-
-    tt_Context_lock(&context_impl->tickle_context);
-    struct tt_DiscoveredEntity* manual_sub_slot = &context_impl->discovery.entities[2];
-    manual_sub_slot->context_id = FAKE_REMOTE_NODE_ID;
-    manual_sub_slot->endpoint_id = 0;
-    manual_sub_slot->kind = tt_KIND_TOPIC_SUBSCRIBER;
-    manual_sub_slot->qos = tt_UPDATE_QOS_LIVELINESS_MANUAL; // requests MANUAL_BY_TOPIC - RELIABLE/DURABLE not requested
-    manual_sub_slot->alive = true;
-    snprintf(manual_sub_slot->type, sizeof(manual_sub_slot->type), "test_events/msg/FakeMsg");
-    snprintf(manual_sub_slot->name, sizeof(manual_sub_slot->name), "offered_liveliness_pub_topic");
-    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
-    tt_Context_unlock(&context_impl->tickle_context);
-
-    events_storage[0] = &liveliness_offered_event;
-    events.event_count = 1;
-    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &qos_wait_timeout));
-    assert(NULL != events.events[0]);
-
-    rmw_offered_qos_incompatible_event_status_t liveliness_offered_status;
-    taken = false;
-    assert(RMW_RET_OK == rmw_take_event(&liveliness_offered_event, &liveliness_offered_status, &taken));
-    assert(taken);
-    assert(liveliness_offered_status.total_count >= 1);
-    assert(RMW_QOS_POLICY_LIVELINESS == liveliness_offered_status.last_policy_kind);
-
-    assert(RMW_RET_OK == rmw_destroy_publisher(node, liveliness_pub));
-
-    // RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE - the Subscription-side counterpart, same technique,
-    // opposite direction: this Subscription requests RELIABLE, a discovered remote Publisher
-    // offering neither bit is incompatible.
     rmw_qos_profile_t requested_sub_qos = base_qos();
     requested_sub_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
     rmw_subscription_t* requested_sub =
         rmw_create_subscription(node, type_support, "requested_qos_sub_topic", &requested_sub_qos, &sub_opts);
     assert(NULL != requested_sub);
-
     rmw_event_t requested_qos_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK ==
            rmw_subscription_event_init(&requested_qos_event, requested_sub, RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE));
-
-    tt_Context_lock(&context_impl->tickle_context);
-    struct tt_DiscoveredEntity* pub_slot = &context_impl->discovery.entities[1];
-    pub_slot->context_id = FAKE_REMOTE_NODE_ID;
-    pub_slot->endpoint_id = 0;
-    pub_slot->kind = tt_KIND_TOPIC_PUBLISHER;
-    pub_slot->qos = 0; // offers neither bit
-    pub_slot->alive = true;
-    snprintf(pub_slot->type, sizeof(pub_slot->type), "test_events/msg/FakeMsg");
-    snprintf(pub_slot->name, sizeof(pub_slot->name), "requested_qos_sub_topic");
-    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
-    tt_Context_unlock(&context_impl->tickle_context);
-
-    events_storage[0] = &requested_qos_event;
-    events.event_count = 1;
-    assert(RMW_RET_OK ==
-           wait_or_explain(&events, wait_set, &qos_wait_timeout, context_impl, pub_slot, "requested QoS incompatible"));
-    assert(NULL != events.events[0]);
-
     rmw_requested_qos_incompatible_event_status_t requested_qos_status;
     taken = false;
     assert(RMW_RET_OK == rmw_take_event(&requested_qos_event, &requested_qos_status, &taken));
-    assert(taken);
-    assert(requested_qos_status.total_count >= 1);
-    assert(requested_qos_status.total_count_change >= 1);
-    assert(RMW_QOS_POLICY_RELIABILITY == requested_qos_status.last_policy_kind);
-
+    assert(taken && 0 == requested_qos_status.total_count && 0 == requested_qos_status.total_count_change);
+    assert(RMW_RET_OK == rmw_event_fini(&requested_qos_event));
     assert(RMW_RET_OK == rmw_destroy_subscription(node, requested_sub));
 
     // rmw_publisher_count_matched_subscriptions() (2026-09-26): a discovered remote Subscription is matched
