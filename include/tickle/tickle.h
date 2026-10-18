@@ -1777,6 +1777,8 @@ struct tt_QosMatched {
 // Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
 tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
                                struct tt_QosProfile* actual);
+// Field by field (the struct has padding, so memcmp() is not a comparison). NULL equals only NULL.
+bool tt_QosProfile_equal(const struct tt_QosProfile* a, const struct tt_QosProfile* b);
 
 struct tt_Service;
 struct tt_Client;
@@ -3563,6 +3565,50 @@ tt_ret_t tt_Node_create_client_legacy(struct tt_Node* node, struct tt_Client* cl
                                       const char* endpoint_name, tt_CLIENT_CALLBACK callback);
 tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
                                       const char* endpoint_name, tt_SERVER_CALLBACK callback);
+// ---- Creating an endpoint with its QoS (docs/DESIGN.md section 9). The QoS, the options and the storage are given at
+// creation and only then; the profile is resolved by tt_QosProfile_resolve() against what discovery shows (for
+// BEST_AVAILABLE) and applied before the endpoint is first announced. `qos` NULL is the zeroed profile - for a Client
+// or Server, tt_QOS_PROFILE_SERVICES_DEFAULT; `options` NULL is a zeroed struct, which a Subscriber, Client and Server
+// cannot take (their callback is required). `type`/`service`, `topic_name`/`service_name` and `storage` are kept, not
+// copied, and must outlive the endpoint, as for the deprecated creates. One context is still single-threaded.
+//
+// Storage: the caller's, 8-byte aligned, at least tt_*_storage_size() bytes, and not touched by anything else until
+// the endpoint is destroyed. A profile that needs storage - any RELIABLE or TRANSIENT_LOCAL Publisher, so the
+// default one; a RELIABLE Subscriber with reorder slots (the default) or a tracking window other than the builtin -
+// fails with tt_RET_INVALID_ARGUMENT without it (D7: never a silent BEST_EFFORT). The sizes assume the strict choice
+// of every BEST_AVAILABLE. They are 0 when nothing is needed, and for a profile tt_QosProfile_resolve() refuses.
+// A Publisher sizes for history.depth samples of the type's largest (max_encoded_size, or tt_MAX_SAMPLE_LENGTH),
+// capped at history.bytes: when the cap keeps fewer, creation warns and tt_Publisher_get_actual_qos() says how many.
+//
+// Returns tt_RET_OK; tt_RET_INVALID_ARGUMENT for a NULL or uncreated node, a NULL argument, a profile the resolution
+// refuses, storage that is missing, short or misaligned, or a periodic HEARTBEAT or solicitation asked of a Publisher
+// that retains nothing; otherwise what the deprecated creates return (a full endpoint table, a full scheduler).
+size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos);
+size_t tt_Subscriber_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos);
+size_t tt_Client_storage_size(const struct tt_ClientOptions* options); // 0 unless max_request_bytes is set
+size_t tt_Server_storage_size(const struct tt_ServerOptions* options); // 0 unless max_response_bytes is set
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_TypeSupport* type,
+                                  const char* topic_name, const struct tt_QosProfile* qos,
+                                  const struct tt_PublisherOptions* options, void* storage, size_t storage_size);
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, const struct tt_TypeSupport* type,
+                                   const char* topic_name, const struct tt_QosProfile* qos,
+                                   const struct tt_SubscriberOptions* options, void* storage, size_t storage_size);
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* service_name, const struct tt_QosProfile* qos,
+                               const struct tt_ClientOptions* options, void* storage, size_t storage_size);
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* service_name, const struct tt_QosProfile* qos,
+                               const struct tt_ServerOptions* options, void* storage, size_t storage_size);
+
+// The QoS an endpoint runs with, resolved: what the hot fields hold now, not what was asked - BEST_AVAILABLE decided,
+// zeros made their defaults, a Publisher's depth as many of its largest samples as history.bytes keeps. Resolving it
+// again with tt_QosProfile_resolve() gives it back. For an endpoint of the deprecated creates it reports what its
+// fields say, with 0 where nothing records a value (a Publisher's max_blocking_ns, a Subscriber's history bytes).
+// tt_RET_INVALID_ARGUMENT for a NULL argument or an endpoint never created.
+tt_ret_t tt_Publisher_get_actual_qos(const struct tt_Publisher* pub, struct tt_QosProfile* out);
+tt_ret_t tt_Subscriber_get_actual_qos(const struct tt_Subscriber* sub, struct tt_QosProfile* out);
+tt_ret_t tt_Client_get_actual_qos(const struct tt_Client* client, struct tt_QosProfile* out);
+tt_ret_t tt_Server_get_actual_qos(const struct tt_Server* server, struct tt_QosProfile* out);
 // Runs `function` at `time` from inside tt_Context_poll(). Callable from any thread. When a poll is blocked
 // waiting for something later than `time`, this wakes it (that poll returns tt_RET_INTERRUPTED and the
 // caller's next poll runs the entry on time); no tt_Context_interrupt() is needed.

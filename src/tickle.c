@@ -5848,6 +5848,20 @@ static tt_ret_t qos_resolve_liveliness(const struct tt_QosLiveliness* requested,
     return tt_RET_OK;
 }
 
+bool tt_QosProfile_equal(const struct tt_QosProfile* a, const struct tt_QosProfile* b) {
+    if (a == NULL || b == NULL) {
+        return a == b;
+    }
+    return a->history.kind == b->history.kind && a->history.depth == b->history.depth &&
+           a->history.bytes == b->history.bytes && a->reliability.kind == b->reliability.kind &&
+           a->reliability.tracking_words == b->reliability.tracking_words &&
+           a->reliability.reorder_slots == b->reliability.reorder_slots &&
+           a->reliability.max_blocking_ns == b->reliability.max_blocking_ns &&
+           a->durability.kind == b->durability.kind && a->deadline.period_ns == b->deadline.period_ns &&
+           a->lifespan.duration_ns == b->lifespan.duration_ns && a->liveliness.kind == b->liveliness.kind &&
+           a->liveliness.lease_ns == b->liveliness.lease_ns;
+}
+
 tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
                                struct tt_QosProfile* actual) {
     static const struct tt_QosProfile zeroed;
@@ -11449,6 +11463,561 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
+    return result;
+}
+
+// ---- Creation with a QoS profile (tickle.h, "QoS"): tt_Node_create_publisher() and its siblings, the storage sizes
+// they need, and the actual QoS they report. The profile is resolved once, at creation, INTO the endpoint's existing
+// fields (reliable, durable, keep_all, liveliness_manual, the durations, the cache and the reorder buffer), so the hot
+// path reads exactly what it read before; only what no field held is appended (tt_Publisher.qos_*).
+
+#define QOS_ALIGN8(n) (((n) + 7U) & ~(size_t)7U)
+
+// `offset` bytes into the caller's storage, as a pointer the caller's part is assigned from without a cast.
+static void* qos_carve(void* storage, size_t offset) {
+    return (uint8_t*)storage + offset;
+}
+
+static uint16_t subscriber_tracking_words(const struct tt_Subscriber* sub); // the window it runs with
+
+static void qos_match_one(struct tt_QosMatched* matched, const struct tt_DiscoveredEntity* entity) {
+    matched->count++;
+    matched->all_reliable = matched->all_reliable && (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+    matched->all_durable = matched->all_durable && (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+    matched->all_manual = matched->all_manual && (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
+}
+
+// The larger of the two (take_max) or the smaller.
+static uint64_t qos_bound(bool take_max, uint64_t bound, uint64_t value) {
+    if (take_max) {
+        return value > bound ? value : bound;
+    }
+    return value < bound ? value : bound;
+}
+
+// What discovery shows on `topic_name` of the side opposite `kind`, for the BEST_AVAILABLE policies - rmw_tickle's
+// rules (rmw_qos.c): alive entities only; a Subscriber takes the largest Publisher deadline and lease, a Publisher the
+// smallest Subscriber one, and an unbounded (0) one wins a max and never a min.
+static void qos_gather_matched(const struct tt_Context* context, uint8_t kind, const char* topic_name,
+                               struct tt_QosMatched* matched) {
+    memset(matched, 0, sizeof(*matched));
+    matched->all_reliable = true;
+    matched->all_durable = true;
+    matched->all_manual = true;
+    if (context->discovery == NULL || (kind != tt_KIND_TOPIC_PUBLISHER && kind != tt_KIND_TOPIC_SUBSCRIBER)) {
+        return;
+    }
+    bool take_max = kind == tt_KIND_TOPIC_SUBSCRIBER;
+    uint8_t opposite = take_max ? tt_KIND_TOPIC_PUBLISHER : tt_KIND_TOPIC_SUBSCRIBER;
+    uint64_t deadline = take_max ? 0 : UINT64_MAX;
+    uint64_t lease = deadline;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        const struct tt_DiscoveredEntity* entity = &context->discovery->entities[i];
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != opposite ||
+            strcmp(entity->name, topic_name) != 0) {
+            continue;
+        }
+        qos_match_one(matched, entity);
+        deadline = qos_bound(take_max, deadline, qos_or_default64(entity->deadline_duration_ns, UINT64_MAX));
+        lease = qos_bound(take_max, lease, qos_or_default64(entity->liveliness_lease_duration_ns, UINT64_MAX));
+    }
+    matched->deadline_ns = deadline; // UINT64_MAX is tt_QOS_DURATION_INFINITE
+    matched->lease_ns = lease;
+}
+
+// The CDR bytes one sample of `type` can take in a datagram-borne sample: its bound, or the largest such sample.
+static uint32_t qos_type_max_cdr(const struct tt_TypeSupport* type) {
+    return type->max_encoded_size != 0 && type->max_encoded_size < (uint32_t)tt_MAX_SAMPLE_LENGTH
+               ? type->max_encoded_size
+               : (uint32_t)tt_MAX_SAMPLE_LENGTH;
+}
+
+// infinite (tt_QOS_DURATION_INFINITE) <-> the hot fields' 0 = "none".
+static uint64_t qos_to_field(uint64_t duration_ns) {
+    return duration_ns == tt_QOS_DURATION_INFINITE ? 0 : duration_ns;
+}
+
+static uint64_t qos_from_field(uint64_t field_ns) {
+    return field_ns == 0 ? tt_QOS_DURATION_INFINITE : field_ns;
+}
+
+// A Publisher's retained-sample storage, laid out in one caller block: the cache, its index ring, its byte arena.
+struct publisher_layout {
+    bool cached;         // RELIABLE or TRANSIENT_LOCAL: the Publisher retains samples
+    uint32_t record;     // arena bytes one sample of the largest size takes
+    uint16_t ring;       // index slots: datagrams, (depth + 1) of the largest sample's
+    uint32_t arena;      // history.bytes, never below one record and never above (depth + 1) records
+    uint32_t depth_kept; // samples of the largest size the arena keeps: depth, or fewer when history.bytes caps it
+    size_t total;        // bytes of caller storage, 0 when nothing is retained
+};
+
+static void publisher_layout_of(const struct tt_TypeSupport* type, const struct tt_QosProfile* actual,
+                                struct publisher_layout* layout) {
+    memset(layout, 0, sizeof(*layout));
+    layout->cached = actual->reliability.kind == tt_QOS_RELIABILITY_RELIABLE ||
+                     actual->durability.kind == tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    layout->depth_kept = actual->history.depth;
+    if (!layout->cached) {
+        return;
+    }
+    uint32_t max_cdr = qos_type_max_cdr(type);
+    layout->record = tt_sample_cache_bytes(max_cdr);
+    uint64_t full = ((uint64_t)actual->history.depth + 1U) * layout->record;
+    uint64_t arena = full < actual->history.bytes ? full : actual->history.bytes;
+    layout->arena = (uint32_t)(arena > layout->record ? arena : layout->record);
+    uint64_t ring = ((uint64_t)actual->history.depth + 1U) * tt_sample_datagrams(max_cdr);
+    layout->ring = (uint16_t)(ring < UINT16_MAX ? ring : UINT16_MAX);
+    // (depth + 1) records hold depth samples: one record's room is the wrap slack (tt_RELIABLE_CACHE_ARENA_BYTES).
+    uint32_t fit = layout->arena / layout->record;
+    uint32_t kept = fit > 1 ? fit - 1 : 1;
+    layout->depth_kept = kept < actual->history.depth ? kept : actual->history.depth;
+    layout->total = QOS_ALIGN8(sizeof(struct tt_ReliableCache)) +
+                    QOS_ALIGN8((size_t)layout->ring * sizeof(struct tt_ReliableCacheIndex)) +
+                    QOS_ALIGN8((size_t)layout->arena);
+}
+
+// A Subscriber's: its ACK tracking window when wider or narrower than the builtin one, and its reorder buffer.
+struct subscriber_layout {
+    size_t tracking_bytes; // 0: the builtin window (tt_Subscriber.builtin_tracking)
+    uint16_t slot_bytes;   // reorder stride, 0 without a buffer
+    size_t reorder_bytes;
+    size_t total;
+};
+
+static void subscriber_layout_of(const struct tt_TypeSupport* type, const struct tt_QosProfile* actual,
+                                 struct subscriber_layout* layout) {
+    memset(layout, 0, sizeof(*layout));
+    if (actual->reliability.tracking_words != tt_RELIABLE_BITMAP_WORDS) {
+        layout->tracking_bytes = (size_t)tt_MAX_PEER_COUNT * actual->reliability.tracking_words * sizeof(uint64_t);
+    }
+    uint16_t slots = actual->reliability.reorder_slots;
+    if (slots != 0 && slots != tt_QOS_REORDER_NONE) {
+        // A slot holds one datagram's payload at most: a larger sample is held a fragment per slot (DESIGN.md section
+        // 8). The stride is 16 bits.
+        uint32_t payload = qos_type_max_cdr(type);
+        payload = payload < (uint32_t)tt_CONTROL_MAX_LENGTH ? payload : (uint32_t)tt_CONTROL_MAX_LENGTH;
+        const uint32_t widest = UINT16_MAX - (uint32_t)sizeof(struct tt_ReorderSlot) - 7U;
+        payload = payload < widest ? payload : widest;
+        layout->slot_bytes = (uint16_t)tt_REORDER_SLOT_SIZE(payload);
+        layout->reorder_bytes = (size_t)slots * layout->slot_bytes;
+    }
+    layout->total = QOS_ALIGN8(layout->tracking_bytes) + QOS_ALIGN8(layout->reorder_bytes);
+}
+
+// Caller storage for a Client's outstanding requests or a Server's cached responses: per call / per entry, the
+// submessage, its call header and the largest body, 8-aligned.
+static size_t client_storage_of(const struct tt_ClientOptions* options) {
+    if (options == NULL || options->max_request_bytes == 0) {
+        return 0;
+    }
+    return (size_t)tt_CLIENT_MAX_OUTSTANDING *
+           QOS_ALIGN8(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader) +
+                      (size_t)options->max_request_bytes);
+}
+
+static size_t server_entry_of(const struct tt_ServerOptions* options) {
+    if (options == NULL || options->max_response_bytes == 0) {
+        return 0;
+    }
+    return QOS_ALIGN8(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader) +
+                      (size_t)options->max_response_bytes);
+}
+
+size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+    struct tt_QosProfile actual;
+    if (type == NULL || tt_QosProfile_resolve(qos, tt_KIND_TOPIC_PUBLISHER, NULL, &actual) != tt_RET_OK) {
+        return 0;
+    }
+    struct publisher_layout layout;
+    publisher_layout_of(type, &actual, &layout);
+    return layout.total;
+}
+
+size_t tt_Subscriber_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+    struct tt_QosProfile actual;
+    if (type == NULL || tt_QosProfile_resolve(qos, tt_KIND_TOPIC_SUBSCRIBER, NULL, &actual) != tt_RET_OK) {
+        return 0;
+    }
+    struct subscriber_layout layout;
+    subscriber_layout_of(type, &actual, &layout);
+    return layout.total;
+}
+
+size_t tt_Client_storage_size(const struct tt_ClientOptions* options) {
+    return client_storage_of(options);
+}
+
+size_t tt_Server_storage_size(const struct tt_ServerOptions* options) {
+    return (size_t)tt_MAX_SERVER_CACHE_COUNT * server_entry_of(options);
+}
+
+// Storage the caller handed over: enough of it, and 8-aligned (every part starts with a uint64_t or a pointer).
+static bool qos_storage_fits(const void* storage, size_t storage_size, size_t needed) {
+    if (needed == 0) {
+        return true;
+    }
+    return storage != NULL && storage_size >= needed && ((uintptr_t)storage % 8U) == 0;
+}
+
+static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct tt_Publisher* pub,
+                                                 const struct tt_TypeSupport* type, const char* topic_name,
+                                                 const struct tt_QosProfile* qos,
+                                                 const struct tt_PublisherOptions* options, void* storage,
+                                                 size_t storage_size) {
+    struct tt_Context* node = owner->context;
+    if (type == NULL || topic_name == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    static const struct tt_PublisherOptions no_options;
+    const struct tt_PublisherOptions* opts = options != NULL ? options : &no_options;
+    struct tt_QosMatched matched;
+    qos_gather_matched(node, tt_KIND_TOPIC_PUBLISHER, topic_name, &matched);
+    struct tt_QosProfile actual;
+    tt_ret_t result = tt_QosProfile_resolve(qos, tt_KIND_TOPIC_PUBLISHER, &matched, &actual);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    struct publisher_layout layout;
+    publisher_layout_of(type, &actual, &layout);
+    // D7: no silent fall back to BEST_EFFORT. Periodic HEARTBEAT and solicitation need the cache too.
+    if (!qos_storage_fits(storage, storage_size, layout.total) ||
+        (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0))) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    result = publisher_reset(node, pub, type, topic_name);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+
+    pub->reliable = actual.reliability.kind == tt_QOS_RELIABILITY_RELIABLE;
+    pub->durable = actual.durability.kind == tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    pub->keep_all = actual.history.kind == tt_QOS_HISTORY_KEEP_ALL && pub->reliable; // blocking needs acks
+    pub->liveliness_manual = actual.liveliness.kind == tt_QOS_LIVELINESS_MANUAL_BY_TOPIC;
+    pub->deadline_duration_ns = qos_to_field(actual.deadline.period_ns);
+    pub->lifespan_duration_ns = qos_to_field(actual.lifespan.duration_ns);
+    pub->liveliness_lease_duration_ns = qos_to_field(actual.liveliness.lease_ns);
+    pub->qos_max_blocking_ns = actual.reliability.max_blocking_ns;
+    pub->qos_history_kind = (uint8_t)actual.history.kind;
+    pub->qos_history_depth = layout.depth_kept;
+    pub->qos_history_bytes = layout.cached ? layout.arena : actual.history.bytes;
+    if (layout.cached) {
+        const size_t index_offset = QOS_ALIGN8(sizeof(struct tt_ReliableCache));
+        struct tt_ReliableCache* cache = qos_carve(storage, 0);
+        struct tt_ReliableCacheIndex* index = qos_carve(storage, index_offset);
+        uint8_t* arena =
+            qos_carve(storage, index_offset + QOS_ALIGN8((size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex)));
+        memset(index, 0, (size_t)layout.ring * sizeof(struct tt_ReliableCacheIndex));
+        result = tt_ReliableCache_init(cache, index, layout.ring, arena, layout.arena);
+        if (result != tt_RET_OK) {
+            return result;
+        }
+        cache->arena_limit = layout.arena;
+        // KEEP_LAST bounds what it keeps in samples; KEEP_ALL never evicts, it refuses (tt_RET_WOULD_BLOCK).
+        cache->sample_depth = actual.history.kind == tt_QOS_HISTORY_KEEP_LAST ? (uint16_t)actual.history.depth : 0;
+        pub->reliable_cache = cache;
+        if (layout.depth_kept < actual.history.depth) { // D10: said at creation, and reported by get_actual_qos
+            unsigned long long needed = ((unsigned long long)actual.history.depth + 1U) * layout.record;
+            TT_LOG_WARNING("Publisher %s: history depth %u of %u-byte samples needs %llu bytes, history.bytes %u "
+                           "keeps %u of them",
+                           topic_name, (unsigned)actual.history.depth, (unsigned)qos_type_max_cdr(type), needed,
+                           (unsigned)actual.history.bytes, (unsigned)layout.depth_kept);
+        }
+    }
+
+    pub->batch = opts->batch;
+    pub->heartbeat_piggyback_every = opts->heartbeat_piggyback_every;
+    pub->ack_solicit_watermark_pct = opts->ack_solicit_watermark_pct;
+    pub->writable_callback = opts->writable_callback;
+    pub->writable_callback_param = opts->writable_callback_param;
+    pub->cache_grow = opts->cache_grow;
+    if (opts->idle_heartbeat_ns != 0) {
+        pub->idle_heartbeat_ns = opts->idle_heartbeat_ns == tt_QOS_DURATION_INFINITE ? 0 : opts->idle_heartbeat_ns;
+    }
+
+    // Every announced field is final before the endpoint is added: an announce in between would go out with a
+    // generation that the corrected one cannot replace (rmw_publisher.c says how that once cost a match).
+    result = register_endpoint_locked(node, (struct tt_Endpoint*)pub, owner, true);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    result = publisher_set_heartbeat_period_locked(pub, opts->heartbeat_period_ns);
+    if (result == tt_RET_OK) {
+        result = publisher_set_ack_solicit_period_locked(pub, opts->ack_solicit_period_ns);
+    }
+    if (result != tt_RET_OK) {
+        (void)publisher_destroy_locked(pub);
+    }
+    return result;
+}
+
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_TypeSupport* type,
+                                  const char* topic_name, const struct tt_QosProfile* qos,
+                                  const struct tt_PublisherOptions* options, void* storage, size_t storage_size) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result =
+        node_create_publisher_qos_locked(node, pub, type, topic_name, qos, options, storage, storage_size);
+    state_unlock(node->context);
+    return result;
+}
+
+static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct tt_Subscriber* sub,
+                                                  const struct tt_TypeSupport* type, const char* topic_name,
+                                                  const struct tt_QosProfile* qos,
+                                                  const struct tt_SubscriberOptions* options, void* storage,
+                                                  size_t storage_size) {
+    struct tt_Context* node = owner->context;
+    if (type == NULL || topic_name == NULL || options == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // options: the callback is required
+    }
+    struct tt_QosMatched matched;
+    qos_gather_matched(node, tt_KIND_TOPIC_SUBSCRIBER, topic_name, &matched);
+    struct tt_QosProfile actual;
+    tt_ret_t result = tt_QosProfile_resolve(qos, tt_KIND_TOPIC_SUBSCRIBER, &matched, &actual);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    struct subscriber_layout layout;
+    subscriber_layout_of(type, &actual, &layout);
+    if (!qos_storage_fits(storage, storage_size, layout.total)) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    result = subscriber_reset(node, sub, type, topic_name, options->callback);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+
+    sub->reliable = actual.reliability.kind == tt_QOS_RELIABILITY_RELIABLE;
+    sub->durable = actual.durability.kind == tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    sub->liveliness_manual = actual.liveliness.kind == tt_QOS_LIVELINESS_MANUAL_BY_TOPIC;
+    sub->deadline_duration_ns = qos_to_field(actual.deadline.period_ns);
+    sub->liveliness_lease_duration_ns = qos_to_field(actual.liveliness.lease_ns);
+    // KEEP_LAST lets the segment drain pass over a sample with depth newer ones behind it; KEEP_ALL never does.
+    sub->keep_last_depth =
+        actual.history.kind == tt_QOS_HISTORY_KEEP_LAST ? (uint16_t)actual.history.depth : (uint16_t)0;
+    sub->accept_callback = options->accept_callback;
+    sub->accept_callback_param = options->accept_callback_param;
+    sub->qos_lifespan_ns = actual.lifespan.duration_ns;
+    sub->qos_history_kind = (uint8_t)actual.history.kind;
+    sub->qos_history_depth = actual.history.depth;
+    sub->qos_history_bytes = actual.history.bytes;
+    if (layout.tracking_bytes != 0) {
+        sub->tracking_bitmaps = qos_carve(storage, 0);
+        sub->tracking_words = actual.reliability.tracking_words;
+        memset(sub->tracking_bitmaps, 0, layout.tracking_bytes);
+    }
+    if (layout.reorder_bytes != 0) {
+        sub->reorder_storage = qos_carve(storage, QOS_ALIGN8(layout.tracking_bytes));
+        sub->reorder_slots = actual.reliability.reorder_slots;
+        sub->reorder_slot_bytes = layout.slot_bytes;
+        memset(sub->reorder_storage, 0, layout.reorder_bytes);
+    }
+    return register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
+}
+
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, const struct tt_TypeSupport* type,
+                                   const char* topic_name, const struct tt_QosProfile* qos,
+                                   const struct tt_SubscriberOptions* options, void* storage, size_t storage_size) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result =
+        node_create_subscriber_qos_locked(node, sub, type, topic_name, qos, options, storage, storage_size);
+    state_unlock(node->context);
+    return result;
+}
+
+static tt_ret_t node_create_client_qos_locked(struct tt_Node* owner, struct tt_Client* client,
+                                              struct tt_Service* service, const char* service_name,
+                                              const struct tt_QosProfile* qos, const struct tt_ClientOptions* options,
+                                              void* storage, size_t storage_size) {
+    struct tt_Context* node = owner->context;
+    if (options == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // the callback is required
+    }
+    struct tt_QosProfile actual;
+    tt_ret_t result = tt_QosProfile_resolve(qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
+                                            tt_KIND_SERVICE_CLIENT, NULL, &actual);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    size_t needed = client_storage_of(options);
+    if (!qos_storage_fits(storage, storage_size, needed) || needed > UINT32_MAX) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    result = client_reset(node, client, service, service_name, options->callback);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    client->call_retry_own = true;
+    client->call_retry_interval = options->call_retry_interval;
+    client->call_retry_count = options->call_retry_count;
+    client->qos = actual;
+    if (needed != 0) {
+        result = client_set_storage_locked(client, (uint8_t*)storage, (uint32_t)needed);
+        if (result != tt_RET_OK) {
+            return result;
+        }
+    }
+    return register_endpoint_locked(node, (struct tt_Endpoint*)client, owner, true);
+}
+
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* service_name, const struct tt_QosProfile* qos,
+                               const struct tt_ClientOptions* options, void* storage, size_t storage_size) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result =
+        node_create_client_qos_locked(node, client, service, service_name, qos, options, storage, storage_size);
+    state_unlock(node->context);
+    return result;
+}
+
+static tt_ret_t node_create_server_qos_locked(struct tt_Node* owner, struct tt_Server* server,
+                                              struct tt_Service* service, const char* service_name,
+                                              const struct tt_QosProfile* qos, const struct tt_ServerOptions* options,
+                                              void* storage, size_t storage_size) {
+    struct tt_Context* node = owner->context;
+    if (options == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // the callback is required
+    }
+    struct tt_QosProfile actual;
+    tt_ret_t result = tt_QosProfile_resolve(qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
+                                            tt_KIND_SERVICE_SERVER, NULL, &actual);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    size_t entry = server_entry_of(options);
+    if (!qos_storage_fits(storage, storage_size, entry * tt_MAX_SERVER_CACHE_COUNT) || entry > UINT32_MAX) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    result = server_reset(node, server, service, service_name, options->callback);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    server->qos = actual;
+    if (entry != 0) {
+        result = server_set_storage_locked(server, (uint8_t*)storage, (uint32_t)entry);
+        if (result != tt_RET_OK) {
+            return result;
+        }
+    }
+    return register_endpoint_locked(node, (struct tt_Endpoint*)server, owner, false);
+}
+
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* service_name, const struct tt_QosProfile* qos,
+                               const struct tt_ServerOptions* options, void* storage, size_t storage_size) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result =
+        node_create_server_qos_locked(node, server, service, service_name, qos, options, storage, storage_size);
+    state_unlock(node->context);
+    return result;
+}
+
+// ---- The actual QoS: read back from the fields the endpoint runs on, so a deprecated create, or a caller that wrote
+// a field after it, still reports what is real.
+
+static void publisher_actual_qos_locked(const struct tt_Publisher* pub, struct tt_QosProfile* out) {
+    memset(out, 0, sizeof(*out));
+    const struct tt_ReliableCache* cache = pub->reliable_cache;
+    // A deprecated create records no history: it is read from keep_all and the cache.
+    out->history.kind = pub->keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST;
+    if (pub->qos_history_kind != 0) {
+        out->history.kind = (enum tt_QosHistoryKind)pub->qos_history_kind;
+    }
+    uint32_t cache_depth = 0;
+    uint32_t cache_bytes = 0;
+    if (cache != NULL) {
+        cache_depth = qos_or_default(cache->sample_depth, cache->depth);
+        cache_bytes = cache->arena_size;
+    }
+    out->history.depth = qos_or_default(pub->qos_history_depth, cache_depth);
+    out->history.bytes = qos_or_default(pub->qos_history_bytes, cache_bytes);
+    out->reliability.kind = pub->reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT;
+    out->reliability.max_blocking_ns = pub->qos_max_blocking_ns;
+    out->durability.kind = pub->durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
+    out->deadline.period_ns = qos_from_field(pub->deadline_duration_ns);
+    out->lifespan.duration_ns = qos_from_field(pub->lifespan_duration_ns);
+    out->liveliness.kind = pub->liveliness_manual ? tt_QOS_LIVELINESS_MANUAL_BY_TOPIC : tt_QOS_LIVELINESS_AUTOMATIC;
+    out->liveliness.lease_ns = qos_from_field(pub->liveliness_lease_duration_ns);
+}
+
+tt_ret_t tt_Publisher_get_actual_qos(const struct tt_Publisher* pub, struct tt_QosProfile* out) {
+    if (pub == NULL || out == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(pub->node);
+    publisher_actual_qos_locked(pub, out);
+    state_unlock(pub->node);
+    return tt_RET_OK;
+}
+
+static void subscriber_actual_qos_locked(const struct tt_Subscriber* sub, struct tt_QosProfile* out) {
+    memset(out, 0, sizeof(*out));
+    bool keep_all = sub->qos_history_kind == (uint8_t)tt_QOS_HISTORY_KEEP_ALL;
+    out->history.kind = keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST;
+    out->history.depth = sub->qos_history_depth != 0 ? sub->qos_history_depth : sub->keep_last_depth;
+    out->history.bytes = sub->qos_history_bytes;
+    out->reliability.kind = sub->reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT;
+    out->reliability.tracking_words = subscriber_tracking_words(sub);
+    // A RELIABLE Subscriber without a buffer reports tt_QOS_REORDER_NONE, which resolves back to itself.
+    if (sub->reliable) {
+        out->reliability.reorder_slots =
+            sub->reorder_storage != NULL ? sub->reorder_slots : (uint16_t)tt_QOS_REORDER_NONE;
+    }
+    out->durability.kind = sub->durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE;
+    out->deadline.period_ns = qos_from_field(sub->deadline_duration_ns);
+    out->lifespan.duration_ns = sub->qos_lifespan_ns != 0 ? sub->qos_lifespan_ns : tt_QOS_DURATION_INFINITE;
+    out->liveliness.kind = sub->liveliness_manual ? tt_QOS_LIVELINESS_MANUAL_BY_TOPIC : tt_QOS_LIVELINESS_AUTOMATIC;
+    out->liveliness.lease_ns = qos_from_field(sub->liveliness_lease_duration_ns);
+}
+
+tt_ret_t tt_Subscriber_get_actual_qos(const struct tt_Subscriber* sub, struct tt_QosProfile* out) {
+    if (sub == NULL || out == NULL || sub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(sub->node);
+    subscriber_actual_qos_locked(sub, out);
+    state_unlock(sub->node);
+    return tt_RET_OK;
+}
+
+// A service endpoint's QoS changes nothing on its fields yet (D6, plan step 7), so it is kept whole. A deprecated
+// create left it zeroed: that is the services default.
+static tt_ret_t service_actual_qos(const struct tt_QosProfile* kept, uint8_t kind, struct tt_QosProfile* out) {
+    if (kept->history.kind == tt_QOS_HISTORY_SYSTEM_DEFAULT) {
+        return tt_QosProfile_resolve(&tt_QOS_PROFILE_SERVICES_DEFAULT, kind, NULL, out);
+    }
+    *out = *kept;
+    return tt_RET_OK;
+}
+
+tt_ret_t tt_Client_get_actual_qos(const struct tt_Client* client, struct tt_QosProfile* out) {
+    if (client == NULL || out == NULL || client->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(client->node);
+    tt_ret_t result = service_actual_qos(&client->qos, tt_KIND_SERVICE_CLIENT, out);
+    state_unlock(client->node);
+    return result;
+}
+
+tt_ret_t tt_Server_get_actual_qos(const struct tt_Server* server, struct tt_QosProfile* out) {
+    if (server == NULL || out == NULL || server->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(server->node);
+    tt_ret_t result = service_actual_qos(&server->qos, tt_KIND_SERVICE_SERVER, out);
+    state_unlock(server->node);
     return result;
 }
 
