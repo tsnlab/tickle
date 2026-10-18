@@ -11566,6 +11566,15 @@ static void publisher_layout_of(const struct tt_TypeSupport* type, const struct 
     uint64_t arena = full < actual->history.bytes ? full : actual->history.bytes;
     layout->arena = (uint32_t)(arena > layout->record ? arena : layout->record);
     uint64_t ring = ((uint64_t)actual->history.depth + 1U) * tt_sample_datagrams(max_cdr);
+    // No more slots than the arena can fill: per sample its first record and a short last one, plus one full
+    // continuation per fragment payload the arena holds. Without the cap an unbounded type indexes every fragment of
+    // samples its arena can never keep - /rosout, depth 1000, would take 45,045 slots (1 MB) for the ~2,700 it can use.
+    // rmw_tickle's rule (resolve_ring_slots(), 2026-09) until the creation moved into core.
+    const uint64_t continuation =
+        (uint64_t)tt_CONTROL_MAX_LENGTH -
+        (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader));
+    uint64_t fillable = (2U * ((uint64_t)actual->history.depth + 1U)) + (layout->arena / continuation);
+    ring = ring < fillable ? ring : fillable;
     layout->ring = (uint16_t)(ring < UINT16_MAX ? ring : UINT16_MAX);
     // (depth + 1) records hold depth samples: one record's room is the wrap slack (tt_RELIABLE_CACHE_ARENA_BYTES).
     uint32_t fit = layout->arena / layout->record;
