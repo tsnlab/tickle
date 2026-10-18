@@ -15,9 +15,10 @@
 // "Design philosophy" table ("Rejects anything outside the currently-supported set explicitly...
 // rather than silently downgrading it").
 
+#include <stdarg.h> // va_list - qos_reason_append()
 #include <stdbool.h>
-#include <stdint.h> // uint64_t - duration_offered_satisfies_requested()'s own nanosecond math
-#include <stdio.h>  // snprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
+#include <stdint.h>
+#include <stdio.h>  // vsnprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
 #include <string.h> // memset() - rmw_tickle_qos_to_tt()
 
 #include <tickle/config.h> // tt_CONTEXT_TX_INTERVAL - see Milestone
@@ -26,7 +27,8 @@
 
 #include "rcutils/error_handling.h" // RCUTILS_CHECK_ARGUMENT_FOR_NULL
 #include "rmw/error_handling.h"
-#include "rmw/qos_profiles.h" // rmw_qos_profile_check_compatible(), rmw_qos_compatibility_type_t
+#include "rmw/qos_profiles.h"           // rmw_qos_profile_check_compatible(), rmw_qos_compatibility_type_t
+#include "rmw/qos_string_conversions.h" // rmw_qos_*_policy_to_str() - the warnings' policy names
 #include "rmw/ret_types.h"
 #include "rmw/time.h" // rmw_time_equal, RMW_QOS_*_DEFAULT
 #include "rmw/types.h"
@@ -290,30 +292,108 @@ uint64_t rmw_tickle_max_blocking_from_tt(const struct tt_QosProfile* actual) {
     return actual->reliability.max_blocking_ns <= 1U ? 0 : actual->reliability.max_blocking_ns;
 }
 
-#define NSEC_PER_SEC 1000000000ULL
-#define QOS_REASON_MAX_LEN 128 // longest of the fixed strings below, rounded up
+#define QOS_WARNINGS_MAX_LEN 512 // every warning at once, with the longest policy names
 
-// rmw's own public "would these two QoS profiles actually work together" utility - unlike rmw_
-// tickle_validate_qos_profile() above, this takes *arbitrary* profiles (not just ones this rmw
-// itself is about to create an entity with), so it has to implement the real DDS-style RxO
-// (request/offer) compatibility rules generally, not just rmw_tickle's own narrow accepted subset.
-// {0, 0} (RMW_DURATION_UNSPECIFIED, what RMW_QOS_DEADLINE_DEFAULT/_LIFESPAN_DEFAULT/_LIVELINESS_
-// LEASE_DURATION_DEFAULT all expand to - rmw/time.h) means "no constraint from this side", not a
-// literal zero-length duration - treated as always compatible below, never compared numerically.
-static bool duration_offered_satisfies_requested(rmw_time_t offered, rmw_time_t requested) {
-    bool offered_unspecified = rmw_time_equal(offered, (rmw_time_t)RMW_DURATION_UNSPECIFIED);
-    bool requested_unspecified = rmw_time_equal(requested, (rmw_time_t)RMW_DURATION_UNSPECIFIED);
-    if (offered_unspecified || requested_unspecified) {
-        return true;
+// rmw_qos_profile_check_compatible()'s `reason`, written as rmw asks: every finding as "ERROR: ...;" or
+// "WARNING: ...;", errors first, cut short at the buffer's end rather than refused.
+struct qos_reasons {
+    char* buf;
+    size_t size;
+    size_t used;
+};
+
+// The findings so far: errors straight into the caller's `reason`, warnings into a buffer of their own, appended
+// once the errors are all in.
+struct qos_findings {
+    struct qos_reasons errors;
+    struct qos_reasons warnings;
+    bool error;
+    bool warning;
+};
+
+// NOLINTNEXTLINE(cert-dcl50-cpp) -- a C printf-style helper; the format strings are this file's own literals
+static void qos_reason_append(struct qos_reasons* reasons, const char* format, ...) {
+    if (NULL == reasons->buf || reasons->size == 0 || reasons->used >= reasons->size - 1) {
+        return;
     }
-    // Offered must be at least as tight (<=) as requested - a publisher promising a shorter
-    // deadline/liveliness lease than the subscriber asked for satisfies the request; a longer one
-    // doesn't.
-    uint64_t offered_ns = (offered.sec * NSEC_PER_SEC) + offered.nsec;
-    uint64_t requested_ns = (requested.sec * NSEC_PER_SEC) + requested.nsec;
-    return offered_ns <= requested_ns;
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(reasons->buf + reasons->used, reasons->size - reasons->used, format, args);
+    va_end(args);
+    if (written > 0) {
+        size_t room = reasons->size - reasons->used - 1;
+        reasons->used += (size_t)written < room ? (size_t)written : room;
+    }
 }
 
+static const char* policy_str(const char* name) {
+    return NULL != name ? name : "unknown";
+}
+
+// A kind whose effect cannot be known from the profile alone: SYSTEM_DEFAULT and UNKNOWN, which rmw names, and
+// BEST_AVAILABLE, which this rmw decides at creation from the endpoints discovery knows then (QoS plan D2).
+static bool reliability_unknown(rmw_qos_reliability_policy_t kind) {
+    return RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT == kind || RMW_QOS_POLICY_RELIABILITY_UNKNOWN == kind ||
+           RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE == kind;
+}
+
+static bool durability_unknown(rmw_qos_durability_policy_t kind) {
+    return RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT == kind || RMW_QOS_POLICY_DURABILITY_UNKNOWN == kind ||
+           RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == kind;
+}
+
+static bool liveliness_unknown(rmw_qos_liveliness_policy_t kind) {
+    return RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT == kind || RMW_QOS_POLICY_LIVELINESS_UNKNOWN == kind ||
+           RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE == kind;
+}
+
+// One kind policy, by rmw's rule: an error when the offer is the weak value and the request the strong one; else a
+// warning when an unknown kind decides the outcome - both unknown, an unknown offer to the strong request, or the weak
+// offer to an unknown request. `name` names the policy in the reason; *_str are the two kinds as rmw spells them.
+static void kind_findings(bool error, bool pub_unknown, bool sub_unknown, bool pub_weak, bool sub_strong,
+                          const char* error_text, const char* name, const char* pub_str, const char* sub_str,
+                          struct qos_findings* findings) {
+    if (error) {
+        findings->error = true;
+        qos_reason_append(&findings->errors, "%s", error_text);
+    } else if ((pub_unknown && sub_unknown) || (pub_unknown && sub_strong) || (pub_weak && sub_unknown)) {
+        findings->warning = true;
+        qos_reason_append(&findings->warnings, "WARNING: Publisher %s is %s and subscription %s is %s;", name,
+                          policy_str(pub_str), name, policy_str(sub_str));
+    }
+}
+
+// A DEADLINE period or LIVELINESS lease (`name`) as core resolves it (duration_to_tt(): unspecified and infinite are
+// both infinite). An infinite offer cannot meet a finite request, nor a longer one a shorter. A BEST_AVAILABLE request
+// takes the loosest offer there is, so it is always met; a BEST_AVAILABLE offer takes the tightest request discovery
+// knows at its creation, so whether it meets this one depends on the order of creation: a warning.
+static void duration_findings(rmw_time_t offered, rmw_time_t requested, rmw_time_t best_available, const char* name,
+                              struct qos_findings* findings) {
+    uint64_t offered_ns = duration_to_tt(offered, true, best_available);
+    uint64_t requested_ns = duration_to_tt(requested, true, best_available);
+    if (tt_QOS_DURATION_BEST_AVAILABLE == requested_ns || tt_QOS_DURATION_INFINITE == requested_ns) {
+        return;
+    }
+    if (tt_QOS_DURATION_BEST_AVAILABLE == offered_ns) {
+        findings->warning = true;
+        qos_reason_append(&findings->warnings, "WARNING: Publisher %s is best available, subscription requests one;",
+                          name);
+    } else if (tt_QOS_DURATION_INFINITE == offered_ns) {
+        findings->error = true;
+        qos_reason_append(&findings->errors, "ERROR: Subscription requests a %s, publisher offers none;", name);
+    } else if (offered_ns > requested_ns) {
+        findings->error = true;
+        qos_reason_append(&findings->errors, "ERROR: Subscription %s is shorter than the publisher's;", name);
+    }
+}
+
+// rmw's own "would these two QoS profiles work together" utility, for arbitrary profiles. ERROR is what this rmw
+// refuses to connect: the same rules core applies to an announced pair (tickle.c's qos_incompatible_policy()) -
+// RELIABLE requested and BEST_EFFORT offered, TRANSIENT_LOCAL and VOLATILE, a period or lease requested and a longer
+// or infinite one offered, MANUAL_BY_TOPIC and AUTOMATIC. WARNING is a pair that may or may not connect because a kind
+// is SYSTEM_DEFAULT, UNKNOWN or BEST_AVAILABLE, or a duration BEST_AVAILABLE - rmw's rules for the first two (a
+// warning only where the known side does not already decide it), extended to the third. Every finding is listed,
+// errors before warnings, each ending in ';'.
 rmw_ret_t rmw_qos_profile_check_compatible(const rmw_qos_profile_t publisher_profile,
                                            const rmw_qos_profile_t subscription_profile,
                                            rmw_qos_compatibility_type_t* compatibility, char* reason,
@@ -323,63 +403,48 @@ rmw_ret_t rmw_qos_profile_check_compatible(const rmw_qos_profile_t publisher_pro
         RMW_SET_ERROR_MSG("reason is null but reason_size is not 0");
         return RMW_RET_INVALID_ARGUMENT;
     }
-
-    char reasons[3][QOS_REASON_MAX_LEN];
-    size_t reason_count = 0;
-
-    // RELIABILITY: a BEST_EFFORT publisher can't satisfy a RELIABLE subscriber's request (the
-    // reverse - RELIABLE publisher, BEST_EFFORT subscriber - is fine, the subscriber just gets
-    // more reliability than it asked for).
-    if (RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == publisher_profile.reliability &&
-        RMW_QOS_POLICY_RELIABILITY_RELIABLE == subscription_profile.reliability) {
-        snprintf(reasons[reason_count++], sizeof(reasons[0]),
-                 "ERROR: Best effort publisher offered, but reliable subscription requested");
-    }
-
-    // DURABILITY: rank VOLATILE < TRANSIENT_LOCAL - a VOLATILE publisher (delivers only to
-    // currently-matched subscribers) can't satisfy a TRANSIENT_LOCAL subscriber (wants
-    // previously-published samples backfilled too).
-    if (RMW_QOS_POLICY_DURABILITY_VOLATILE == publisher_profile.durability &&
-        RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == subscription_profile.durability) {
-        snprintf(reasons[reason_count++], sizeof(reasons[0]),
-                 "ERROR: Volatile publisher offered, but transient local subscription requested");
-    }
-
-    // DEADLINE: the publisher's own promised max inter-publish gap must be at least as tight as
-    // whatever the subscriber is willing to accept.
-    if (!duration_offered_satisfies_requested(publisher_profile.deadline, subscription_profile.deadline)) {
-        snprintf(reasons[reason_count++], sizeof(reasons[0]),
-                 "ERROR: Publisher offered deadline is greater than subscription requested deadline");
-    }
-
-    // LIVELINESS: rank AUTOMATIC < MANUAL_BY_TOPIC - an AUTOMATIC publisher (TickLE's own process-
-    // level liveliness) can't satisfy a subscriber that specifically wants per-topic manual
-    // assertion; the lease duration itself follows the same offered<=requested rule as DEADLINE.
-    if (RMW_QOS_POLICY_LIVELINESS_AUTOMATIC == publisher_profile.liveliness &&
-        RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == subscription_profile.liveliness) {
-        snprintf(reasons[reason_count++], sizeof(reasons[0]),
-                 "ERROR: Automatic liveliness publisher offered, but manual by topic liveliness "
-                 "subscription requested");
-    } else if (!duration_offered_satisfies_requested(publisher_profile.liveliness_lease_duration,
-                                                     subscription_profile.liveliness_lease_duration)) {
-        snprintf(reasons[reason_count++], sizeof(reasons[0]),
-                 "ERROR: Publisher offered liveliness lease duration is greater than subscription "
-                 "requested liveliness lease duration");
-    }
-
-    *compatibility = (reason_count > 0) ? RMW_QOS_COMPATIBILITY_ERROR : RMW_QOS_COMPATIBILITY_OK;
-
     if (NULL != reason && reason_size > 0) {
         reason[0] = '\0';
-        size_t used = 0;
-        for (size_t i = 0; i < reason_count && used < reason_size - 1; i++) {
-            int written = snprintf(reason + used, reason_size - used, "%s%s", used > 0 ? "; " : "", reasons[i]);
-            if (written > 0) {
-                used += (size_t)written;
-            }
-        }
     }
+    char warning_text[QOS_WARNINGS_MAX_LEN];
+    warning_text[0] = '\0';
+    struct qos_findings findings = {.errors = {reason, reason_size, 0},
+                                    .warnings = {warning_text, sizeof(warning_text), 0}};
+    const rmw_qos_profile_t* pub = &publisher_profile;
+    const rmw_qos_profile_t* sub = &subscription_profile;
 
+    bool pub_weak = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == pub->reliability;
+    bool sub_strong = RMW_QOS_POLICY_RELIABILITY_RELIABLE == sub->reliability;
+    kind_findings(pub_weak && sub_strong, reliability_unknown(pub->reliability), reliability_unknown(sub->reliability),
+                  pub_weak, sub_strong, "ERROR: Best effort publisher and reliable subscription;", "reliability",
+                  rmw_qos_reliability_policy_to_str(pub->reliability),
+                  rmw_qos_reliability_policy_to_str(sub->reliability), &findings);
+
+    pub_weak = RMW_QOS_POLICY_DURABILITY_VOLATILE == pub->durability;
+    sub_strong = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == sub->durability;
+    kind_findings(pub_weak && sub_strong, durability_unknown(pub->durability), durability_unknown(sub->durability),
+                  pub_weak, sub_strong, "ERROR: Volatile publisher and transient local subscription;", "durability",
+                  rmw_qos_durability_policy_to_str(pub->durability), rmw_qos_durability_policy_to_str(sub->durability),
+                  &findings);
+
+    duration_findings(pub->deadline, sub->deadline, (rmw_time_t)RMW_QOS_DEADLINE_BEST_AVAILABLE, "deadline", &findings);
+
+    pub_weak = RMW_QOS_POLICY_LIVELINESS_AUTOMATIC == pub->liveliness;
+    sub_strong = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == sub->liveliness;
+    kind_findings(pub_weak && sub_strong, liveliness_unknown(pub->liveliness), liveliness_unknown(sub->liveliness),
+                  pub_weak, sub_strong, "ERROR: Automatic liveliness publisher and manual by topic subscription;",
+                  "liveliness", rmw_qos_liveliness_policy_to_str(pub->liveliness),
+                  rmw_qos_liveliness_policy_to_str(sub->liveliness), &findings);
+    duration_findings(pub->liveliness_lease_duration, sub->liveliness_lease_duration,
+                      (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE, "liveliness lease duration",
+                      &findings);
+
+    if (findings.error) {
+        *compatibility = RMW_QOS_COMPATIBILITY_ERROR;
+    } else {
+        *compatibility = findings.warning ? RMW_QOS_COMPATIBILITY_WARNING : RMW_QOS_COMPATIBILITY_OK;
+    }
+    qos_reason_append(&findings.errors, "%s", warning_text);
     return RMW_RET_OK;
 }
 
