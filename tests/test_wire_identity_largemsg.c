@@ -138,7 +138,7 @@ static void test_release(void* user, void* buffer) {
 #endif
 
 static struct tt_Context node;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Publisher pub;
 #define CACHE_DEPTH 128
 static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];

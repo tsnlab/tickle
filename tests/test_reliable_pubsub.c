@@ -77,7 +77,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     subscriber_callback_count++;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -93,7 +93,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
     topic->data_free = stub_data_free;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_Topic* topic) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -107,7 +107,7 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, st
 static uint64_t test_reorder_storage[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
-                                               struct tt_Topic* topic) {
+                                               struct tt_TypeSupport* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub->endpoint.id = ENDPOINT_ID;
@@ -213,7 +213,7 @@ static void test_reliable_publish_caches_and_evicts(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -247,7 +247,7 @@ static void test_reliable_subscribe_in_order_no_acknack(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -328,7 +328,7 @@ static void test_reliable_cache_evicts_by_bytes_oldest_first(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     init_node_and_topic(&node, &topic);
 
     const uint32_t record = 32; // ROUNDUP(32) == 32
@@ -357,7 +357,7 @@ static void test_reliable_cache_wrap_slack_keeps_depth_samples(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     init_node_and_topic(&node, &topic);
 
     const uint32_t record = 36; // not a divisor of either arena size below - wraps land mid-arena
@@ -400,7 +400,7 @@ static void test_reliable_cache_oversize_record_is_not_cached(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     init_node_and_topic(&node, &topic);
 
     TEST_RELIABLE_CACHE(cache, 4);
@@ -430,7 +430,7 @@ static void test_reliable_cache_oversize_record_on_empty_cache(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     init_node_and_topic(&node, &topic);
 
     TEST_RELIABLE_CACHE(cache, 4);
@@ -454,7 +454,7 @@ static void test_reliable_cache_randomized_invariants(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     init_node_and_topic(&node, &topic);
 
     const uint16_t depth = 16;
@@ -509,7 +509,7 @@ static void test_reliable_subscribe_gap_then_close(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -581,7 +581,7 @@ static void test_reliable_new_gap_while_armed_gets_immediate_narrow_nack(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -655,7 +655,7 @@ static void test_reliable_acknack_retry_uses_reliable_retry_interval(void) {
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -697,7 +697,7 @@ static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(voi
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -766,7 +766,7 @@ static void test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_si
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -814,7 +814,7 @@ static void test_reliable_held_samples_precede_the_jump_that_releases_them(void)
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -856,7 +856,7 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -901,7 +901,7 @@ static void test_a_keep_last_gap_is_asked_for_with_back_off_not_given_up(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -959,7 +959,7 @@ static void test_the_back_off_waits_for_the_writer_to_go_quiet(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1014,7 +1014,7 @@ static void test_the_retry_count_saturates(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1049,7 +1049,7 @@ static void test_a_keep_last_gap_ends_on_the_eviction_heartbeat(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1095,7 +1095,7 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1153,7 +1153,7 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1201,7 +1201,7 @@ static void test_reliable_first_contact_via_data_does_not_request_pre_match_hist
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1238,7 +1238,7 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1286,7 +1286,7 @@ static void test_a_keep_last_publisher_resends_while_it_holds_the_sample(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1346,7 +1346,7 @@ static void test_a_reliable_publisher_without_history_says_everything_is_gone(vo
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1401,7 +1401,7 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1529,7 +1529,7 @@ static void test_retransmit_is_exactly_the_named_set_across_a_wide_window(void) 
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -1606,7 +1606,7 @@ static void test_acknack_names_every_gap_across_a_wide_window(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1701,7 +1701,7 @@ static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1805,7 +1805,7 @@ static void test_recovery_probe_times_from_the_first_request(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1848,7 +1848,7 @@ static void test_a_backed_off_recovery_is_not_timed(void) {
         test_mock_reset();
 
         struct tt_Context node;
-        struct tt_Topic topic;
+        struct tt_TypeSupport topic;
         struct tt_Subscriber sub;
         init_node_and_topic(&node, &topic);
         init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1888,7 +1888,7 @@ static void test_recovery_probe_ignores_a_late_original(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1921,7 +1921,7 @@ static void test_recovery_probe_only_times_the_watermark(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1956,7 +1956,7 @@ static void test_recovery_estimate_resets_when_a_slot_is_reused(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -1983,7 +1983,7 @@ static void test_process_acknack_skips_expired_sample(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2025,7 +2025,7 @@ static void test_process_acknack_ignored_for_besteffort_publisher(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2051,7 +2051,7 @@ static void test_process_acknack_ignored_for_durable_only_publisher(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2083,7 +2083,7 @@ static void test_wide_gap_tracked_with_caller_sized_window(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2122,7 +2122,7 @@ static void test_wide_gap_tracked_with_caller_sized_window(void) {
     // separate node/subscriber pair, so nothing above carries over.
     test_mock_reset();
     struct tt_Context narrow_node;
-    struct tt_Topic narrow_topic;
+    struct tt_TypeSupport narrow_topic;
     struct tt_Subscriber narrow;
     init_node_and_topic(&narrow_node, &narrow_topic);
     init_subscriber_registered_on_node(&narrow, &narrow_node, &narrow_topic);
@@ -2146,7 +2146,7 @@ static void test_oversized_window_request_is_clamped(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2191,7 +2191,7 @@ static void test_two_subscriber_entities_on_one_node_ack_independently(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2235,7 +2235,7 @@ static void test_process_acknack_from_unmatched_entity_records_nothing(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2284,7 +2284,7 @@ static void run_first_contact_stream(bool writer_keep_all, int* sends_after_firs
     memset(&discovery, 0, sizeof(discovery));
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2335,7 +2335,7 @@ static void test_a_reader_acknowledges_a_keep_all_writer_on_first_contact(void) 
 static void test_a_reader_acknowledges_a_writer_learned_keep_all_after_its_data(void) {
     test_mock_reset();
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2363,7 +2363,7 @@ static void test_a_reader_acknowledges_a_not_yet_announced_writer_once(void) {
     static struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2391,7 +2391,7 @@ static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
     memset(&discovery, 0, sizeof(discovery));
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2446,7 +2446,7 @@ static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
 // acks could never be counted (which would unblock a KEEP_ALL writer early).
 static void test_ack_table_full_refuses_further_entities(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2470,7 +2470,7 @@ static void test_acknack_rejects_malformed_bitmap_words(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2513,7 +2513,7 @@ static void test_acknack_with_no_bitmap_words_is_a_pure_ack(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2547,7 +2547,7 @@ static void test_acknack_multi_word_bitmap_retransmits_each_named_sample(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2587,7 +2587,7 @@ static void test_process_acknack_updates_peer_ack_seq_no(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2626,7 +2626,7 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2659,7 +2659,7 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2685,7 +2685,7 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
 // test_publisher_peer_ack_survives_announce_refresh() below for the preserve_ack = true case.
 static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2722,7 +2722,7 @@ static void test_reliable_stats_subscriber_gap_accounting(void) {
     test_mock_now = 1000 * tt_MICROSECOND; // non-zero: a 0 timestamp means "unset" to the stats
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -2772,7 +2772,7 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
     tt_reliable_stats_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -2807,7 +2807,7 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
 // --- Phase 3 step 2 (rmw_tickle/PLAN.md): KEEP_ALL write blocking ------------------------------
 
 // Sets up a KEEP_ALL Publisher with one matched Subscriber entity that has acked nothing yet.
-static void init_keep_all_publisher(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub,
+static void init_keep_all_publisher(struct tt_Context* node, struct tt_TypeSupport* topic, struct tt_Publisher* pub,
                                     struct tt_ReliableCache* cache, uint16_t window_words) {
     init_node_and_topic(node, topic);
     init_publisher(pub, node, topic);
@@ -2830,7 +2830,7 @@ static void test_keep_all_refuses_at_bound_and_unblocks_on_ack(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 4, so depth binds
@@ -2873,7 +2873,7 @@ static void test_keep_last_still_evicts_rather_than_refusing(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -2894,7 +2894,7 @@ static void test_keep_all_bound_follows_smallest_window(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 200);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 2); // 2 words = 128 samples, below depth 200
@@ -2929,7 +2929,7 @@ static void test_keep_all_bound_honors_wide_window(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 2048);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // 16 words = 1024, above the 256 default
@@ -2970,7 +2970,7 @@ static void test_keep_all_sustains_on_clean_link(void) {
     test_mock_now = 10 * tt_MILLISECOND; // see test_keep_all_solicitation_is_throttled() on why not 0
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 64);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // 1 word = 64 samples, so bound = 64
@@ -3011,7 +3011,7 @@ static void test_keep_all_solicits_before_blocking(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 64);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, so the watermark is 32
@@ -3044,7 +3044,7 @@ static void test_keep_all_solicitation_is_throttled(void) {
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 64);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, watermark 32
@@ -3086,7 +3086,7 @@ static bool solicits_again_after_half_window(bool with_acknack) {
     test_mock_now = 10 * tt_MILLISECOND; // see the test above for why not 0
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 64);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, watermark 32
@@ -3133,7 +3133,7 @@ static void test_keep_all_refused_publisher_resolicits_by_itself(void) {
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // depth 4 binds
@@ -3195,7 +3195,7 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -3268,7 +3268,7 @@ static void test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open(
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -3307,7 +3307,7 @@ static void test_heartbeat_requesting_an_answer_does_not_rerequest_a_repair_in_f
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -3363,7 +3363,7 @@ static void test_heartbeat_requesting_an_answer_names_an_overdue_repair_alone(vo
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -3408,7 +3408,7 @@ static void test_repair_transit_is_timed_from_the_oldest_request(void) {
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -3485,7 +3485,7 @@ static void test_keep_all_writable_cause_is_distinguished(void) {
     tt_reliable_stats_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 4, so depth binds
@@ -3512,7 +3512,7 @@ static void test_keep_all_writable_cause_is_distinguished(void) {
     tt_reliable_stats_reset();
 
     struct tt_Context node2;
-    struct tt_Topic topic2;
+    struct tt_TypeSupport topic2;
     struct tt_Publisher pub2;
     TEST_RELIABLE_CACHE(cache2, 4);
     init_keep_all_publisher(&node2, &topic2, &pub2, &cache2, 16);
@@ -3549,7 +3549,7 @@ static void test_keep_all_writable_callback_fires_once(void) {
     int param_hits = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3583,7 +3583,7 @@ static void test_keep_all_unblocks_when_last_subscriber_leaves(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3638,7 +3638,7 @@ static void test_keep_all_refuses_when_bytes_bind_before_count(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     // Arena sized for 64-byte payloads (9 x 88 = 792 B), depth 8 - so the count bound is 8 samples
     // while only one KEEP_ALL_BIG_RECORD-byte record fits. The same shape as a 1472-byte reservation meeting a
@@ -3717,7 +3717,7 @@ static void test_cache_grow_keeps_every_retained_sample(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3759,7 +3759,7 @@ static void test_cache_grow_leaves_migrated_samples_answerable(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3801,7 +3801,7 @@ static void test_cache_grow_from_a_wrapped_ring(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3858,7 +3858,7 @@ static void test_cache_grow_refuses_past_the_limit_and_downward(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3892,7 +3892,7 @@ static void test_keep_last_evicts_when_bytes_bind(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3914,7 +3914,7 @@ static void test_keep_all_retains_both_when_the_arena_fits_the_record(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     struct tt_ReliableCacheIndex index_storage[8];
     uint8_t arena_storage[tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(KEEP_ALL_BIG_PAYLOAD))];
@@ -3945,7 +3945,7 @@ static void test_keep_all_still_honours_lifespan(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     TEST_RELIABLE_CACHE(cache, 4);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
@@ -3975,7 +3975,7 @@ static void test_keep_all_subscriber_never_gives_up(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4020,7 +4020,7 @@ static void test_reliable_delivers_in_order_with_buffer(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4063,7 +4063,7 @@ static void test_reliable_delivers_in_order_without_buffer(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4109,7 +4109,7 @@ static void test_reliable_releases_held_samples_when_gap_is_abandoned(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4153,7 +4153,7 @@ static void test_reorder_stays_inside_an_odd_sized_buffer(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4195,7 +4195,7 @@ static void test_eviction_heartbeat_releases_the_samples_it_absorbs(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4241,7 +4241,7 @@ static void test_heartbeat_jump_releases_what_it_passes(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4285,7 +4285,7 @@ static void test_released_sample_keeps_its_arrival_socket(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4345,7 +4345,7 @@ static void test_piggybacked_heartbeat_rides_every_nth_datagram_unicast(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -4378,7 +4378,7 @@ static void test_piggyback_off_by_default_sends_no_heartbeat(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -4427,7 +4427,7 @@ static void test_g13_premise_a_declined_sample_is_asked_for_again(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4480,7 +4480,7 @@ static void test_g13_premise_b_an_in_order_sample_cannot_be_declined(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4522,7 +4522,7 @@ static void test_g13_premise_control_an_undeclined_stream_asks_for_nothing(void)
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4581,7 +4581,7 @@ static void test_g13_accept_hook_a_declined_sample_survives_the_refusal(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4640,7 +4640,7 @@ static void test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open(voi
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4694,7 +4694,7 @@ static void test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open(voi
 // "the hook works" could be true of a hook that quietly changed the ordinary path as well.
 static void test_g13_accept_hook_that_always_accepts_changes_nothing(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     struct tt_Header header;
 
@@ -4760,7 +4760,7 @@ static void test_g13_a_declined_sample_survives_only_while_the_writer_holds_it(v
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4825,7 +4825,7 @@ static void test_g13_a_declined_tail_is_asked_for_until_it_is_taken(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4900,7 +4900,7 @@ static void test_g13_a_declined_tail_no_heartbeat_announced_is_asked_for(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -4959,7 +4959,7 @@ static void test_g13_a_gap_found_after_a_decline_is_asked_for_at_once(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -5010,7 +5010,7 @@ static void test_g13_best_effort_decline_is_a_counted_drop(void) {
     subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -5071,7 +5071,7 @@ static void test_a_declined_repair_is_named_again_and_timed_from_after_the_decli
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);

@@ -114,7 +114,7 @@ static uint32_t announce_header_at(uint32_t i) {
 
 // --- tests -----------------------------------------------------------------------------------------------------------
 
-static struct tt_Topic topics[48];
+static struct tt_TypeSupport topics[48];
 static struct tt_Publisher pubs[48];
 static char topic_names[48][96];
 

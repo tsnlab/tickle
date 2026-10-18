@@ -51,7 +51,7 @@ static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len
 }
 
 static struct tt_Context node;
-static struct tt_Topic topics[MAX_ENDPOINTS];
+static struct tt_TypeSupport topics[MAX_ENDPOINTS];
 static struct tt_Publisher pubs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][48];
 static uint8_t sample[8];
@@ -128,7 +128,7 @@ static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     init_node_with_endpoints(4);
     memset(huge_name, 'x', sizeof(huge_name) - 1);
     huge_name[sizeof(huge_name) - 1] = '\0';
-    static struct tt_Topic huge_topic;
+    static struct tt_TypeSupport huge_topic;
     static struct tt_Publisher huge_pub;
     memset(&huge_topic, 0, sizeof(huge_topic));
     huge_topic.name = huge_name;

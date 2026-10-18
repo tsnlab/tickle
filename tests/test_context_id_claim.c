@@ -100,7 +100,7 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     (void)data;
 }
 
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Context keeper;
 static struct tt_Context newcomer;
 static struct tt_Context third;

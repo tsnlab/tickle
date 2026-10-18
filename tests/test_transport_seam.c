@@ -78,7 +78,7 @@ static void drain_pass(struct tt_Context* node) {
     (void)drain_own_segment(node, &emptied);
 }
 
-static void init_node_topic_pub(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub) {
+static void init_node_topic_pub(struct tt_Context* node, struct tt_TypeSupport* topic, struct tt_Publisher* pub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -127,7 +127,7 @@ static void expect_all_udp(struct tt_Context* node, const char* what) {
 static void test_ordinary_publish_is_counted_as_udp(void) {
     test_mock_reset();
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     // A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast threshold,
@@ -148,7 +148,7 @@ static void test_ordinary_publish_is_counted_as_udp(void) {
 static void test_zerocopy_publish_is_counted_as_udp(void) {
     test_mock_reset();
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -185,7 +185,7 @@ static void test_zerocopy_publish_is_counted_as_udp(void) {
 static void test_batch_shape_is_counted_per_datagram(void) {
     test_mock_reset();
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -501,7 +501,7 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -554,7 +554,7 @@ static void test_a_datagram_crosses_a_segment(void) {
 
     // The reader: a context with its own segment, which is what a peer attaches to.
     struct tt_Context reader;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&reader, &topic, &pub);
     reader.id = OWNER_ID;
@@ -571,7 +571,7 @@ static void test_a_datagram_crosses_a_segment(void) {
     // The writer: a second context that reaches the first as a peer. tt_own_address() gives the
     // mock's own address for both, which is what makes them find each other here.
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP; // different from the reader's, so "whose address is this" is a real question
@@ -657,7 +657,7 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
 
     // Arm 1: no segment anywhere, so the datagram goes to the socket and the mock captures it.
     struct tt_Context udp_node;
-    struct tt_Topic udp_topic;
+    struct tt_TypeSupport udp_topic;
     struct tt_Publisher udp_pub;
     init_node_topic_pub(&udp_node, &udp_topic, &udp_pub);
     udp_node.hal.own_ip = PEER_IP;
@@ -683,7 +683,7 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
 
     // Arm 2: the same publish, with the peer's segment present so it takes the segment instead.
     struct tt_Context reader;
-    struct tt_Topic reader_topic;
+    struct tt_TypeSupport reader_topic;
     struct tt_Publisher reader_pub;
     init_node_topic_pub(&reader, &reader_topic, &reader_pub);
     reader.id = OWNER_ID;
@@ -694,7 +694,7 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
     EXPECT_TRUE(reader.own_segment != NULL);
 
     struct tt_Context shm_node;
-    struct tt_Topic shm_topic;
+    struct tt_TypeSupport shm_topic;
     struct tt_Publisher shm_pub;
     init_node_topic_pub(&shm_node, &shm_topic, &shm_pub);
     shm_node.hal.own_ip = PEER_IP;
@@ -733,7 +733,7 @@ static void test_a_refused_datagram_is_refused_over_the_segment_too(void) {
     test_mock_segments_free();
 
     struct tt_Context reader;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&reader, &topic, &pub);
     reader.id = OWNER_ID;
@@ -867,7 +867,7 @@ static void test_two_writers_contend_for_one_segment(void) {
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
 
@@ -901,7 +901,7 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.hal.own_ip = PEER_IP;
@@ -935,7 +935,7 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     test_mock_reset();
     test_mock_segments_free();
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1015,7 +1015,7 @@ static void test_a_context_in_unzeroed_memory_attaches_a_same_host_peer(void) {
     test_mock_reset();
     test_mock_segments_free();
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1151,7 +1151,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
     test_mock_reset();
     test_mock_segments_free();
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1162,7 +1162,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1211,7 +1211,7 @@ static void test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem(
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1275,7 +1275,7 @@ static void test_destroy_takes_the_segment_with_it(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1287,7 +1287,7 @@ static void test_destroy_takes_the_segment_with_it(void) {
 
     // The owner has a peer mapped as well, so the teardown is asked about both kinds of mapping.
     struct tt_Context other;
-    struct tt_Topic other_topic;
+    struct tt_TypeSupport other_topic;
     struct tt_Publisher other_pub;
     init_node_topic_pub(&other, &other_topic, &other_pub);
     other.id = PEER_CONTEXT_ID;
@@ -1352,7 +1352,7 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     test_mock_segments_free();
 
     struct tt_Context dead;
-    struct tt_Topic dead_topic;
+    struct tt_TypeSupport dead_topic;
     struct tt_Publisher dead_pub;
     init_node_topic_pub(&dead, &dead_topic, &dead_pub);
     dead.id = OWNER_ID;
@@ -1364,7 +1364,7 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
 
     // A peer attaches while it is alive, and puts a record in it.
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1379,7 +1379,7 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     // A new context takes the same address and context id - the case the name cannot distinguish,
     // which is why the header carries an incarnation.
     struct tt_Context reborn;
-    struct tt_Topic reborn_topic;
+    struct tt_TypeSupport reborn_topic;
     struct tt_Publisher reborn_pub;
     init_node_topic_pub(&reborn, &reborn_topic, &reborn_pub);
     reborn.id = OWNER_ID;
@@ -1440,7 +1440,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     test_mock_segments_free();
 
     struct tt_Context dead;
-    struct tt_Topic dead_topic;
+    struct tt_TypeSupport dead_topic;
     struct tt_Publisher dead_pub;
     init_node_topic_pub(&dead, &dead_topic, &dead_pub);
     dead.id = OWNER_ID;
@@ -1451,7 +1451,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     EXPECT_TRUE(dead.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1497,7 +1497,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     test_mock_reset();
     test_mock_segments_free();
     struct tt_Context slow;
-    struct tt_Topic slow_topic;
+    struct tt_TypeSupport slow_topic;
     struct tt_Publisher slow_pub;
     init_node_topic_pub(&slow, &slow_topic, &slow_pub);
     slow.id = OWNER_ID;
@@ -1507,7 +1507,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     create_own_segment(&slow);
 
     struct tt_Context patient;
-    struct tt_Topic patient_topic;
+    struct tt_TypeSupport patient_topic;
     struct tt_Publisher patient_pub;
     init_node_topic_pub(&patient, &patient_topic, &patient_pub);
     patient.hal.own_ip = PEER_IP;
@@ -1541,7 +1541,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     test_mock_reset();
     test_mock_segments_free();
     struct tt_Context behind;
-    struct tt_Topic behind_topic;
+    struct tt_TypeSupport behind_topic;
     struct tt_Publisher behind_pub;
     init_node_topic_pub(&behind, &behind_topic, &behind_pub);
     behind.id = OWNER_ID;
@@ -1551,7 +1551,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     create_own_segment(&behind);
 
     struct tt_Context ahead;
-    struct tt_Topic ahead_topic;
+    struct tt_TypeSupport ahead_topic;
     struct tt_Publisher ahead_pub;
     init_node_topic_pub(&ahead, &ahead_topic, &ahead_pub);
     ahead.hal.own_ip = PEER_IP;
@@ -1604,7 +1604,7 @@ static void test_the_drain_empties_the_ring_or_says_it_did_not(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1679,7 +1679,7 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1691,7 +1691,7 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     EXPECT_EQ_U32(0, owner.own_segment->reader_waiting); // nobody is waiting yet
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1801,7 +1801,7 @@ static void test_a_called_off_sleep_keeps_its_generation_once(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1812,7 +1812,7 @@ static void test_a_called_off_sleep_keeps_its_generation_once(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1884,7 +1884,7 @@ static void test_a_batch_is_rung_for_once_after_its_last_record(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1895,7 +1895,7 @@ static void test_a_batch_is_rung_for_once_after_its_last_record(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -1980,7 +1980,7 @@ static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(
     test_mock_receive_advances_clock = true; // a wait with nothing arriving lets its whole length pass
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -1991,7 +1991,7 @@ static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -2048,7 +2048,7 @@ static void test_a_socket_that_never_empties_does_not_starve_the_ring(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -2059,7 +2059,7 @@ static void test_a_socket_that_never_empties_does_not_starve_the_ring(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -2111,7 +2111,7 @@ static void test_a_drain_that_empties_soon_does_not_look_at_the_ring(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic owner_topic;
+    struct tt_TypeSupport owner_topic;
     struct tt_Publisher owner_pub;
     init_node_topic_pub(&owner, &owner_topic, &owner_pub);
     owner.id = OWNER_ID;
@@ -2122,7 +2122,7 @@ static void test_a_drain_that_empties_soon_does_not_look_at_the_ring(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     struct tt_Context writer;
-    struct tt_Topic writer_topic;
+    struct tt_TypeSupport writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
@@ -2212,7 +2212,7 @@ static bool waits_for_a_claimed_head(struct tt_Context* owner) {
     return owner->segment_claim_waits > waits;
 }
 
-static void make_owner(struct tt_Context* owner, struct tt_Topic* topic, struct tt_Publisher* pub) {
+static void make_owner(struct tt_Context* owner, struct tt_TypeSupport* topic, struct tt_Publisher* pub) {
     test_mock_reset();
     test_mock_segments_free();
     init_node_topic_pub(owner, topic, pub);
@@ -2274,7 +2274,7 @@ static uint32_t run_epochs(struct tt_Context* owner, const struct pair_costs* co
 // re-measured ever more rarely.
 static void test_the_waits_are_declined_where_they_cost_the_pair_more(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     make_owner(&owner, &topic, &pub);
     const struct pair_costs costs = {750, 640, 1000, 1000};
@@ -2300,7 +2300,7 @@ static void test_the_waits_are_declined_where_they_cost_the_pair_more(void) {
 // must be taken.
 static void test_the_waits_are_taken_where_they_cost_the_pair_less(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     make_owner(&owner, &topic, &pub);
     const struct pair_costs costs = {806, 777, 664, 651};
@@ -2319,7 +2319,7 @@ static void test_the_waits_are_taken_where_they_cost_the_pair_less(void) {
 // wrong.
 static void test_the_choice_weighs_both_the_writer_and_the_reader(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
 
     make_owner(&owner, &topic, &pub);
@@ -2347,7 +2347,7 @@ static void test_a_noisy_epoch_does_not_turn_the_choice(void) {
     uint32_t sequences_turned = 0;
     for (uint32_t seed = 1; seed <= 32; seed++) {
         struct tt_Context owner;
-        struct tt_Topic topic;
+        struct tt_TypeSupport topic;
         struct tt_Publisher pub;
         make_owner(&owner, &topic, &pub);
         g_epoch_noise_seed = seed * 2654435761U;
@@ -2390,7 +2390,7 @@ static uint32_t run_until_preferred(struct tt_Context* owner, const struct pair_
 // longer confirm the choice to come closer together.
 static void test_the_choice_follows_a_change_in_the_costs(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     make_owner(&owner, &topic, &pub);
     const struct pair_costs far = {750, 640, 1000, 1000};
@@ -2416,7 +2416,7 @@ static void test_the_choice_follows_a_change_in_the_costs(void) {
 // every re-measure of the waits is that one cheap epoch, and the record of the waiting mode drifts below sleeping.
 static void test_the_first_epoch_after_a_change_is_not_measured(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     make_owner(&owner, &topic, &pub);
     uint8_t last = owner.segment_watching;
@@ -2446,7 +2446,7 @@ static void test_the_first_epoch_after_a_change_is_not_measured(void) {
 // anything (a6ef471d rebased, one run in five: 1.80 us a sample against 1.61).
 static void test_a_sleep_that_never_blocked_does_not_become_the_bound(void) {
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     make_owner(&owner, &topic, &pub);
     const uint64_t blocked = 15U * tt_MICROSECOND;
@@ -2492,7 +2492,7 @@ static void test_a_context_alone_on_its_host_builds_no_segment(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2511,7 +2511,7 @@ static void test_a_same_host_peer_appearing_builds_the_segment(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2543,7 +2543,7 @@ static void test_a_peer_on_another_host_builds_nothing(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2569,7 +2569,7 @@ static void test_a_repeated_announce_builds_nothing_more(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2609,7 +2609,7 @@ static void test_delivering_to_ourselves_builds_the_segment(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2638,7 +2638,7 @@ static void test_the_last_same_host_peer_leaving_takes_the_segment(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2682,7 +2682,7 @@ static void test_a_peer_we_never_counted_leaving_changes_nothing(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2715,7 +2715,7 @@ static void test_a_context_delivering_to_itself_keeps_its_segment(void) {
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2751,7 +2751,7 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
     test_mock_segments_free();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
     node.id = OWNER_ID;
@@ -2808,7 +2808,7 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
 static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
 
     memset(&owner, 0, sizeof(owner));
@@ -2881,7 +2881,7 @@ static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
 static void test_the_limit_reads_only_the_peers_it_was_given(void) {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
 
     memset(&owner, 0, sizeof(owner));
@@ -3006,7 +3006,7 @@ static void test_a_segment_with_another_geometry_is_refused(void) {
     test_mock_segments_free();
 
     struct tt_Context owner;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&owner, &topic, &pub);
     owner.id = OWNER_ID;

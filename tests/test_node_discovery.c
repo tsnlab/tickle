@@ -92,7 +92,7 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
 static struct tt_Context remote;
 static struct tt_Context local;
 static struct tt_Discovery discovery;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 static struct tt_Node nodes[tt_MAX_NODES];
 static char node_names[tt_MAX_NODES][NAME_LENGTH];
 static char endpoint_names[MAX_ENDPOINTS][NAME_LENGTH];

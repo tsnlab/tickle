@@ -253,14 +253,14 @@ static bool owed_delivered(void) {
 
 static struct tt_Context writer;
 static struct tt_Context reader;
-static struct tt_Topic writer_topic = {.name = "match_point",
-                                       .data_size = 4,
-                                       .data_encode_size = sample_encode_size,
-                                       .data_encode = sample_encode};
-static struct tt_Topic reader_topic = {.name = "match_point",
-                                       .data_size = 4,
-                                       .data_decode = sample_decode,
-                                       .data_free = free_nothing};
+static struct tt_TypeSupport writer_topic = {.name = "match_point",
+                                             .data_size = 4,
+                                             .data_encode_size = sample_encode_size,
+                                             .data_encode = sample_encode};
+static struct tt_TypeSupport reader_topic = {.name = "match_point",
+                                             .data_size = 4,
+                                             .data_decode = sample_decode,
+                                             .data_free = free_nothing};
 static struct tt_ReliableCacheIndex cache_index[DEPTH];
 static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(4))];
 static struct tt_ReliableCache cache;

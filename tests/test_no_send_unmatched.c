@@ -275,8 +275,8 @@ static void init_node(struct tt_Context* node, uint8_t id) {
     node->entity_id_base = 0x5A000000U | ((uint32_t)id << 16); // as tt_Context_create() draws one: never 0
 }
 
-static struct tt_Topic writer_topic;
-static struct tt_Topic reader_topic;
+static struct tt_TypeSupport writer_topic;
+static struct tt_TypeSupport reader_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 static struct tt_ReliableCacheIndex cache_index[DEPTH];
@@ -313,15 +313,15 @@ static void start(enum mode mode, uint16_t depth, bool periodic) {
         EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&writer));
         EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&reader));
     }
-    writer_topic = (struct tt_Topic) {.name = "unmatched",
-                                      .data_size = 8,
-                                      .data_encode_size = sample_encode_size,
-                                      .data_encode = sample_encode,
-                                      .data_encode_range = sample_encode_range};
-    reader_topic = (struct tt_Topic) {.name = "unmatched",
-                                      .data_size = 8,
-                                      .data_decode = sample_decode,
-                                      .data_free = free_nothing};
+    writer_topic = (struct tt_TypeSupport) {.name = "unmatched",
+                                            .data_size = 8,
+                                            .data_encode_size = sample_encode_size,
+                                            .data_encode = sample_encode,
+                                            .data_encode_range = sample_encode_range};
+    reader_topic = (struct tt_TypeSupport) {.name = "unmatched",
+                                            .data_size = 8,
+                                            .data_decode = sample_decode,
+                                            .data_free = free_nothing};
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &pub, &writer_topic, "unmatched_ep"));
     if (mode != BEST_EFFORT) {
         memset(&cache, 0, sizeof(cache));

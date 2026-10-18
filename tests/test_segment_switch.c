@@ -374,7 +374,7 @@ static void sample_free(struct tt_Data* data) {
 static struct tt_Context node_a; // writer
 static struct tt_Context node_b; // reader: owns the segment
 static struct tt_Context node_c; // a second writer, in the case that has two
-static struct tt_Topic topic = {
+static struct tt_TypeSupport topic = {
     .name = "switch",
     .data_size = sizeof(struct sample),
     .data_encode_size = sample_encode_size,

@@ -67,7 +67,7 @@ static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len
 
 #define ENDPOINTS 30
 static struct tt_Context node;
-static struct tt_Topic topics[ENDPOINTS];
+static struct tt_TypeSupport topics[ENDPOINTS];
 static struct tt_Publisher pubs[ENDPOINTS];
 static char names[ENDPOINTS][48];
 static uint8_t sample[8];

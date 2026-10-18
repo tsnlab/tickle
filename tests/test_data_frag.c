@@ -153,8 +153,8 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
 
 static struct tt_Context sender;
 static struct tt_Context receiver;
-static struct tt_Topic sender_topic;
-static struct tt_Topic receiver_topic;
+static struct tt_TypeSupport sender_topic;
+static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 
@@ -226,7 +226,7 @@ static void test_topics_up_to_the_sample_limit_can_be_created(void) {
     init_pair(8);
     struct tt_Publisher big_pub;
     struct tt_Subscriber big_sub;
-    struct tt_Topic big_topic = sender_topic;
+    struct tt_TypeSupport big_topic = sender_topic;
     big_topic.name = "big";
     big_topic.data_decode = checking_decode;
     big_topic.data_free = free_nothing;
@@ -1356,7 +1356,7 @@ static void test_reliable_two_writers_interleaved_after_first_contact(void) {
 // A second Subscriber of the same endpoint, on a topic of its own so that what it decodes is checked apart
 // from what the first one does: the two share frag_scratch, and one corrupting the other's sample would
 // otherwise be hidden by whichever decoded last.
-static struct tt_Topic second_topic;
+static struct tt_TypeSupport second_topic;
 static struct tt_Subscriber sub2;
 static uint64_t reorder2[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 static int second_delivered;
@@ -1750,8 +1750,8 @@ static void test_reliable_fast_path_survives_another_writers_drain(void) {
 static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
     // A DATA held by a Subscriber of another topic does not concern the sample in the scratch either.
     first_contact_sample(5000);
-    static struct tt_Topic other_topic;
-    static struct tt_Topic other_sender_topic;
+    static struct tt_TypeSupport other_topic;
+    static struct tt_TypeSupport other_sender_topic;
     static struct tt_Subscriber other_sub;
     other_topic = receiver_topic;
     other_topic.name = "other_topic";

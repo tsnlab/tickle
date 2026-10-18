@@ -29,7 +29,7 @@
 #define REMOTE_SUB_ENTITY_ID 0x22220001 // Phase 2 - which remote Subscriber entity acks
 #define PUB_ENDPOINT_ID 0x11111111
 
-static struct tt_Topic test_topic = {.name = "test_topic"};
+static struct tt_TypeSupport test_topic = {.name = "test_topic"};
 
 static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
@@ -522,7 +522,7 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
 // same samples every retry interval forever, at an address nobody answers.
 static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node(&node);
     memset(&topic, 0, sizeof(topic));

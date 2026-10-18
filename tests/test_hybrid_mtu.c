@@ -63,7 +63,7 @@ static uint32_t datagram(uint8_t* out, uint8_t type, const void* body, uint32_t 
 }
 
 static struct tt_Subscriber sub;
-static struct tt_Topic topic;
+static struct tt_TypeSupport topic;
 
 static void init_node(void) {
     test_mock_reset();

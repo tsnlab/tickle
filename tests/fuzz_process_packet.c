@@ -69,12 +69,12 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         return 0; // the real receive path never hands process_packet() more than one datagram
     }
 
-    static struct tt_Topic topic = {.name = "fuzz",
-                                    .data_size = 4,
-                                    .data_encode_size = stub_size,
-                                    .data_encode = stub_enc,
-                                    .data_decode = stub_dec,
-                                    .data_free = stub_free};
+    static struct tt_TypeSupport topic = {.name = "fuzz",
+                                          .data_size = 4,
+                                          .data_encode_size = stub_size,
+                                          .data_encode = stub_enc,
+                                          .data_decode = stub_dec,
+                                          .data_free = stub_free};
     static struct tt_Subscriber sub;
     struct tt_Context node;
     memset(&node, 0, sizeof(node));

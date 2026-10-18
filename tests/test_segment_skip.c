@@ -118,9 +118,9 @@ static uint64_t reorder_a[REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)]
 struct rig {
     struct tt_Context owner;
     struct tt_Context sender;
-    struct tt_Topic topic;   // the sender's
-    struct tt_Topic topic_a; // the owner's
-    struct tt_Topic topic_b;
+    struct tt_TypeSupport topic;   // the sender's
+    struct tt_TypeSupport topic_a; // the owner's
+    struct tt_TypeSupport topic_b;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     struct tt_Subscriber sub_a;
@@ -128,7 +128,7 @@ struct rig {
 };
 static struct rig rig;
 
-static void init_topic(struct tt_Topic* topic, const char* name) {
+static void init_topic(struct tt_TypeSupport* topic, const char* name) {
     memset(topic, 0, sizeof(*topic));
     topic->name = name;
     topic->data_size = sizeof(uint32_t);
@@ -138,7 +138,7 @@ static void init_topic(struct tt_Topic* topic, const char* name) {
     topic->data_free = value_free;
 }
 
-static void init_sub(struct tt_Subscriber* sub, uint32_t endpoint_id, struct tt_Topic* topic,
+static void init_sub(struct tt_Subscriber* sub, uint32_t endpoint_id, struct tt_TypeSupport* topic,
                      tt_SUBSCRIBER_CALLBACK callback, bool reliable, uint16_t depth) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;

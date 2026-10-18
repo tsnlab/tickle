@@ -77,7 +77,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     last_value = *(uint32_t*)data;
 }
 
-static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -93,7 +93,7 @@ static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic)
     topic->data_free = stub_data_free;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_Topic* topic) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_TypeSupport* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -111,7 +111,7 @@ static void match_by_broadcast(struct tt_Publisher* pub) {
 }
 
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
-                                               struct tt_Topic* topic) {
+                                               struct tt_TypeSupport* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub->endpoint.id = ENDPOINT_ID;
@@ -136,7 +136,7 @@ static void test_publish_flushes_immediately_by_default(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -171,7 +171,7 @@ static void test_publish_batches_when_opted_in(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -195,7 +195,7 @@ static void test_publish_unicasts_to_known_peers_at_or_under_threshold(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -216,7 +216,7 @@ static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -241,7 +241,7 @@ static void test_publish_flushes_a_pending_broadcast_then_unicasts(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -269,7 +269,7 @@ static void test_publish_rolls_back_on_out_of_buffer(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -295,7 +295,7 @@ static void test_node_flush_sends_nothing_with_no_known_peers(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -331,7 +331,7 @@ static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_thresh
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -358,7 +358,7 @@ static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -388,7 +388,7 @@ static void test_node_flush_broadcasts_when_update_is_pending(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -419,7 +419,7 @@ static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub1;
     struct tt_Publisher pub2;
     init_node_and_topic(&node, &topic);
@@ -448,7 +448,7 @@ static void test_node_update_sets_pending_update_flag(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -469,7 +469,7 @@ static void test_node_destroy_broadcasts_farewell(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
@@ -493,7 +493,7 @@ static void test_publisher_destroy_broadcasts_goodbye_immediately(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub1;
     struct tt_Publisher pub2;
     init_node_and_topic(&node, &topic);
@@ -542,7 +542,7 @@ static void test_process_data_dispatches_to_subscriber(void) {
     decode_should_fail = false;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -572,7 +572,7 @@ static void test_process_data_unknown_endpoint_is_ignored(void) {
     decode_should_fail = false;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -603,7 +603,7 @@ static void test_process_data_decode_failure_is_reported(void) {
     decode_should_fail = true;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -634,7 +634,7 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
     decode_should_fail = false;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub_a;
     struct tt_Subscriber sub_b;
     init_node_and_topic(&node, &topic);
@@ -691,7 +691,7 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     test_mock_reset();
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -757,7 +757,7 @@ static void expect_delivery_line(bool destroy_subscriber_first) {
     decode_should_fail = false;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -819,7 +819,7 @@ static void test_best_effort_discards_out_of_order(void) {
     decode_should_fail = false;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
@@ -915,7 +915,7 @@ static void keep_raw(const void* buf, size_t len) {
 }
 
 // A sender (node 2) with one Publisher, sends captured as they went on the wire.
-static void init_single_form_sender(struct tt_Context* sender, struct tt_Topic* topic, struct tt_Publisher* pub) {
+static void init_single_form_sender(struct tt_Context* sender, struct tt_TypeSupport* topic, struct tt_Publisher* pub) {
     test_mock_reset();
     test_mock_send_hook = keep_raw;
     sent_raw_len = 0;
@@ -926,7 +926,7 @@ static void init_single_form_sender(struct tt_Context* sender, struct tt_Topic* 
 }
 
 // What a receiver (node 1) with a matching Subscriber makes of the captured datagram.
-static bool deliver_raw(struct tt_Context* receiver, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+static bool deliver_raw(struct tt_Context* receiver, struct tt_TypeSupport* topic, struct tt_Subscriber* sub) {
     init_node_and_topic(receiver, topic);
     init_subscriber_registered_on_node(sub, receiver, topic);
     subscriber_callback_count = 0;
@@ -938,8 +938,8 @@ static bool deliver_raw(struct tt_Context* receiver, struct tt_Topic* topic, str
 static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {
     static struct tt_Context sender;
     static struct tt_Context receiver;
-    struct tt_Topic topic;
-    struct tt_Topic receiver_topic;
+    struct tt_TypeSupport topic;
+    struct tt_TypeSupport receiver_topic;
     struct tt_Publisher pub;
     struct tt_Subscriber sub;
     init_single_form_sender(&sender, &topic, &pub);
@@ -964,8 +964,8 @@ static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {
 static void test_a_batch_of_two_stays_classic(void) {
     static struct tt_Context sender;
     static struct tt_Context receiver;
-    struct tt_Topic topic;
-    struct tt_Topic receiver_topic;
+    struct tt_TypeSupport topic;
+    struct tt_TypeSupport receiver_topic;
     struct tt_Publisher pub;
     struct tt_Subscriber sub;
     init_single_form_sender(&sender, &topic, &pub);
@@ -986,7 +986,7 @@ static void test_a_batch_of_two_stays_classic(void) {
 // A submessage addressed to one node keeps the classic headers: the single form has no receiver field.
 static void test_an_addressed_submessage_stays_classic(void) {
     static struct tt_Context sender;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Publisher pub;
     init_single_form_sender(&sender, &topic, &pub);
     struct tt_SubmessageHeader* submessage = start_encode(&sender, tt_SUBMESSAGE_TYPE_HEARTBEAT, LOCAL_NODE_ID);
@@ -1005,7 +1005,7 @@ static void test_an_addressed_submessage_stays_classic(void) {
 // it is read swapped, as behind a reversed tt_Header magic.
 static void test_a_single_form_datagram_from_the_other_byte_order_is_read(void) {
     static struct tt_Context receiver;
-    struct tt_Topic receiver_topic;
+    struct tt_TypeSupport receiver_topic;
     struct tt_Subscriber sub;
     uint16_t magic = NATIVE_MAGIC_VALUE;
     uint8_t native_first = 0;
@@ -1027,7 +1027,7 @@ static void test_a_single_form_datagram_from_the_other_byte_order_is_read(void) 
 // A single-form header with nothing behind it, or another version, is refused without a delivery.
 static void test_a_short_or_foreign_single_form_datagram_is_refused(void) {
     static struct tt_Context receiver;
-    struct tt_Topic receiver_topic;
+    struct tt_TypeSupport receiver_topic;
     struct tt_Subscriber sub;
     uint16_t magic = NATIVE_MAGIC_VALUE;
     uint8_t native_first = 0;

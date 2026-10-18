@@ -95,7 +95,7 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
 static struct tt_Context remote;
 static struct tt_Context local;
 static struct tt_Discovery discovery;
-static struct tt_Topic topics[PUBLISHERS];
+static struct tt_TypeSupport topics[PUBLISHERS];
 static char names[PUBLISHERS][24];
 static struct tt_Publisher pubs[PUBLISHERS];
 static struct tt_Subscriber sub;

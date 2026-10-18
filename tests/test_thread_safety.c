@@ -528,7 +528,7 @@ static void sample_free(struct tt_Data* data) {
 
 static struct tt_Context node_a;
 static struct tt_Context node_b;
-static struct tt_Topic topics[PUBLISHER_THREADS];
+static struct tt_TypeSupport topics[PUBLISHER_THREADS];
 static struct tt_Publisher publishers[PUBLISHER_THREADS];
 static struct tt_Subscriber subscribers[PUBLISHER_THREADS];
 static char names[PUBLISHER_THREADS][32];

@@ -69,7 +69,7 @@ static const struct tt_SubmessageHeader* first_submessage(int d) {
 // --- the sender: subscribers named the way rmw_tickle names endpoints --------------------------
 
 static struct tt_Context sender;
-static struct tt_Topic sender_topics[MAX_ENDPOINTS];
+static struct tt_TypeSupport sender_topics[MAX_ENDPOINTS];
 static struct tt_Subscriber sender_subs[MAX_ENDPOINTS];
 static char topic_names[MAX_ENDPOINTS][48];
 
@@ -123,7 +123,7 @@ static void init_sender(int count, uint64_t last_modified) {
 // --- the receiver: publishers for a chosen few of the sender's topics --------------------------
 
 static struct tt_Context receiver;
-static struct tt_Topic receiver_topics[4];
+static struct tt_TypeSupport receiver_topics[4];
 static struct tt_Publisher receiver_pubs[4];
 static char receiver_names[4][48];
 static int receiver_pub_count;

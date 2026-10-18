@@ -141,7 +141,8 @@ static void stub_topic_data_free(struct tt_Data* data) {
     (void)data;
 }
 
-static void init_node_topic_subscriber(struct tt_Context* node, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+static void init_node_topic_subscriber(struct tt_Context* node, struct tt_TypeSupport* topic,
+                                       struct tt_Subscriber* sub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -385,7 +386,7 @@ static void test_self_sent_data_is_still_ignored(void) {
     self_sent_subscriber_callback_count = 0;
 
     struct tt_Context node;
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
     init_node_topic_subscriber(&node, &topic, &sub);
 
