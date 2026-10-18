@@ -24,6 +24,7 @@
 #   inprocess a talker node and a listener node in ONE process, and a service call between them    (g9)
 #   range    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST isolates the two hosts; SUBNET does not        (g6)
 #   peers    LOCALHOST plus ROS_STATIC_PEERS naming the other host connects them again            (g6)
+#   besvc    BEST_EFFORT service calls over a clean and a 10%-lossy link lose no more than on DDS (D6)
 #
 #   BOTH bag cases depend on three capacity rows, and fail together without them (2026-10-03). `ros2 bag
 #   record` publishes /events/rosbag2_messages_lost as it starts, carrying rosbag2_interfaces/msg/
@@ -52,7 +53,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names}
+TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names besvc}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -501,6 +502,65 @@ t_peers() {
     n=$(t_range_arm "$1" LOCALHOST 10.77.0.2 10.77.0.1)
     [ "$iso" = -1 ] || [ "$n" = -1 ] && { echo "ERROR(talker did not run)"; return; }
     if [ "$iso" = 0 ] && [ "$n" -ge 20 ]; then echo PASS; else echo "FAIL(localhost=$iso localhost+static_peers=$n)"; fi
+}
+# besvc: a BEST_EFFORT service across the veth (D6, QoS plan step 7: a BEST_EFFORT client sends each request once).
+# The plan's falsifier: a ROS tool that makes a BEST_EFFORT service call must not lose more calls on rmw_tickle than on
+# DDS. Two arms, the same client and server: a clean link (BESVC_CLEAN calls) and BESVC_LOSS% netem loss on both veth
+# ends (BESVC_LOSSY calls), each call lost if not answered within 0.5 s.
+#
+# Pre-registered reading:
+#   control (CycloneDDS)  PASS when the clean arm answers every call and the lossy arm loses some; a lossy arm that
+#                         loses nothing did not test anything - VOID, not a pass.
+#   rmw_tickle            PASS when the clean arm answers every call and the lossy arm answers at least the control's
+#                         count less BESVC_MARGIN (2.5 standard deviations of the difference of two such runs at the
+#                         control's loss rate, rounded up). A shortfall beyond that is the falsifier: BEST_EFFORT loses
+#                         more calls on rmw_tickle than on DDS. More answers than the control is not a finding.
+BESVC_CLEAN=50
+BESVC_LOSSY=200
+BESVC_LOSS=10
+besvc_arm() { # besvc_arm RMW LOSS CALLS LOG: prints the client's answered count, or -1 if a process did not run
+    local rmw=$1 loss=$2 calls=$3 d=$4
+    if [ "$loss" != 0 ]; then
+        sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root netem loss "$loss%" || { echo -1; return; }
+        sudo -n ip netns exec "$NS2" tc qdisc add dev accv2 root netem loss "$loss%" || { echo -1; return; }
+    fi
+    local secs=$((25 + calls))
+    run_in "$NS2" "$rmw" 2 "$secs" "" python3 "$NODE" besvc_server "$secs" > "$d/server_$loss.log" 2>&1 &
+    local sp=$!
+    sleep 2
+    run_in "$NS1" "$rmw" 1 "$secs" "" python3 "$NODE" besvc_client "$secs" "$calls" > "$d/client_$loss.log" 2>&1
+    wait "$sp"
+    if [ "$loss" != 0 ]; then
+        sudo -n ip netns exec "$NS1" tc qdisc del dev accv1 root
+        sudo -n ip netns exec "$NS2" tc qdisc del dev accv2 root
+    fi
+    # Every call made or refused (an rmw error is a lost call, not a process that did not run).
+    local made refused
+    made=$(field "$d/client_$loss.log" sent); refused=$(field "$d/client_$loss.log" errors)
+    [ $((${made:-0} + ${refused:-0})) -eq "$calls" ] || { echo -1; return; }
+    field "$d/client_$loss.log" answered
+}
+t_besvc() {
+    local rmw=$1 d=$OUTDIR/besvc_$1
+    mkdir -p "$d"
+    local clean lossy
+    clean=$(besvc_arm "$rmw" 0 "$BESVC_CLEAN" "$d")
+    lossy=$(besvc_arm "$rmw" "$BESVC_LOSS" "$BESVC_LOSSY" "$d")
+    { [ "$clean" = -1 ] || [ "$lossy" = -1 ]; } && { echo "ERROR(a process did not run or made fewer calls: clean=$clean lossy=$lossy)"; return; }
+    local detail="clean=$clean/$BESVC_CLEAN lossy=$lossy/$BESVC_LOSSY"
+    if [ "$rmw" != rmw_tickle ]; then
+        echo "$lossy" > "$OUTDIR/besvc_control_lossy"
+        if [ "$clean" = "$BESVC_CLEAN" ] && [ "$lossy" -lt "$BESVC_LOSSY" ]; then echo "PASS($detail)"; else echo "FAIL($detail)"; fi
+        return
+    fi
+    local ctl
+    ctl=$(cat "$OUTDIR/besvc_control_lossy" 2>/dev/null)
+    [ -n "$ctl" ] || { echo "ERROR(no control count: $detail)"; return; }
+    # 2.5 sd of the difference of two binomial counts at the control's own loss rate, rounded up.
+    local margin
+    margin=$(awk -v n="$BESVC_LOSSY" -v a="$ctl" 'BEGIN { p = 1 - a / n; m = 2.5 * sqrt(2 * n * p * (1 - p)); print int(m) + (m > int(m)) }')
+    if [ "$clean" = "$BESVC_CLEAN" ] && [ "$lossy" -ge $((ctl - margin)) ]; then echo "PASS($detail control_lossy=$ctl margin=$margin)"
+    else echo "FAIL($detail control_lossy=$ctl margin=$margin)"; fi
 }
 # The control per test: CycloneDDS, except where it does not produce the behaviour at all (set after checking it).
 declare -A CONTROL=([itype]=${CONTROL_ITYPE:-rmw_cyclonedds_cpp})
