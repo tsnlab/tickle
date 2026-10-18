@@ -338,6 +338,15 @@ static void test_unbounded_type_keeps_the_depth(void) {
     EXPECT_TRUE(bounded_log > 0);
     EXPECT_TRUE(actual.history.depth < qos.history.depth);
 
+    init(); // a size its binding chose for an unbounded type (rmw_tickle's record budget): judged as unbounded
+    type.max_encoded_size_estimated = true;
+    long estimated_log = create_logged(&qos);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_get_actual_qos(&pub, &actual));
+    printf("test_qos_create: max_encoded_size %u estimated: logged %ld bytes, reports %u\n", (unsigned)SAMPLE_BYTES,
+           estimated_log, (unsigned)actual.history.depth);
+    EXPECT_EQ_INT(0, (int)estimated_log);
+    EXPECT_EQ_U32(qos.history.depth, actual.history.depth);
+
     init();
     type.max_encoded_size = 0;
     long unbounded_log = create_logged(&qos);

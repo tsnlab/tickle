@@ -517,6 +517,11 @@ static void check_rosout_shape(void) {
     assert(cache->capacity < 3000U);
     assert(cache->arena_size < cache->arena_limit); // lazily: the first slice
     assert(cache->arena == pub_impl->arena_base);
+    // D10 for an unbounded type: the depth asked for, not what a 1 MiB budget keeps of 65,507-byte samples (14).
+    rmw_qos_profile_t actual;
+    assert(RMW_RET_OK == rmw_publisher_get_actual_qos(pub, &actual));
+    printf("/rosout shape: actual depth %zu of %d asked\n", actual.depth, ROSOUT_DEPTH);
+    assert((size_t)ROSOUT_DEPTH == actual.depth);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 }
 

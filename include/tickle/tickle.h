@@ -3453,6 +3453,11 @@ struct tt_TypeSupport {
     // storage and a Subscriber's reorder slots (tt_Publisher_storage_size(), tt_Subscriber_storage_size()); an
     // unbounded type is sized for tt_MAX_SAMPLE_LENGTH.
     uint32_t max_encoded_size;
+    // true: max_encoded_size is what storage is sized for, not a bound the type has - a binding (rmw_tickle) that sizes
+    // an unbounded type's records by a budget says so here. Such a type is judged as an unbounded one where the bound
+    // decides something: a Publisher's history.depth is kept as asked, without a creation warning (D10). false (a
+    // zeroed struct): max_encoded_size, when not 0, is the type's bound.
+    bool max_encoded_size_estimated;
 };
 
 // Settings that are not QoS, read at creation only. A zeroed struct is the default for every field; NULL is a zeroed
@@ -3588,9 +3593,10 @@ tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* se
 // of every BEST_AVAILABLE. They are 0 when nothing is needed, and for a profile tt_QosProfile_resolve() refuses.
 // A Publisher sizes for history.depth samples of the type's largest (max_encoded_size, or tt_MAX_SAMPLE_LENGTH),
 // capped at history.bytes: when the cap keeps fewer, creation warns and tt_Publisher_get_actual_qos() says how many.
-// A type with no bound (max_encoded_size 0) cannot be judged until its samples are published: it keeps the depth asked
-// for, without a warning, and a sample the bytes cannot keep is counted then (tt_ReliableCache.depth_shortfalls).
-// Storage that arrives zeroed (static, calloc(), mmap()) is cheapest: creation clears only pages that hold anything.
+// A type with no bound (max_encoded_size 0, or max_encoded_size_estimated) cannot be judged until its samples are
+// published: it keeps the depth asked for, without a warning, and a sample the bytes cannot keep is counted then
+// (tt_ReliableCache.depth_shortfalls). Storage that arrives zeroed (static, calloc(), mmap()) is cheapest: creation
+// clears only pages that hold anything.
 //
 // Returns tt_RET_OK; tt_RET_INVALID_ARGUMENT for a NULL or uncreated node, a NULL argument, a profile the resolution
 // refuses, storage that is missing, short or misaligned, or a periodic HEARTBEAT or solicitation asked of a Publisher

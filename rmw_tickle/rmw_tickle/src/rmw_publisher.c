@@ -894,6 +894,12 @@ static bool publisher_profile(rmw_tickle_publisher_t* pub_impl, const rmw_qos_pr
     }
     uint32_t record = keep_all ? resolve_record_bytes(pub_impl) : keep_last_record_bytes(pub_impl);
     pub_impl->topic.max_encoded_size = cdr_for_record(record);
+    // For a type with no bound the record is a budget's choice, not the type's size: core then keeps the depth asked
+    // for instead of warning at creation (D10) - every rclcpp node's /rosout and /parameter_events did - and a sample
+    // the budget cannot keep is counted when published (report_depth_shortfalls()).
+    pub_impl->topic.max_encoded_size_estimated =
+        NULL == pub_impl->callbacks ||
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == pub_impl->callbacks->tickle_max_encoded_size;
 
     rmw_tickle_qos_extensions_t ext;
     memset(&ext, 0, sizeof(ext));
