@@ -12,30 +12,26 @@
 // offered (publisher) and the requested (subscription) side. rmw's contract: a deadline is missed when the time between
 // two samples exceeds the period; each missed period adds one to total_count.
 //
-// Suspected defect (QoS plan step 0, 2026-10-18): check_publisher_deadline() and check_subscription_deadline() run once
-// per P from the entity's creation time C and ask only "is the last sample at least P old?". With the last sample
-// before a gap at L = C + kP + phi and the next one at L + 1.5P:
-//   - phi > P/2: the check at L + 2P - phi comes before the next sample and sees a 2P - phi >= P old one: caught.
-//   - phi < P/2: the check at L + P - phi sees a sample only P - phi old, and by the next check (L + 2P - phi) the gap
-//     has already ended, so the sample is only P/2 - phi old: the miss is never reported.
-// So the gap is missed exactly when phi < P/2, and the test runs phases on both sides of P/2.
+// The defect this test was written for (QoS plan step 0, 2026-10-18; fixed by D4): the checks ran once per P from the
+// entity's creation time C and asked only "is the last sample at least P old?". With the last sample before a gap at
+// L = C + kP + phi and the next one at L + 1.5P, the gap was missed exactly when phi < P/2. Since D4 the check re-arms
+// at the last activity + P and counts one per missed period, so the phase must not matter.
 //
-// Cases (one fresh publisher + subscription each, so the timer phase is set by its creation time):
-//   gap 1.5P at phi = 0.10, 0.25, 0.40, 0.60, 0.75, 0.90 P: every one must count >= 1 on both sides.
-//   control: gap 3P at phi = 0.25 and 0.75 P: any implementation must count >= 1 (exact: 2).
-//   control: no gap (the cadence just continues) at phi = 0.25 P: must count 0 on both sides.
+// Cases (one fresh publisher + subscription each, so the old timer phase is set by its creation time):
+//   gap 1.5P at phi = 0.10, 0.25, 0.40, 0.60, 0.75, 0.90 P: exactly 1 on both sides (0 is the defect).
+//   gap 0.5P at phi = 0.25, 0.75 P: exactly 0 on both sides - the falsifier: a check that counts without a gap.
+//   gap 5.5P at phi = 0.25 P: exactly 5 on both sides - one per missed period, not one per silence.
+//   control: gap 3P at phi = 0.25 and 0.75 P: 2, or 3 when the check due at L + 3P runs before the sample planned for
+//   that same instant arrives - the gap ends on a period boundary, so either side of it is correct.
+//   control: no gap (the cadence just continues) at phi = 0.25 P: 0 on both sides.
 // Publishes are every P/4 before and after the gap, far inside the deadline.
 //
 // Reading rules, enforced below, not only stated here:
 //   - VOID (not a result) if a planned publish happened more than JITTER_MS late, or the subscription did not take the
 //     last sample before the gap or the first one after it - then the requested-side count would not be about the gap.
 //     A VOID case is retried up to MAX_TRIES times; still VOID is a failure (exit 1), never a pass.
-//   - PASS (exit 0): every control holds and every 1.5P case counts >= 1 on both sides.
-//   - KNOWN DEFECT (exit 77, which CMake maps to a skip with this reason printed): every control holds, and the 1.5P
-//     cases match the defect's prediction exactly - 0 on both sides for every phi < P/2 and >= 1 on both sides for
-//     every phi > P/2. Present on main at 2.0.0 (ab972496). The fix must make this test PASS and then remove the
-//     KNOWN DEFECT exit (and SKIP_RETURN_CODE in CMakeLists.txt), so a regression fails instead of skipping.
-//   - FAIL (exit 1): anything else - a control broken, or a pattern the defect does not predict.
+//   - PASS (exit 0): every case's count, on both sides, is inside its range above.
+//   - FAIL (exit 1): anything else.
 
 #include <assert.h>
 #include <stdbool.h>
@@ -119,10 +115,8 @@ static rosidl_message_type_support_t fake_handle = {.data = &fake_callbacks,
 
 #define NS_PER_MS 1000000ULL
 #define NS_PER_S 1000000000ULL
-#define PERCENT 100U        // phases are given in percent of P
-#define HALF_PERIOD_PCT 50U // the defect's boundary: a gap starting before this phase is missed
+#define PERCENT 100U // phases are given in percent of P
 #define TOPIC_CHARS 64
-#define EXIT_KNOWN_DEFECT 77 // SKIP_RETURN_CODE in CMakeLists.txt
 #define PERIOD_MS 100ULL
 #define PERIOD_NS (PERIOD_MS * NS_PER_MS)
 #define CADENCE_NS (PERIOD_NS / 4) // publishes before and after the gap: far inside the deadline
@@ -130,8 +124,9 @@ static rosidl_message_type_support_t fake_handle = {.data = &fake_callbacks,
 #define AFTER_NS (2 * PERIOD_NS)   // cadence after the gap, before the counts are read
 #define JITTER_MS 5ULL             // a publish later than this is a VOID case: the phase was not the one planned
 #define MAX_TRIES 3
+#define LONG_GAP_PERIODS 5ULL // the 5.5P case: whole periods missed
 
-enum gap_kind { GAP_NONE, GAP_1_5P, GAP_3P };
+enum gap_kind { GAP_NONE, GAP_0_5P, GAP_1_5P, GAP_3P, GAP_5_5P };
 
 struct gap_case {
     enum gap_kind kind;
@@ -199,10 +194,14 @@ static bool publish_at(rmw_publisher_t* pub, rmw_subscription_t* sub, uint64_t p
 // From the last sample before the gap to the first after it; with no gap, the cadence just continues.
 static uint64_t gap_length(enum gap_kind kind) {
     switch (kind) {
+    case GAP_0_5P:
+        return PERIOD_NS / 2;
     case GAP_1_5P:
         return (3 * PERIOD_NS) / 2;
     case GAP_3P:
         return 3 * PERIOD_NS;
+    case GAP_5_5P:
+        return (LONG_GAP_PERIODS * PERIOD_NS) + (PERIOD_NS / 2);
     case GAP_NONE:
         break;
     }
@@ -266,10 +265,14 @@ static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct 
 
 static const char* kind_name(enum gap_kind kind) {
     switch (kind) {
+    case GAP_0_5P:
+        return "0.5P";
     case GAP_1_5P:
         return "1.5P";
     case GAP_3P:
         return "3P  ";
+    case GAP_5_5P:
+        return "5.5P";
     case GAP_NONE:
         break;
     }
@@ -292,10 +295,31 @@ static struct outcome run_with_retries(rmw_node_t* talker, rmw_node_t* listener,
     return out;
 }
 
+// The counts a case must show on each side, inclusive (see this file's header).
+static void expected_range(enum gap_kind kind, uint64_t* low, uint64_t* high) {
+    switch (kind) {
+    case GAP_1_5P:
+        *low = 1;
+        *high = 1;
+        return;
+    case GAP_3P:
+        *low = 2;
+        *high = 3;
+        return;
+    case GAP_5_5P:
+        *low = 5;
+        *high = 5;
+        return;
+    case GAP_0_5P:
+    case GAP_NONE:
+        break;
+    }
+    *low = 0;
+    *high = 0;
+}
+
 struct tally {
-    bool controls_hold;
-    bool all_caught;     // every 1.5P case >= 1 on both sides
-    bool defect_pattern; // phi < P/2 -> 0 on both sides, phi > P/2 -> >= 1 on both sides
+    bool all_hold;
     bool any_void;
 };
 
@@ -305,27 +329,16 @@ static void judge(struct gap_case gap_case, struct outcome out, int tries, struc
         tally->any_void = true;
         return;
     }
-    bool caught = out.offered >= 1 && out.requested >= 1;
-    bool silent = out.offered == 0 && out.requested == 0;
-    const char* verdict = NULL;
-    switch (gap_case.kind) {
-    case GAP_NONE:
-        verdict = silent ? "ok (control: 0 expected)" : "CONTROL BROKEN (0 expected)";
-        tally->controls_hold = tally->controls_hold && silent;
-        break;
-    case GAP_3P:
-        verdict = caught ? "ok (control: >= 1 expected)" : "CONTROL BROKEN (>= 1 expected)";
-        tally->controls_hold = tally->controls_hold && caught;
-        break;
-    case GAP_1_5P:
-        verdict = caught ? "caught" : "MISSED";
-        tally->all_caught = tally->all_caught && caught;
-        tally->defect_pattern = tally->defect_pattern && (gap_case.phase_pct < HALF_PERIOD_PCT ? silent : caught);
-        break;
-    }
-    printf("  gap %s phi %2u%%: offered +%llu requested +%llu  %s (worst lateness %.2f ms, tries %d)\n",
+    uint64_t low = 0;
+    uint64_t high = 0;
+    expected_range(gap_case.kind, &low, &high);
+    bool holds = out.offered >= low && out.offered <= high && out.requested >= low && out.requested <= high;
+    tally->all_hold = tally->all_hold && holds;
+    printf("  gap %s phi %2u%%: offered +%llu requested +%llu  expected %llu..%llu  %s (worst lateness %.2f ms, "
+           "tries %d)\n",
            kind_name(gap_case.kind), gap_case.phase_pct, (unsigned long long)out.offered,
-           (unsigned long long)out.requested, verdict, (double)out.late_ns / (double)NS_PER_MS, tries);
+           (unsigned long long)out.requested, (unsigned long long)low, (unsigned long long)high, holds ? "ok" : "WRONG",
+           (double)out.late_ns / (double)NS_PER_MS, tries);
 }
 
 int main(void) {
@@ -342,12 +355,12 @@ int main(void) {
     assert(NULL != talker && NULL != listener);
 
     static const struct gap_case cases[] = {
-        {GAP_1_5P, 10}, {GAP_1_5P, 25}, {GAP_1_5P, 40}, {GAP_1_5P, 60}, {GAP_1_5P, 75},
-        {GAP_1_5P, 90}, {GAP_3P, 25},   {GAP_3P, 75},   {GAP_NONE, 25},
+        {GAP_1_5P, 10}, {GAP_1_5P, 25}, {GAP_1_5P, 40}, {GAP_1_5P, 60}, {GAP_1_5P, 75}, {GAP_1_5P, 90},
+        {GAP_0_5P, 25}, {GAP_0_5P, 75}, {GAP_5_5P, 25}, {GAP_3P, 25},   {GAP_3P, 75},   {GAP_NONE, 25},
     };
     const int count = (int)(sizeof(cases) / sizeof(cases[0]));
 
-    struct tally tally = {.controls_hold = true, .all_caught = true, .defect_pattern = true, .any_void = false};
+    struct tally tally = {.all_hold = true, .any_void = false};
     printf("deadline gap: P = %llu ms, cadence %llu ms, gap 1.5P = %llu ms\n", PERIOD_MS, CADENCE_NS / NS_PER_MS,
            (3 * PERIOD_MS) / 2);
     for (int i = 0; i < count; i++) {
@@ -366,19 +379,10 @@ int main(void) {
         printf("deadline gap: FAIL - a case stayed VOID after %d tries; nothing was decided\n", MAX_TRIES);
         return 1;
     }
-    if (!tally.controls_hold) {
-        printf("deadline gap: FAIL - a control does not hold\n");
+    if (!tally.all_hold) {
+        printf("deadline gap: FAIL - a count is outside its expected range\n");
         return 1;
     }
-    if (tally.all_caught) {
-        printf("deadline gap: PASS - every 1.5P gap counted on both sides, at every phase\n");
-        return 0;
-    }
-    if (tally.defect_pattern) {
-        printf("deadline gap: KNOWN DEFECT (skipped) - a 1.5P gap is missed exactly when it starts in the first half "
-               "of the deadline timer's period; see this file's header\n");
-        return EXIT_KNOWN_DEFECT;
-    }
-    printf("deadline gap: FAIL - 1.5P gaps missed in a pattern the known defect does not predict\n");
-    return 1;
+    printf("deadline gap: PASS - every gap counted one per missed period on both sides, at every phase\n");
+    return 0;
 }
