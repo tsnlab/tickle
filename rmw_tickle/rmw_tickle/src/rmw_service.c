@@ -310,20 +310,30 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
+    // Created with its QoS, its options and that storage (QoS redesign step 3): core lays the cached responses out in
+    // response_cache exactly as tt_Server_set_storage() did - tt_MAX_SERVER_CACHE_COUNT entries of
+    // max_response_bytes plus framing, which is the entry computed above.
+    struct tt_QosProfile profile;
+    rmw_tickle_qos_to_tt(qos_policies, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT, NULL, &profile);
+    struct tt_ServerOptions options;
+    memset(&options, 0, sizeof(options));
+    options.callback = server_callback;
+    // At least a byte: 0 would be "the inline cache". Only a budget too small for any response gets here.
+    options.max_response_bytes =
+        cache_entry > (uint32_t)response_framing ? cache_entry - (uint32_t)response_framing : 1U;
+    size_t storage_size = tt_Server_storage_size(&options);
+
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret = tt_Node_create_server_legacy(node_impl->core_node, &svc->tickle_server, &svc->service,
-                                                svc->rmw_service.service_name, server_callback);
-    if (ret == tt_RET_OK) {
-        // After create, which resets the server to its inline storage, and under the same lock, so
-        // the poll thread cannot hand it a request in between.
-        ret = tt_Server_set_storage(&svc->tickle_server, svc->response_cache, cache_entry);
-        if (ret != tt_RET_OK) {
-            tt_Server_destroy(&svc->tickle_server);
-        }
+    tt_ret_t ret = tt_RET_INVALID_ARGUMENT;
+    if (storage_size <= (size_t)tt_MAX_SERVER_CACHE_COUNT * cache_entry) {
+        ret =
+            tt_Node_create_server(node_impl->core_node, &svc->tickle_server, &svc->service,
+                                  svc->rmw_service.service_name, &profile, &options, svc->response_cache, storage_size);
     }
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Context_create_server()/tt_Server_set_storage() failed");
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("tt_Node_create_server() failed (%d) for service '%s'", (int)ret,
+                                             service_name);
         allocator->deallocate(svc->response_cache, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
@@ -450,7 +460,7 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
 // rcl_service_init() asks for both on every service (rcl service.c), so a service could not be
 // created through rcl at all without them - every default rclcpp::Node starts several. TickLE
 // has no request reader or response writer of its own to report on: both answer with the profile
-// the service was created with (rmw_tickle_service_t.qos).
+// core resolved for the service (tt_Server_get_actual_qos(), QoS redesign step 3).
 static rmw_ret_t service_actual_qos(const rmw_service_t* service, rmw_qos_profile_t* qos) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(service, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
@@ -458,7 +468,13 @@ static rmw_ret_t service_actual_qos(const rmw_service_t* service, rmw_qos_profil
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    *qos = ((const rmw_tickle_service_t*)service->data)->qos;
+    const rmw_tickle_service_t* svc = (const rmw_tickle_service_t*)service->data;
+    struct tt_QosProfile actual;
+    if (tt_RET_OK != tt_Server_get_actual_qos(&svc->tickle_server, &actual)) {
+        RMW_SET_ERROR_MSG("tt_Server_get_actual_qos() failed");
+        return RMW_RET_ERROR;
+    }
+    rmw_tickle_qos_from_tt(&actual, &svc->qos, qos);
     return RMW_RET_OK;
 }
 

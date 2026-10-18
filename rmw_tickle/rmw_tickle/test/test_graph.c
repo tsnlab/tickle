@@ -190,7 +190,7 @@ int main(void) {
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
 
-    struct tt_Topic topic = {
+    struct tt_TypeSupport topic = {
         .name = "test_graph/Msg",
         .data_size = sizeof(struct tt_Data),
         .data_encode_size = fake_encode_size,
@@ -201,9 +201,12 @@ int main(void) {
 
     // See this file's own top comment on why the interrupt-then-lock pattern is needed here -
     // tickle_context is otherwise only ever touched by this node's own background poll thread.
+    // BEST_EFFORT endpoints, which need no storage - what the deprecated creates made.
+    const struct tt_QosProfile best_effort = {.reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT}};
     struct tt_Publisher pub;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t tt_ret = tt_Node_create_publisher_legacy(node_impl->core_node, &pub, &topic, topic_name);
+    tt_ret_t tt_ret =
+        tt_Node_create_publisher(node_impl->core_node, &pub, &topic, topic_name, &best_effort, NULL, NULL, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
     // Created on this rmw node's core node, not on a default node (CONTEXT_NODE_PLAN.md stage 2).
@@ -217,7 +220,9 @@ int main(void) {
 
     struct tt_Subscriber sub;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Node_create_subscriber_legacy(node_impl->core_node, &sub, &topic, topic_name, fake_subscriber_callback);
+    const struct tt_SubscriberOptions sub_options = {.callback = fake_subscriber_callback};
+    tt_ret =
+        tt_Node_create_subscriber(node_impl->core_node, &sub, &topic, topic_name, &best_effort, &sub_options, NULL, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
@@ -254,7 +259,9 @@ int main(void) {
 
     struct tt_Client client;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Node_create_client_legacy(node_impl->core_node, &client, &service, service_name, fake_client_callback);
+    const struct tt_ClientOptions client_options = {.callback = fake_client_callback};
+    tt_ret =
+        tt_Node_create_client(node_impl->core_node, &client, &service, service_name, NULL, &client_options, NULL, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
@@ -265,7 +272,9 @@ int main(void) {
 
     struct tt_Server server;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Node_create_server_legacy(node_impl->core_node, &server, &service, service_name, fake_server_callback);
+    const struct tt_ServerOptions server_options = {.callback = fake_server_callback};
+    tt_ret =
+        tt_Node_create_server(node_impl->core_node, &server, &service, service_name, NULL, &server_options, NULL, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 

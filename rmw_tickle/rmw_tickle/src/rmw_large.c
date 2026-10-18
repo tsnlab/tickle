@@ -262,11 +262,11 @@ uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message
     return (uint16_t)RMW_TICKLE_TRACKING_WORDS;
 }
 
-void rmw_tickle_large_region_attach(struct tt_Publisher* pub,
-                                    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
-                                    bool keep_all) {
+void rmw_tickle_large_region_options(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
+                                     bool keep_all, struct tt_PublisherOptions* options) {
+    options->large_region_chunks = 0;
+    options->large_region_chunk_bytes = 0;
 #if !tt_LARGE_SHM
-    (void)pub;
     (void)callbacks;
     (void)depth;
     (void)keep_all;
@@ -291,9 +291,13 @@ void rmw_tickle_large_region_attach(struct tt_Publisher* pub,
     if (chunks > (size_t)tt_LARGE_REGION_CHUNKS_MAX) {
         chunks = (size_t)tt_LARGE_REGION_CHUNKS_MAX;
     }
-    if (tt_RET_OK != tt_Publisher_set_large_region(pub, (uint32_t)chunks, chunk_bytes)) {
+    // What tt_Publisher_set_large_region() refused, and creation now would: said, and the publisher made without one.
+    if (chunk_bytes < tt_LARGE_CHUNK_BYTES(tt_MAX_SAMPLE_LENGTH + 1U)) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle", "could not give a large-message publisher its shared region: its "
                                              "same-host subscribers get fragments");
+        return;
     }
+    options->large_region_chunks = (uint32_t)chunks;
+    options->large_region_chunk_bytes = chunk_bytes;
 #endif
 }

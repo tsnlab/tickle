@@ -317,28 +317,40 @@ static uint32_t initial_arena_bytes(uint32_t limit, uint32_t largest_record) {
 }
 
 // Doubles this publisher's arena toward its limit, keeping everything retained, and returns whether
-// it grew. Called only from publish_blocking() below, on the caller's thread and never from core's
-// publish path, which allocates nothing by design. The node mutex is held: tt_ReliableCache_grow()
-// is not safe against a concurrent poll.
+// it grew. Called with the node mutex held (tt_ReliableCache_grow() is not safe against a concurrent
+// poll): from publish_blocking() below, and from core through grow_on_need().
+//
+// The arena never leaves the storage core was given at creation (QoS redesign step 3), which already
+// spans the limit: the publisher starts on its first slice (initial_arena_bytes()) and grows into the
+// rest, so a publisher that never needs the budget never touches - never makes resident - more than
+// that slice, as when the slices were separate allocations. tt_ReliableCache_grow() repacks the
+// retained records to the start of the new arena and cannot do so in place, so they go through a
+// scratch copy of the current size first.
 static bool grow_reliable_cache(rmw_tickle_publisher_t* pub_impl) {
     struct tt_ReliableCache* cache = pub_impl->reliable_cache;
-    if (NULL == cache || NULL == cache->arena || cache->arena_size >= cache->arena_limit) {
+    if (NULL == cache || NULL == cache->arena || cache->arena_size >= cache->arena_limit ||
+        cache->arena != pub_impl->arena_base) {
         return false; // nothing retained, or already at the limit the budget set
     }
     unsigned long long doubled = (unsigned long long)cache->arena_size * 2ULL;
     uint32_t next = doubled < (unsigned long long)cache->arena_limit ? (uint32_t)doubled : cache->arena_limit;
 
     rcutils_allocator_t* allocator = &pub_impl->allocator;
-    uint8_t* grown = (uint8_t*)allocator->allocate(next, allocator->state);
-    if (NULL == grown) {
+    uint8_t* scratch = (uint8_t*)allocator->allocate(cache->arena_size, allocator->state);
+    if (NULL == scratch) {
         return false; // out of memory is not this publisher's problem to report: it just blocks
     }
-    uint8_t* previous = cache->arena;
-    if (tt_RET_OK != tt_ReliableCache_grow(cache, grown, next)) {
-        allocator->deallocate(grown, allocator->state);
+    if (tt_RET_OK != tt_ReliableCache_grow(cache, scratch, cache->arena_size)) {
+        allocator->deallocate(scratch, allocator->state);
         return false;
     }
-    allocator->deallocate(previous, allocator->state); // core copied out of it and never kept it
+    // Cannot fail: the same arena at a size between the current one and the limit. Were it to, the cache would stay on
+    // the scratch copy, and losing track of that would free memory core still writes.
+    if (tt_RET_OK != tt_ReliableCache_grow(cache, pub_impl->arena_base, next)) {
+        pub_impl->arena_scratch = scratch; // freed with the publisher
+        return false;
+    }
+    allocator->deallocate(scratch, allocator->state); // core copied out of it and never kept it
     return true;
 }
 
@@ -490,7 +502,7 @@ static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
 // answered with an eviction Heartbeat, i.e. lost to that reader. With 64 KiB samples 1 MiB holds
 // 16, fine at camera rates and tight at max rate (Plan's review).
 //
-// KEEP_ALL is budgeted too, but differently - see resolve_keep_all_arena_bytes() below: its promise is
+// KEEP_ALL is budgeted too, but differently - see resolve_keep_all_budget_bytes() below: its promise is
 // that nothing unacknowledged is ever dropped, so its budget is reached by blocking the writer, not
 // by evicting.
 // The arena bytes one message of this type can need under KEEP_LAST: its generated bound when it has one,
@@ -498,24 +510,21 @@ static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
 // one, which is the only thing the payload changes here. Deliberately not resolve_record_bytes(): that
 // one falls back to KEEP_ALL's 1472-byte default for an unbounded type, because KEEP_ALL is not budgeted
 // and would otherwise reserve hundreds of megabytes. KEEP_LAST is budgeted, so it can afford the largest
-// sample per record and the cap in resolve_keep_last_arena_bytes() is what bounds it.
+// sample per record and the cap in resolve_keep_last_budget_bytes() and core is what bounds it.
 static uint32_t keep_last_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
     uint32_t record = payload_record_bytes(pub_impl);
     return 0 != record ? record : clamp_record_bytes(type_ceiling_bytes(pub_impl));
 }
 
-static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
-    unsigned long long record = keep_last_record_bytes(pub_impl);
-    unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
-
+//
+// Since QoS redesign step 3 this is history.bytes, the budget alone: core takes the arena as (depth + 1) records capped
+// at it and never below one record, with the record as core sizes it (tt_Publisher_storage_size()).
+static uint32_t resolve_keep_last_budget_bytes(const rmw_tickle_publisher_t* pub_impl) {
     const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
     unsigned long long budget = NULL != payload && 0 != payload->cache_bytes
                                     ? (unsigned long long)payload->cache_bytes
                                     : rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
-    if (budget < record) {
-        budget = record;
-    }
-    return (uint32_t)(full < budget ? full : budget);
+    return budget < UINT32_MAX ? (uint32_t)budget : UINT32_MAX;
 }
 
 // Byte budget for a KEEP_ALL publisher's unacknowledged samples (2026-09-25, the user's decision to
@@ -545,19 +554,17 @@ static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_
 //
 // The per-publisher payload's cache_bytes overrides the environment, and the budget never drops below
 // one record, so any single legal sample can still be admitted.
-static uint32_t resolve_keep_all_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth, bool durable) {
-    unsigned long long record = (unsigned long long)resolve_record_bytes(pub_impl);
-    unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
+//
+// As history.bytes (QoS redesign step 3): the budget alone, UINT32_MAX - none - for TRANSIENT_LOCAL; core caps the
+// arena at it and keeps it at least one record.
+static uint32_t resolve_keep_all_budget_bytes(const rmw_tickle_publisher_t* pub_impl, bool durable) {
     if (durable) {
-        return (uint32_t)full;
+        return UINT32_MAX;
     }
     const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
     unsigned long long budget = NULL != payload && 0 != payload->cache_bytes ? (unsigned long long)payload->cache_bytes
                                                                              : rmw_tickle_keep_all_budget_bytes();
-    if (budget < record) {
-        budget = record;
-    }
-    return (uint32_t)(full < budget ? full : budget);
+    return budget < UINT32_MAX ? (uint32_t)budget : UINT32_MAX;
 }
 
 // Periodic Heartbeat for a RELIABLE publisher, off unless RMW_TICKLE_HEARTBEAT_PERIOD_NS is set.
@@ -662,21 +669,20 @@ static uint32_t resolve_heartbeat_piggyback_every(void) {
 }
 
 // Split out of rmw_create_publisher() to keep its cognitive complexity under clang-tidy's
-// threshold. A plain field, schedules nothing - but set after tt_Context_create_publisher(), which
-// initialises it, and after setup_reliable_cache(), whose cache it checks.
+// threshold. tt_PublisherOptions.heartbeat_piggyback_every, given at creation.
 //
 // Only a publisher with a reliable_cache can piggyback (the Heartbeat names its oldest cached
 // sample) - RELIABLE, or TRANSIENT_LOCAL - so a BEST_EFFORT VOLATILE one neither arms nor logs.
+// Logged once the publisher exists (log_heartbeat_piggyback()).
 //
 // Exact wording of both lines is load-bearing: the heartbeat sweep VOIDs a run whose log does not
 // carry the armed line with the N it asked for, and verifies an off arm by the off line. Change
 // them only together with that script.
-static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
+static void log_heartbeat_piggyback(const rmw_tickle_publisher_t* pub_impl) {
     if (NULL == pub_impl->tickle_publisher.reliable_cache) {
         return;
     }
-    uint32_t piggyback_every = resolve_heartbeat_piggyback_every();
-    pub_impl->tickle_publisher.heartbeat_piggyback_every = piggyback_every;
+    uint32_t piggyback_every = pub_impl->tickle_publisher.heartbeat_piggyback_every;
     if (piggyback_every != 0) {
         RCUTILS_LOG_INFO_NAMED("rmw_tickle", "heartbeat piggyback armed: every %u samples", (unsigned)piggyback_every);
     } else {
@@ -688,29 +694,40 @@ static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
 // this publisher send runs of exactly N large units - forced IP with its own ip_datagram_max at N units (the run's 28
 // bytes of framing and N x 1,452) - so long as the reader's advertisement allows N (its reader runs with
 // RMW_TICKLE_REASSEMBLY_CAP_OFF=1). Unset: the context's setting. The log line is load-bearing, as the heartbeat's.
+// Fills tt_PublisherOptions.large_fragmentation / .ip_datagram_max and returns the units, 0 when unset.
 #define RMW_TICKLE_RUN_FRAMING 28U
 #define RMW_TICKLE_LARGE_UNIT 1452U
 #define RMW_TICKLE_RUN_UNITS_MAX 45U
-static void arm_run_units(rmw_tickle_publisher_t* pub_impl) {
+static unsigned run_units_option(struct tt_PublisherOptions* options) {
 #if tt_HYBRID_TRANSPORT
     const char* env = getenv("RMW_TICKLE_RUN_UNITS");
     if (NULL == env || '\0' == env[0]) {
-        return;
+        return 0;
     }
     char* end = NULL;
     unsigned long long units = strtoull(env, &end, 10);
     if (end == env || (end != NULL && '\0' != *end) || units < 1U || units > RMW_TICKLE_RUN_UNITS_MAX) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_RUN_UNITS='%s' is not 1..%u; ignored", env,
                                (unsigned)RMW_TICKLE_RUN_UNITS_MAX);
-        return;
+        return 0;
     }
-    pub_impl->tickle_publisher.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
-    pub_impl->tickle_publisher.ip_datagram_max =
-        (uint16_t)(RMW_TICKLE_RUN_FRAMING + ((uint32_t)units * RMW_TICKLE_LARGE_UNIT));
-    RCUTILS_LOG_INFO_NAMED("rmw_tickle", "hybrid transport: runs of %u units", (unsigned)units);
+    options->large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+    options->ip_datagram_max = (uint16_t)(RMW_TICKLE_RUN_FRAMING + ((uint32_t)units * RMW_TICKLE_LARGE_UNIT));
+    return (unsigned)units;
 #else
-    (void)pub_impl;
+    (void)options;
+    return 0;
 #endif
+}
+
+// RMW_TICKLE_IDLE_HEARTBEAT_NS as tt_PublisherOptions.idle_heartbeat_ns: core's default when unset (0 there), off
+// (tt_QOS_DURATION_INFINITE there) for 0.
+static uint64_t idle_heartbeat_option(void) {
+    uint64_t period = resolve_idle_heartbeat_ns(tt_IDLE_HEARTBEAT_PERIOD);
+    if (period == tt_IDLE_HEARTBEAT_PERIOD) {
+        return 0;
+    }
+    return 0 == period ? tt_QOS_DURATION_INFINITE : period;
 }
 
 // (LARGE_MESSAGE_PLAN.md stage 1) The direct codec where the type has one - the ROS message goes
@@ -800,162 +817,151 @@ static int32_t encode_range_with_psn(struct tt_Data* data, uint8_t* payload, uin
     return (int32_t)len;
 }
 
-// Core's cache counts seq_no, and every datagram of a fragmented message takes its own
-// (DATAFRAG_PLAN.md section 13), so a KEEP_LAST ring of `depth` would hold depth / k messages of k
-// fragments. Its ring is sized in datagrams instead - depth times the datagrams one reserved message
-// takes (the record's bytes stand in for its CDR, which can overstate that by one datagram, never
-// understate it) - and HISTORY.depth is bounded in messages separately (sample_depth, setup_reliable_cache()). The ring
-// then only has to hold what that bound and the arena let in: per message its first record and a short
-// last one, plus one full continuation per fragment payload the arena can hold. Without that cap an
-// unbounded type - /rosout, depth 1000 - would index 47 datagrams a message it can never retain.
+// QoS redesign step 3 (2026-10-18): a publisher is created with tt_Node_create_publisher(), its profile, its options
+// and caller storage of tt_Publisher_storage_size() bytes, which core lays out as the retained-sample cache, its index
+// and its arena. What follows translates rmw_tickle's own sizing - the depths, record sizes and byte budgets the
+// functions above have always worked out - into that profile, so the cache core builds is the one rmw_tickle built:
 //
-// KEEP_ALL's depth stays as it was, now counted in datagrams: it is a resource limit rather than a
-// promise about messages, and it blocks rather than evicts. A VOLATILE one can never have more
-// unacknowledged datagrams outstanding than a reader's tracking window, which counts seq_no too, so a
-// larger ring would be memory nothing reaches. Capped by the ring's uint16 width either way.
-static uint16_t resolve_ring_slots(const rmw_tickle_publisher_t* pub_impl, size_t depth, bool keep_all,
-                                   uint32_t arena_bytes) {
-    unsigned long long ring = (unsigned long long)depth;
-    if (!keep_all) {
-        const unsigned long long continuation =
-            (unsigned long long)tt_CONTROL_MAX_LENGTH -
-            (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader));
-        unsigned long long per_message =
-            (unsigned long long)depth * tt_sample_datagrams(keep_last_record_bytes(pub_impl));
-        unsigned long long most = (2ULL * depth) + (arena_bytes / continuation);
-        ring = per_message < most ? per_message : most;
+//   - depth: HISTORY.depth, tt_MAX_RELIABLE_HISTORY when unset, and the two KEEP_ALL constants above for KEEP_ALL;
+//   - the record a sample reserves: the type's sizing bound (tt_TypeSupport.max_encoded_size, cdr_for_record());
+//   - the arena: history.bytes, the budget resolve_keep_last_budget_bytes() / resolve_keep_all_budget_bytes() give.
+//
+// Core counts the index ring the same way rmw_tickle did (datagrams, capped at what the arena can fill), plus one
+// sample's slack. The arena is still reserved lazily: see grow_reliable_cache().
+
+// The largest CDR - rmw_tickle's per-message header included - whose cached record fits `record` bytes: what
+// tt_TypeSupport.max_encoded_size tells core, so it reserves per sample exactly what resolve_record_bytes() and
+// keep_last_record_bytes() work out. tt_sample_cache_bytes() never decreases, so a bisection finds it. A record core
+// cannot reserve exactly - KEEP_ALL's raw 1472 for an unbounded type, which lies between the record of the largest
+// sample one datagram carries and that of the smallest that takes two - becomes the largest below it: for 1472, what
+// every sample that fits a datagram needs, which is what the 1472 stood for.
+static uint32_t cdr_for_record(uint32_t record) {
+    uint32_t low = 1;
+    uint32_t high = (uint32_t)tt_MAX_SAMPLE_LENGTH;
+    if (tt_sample_cache_bytes(high) <= record) {
+        return high;
     }
-    if (ring > (unsigned long long)UINT16_MAX) {
-        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
-                               "publisher of %s: a history depth of %zu messages needs %llu datagram slots, more than "
-                               "the %u a cache can index - it keeps fewer messages of its largest size",
-                               type_name_of(pub_impl), depth, ring, (unsigned)UINT16_MAX);
-        ring = UINT16_MAX;
+    while (low + 1U < high) { // tt_sample_cache_bytes(low) <= record < tt_sample_cache_bytes(high)
+        uint32_t mid = low + ((high - low) / 2U);
+        if (tt_sample_cache_bytes(mid) <= record) {
+            low = mid;
+        } else {
+            high = mid;
+        }
     }
-    return (uint16_t)ring;
+    return low;
 }
 
-// Split out of rmw_create_publisher() below purely to keep that function's own cognitive
-// complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
-// comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
-// called) only on a real failure; true covers both "successfully set up" and "neither RELIABLE
-// nor TRANSIENT_LOCAL was requested, nothing to do" - the caller doesn't need to tell those two
-// apart, only whether to bail out and run its own (unrelated - tt_Context_create_publisher() et al.)
-// cleanup.
-static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos_profile,
-                                 rcutils_allocator_t* allocator) {
-    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE != qos_profile->reliability &&
-        RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL != qos_profile->durability) {
-        return true;
-    }
+// Whether core will retain samples for this publisher: RELIABLE or TRANSIENT_LOCAL once resolved. A publisher's
+// BEST_AVAILABLE always resolves to the strict choice, and SYSTEM_DEFAULT reliability is RELIABLE (decision D7).
+static bool publisher_retains(const rmw_qos_profile_t* qos) {
+    return RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT != qos->reliability ||
+           RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos->durability ||
+           RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == qos->durability;
+}
 
-    // DDS QoS policy coverage inventory gap 2 (rmw_tickle/PLAN.md) - rmw_tickle_validate_qos_
-    // profile() (rmw_qos.c) only rejects HISTORY_KEEP_ALL for Subscriptions; a Publisher requesting
-    // it used to pass validation and then silently fall through to the ordinary ->depth branch
-    // below (defaulting to tt_MAX_RELIABLE_HISTORY=64 if ->depth was also unset) - a real "reject
-    // explicitly, never silently downgrade" violation (this file's own design philosophy, rmw_
-    // qos.c's header comment). Honored here instead of rejected, at the user's own explicit choice.
-    bool keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history;
-    bool durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
-    size_t depth;
-    if (keep_all) {
-        depth = durable ? (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE : (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE;
-    } else {
-        depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
-                                                                          : (size_t)tt_MAX_RELIABLE_HISTORY;
-    }
-    if (depth == 0 || depth > (size_t)UINT16_MAX) {
-        RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher depth must be 1.."
-                          "UINT16_MAX (struct tt_ReliableCache.depth/capacity's own uint16_t "
-                          "width) - see rmw_tickle/PLAN.md's QoS roadmap #4/#5");
-        return false;
-    }
+// Whether core will refuse rather than evict (tt_Publisher.keep_all): KEEP_ALL and RELIABLE once resolved.
+static bool publisher_keep_all_blocks(const rmw_qos_profile_t* qos) {
+    return RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history &&
+           RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT != qos->reliability;
+}
 
-    // B1 (rmw_tickle/PLAN.md) - the encoded bytes live in a separate byte arena rather than a
-    // 1472-byte buffer embedded in every index slot, sized at the type's own maximum. That maximum
-    // is now a real per-type number for any type the generator can bound (callbacks->tickle_max_
-    // encoded_size), which is what the ceiling below used to stand in for: a depth-8192 DURABLE
-    // KEEP_ALL publisher of a 76-byte type reserved ~12.06 MB and needs ~0.6 MB. Types carrying a
-    // plain unbounded string still have no bound and still get the ceiling. See
-    // resolve_record_bytes() above for which source applies when and why.
-    //
-    // (depth + 1) records either way - the wrap slack B1 added, so the byte bound still cannot
-    // evict before the count bound, which is what `depth` promises.
-    uint32_t arena_bytes = keep_all ? resolve_keep_all_arena_bytes(pub_impl, depth, durable)
-                                    : resolve_keep_last_arena_bytes(pub_impl, depth);
-    // The ring counts datagrams (resolve_ring_slots() says how many and why).
-    uint16_t ring = resolve_ring_slots(pub_impl, depth, keep_all, arena_bytes);
+// The depth rmw_tickle has always given a publisher's cache (see the comment above).
+static size_t publisher_depth(const rmw_qos_profile_t* qos) {
+    if (RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history) {
+        bool durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos->durability ||
+                       RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == qos->durability;
+        return durable ? (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE : (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE;
+    }
+    return qos->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos->depth : (size_t)tt_MAX_RELIABLE_HISTORY;
+}
 
-    pub_impl->reliable_cache =
-        (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
-    if (NULL == pub_impl->reliable_cache) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
-        return false;
+// The profile rmw_create_publisher() hands core. False, with the error set, for a depth the cache cannot count.
+static bool publisher_profile(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos,
+                              struct tt_QosProfile* profile) {
+    bool keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history;
+    bool durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos->durability ||
+                   RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == qos->durability;
+    size_t depth = publisher_depth(qos);
+    if (depth > (size_t)UINT16_MAX) {
+        if (publisher_retains(qos)) {
+            RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher depth must be 1.."
+                              "UINT16_MAX (struct tt_ReliableCache.depth/capacity's own uint16_t "
+                              "width) - see rmw_tickle/PLAN.md's QoS roadmap #4/#5");
+            return false;
+        }
+        depth = UINT16_MAX; // nothing is retained, so the depth bounds nothing; core counts it in 16 bits
     }
-    pub_impl->reliable_cache->index = (struct tt_ReliableCacheIndex*)allocator->zero_allocate(
-        (size_t)ring, sizeof(struct tt_ReliableCacheIndex), allocator->state);
-    if (NULL == pub_impl->reliable_cache->index) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache index");
-        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
-        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
-        return false;
+    uint32_t record = keep_all ? resolve_record_bytes(pub_impl) : keep_last_record_bytes(pub_impl);
+    pub_impl->topic.max_encoded_size = cdr_for_record(record);
+
+    rmw_tickle_qos_extensions_t ext;
+    memset(&ext, 0, sizeof(ext));
+    ext.depth = (uint32_t)depth;
+    ext.history_bytes =
+        keep_all ? resolve_keep_all_budget_bytes(pub_impl, durable) : resolve_keep_last_budget_bytes(pub_impl);
+    ext.max_blocking_ns = resolve_max_blocking_ns();
+    rmw_qos_profile_t sized = *qos;
+    sized.depth = depth;
+    rmw_tickle_qos_to_tt(&sized, RMW_TICKLE_ENTITY_PUBLISHER, &ext, profile);
+    return true;
+}
+
+// The options rmw_create_publisher() hands core; returns RMW_TICKLE_RUN_UNITS (0 when unset), for the log.
+//
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS applies to a publisher core keeps KEEP_LAST (a BEST_EFFORT KEEP_ALL one included:
+// core's keep_all needs RELIABLE) whose type can be larger than a datagram; a KEEP_ALL one already waits, refused by
+// core while a large send is in progress. Such a publisher is woken by the writable callback, which core fires for it
+// when its large sends have gone (tt_Publisher_large_in_flight()), as it does a KEEP_ALL one that has room again.
+static unsigned publisher_creation_options(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos,
+                                           struct tt_PublisherOptions* options) {
+    memset(options, 0, sizeof(*options));
+    bool keep_all_blocks = publisher_keep_all_blocks(qos);
+    if (publisher_retains(qos)) {
+        options->cache_grow = grow_on_need; // (g10)
+        options->heartbeat_piggyback_every = resolve_heartbeat_piggyback_every();
+        options->heartbeat_period_ns = resolve_heartbeat_period_ns();
     }
-    // Said at attach, where it is decidable, rather than discovered on the first publish that hits
-    // it (Plan's request, 2026-09-25): a sample too large for the whole arena is sent without being
-    // cached at all (B1, tickle.c), so a reader that misses it can never recover it. Whether that
-    // can happen is a question about this cache and this type, and both are known here. The arena
-    // may legitimately be smaller than (depth + 1) full-size records - that only costs retention -
-    // so the test is against ONE such record, which is where retention stops working entirely.
-    if ((unsigned long long)arena_bytes < (unsigned long long)clamp_record_bytes(type_ceiling_bytes(pub_impl))) {
+    options->idle_heartbeat_ns = idle_heartbeat_option();
+    unsigned run_units = run_units_option(options);
+    // Large-message step B (docs/DESIGN.md section 8): a type whose message can be large gets a shared region, so its
+    // same-host subscribers take each message in place instead of as fragments through their rings.
+    rmw_tickle_large_region_options(pub_impl->callbacks, qos->depth, RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history,
+                                    options);
+    // rmw_large.c's own test of "can be large", which sizes the reader window and the shared region alike.
+    bool can_be_large = NULL == pub_impl->callbacks ||
+                        (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS == rmw_tickle_tracking_words_for(pub_impl->callbacks);
+    pub_impl->large_block_ns = keep_all_blocks || !can_be_large ? 0 : resolve_large_block_ns();
+    if (keep_all_blocks || 0 != pub_impl->large_block_ns) {
+        options->writable_callback = publisher_writable_callback;
+        options->writable_callback_param = pub_impl;
+    }
+    return run_units;
+}
+
+// Said at creation, where it is decidable, rather than discovered on the first publish that hits it (Plan's request,
+// 2026-09-25): a sample too large for the whole arena is sent without being cached at all (B1, tickle.c), so a reader
+// that misses it can never recover it. The arena may legitimately be smaller than (depth + 1) full-size records - that
+// only costs retention - so the test is against ONE such record, which is where retention stops working entirely.
+// And a KEEP_ALL publisher of an unbounded type reserves one datagram a sample, so a larger one blocks it early.
+static void warn_about_cache(const rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos, size_t depth) {
+    const struct tt_ReliableCache* cache = pub_impl->reliable_cache;
+    if (NULL == cache) {
+        return;
+    }
+    uint32_t one_record = clamp_record_bytes(type_ceiling_bytes(pub_impl));
+    if (cache->arena_limit < one_record) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                "publisher of %s: its retained-sample cache is %u bytes, but one sample of this type "
                                "can need %u - such a sample is sent without being retained, so a reader that misses "
                                "it cannot ask for it again. Raise the budget (the payload's cache_bytes, or "
                                "RMW_TICKLE_CACHE_BYTES) to at least that.",
-                               type_name_of(pub_impl), (unsigned)arena_bytes,
-                               (unsigned)clamp_record_bytes(type_ceiling_bytes(pub_impl)));
+                               type_name_of(pub_impl), (unsigned)cache->arena_limit, (unsigned)one_record);
     }
-    // Reserved lazily: the limit is what the budget above worked out, but only the first slice of
-    // it is allocated now, and publish_blocking() grows toward the limit if the traffic ever asks
-    // (tt_ReliableCache_grow(), tickle.c). A KEEP_ALL publisher of an unbounded type would
-    // otherwise take 3 MB at creation whether it retains anything or not. The limit itself never
-    // moves, so back-pressure still arrives exactly where it did.
-    uint32_t initial_bytes = initial_arena_bytes(arena_bytes, clamp_record_bytes(type_ceiling_bytes(pub_impl)));
-    pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(initial_bytes, allocator->state);
-    if (NULL == pub_impl->reliable_cache->arena) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
-        allocator->deallocate(pub_impl->reliable_cache->index, allocator->state);
-        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
-        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
-        return false;
-    }
-    pub_impl->reliable_cache->arena_size = initial_bytes;
-    pub_impl->reliable_cache->arena_limit = arena_bytes;
-    pub_impl->reliable_cache->capacity = ring;
-    pub_impl->reliable_cache->depth = ring;
-    // The ring counts datagrams, so it would keep up to `ring` single-datagram messages: HISTORY.depth
-    // is a bound in messages, which core enforces separately when told it (tt_ReliableCache.sample_depth).
-    // KEEP_ALL has no such bound to enforce - its depth is a resource limit and it blocks, never evicts.
-    if (!keep_all) {
-        pub_impl->reliable_cache->sample_depth = (uint16_t)(depth < (size_t)UINT16_MAX ? depth : UINT16_MAX);
-    }
-    pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
-    pub_impl->tickle_publisher.cache_grow = grow_on_need; // (g10)
-    pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
-    pub_impl->tickle_publisher.durable = durable;
-
-    // Phase 3 step 3 - the half of HISTORY.KEEP_ALL that sizing the cache above can't express: with
-    // this set, core refuses a write (tt_RET_WOULD_BLOCK) rather than evicting a sample no matched
-    // Subscriber has acknowledged yet, which is what makes "keep all" a promise instead of a larger
-    // ring buffer. rmw_publish() below turns that refusal into a bounded wait. Only meaningful for a
-    // RELIABLE Publisher - a Subscriber that never acknowledges can't hold anything back - so a
-    // DURABLE-but-BEST_EFFORT KEEP_ALL Publisher keeps its deep cache and its non-blocking writes,
-    // which is the only behavior it could have.
-    pub_impl->tickle_publisher.keep_all = keep_all && pub_impl->tickle_publisher.reliable;
     const rmw_tickle_publisher_payload_t* sizing = publisher_payload(pub_impl, type_name_of(pub_impl));
     bool application_chose_the_size = NULL != sizing && 0 != sizing->max_sample_bytes;
-    if (keep_all && tt_MAX_BUFFER_LENGTH > tt_ETHERNET_UDP_PAYLOAD && !application_chose_the_size &&
-        resolve_record_bytes(pub_impl) < (uint32_t)tt_MAX_BUFFER_LENGTH &&
+    if (RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history && tt_MAX_BUFFER_LENGTH > tt_ETHERNET_UDP_PAYLOAD &&
+        !application_chose_the_size && resolve_record_bytes(pub_impl) < (uint32_t)tt_MAX_BUFFER_LENGTH &&
         (NULL == pub_impl->callbacks ||
          ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == pub_impl->callbacks->tickle_max_encoded_size)) {
         // resolve_record_bytes() says why: said out loud, because the cost is otherwise
@@ -965,30 +971,79 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
                                "per sample; a larger one takes the room of several, so publishing blocks once the "
                                "cache is full rather than at depth %u. Set RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES to "
                                "the largest sample this publisher sends (it reserves that much per sample)",
-                               NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?",
-                               (unsigned)resolve_record_bytes(pub_impl), (unsigned)depth);
+                               type_name_of(pub_impl), (unsigned)resolve_record_bytes(pub_impl), (unsigned)depth);
     }
-    if (pub_impl->tickle_publisher.keep_all) {
-        pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
-        pub_impl->tickle_publisher.writable_callback_param = pub_impl;
-    }
-    return true;
 }
 
-// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS applies to a publisher core keeps KEEP_LAST (a BEST_EFFORT KEEP_ALL one included:
-// core's keep_all needs RELIABLE) whose type can be larger than a datagram; a KEEP_ALL one already waits, refused by
-// core while a large send is in progress. Such a publisher is woken by the writable callback, which core fires for it
-// when its large sends have gone (tt_Publisher_large_in_flight()). Node lock held.
-static void arm_large_block(rmw_tickle_publisher_t* pub_impl) {
-    // rmw_large.c's own test of "can be large", which sizes the reader window and the shared region alike.
-    bool can_be_large = NULL == pub_impl->callbacks ||
-                        (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS == rmw_tickle_tracking_words_for(pub_impl->callbacks);
-    if (pub_impl->tickle_publisher.keep_all || !can_be_large) {
-        pub_impl->large_block_ns = 0;
+// After tt_Node_create_publisher(), with the create's lock still held: what rmw_tickle keeps of what core made, and
+// the parts of each policy rmw_tickle itself enforces, from the actual QoS core resolved.
+static void publisher_adopt_actual_qos(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* requested) {
+    struct tt_Publisher* pub = &pub_impl->tickle_publisher;
+    // Reserved lazily: the limit is what the budget worked out, but the cache starts on its first slice, and grows
+    // toward the limit if the traffic ever asks (grow_reliable_cache()). A KEEP_ALL publisher of an unbounded type
+    // would otherwise touch 3 MB whether it retains anything or not. The limit itself never moves, so back-pressure
+    // still arrives exactly where it did. Nothing is cached yet, so the arena can still be narrowed.
+    pub_impl->reliable_cache = pub->reliable_cache;
+    if (NULL != pub_impl->reliable_cache) {
+        struct tt_ReliableCache* cache = pub_impl->reliable_cache;
+        pub_impl->arena_base = cache->arena;
+        uint32_t initial = initial_arena_bytes(cache->arena_limit, clamp_record_bytes(type_ceiling_bytes(pub_impl)));
+        if (initial < cache->arena_size) {
+            cache->arena_size = initial;
+        }
     }
-    if (0 != pub_impl->large_block_ns) {
-        pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
-        pub_impl->tickle_publisher.writable_callback_param = pub_impl;
+
+    struct tt_QosProfile actual;
+    (void)tt_Publisher_get_actual_qos(pub, &actual);
+    rmw_tickle_qos_resolve_request(requested, &actual, &pub_impl->qos);
+    // Phase 3 step 3 - resolved once here rather than per publish. Set for every Publisher, not just KEEP_ALL ones,
+    // so publish_blocking()'s own diagnostics can quote it without first having to ask which kind it is.
+    pub_impl->max_blocking_ns = rmw_tickle_max_blocking_from_tt(&actual);
+
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment. Infinite leaves
+    // deadline_period_ns at its zero_allocate() default (0 = not requested, no cost).
+    if (tt_QOS_DURATION_INFINITE != actual.deadline.period_ns) {
+        pub_impl->deadline_period_ns = actual.deadline.period_ns;
+        pub_impl->last_activity_time = tt_get_ns();
+        // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring inactive.
+        (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context,
+                                  pub_impl->last_activity_time + pub_impl->deadline_period_ns, check_publisher_deadline,
+                                  pub_impl);
+    }
+
+    // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC. See rmw_tickle_publisher_t.
+    // liveliness_lease_ns's own doc comment. AUTOMATIC leaves it 0, the sentinel check_liveliness_lost() (rmw_node.c)
+    // uses to pick the AUTOMATIC path. A MANUAL one without a lease got rmw_tickle's own (rmw_tickle_qos_to_tt()),
+    // which core also announces; an infinite one is held to the longest rmw duration, as before.
+    if (tt_QOS_LIVELINESS_MANUAL_BY_TOPIC == actual.liveliness.kind) {
+        pub_impl->liveliness_lease_ns =
+            tt_QOS_DURATION_INFINITE == actual.liveliness.lease_ns ? (uint64_t)INT64_MAX : actual.liveliness.lease_ns;
+        atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
+    }
+}
+
+// Everything rmw_create_publisher() made before the endpoint exists, given back on a failure.
+static void discard_unborn_publisher(rmw_tickle_publisher_t* pub_impl) {
+    rcutils_allocator_t* allocator = &pub_impl->allocator;
+    pthread_mutex_destroy(&pub_impl->publish_mutex);
+    pthread_mutex_destroy(&pub_impl->loan_mutex);
+    allocator->deallocate(pub_impl->qos_storage, allocator->state);
+    allocator->deallocate(pub_impl->publish_scratch_buf, allocator->state);
+    allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+    allocator->deallocate(pub_impl->owning_node_name, allocator->state);
+    allocator->deallocate(pub_impl->owning_node_namespace, allocator->state);
+    allocator->deallocate(pub_impl, allocator->state);
+}
+
+// Logged once the publisher exists. Exact wording is load-bearing (the sweeps read these lines).
+static void log_publisher_options(const rmw_tickle_publisher_t* pub_impl, unsigned run_units) {
+    log_heartbeat_piggyback(pub_impl);
+    if (0 != run_units) {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "hybrid transport: runs of %u units", run_units);
+    }
+    if (0 != pub_impl->tickle_publisher.heartbeat_period_ns) {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "periodic heartbeat armed: every %llu ns",
+                               (unsigned long long)pub_impl->tickle_publisher.heartbeat_period_ns);
     }
 }
 
@@ -1028,18 +1083,6 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
     rcutils_allocator_t* allocator = &node_impl->allocator;
 
-    // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21) - resolve any RMW_
-    // QOS_POLICY_*_BEST_AVAILABLE value/sentinel in qos_profile into a concrete one before anything
-    // below reads it (rmw_tickle_resolve_best_available()'s own doc comment, rmw_tickle.h, has the
-    // full algorithm). Reassigning the qos_profile parameter itself (not shadowing with a new name)
-    // keeps every downstream reference below already correct with no further edits needed - a
-    // profile that requested nothing as BEST_AVAILABLE gets its own values back unchanged.
-    tt_Context_lock(&node_impl->context_impl->tickle_context);
-    rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
-                                                                       topic_name, RMW_TICKLE_ENTITY_PUBLISHER);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    qos_profile = &resolved_qos;
-
     rmw_tickle_publisher_t* pub_impl =
         (rmw_tickle_publisher_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_publisher_t), allocator->state);
     if (NULL == pub_impl) {
@@ -1048,20 +1091,18 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     }
     pub_impl->node = node_impl;
     // Milestone 34 - see rmw_tickle_publisher_t.owning_node_name's own doc comment. Failure here
-    // isn't fatal to publisher creation - just leaves attribution unavailable for this publisher,
-    // matching the "not consumed by anything yet" scope that field's own doc comment describes;
-    // nothing downstream depends on these being non-NULL today.
+    // isn't fatal to publisher creation - just leaves attribution unavailable for this publisher.
     pub_impl->owning_node_name = rcutils_strdup(node_impl->rmw_node.name, *allocator);
     pub_impl->owning_node_namespace = rcutils_strdup(node_impl->rmw_node.namespace_, *allocator);
     pub_impl->type_support = type_support;
     pub_impl->callbacks = callbacks;
     pub_impl->allocator = *allocator;
-    pub_impl->qos = *qos_profile;
+    pub_impl->qos = *qos_profile; // BEST_AVAILABLE resolved by core, below (publisher_adopt_actual_qos())
 
     // topic.name is callbacks->ros_type_name - a generated-code string literal, so it already
     // satisfies tickle.h's "Lifetime / ownership" rule (stay valid and unmoved until tt_Publisher_
     // destroy()) without needing its own copy - see rmw_tickle.h's own rmw_tickle_publisher_t.topic
-    // doc comment.
+    // doc comment. max_encoded_size is set with the profile (publisher_profile()).
     pub_impl->topic.name = callbacks->ros_type_name;
     pub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
     pub_impl->topic.data_encode_size = encode_size_with_psn;
@@ -1083,12 +1124,6 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->rmw_publisher.can_loan_messages = pub_impl->loans;
     const char* loan_slots = getenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS");
     pub_impl->loan_slots = pub_impl->loans && NULL != loan_slots && 0 == strcmp(loan_slots, "1");
-    // Phase 3 step 3 - resolved once here rather than per publish: getenv() on the hot path would
-    // be both wasteful and a lie (the value can't change meaningfully mid-run anyway). Set for every
-    // Publisher, not just KEEP_ALL ones, so publish_blocking()'s own diagnostics can quote it
-    // without first having to ask which kind it is.
-    pub_impl->max_blocking_ns = resolve_max_blocking_ns();
-    pub_impl->large_block_ns = resolve_large_block_ns(); // narrowed to KEEP_LAST large-capable types below
     if (NULL == pub_impl->rmw_publisher.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         allocator->deallocate(pub_impl, allocator->state);
@@ -1118,158 +1153,49 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
-    // Same tt_Context_interrupt()-then-lock pattern rmw_destroy_node() already established - see
-    // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
-    // Held from the create until every announced field is final, released only at the return below (or on a failure
-    // path). tt_Node_create_publisher_legacy() resets reliable/keep_all/durable/deadline/lease and makes the endpoint
-    // announceable at once; the fields are set after it. With the lock released in between, the poll thread could
-    // announce this publisher as BEST_EFFORT under its new generation, and every later, correct announce carries the
-    // same generation and is dropped as a resend - so the remote reader kept "offered reliable=0" for good, dropped
-    // every sample, and a KEEP_ALL publisher gave up after 100 ms (1 in 36 rig runs; 25/25 with the window widened,
-    // experiments/rxo_mismatch_repro.sh). The lock is re-entrant, so the nested lock/unlock pairs below are unchanged.
-    tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret = tt_Node_create_publisher_legacy(node_impl->core_node, &pub_impl->tickle_publisher, &pub_impl->topic,
-                                                   pub_impl->rmw_publisher.topic_name);
-    if (ret != tt_RET_OK) {
-        tt_Context_unlock(&node_impl->context_impl->tickle_context);
-        RMW_SET_ERROR_MSG("tt_Context_create_publisher() failed");
-        allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-        allocator->deallocate(pub_impl, allocator->state);
+    // The QoS, the options and the storage, all given at creation (QoS redesign step 3, the comment above
+    // cdr_for_record()).
+    struct tt_QosProfile profile;
+    if (!publisher_profile(pub_impl, qos_profile, &profile)) {
+        discard_unborn_publisher(pub_impl);
         return NULL;
     }
-
-    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see rmw_tickle_publisher_t.reliable_cache's
-    // own doc comment. One shared struct tt_ReliableCache backs both policies now (PLAN.md's
-    // Milestone 24 - matches real DDS/RTPS's own single Writer History Cache), allocated once if
-    // either is requested; depth defaults to tt_MAX_RELIABLE_HISTORY when unset
-    // (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT). ROS 2's own rmw_qos_profile_t.depth is a single shared
-    // field regardless - both policies always read the exact same requested depth, so merging this
-    // into one allocation/one check changes no observable behavior for a Publisher requesting just
-    // one of the two, and fixes a real asymmetry for one requesting both: a depth between the old,
-    // smaller DURABILITY cap and the old, larger RELIABILITY cap used to reject the whole publisher
-    // outright even though RELIABILITY alone would have accepted it.
-    //
-    // rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - index[]/capacity/arena are now
-    // caller-owned (struct tt_ReliableCache's own doc comment, tickle.h), not a single build-wide
-    // tt_MAX_RELIABLE_HISTORY=64 ceiling every rmw_tickle Publisher used to be capped by alike -
-    // this caller (rmw_tickle, which already accepts dynamic allocation everywhere else, unlike
-    // TickLE core's own embedded-facing examples) allocates them sized to *whatever* real
-    // depth the ROS 2 caller actually requested, no artificial rejection past 64 anymore, matching
-    // real rmw_fastrtps_cpp/rmw_cyclonedds_cpp's own dynamic-depth support instead of trailing it.
-    // The only remaining rejection is the hard type-width limit struct tt_ReliableCache.depth/
-    // capacity (uint16_t) itself imposes - not a business-logic choice, so still explicit-reject
-    // rather than silently clamp, matching this package's own established design philosophy for
-    // genuinely out-of-range requests. setup_reliable_cache() (above) does the actual work, split
-    // out purely to keep this function's own cognitive complexity under clang-tidy's threshold.
-    if (!setup_reliable_cache(pub_impl, qos_profile, allocator)) {
-        tt_Context_lock(&node_impl->context_impl->tickle_context);
-        tt_Publisher_destroy(&pub_impl->tickle_publisher);
-        // (g3) A discovery callback may have counted it already; the Subscriptions recount without it.
-        rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name,
-                                         tt_KIND_TOPIC_SUBSCRIBER);
-        tt_Context_unlock(&node_impl->context_impl->tickle_context);
-        tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's, held since (see above)
-        allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-        allocator->deallocate(pub_impl, allocator->state);
-        return NULL;
-    }
-
-    // Large-message step B (docs/DESIGN.md section 8): a type whose message can be large gets a shared region, so its
-    // same-host subscribers take each message in place instead of as fragments through their rings.
-    rmw_tickle_large_region_attach(&pub_impl->tickle_publisher, pub_impl->callbacks, qos_profile->depth,
-                                   RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history);
-    arm_large_block(pub_impl); // under the create's lock, before the poll thread can see the callback
-
-    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
-    // rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT ({0,0}) leaves
-    // deadline_period_ns at its zero_allocate() default (0 = not requested, no cost).
-    rmw_duration_t deadline_ns = rmw_time_total_nsec(qos_profile->deadline);
-    if (deadline_ns > 0) {
-        pub_impl->deadline_period_ns = (uint64_t)deadline_ns;
-        pub_impl->last_activity_time = tt_get_ns();
-        tt_Context_lock(&node_impl->context_impl->tickle_context);
-        // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring
-        // inactive for this Publisher - no logging facility in this package to report it through.
-        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context,
-                                  pub_impl->last_activity_time + pub_impl->deadline_period_ns, check_publisher_deadline,
-                                  pub_impl);
-        tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    }
-
-    // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment
-    // (tickle.h). rmw_qos.c already accepted any finite qos.lifespan; RMW_QOS_LIFESPAN_DEFAULT
-    // ({0,0}) leaves lifespan_duration_ns at its zero_allocate() default (0 = not requested, no
-    // cost) - a plain field TickLE core itself reads on demand (deliver_durability_backlog()/
-    // process_acknack()), no rmw_tickle-side state or scheduling needed, unlike DEADLINE above.
-    rmw_duration_t lifespan_ns = rmw_time_total_nsec(qos_profile->lifespan);
-    if (lifespan_ns > 0) {
-        pub_impl->tickle_publisher.lifespan_duration_ns = (uint64_t)lifespan_ns;
-    }
-
-    // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC. See rmw_tickle_
-    // publisher_t.liveliness_lease_ns's own doc comment. AUTOMATIC (or SYSTEM_DEFAULT) leaves
-    // liveliness_lease_ns at its zero_allocate() default (0), the disambiguating sentinel check_
-    // liveliness_lost() (rmw_node.c) uses to pick the AUTOMATIC (node-wide poll_thread health)
-    // path over the manual-lease one. Left at RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT ({0,0})
-    // falls back to the same floor rmw_qos.c's own acceptance check already established, rather
-    // than leaving liveliness_lease_ns at 0 too (which would be indistinguishable from AUTOMATIC
-    // here).
-    if (RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness) {
-        rmw_duration_t lease_ns = rmw_time_total_nsec(qos_profile->liveliness_lease_duration);
-        pub_impl->liveliness_lease_ns =
-            lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL;
-        atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
-    }
-
-    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - what this Publisher
-    // announces on the wire (tickle_publisher.deadline_duration_ns/liveliness_lease_duration_ns/
-    // .liveliness_manual, tickle.h) so a remote Subscriber's own discovery-driven RxO check can
-    // compare against it - see tt_UpdateEntity's own doc comment for the wire format. For the
-    // Publisher side specifically, these are the *exact same values* deadline_period_ns/
-    // liveliness_lease_ns above already resolved (the real, enforced values, not the raw request) -
-    // copied straight across rather than recomputed, since tickle_publisher.liveliness_manual ==
-    // (qos_profile->liveliness == MANUAL_BY_TOPIC) is exactly what pub_impl->liveliness_lease_ns's
-    // own "!= 0" sentinel already distinguishes.
-    pub_impl->tickle_publisher.deadline_duration_ns = pub_impl->deadline_period_ns;
-    // The lease goes on the wire for AUTOMATIC too (2026-09-26): until then only a MANUAL_BY_TOPIC
-    // Publisher announced one, so a remote Subscription held an AUTOMATIC one to the core's node-level
-    // limit whatever lease it asked for. A MANUAL one keeps announcing the lease it enforces locally.
-    pub_impl->tickle_publisher.liveliness_lease_duration_ns =
-        pub_impl->liveliness_lease_ns != 0 ? pub_impl->liveliness_lease_ns
-                                           : rmw_tickle_wire_lease_ns(qos_profile->liveliness_lease_duration);
-    pub_impl->tickle_publisher.liveliness_manual = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
-
-    // Armed last, and under the node mutex: tt_Publisher_set_heartbeat_period() schedules on the
-    // node and refuses a publisher with no reliable_cache, so it has to follow both
-    // tt_Context_create_publisher() and setup_reliable_cache(). Configuration set before the object it
-    // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
-    arm_heartbeat_piggyback(pub_impl);
-    arm_run_units(pub_impl);
-    // A plain field: core arms the timer at the next publish and reads the field each time it runs.
-    pub_impl->tickle_publisher.idle_heartbeat_ns =
-        resolve_idle_heartbeat_ns(pub_impl->tickle_publisher.idle_heartbeat_ns);
-
-    uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
-    if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
-        tt_Context_lock(&node_impl->context_impl->tickle_context);
-        tt_ret_t armed = tt_Publisher_set_heartbeat_period(&pub_impl->tickle_publisher, heartbeat_ns);
-        tt_Context_unlock(&node_impl->context_impl->tickle_context);
-        if (armed != tt_RET_OK) {
-            // Not fatal - the publisher works without it, exactly as it always has - but said, so a
-            // run that asked for heartbeats and did not get them cannot be read as if it had.
-            RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_HEARTBEAT_PERIOD_NS=%llu requested but not armed (%d)",
-                                   (unsigned long long)heartbeat_ns, (int)armed);
-        } else {
-            RCUTILS_LOG_INFO_NAMED("rmw_tickle", "periodic heartbeat armed: every %llu ns",
-                                   (unsigned long long)heartbeat_ns);
+    struct tt_PublisherOptions options;
+    unsigned run_units = publisher_creation_options(pub_impl, qos_profile, &options);
+    size_t storage_size = tt_Publisher_storage_size(&pub_impl->topic, &profile);
+    if (0 != storage_size) {
+        // Not zeroed: core initialises the cache and its index, and the arena is only ever written before it is read -
+        // so the pages of it a publisher never reaches are never made resident.
+        pub_impl->qos_storage = allocator->allocate(storage_size, allocator->state);
+        if (NULL == pub_impl->qos_storage) {
+            RMW_SET_ERROR_MSG("failed to allocate publisher storage");
+            discard_unborn_publisher(pub_impl);
+            return NULL;
         }
     }
 
-    // (g3) Its QoS is complete only now: it, and the local Subscriptions on its topic, count their matches.
+    // Held from the create until every field rmw_tickle adds is set, released only at the return below. Core applies
+    // the QoS before its first announce (tt_Node_create_publisher()), so no announce can go out with a reset QoS: one
+    // once did, under the deprecated create, and the generation dedup kept the remote reader at "offered reliable=0"
+    // for good (1 in 36 rig runs; experiments/rxo_mismatch_repro.sh). The lock is re-entrant.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret_t ret = tt_Node_create_publisher(node_impl->core_node, &pub_impl->tickle_publisher, &pub_impl->topic,
+                                            pub_impl->rmw_publisher.topic_name, &profile, &options,
+                                            pub_impl->qos_storage, storage_size);
+    if (ret != tt_RET_OK) {
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("tt_Node_create_publisher() failed (%d) for topic '%s'", (int)ret,
+                                             topic_name);
+        discard_unborn_publisher(pub_impl);
+        return NULL;
+    }
+    publisher_adopt_actual_qos(pub_impl, qos_profile);
+    warn_about_cache(pub_impl, qos_profile, publisher_depth(qos_profile));
+    log_publisher_options(pub_impl, run_units);
+
+    // (g3) Its QoS is complete only now: it, and the local Subscriptions on its topic, count their matches.
     rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name, 0);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every announced field is final now
+    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every field is final now
     return &pub_impl->rmw_publisher;
 }
 
@@ -1335,15 +1261,9 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
-    // index[]/arena freed before the struct that (used to) point at them - reliable_cache is NULL
-    // when neither RELIABLE nor TRANSIENT_LOCAL was requested, in which case both are also still
-    // NULL (zero_allocate()'s own default, never touched) - every deallocate() call is then a
-    // no-op, see their own doc comment.
-    if (NULL != pub_impl->reliable_cache) {
-        allocator.deallocate(pub_impl->reliable_cache->index, allocator.state);
-        allocator.deallocate(pub_impl->reliable_cache->arena, allocator.state);
-    }
-    allocator.deallocate(pub_impl->reliable_cache, allocator.state);   // NULL is a no-op, see its own doc comment
+    // The cache, its index and its arena are all in qos_storage (NULL when nothing was retained, a no-op).
+    allocator.deallocate(pub_impl->qos_storage, allocator.state);
+    allocator.deallocate(pub_impl->arena_scratch, allocator.state);
     allocator.deallocate(pub_impl->owning_node_name, allocator.state); // NULL is a no-op too (a failed strdup)
     allocator.deallocate(pub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(pub_impl->publish_scratch_buf, allocator.state); // Milestone 45
@@ -1624,8 +1544,8 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
 // just optionally/best-effort like most of the other rmw_publisher_*() extras - discovered while
 // provisioning rmw_tickle/PLAN.md's rmw-perf.yml benchmark rig (the first time this rmw was
 // exercised via a real rclcpp C++ node rather than this package's own C-level unit tests).
-// rmw_tickle never negotiates/downgrades a requested QoS policy, so "actual" is always just
-// whatever rmw_create_publisher() already validated and stored.
+// What core runs the publisher with (tt_Publisher_get_actual_qos(), QoS redesign step 3): every
+// SYSTEM_DEFAULT and BEST_AVAILABLE resolved, and the depth its cache keeps (D10).
 rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos_profile_t* qos) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
@@ -1634,8 +1554,13 @@ rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
-    *qos = pub_impl->qos;
+    const rmw_tickle_publisher_t* pub_impl = (const rmw_tickle_publisher_t*)publisher->data;
+    struct tt_QosProfile actual;
+    if (tt_RET_OK != tt_Publisher_get_actual_qos(&pub_impl->tickle_publisher, &actual)) {
+        RMW_SET_ERROR_MSG("tt_Publisher_get_actual_qos() failed");
+        return RMW_RET_ERROR;
+    }
+    rmw_tickle_qos_from_tt(&actual, &pub_impl->qos, qos);
     return RMW_RET_OK;
 }
 

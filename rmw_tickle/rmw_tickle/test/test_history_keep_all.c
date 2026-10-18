@@ -52,6 +52,9 @@
 // is unreachable memory. See RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE's own comment for the coupling.
 #define EXPECTED_KEEP_ALL_DEPTH_DURABLE 8192
 #define EXPECTED_KEEP_ALL_DEPTH_VOLATILE 2048
+// The index ring of a one-datagram type: since core lays the cache out (QoS redesign step 3, 2026-10-18) it indexes
+// depth + 1 samples - one sample's slack, as the arena's (depth + 1) records - where rmw_tickle indexed depth.
+#define EXPECTED_KEEP_ALL_RING_VOLATILE (EXPECTED_KEEP_ALL_DEPTH_VOLATILE + 1)
 
 // What a generated typesupport reports for a type the generator can bound. 76 is BenchData's own
 // figure (examples/perf_hil/tickle/common/p1/Bench.msg), i.e. a realistic fixed-layout telemetry type
@@ -68,8 +71,16 @@
 // the standard 1472-byte datagram, or tt_MAX_BUFFER_LENGTH if smaller - what it reserved before
 // rmw_tickle's buffer grew to 65507, deliberately kept (KEEP_ALL is not budgeted, and 65507 per
 // sample at depth 8192 would be 536 MB).
-#define DEFAULT_UNBOUNDED_RECORD \
-    (tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD ? tt_MAX_BUFFER_LENGTH : tt_ETHERNET_UDP_PAYLOAD)
+// Since core sizes the cache (QoS redesign step 3) a record is one core can reserve: the 1472 bytes, which lie between
+// the record of the largest sample one datagram carries and that of the smallest that takes two, reserve the former -
+// what every sample that fits a datagram needs, which is what the 1472 stood for.
+#define ONE_DATAGRAM_CDR               \
+    ((uint32_t)tt_CONTROL_MAX_LENGTH - \
+     (uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)))
+#define DEFAULT_UNBOUNDED_RECORD tt_RELIABLE_RECORD_BYTES(ONE_DATAGRAM_CDR)
+_Static_assert(DEFAULT_UNBOUNDED_RECORD <=
+                   (tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD ? tt_MAX_BUFFER_LENGTH : tt_ETHERNET_UDP_PAYLOAD),
+               "the record reserved is at most the 1472 it stands for");
 
 struct fake_ros_msg {
     uint8_t value;
@@ -172,6 +183,8 @@ static rmw_qos_profile_t base_qos(void) {
 
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    // ONE_DATAGRAM_CDR is the largest: one more byte (padded to 4) takes two datagrams.
+    assert(1U == tt_sample_datagrams(ONE_DATAGRAM_CDR) && 2U == tt_sample_datagrams(ONE_DATAGRAM_CDR + 1U));
 
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
@@ -200,8 +213,8 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity);
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->depth);
         assert(pub_impl->tickle_publisher.keep_all);
         assert(NULL != pub_impl->tickle_publisher.writable_callback);
         assert(pub_impl == pub_impl->tickle_publisher.writable_callback_param);
@@ -223,7 +236,7 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(EXPECTED_KEEP_ALL_DEPTH_DURABLE == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_DEPTH_DURABLE + 1 == pub_impl->reliable_cache->capacity);
         assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
@@ -271,7 +284,7 @@ int main(void) {
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, DEFAULT_UNBOUNDED_RECORD) ==
                pub_impl->reliable_cache->arena_limit);
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // count bound intact
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->capacity); // count bound intact
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         // Set: the value is a message payload, so the arena is sized from the *record* it implies
@@ -288,8 +301,8 @@ int main(void) {
                tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, DEFAULT_UNBOUNDED_RECORD) / 10);
         // B1's guarantee is by count, and a narrower arena must not weaken it: still `depth` slots,
         // and still `depth + 1` records of room so the byte bound can't evict before the count one.
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity);
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->depth);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         // Nonsense values fall back to the default rather than failing node startup.
@@ -327,8 +340,8 @@ int main(void) {
         assert(
             tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, MESSAGE_RECORD(BOUNDED_TYPE_MAX_ENCODED)) ==
             pub_impl->reliable_cache->arena_limit);
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // B1 intact
-        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->capacity); // B1 intact
+        assert(EXPECTED_KEEP_ALL_RING_VOLATILE == pub_impl->reliable_cache->depth);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "512", 1);

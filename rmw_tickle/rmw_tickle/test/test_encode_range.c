@@ -100,7 +100,8 @@ static rosidl_message_type_support_t blob_handle = {.data = &blob_callbacks,
 
 // Cuts [0, size) into ranges of `width` (the last shorter) and asks for each in order, as core does; the result must be
 // data_encode's bytes exactly.
-static void expect_ranges_match(const struct tt_Topic* topic, rmw_tickle_outgoing_message_t* message, uint32_t width) {
+static void expect_ranges_match(const struct tt_TypeSupport* topic, rmw_tickle_outgoing_message_t* message,
+                                uint32_t width) {
     int32_t size = topic->data_encode_size((struct tt_Data*)message);
     assert(size > 0);
     uint8_t* whole = (uint8_t*)malloc((size_t)size);
@@ -120,7 +121,7 @@ static void expect_ranges_match(const struct tt_Topic* topic, rmw_tickle_outgoin
     free(by_range);
 }
 
-static void expect_every_width(const struct tt_Topic* topic, rmw_tickle_outgoing_message_t* message) {
+static void expect_every_width(const struct tt_TypeSupport* topic, rmw_tickle_outgoing_message_t* message) {
     static const uint32_t widths[] = {1, 3, 4, 5, 7, 8, 9, 1446, 1452, 92928, 1U << 30U};
     for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
         expect_ranges_match(topic, message, widths[i]);
@@ -143,7 +144,7 @@ int main(void) {
     rmw_publisher_t* publisher =
         rmw_create_publisher(node, &blob_handle, "/encode_range", &rmw_qos_profile_default, &publisher_options);
     assert(NULL != publisher);
-    const struct tt_Topic* topic = &((rmw_tickle_publisher_t*)publisher->data)->topic;
+    const struct tt_TypeSupport* topic = &((rmw_tickle_publisher_t*)publisher->data)->topic;
     assert(NULL != topic->data_encode_range);
 
     struct blob* message = (struct blob*)calloc(1, sizeof(struct blob));

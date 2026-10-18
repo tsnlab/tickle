@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include <tickle/config.h> // tt_MAX_SAMPLE_LENGTH
+#include <tickle/hal.h>    // tt_RET_OK
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -176,8 +177,12 @@ static uint32_t keep_all_record_with(rmw_tickle_publisher_payload_t* payload) {
     rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/budget_keep_all", &q, &opts);
     assert(NULL != pub);
     const rmw_tickle_publisher_t* pub_impl = (const rmw_tickle_publisher_t*)pub->data;
-    // The arena is (depth + 1) records of whatever was reserved, so the record is what it divides to.
-    uint32_t record = pub_impl->reliable_cache->arena_limit / (pub_impl->reliable_cache->depth + 1U);
+    // The arena is (depth + 1) records of whatever was reserved, so the record is what it divides to. The depth in
+    // samples is the actual QoS's (QoS redesign step 3: the ring counts datagrams, so it is not the depth for a sample
+    // that fragments); with the budget out of the way it is the whole KEEP_ALL depth.
+    struct tt_QosProfile actual;
+    assert(tt_RET_OK == tt_Publisher_get_actual_qos(&pub_impl->tickle_publisher, &actual));
+    uint32_t record = pub_impl->reliable_cache->arena_limit / (actual.history.depth + 1U);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     if (NULL != saved) {
         setenv("RMW_TICKLE_KEEP_ALL_BYTES", saved_copy, 1);
@@ -200,7 +205,7 @@ static uint32_t keep_all_arena_with(rmw_tickle_publisher_payload_t* payload, boo
     assert(NULL != pub);
     const struct tt_ReliableCache* cache = ((const rmw_tickle_publisher_t*)pub->data)->reliable_cache;
     uint32_t arena = cache->arena_limit;
-    *depth = cache->depth;
+    *depth = cache->depth - 1U; // the ring of a one-datagram type: depth + 1 samples (QoS redesign step 3)
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     return arena;
 }
@@ -214,7 +219,7 @@ static void reorder_shape(enum rmw_qos_reliability_policy_e reliability, uint16_
     rmw_tickle_subscriber_t* impl = (rmw_tickle_subscriber_t*)sub->data;
     *slots = impl->tickle_subscriber.reorder_slots;
     *slot_bytes = impl->tickle_subscriber.reorder_slot_bytes;
-    *has_storage = NULL != impl->reorder_storage;
+    *has_storage = NULL != impl->tickle_subscriber.reorder_storage;
     assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));
 }
 
@@ -457,7 +462,6 @@ int main(void) {
     uint16_t slots = 0;
     uint16_t slot_bytes = 0;
     bool has_storage = false;
-    const unsigned long long header = sizeof(struct tt_ReorderSlot);
 
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT, &slots, &slot_bytes, &has_storage);
     assert(!has_storage && 0 == slots); // BEST_EFFORT never reads one, so it gets none
@@ -465,14 +469,15 @@ int main(void) {
     // Bounded and small: the full window, slots of the type's size.
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(has_storage);
-    assert(slot_bytes == header + BOUNDED_PAYLOAD + RMW_TICKLE_PSN_BYTES); // a message is its CDR and psn
+    // a message is its CDR and psn; core strides the slots at 8 bytes since it lays them out (QoS redesign step 3)
+    assert(slot_bytes == tt_REORDER_SLOT_SIZE(BOUNDED_PAYLOAD + RMW_TICKLE_PSN_BYTES));
     assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
 
     // Unbounded: a slot holds one datagram's payload at most - a larger message is held a fragment a
     // slot - and the budget decides how many: at N=1472 the whole window, as before there was a budget.
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == header + min_ull(tt_CONTROL_MAX_LENGTH, 2048));
+    assert(slot_bytes == tt_REORDER_SLOT_SIZE(min_ull(tt_CONTROL_MAX_LENGTH, 2048)));
     assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
     assert((unsigned long long)slots * slot_bytes <= REORDER_BUDGET);
     if (tt_MAX_BUFFER_LENGTH <= tt_ETHERNET_UDP_PAYLOAD) {
@@ -482,7 +487,7 @@ int main(void) {
     setenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD", "512", 1);
     setenv("RMW_TICKLE_REORDER_BYTES", "65536", 1);
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == header + min_ull(tt_CONTROL_MAX_LENGTH, 512));
+    assert(slot_bytes == tt_REORDER_SLOT_SIZE(min_ull(tt_CONTROL_MAX_LENGTH, 512)));
     assert(slots == 65536 / slot_bytes);
     setenv("RMW_TICKLE_REORDER_BYTES", "1", 1); // smaller than one slot: still one slot, never zero
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
