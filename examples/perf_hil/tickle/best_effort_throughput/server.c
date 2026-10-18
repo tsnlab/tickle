@@ -28,6 +28,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchFreshness.h"
 #include "BenchHistory.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
@@ -51,6 +52,9 @@ static void handle_sigint(int sig) {
 static uint64_t received = 0;
 static uint64_t lost = 0;
 static uint32_t last_seq = 0;
+// KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when this callback has it.
+static struct bench_fresh_receiver g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 // --keep lend|copy [--keep-depth N] (TickLE only; receive-buffer lending, docs/DESIGN.md section 10): the application
 // keeps every sample until N samples later, as one that hands samples to a worker or a queue does. `copy` keeps a copy
@@ -144,6 +148,9 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     last_seq = data->seq;
     received++;
     BenchWindow_add(&g_window, data->send_ns);
+    if (g_fresh.on) {
+        bench_fresh_take(&g_fresh, data->seq, data->payload, sizeof data->payload, bench_fresh_wall_ns());
+    }
     if (g_keep != KEEP_NONE) {
         keep_sample(sub, data);
     }
@@ -158,7 +165,11 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double safety_cap_s = default_safety_cap_s;
     BenchWindow_init(&g_window);
+    bench_fresh_receiver_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+            continue;
+        }
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
         } else if (parse_keep_arg(argc, argv, &i)) {
@@ -232,14 +243,15 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.6f %s "
-           "history=none segment_slots=%d keep=%s keep_depth=%d kept=%lu lend_ok=%lu lend_refused=%lu %s %s\n",
+           "history=none segment_slots=%d keep=%s keep_depth=%d kept=%lu lend_ok=%lu lend_refused=%lu %s %s%s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct,
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
            tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0, keep_name(), g_keep == KEEP_NONE ? 0 : g_keep_depth,
            (unsigned long)g_kept, (unsigned long)g_lend_ok, (unsigned long)g_lend_refused,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
-                              sizeof g_bench_fields));
+                              sizeof g_bench_fields),
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     release_kept(&node);
     tt_Context_destroy(&node);

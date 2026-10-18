@@ -28,6 +28,7 @@
  * own throughput example, not just this repo's earlier design.
  */
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
@@ -50,6 +52,11 @@ static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 static int g_history = BENCH_HISTORY_DEFAULT;
 static char g_history_arg[BENCH_HISTORY_FIELD_MAX];
 static char g_history_field[BENCH_HISTORY_FIELD_MAX];
+
+// KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its creation time - the slot's due time with
+// -i, the write's own stamp at max rate - and --burst B writes B samples back to back per slot (default 1).
+static struct bench_fresh_sender g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -72,7 +79,11 @@ int main(int argc, char** argv) {
     // --readers <n>: start writing once n readers are matched (common.h, wait_for_writer_matches); 1 by default.
     int readers = 1;
     BenchWindow_init(&g_window);
+    bench_fresh_sender_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+            continue;
+        }
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "--readers") == 0 && i + 1 < argc) {
@@ -118,14 +129,30 @@ int main(int argc, char** argv) {
     uint64_t sent = 0;
     uint64_t start = now_ns();
     uint64_t deadline = start + (uint64_t)(send_s * 1e9);
+    // The measured window on this side's schedule, as BenchWindow.h reads it: after the warm-up, for -d seconds. With
+    // -i the schedule is "write, then sleep one interval": a slot is due one interval after the previous slot's last
+    // write.
+    g_fresh.due_schedule = interval_s > 0.0;
+    uint64_t win_lo = start + (uint64_t)(g_window.warmup_s * BENCH_WINDOW_NS_PER_S);
+    bench_fresh_sender_window(&g_fresh, win_lo, win_lo + (uint64_t)(duration_s * BENCH_WINDOW_NS_PER_S));
+    uint64_t due = start;
 
     while (!g_interrupted && now_ns() < deadline) {
-        struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
-        if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
-            sent++;
-            BenchWindow_add(&g_window, msg.send_ns);
+        int64_t due_wall = g_fresh.on && g_fresh.due_schedule ? bench_fresh_mono_to_wall(due) : 0;
+        for (uint32_t k = 0; k < g_fresh.burst; k++) {
+            struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
+            if (g_fresh.on) {
+                bench_fresh_stamp(&g_fresh, msg.payload, sizeof msg.payload,
+                                  g_fresh.due_schedule ? due_wall : bench_fresh_wall_ns(),
+                                  g_fresh.due_schedule ? due : msg.send_ns);
+            }
+            if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
+                sent++;
+                BenchWindow_add(&g_window, msg.send_ns);
+            }
         }
         if (interval_s > 0.0) {
+            due = g_fresh.on ? now_ns() + (uint64_t)(interval_s * BENCH_WINDOW_NS_PER_S) : due;
             struct timespec pace = {.tv_sec = (time_t)interval_s,
                                     .tv_nsec = (long)((interval_s - (time_t)interval_s) * 1e9)};
             nanosleep(&pace, NULL);
@@ -136,13 +163,14 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.6f readers_wanted=%d readers_at_start=%d %s %s %s %s\n",
+           "send_mbps=%.6f readers_wanted=%d readers_at_start=%d %s %s %s %s%s\n",
            (unsigned long)sent, elapsed_s, mbps, readers, matched_at_start,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
            cdds_history_field(writer, g_history_field, sizeof g_history_field),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
-                              sizeof g_bench_fields));
+                              sizeof g_bench_fields),
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     dds_delete(participant);
     return 0;

@@ -21,6 +21,7 @@
  * will hold for a slow reader before giving up, not an unlimited buffer).
  */
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../common.h"
 #include "Bench.h"
 
@@ -51,7 +53,16 @@ int main(int argc, char** argv) {
     // participant torn down mid-catch-up), nothing to do with HISTORY depth or watermarks. A fixed
     // count plus dds_wait_for_acks() below removes wall-clock timing as a variable entirely.
     uint32_t count = 160;
+    // KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its burst's due time, --burst B writes B
+    // samples back to back per slot (default 1: the schedule as it always was).
+    static struct bench_fresh_sender fresh;
+    static char fresh_fields[BENCH_FRESH_FIELDS_MAX];
+    bench_fresh_sender_init(&fresh);
+    fresh.due_schedule = true;
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_sender_parse_arg(&fresh, argc, argv, &i)) {
+            continue;
+        }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
@@ -89,14 +100,22 @@ int main(int argc, char** argv) {
     uint64_t sent = 0, dropped = 0;
     uint64_t interval_ns = (uint64_t)(interval_s * 1e9);
 
+    // The schedule is "write, then sleep one interval", so a slot is due one interval after the previous slot's
+    // last write returned, and the first slot when it starts. Kept as it was; the due time only records it.
+    uint64_t due = now_ns();
     while (!g_interrupted && seq < count) {
-        struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
-        dds_return_t rc = dds_write(writer, &msg);
-        if (rc == DDS_RETCODE_OK) {
-            sent++;
-        } else {
-            dropped++;
+        int64_t due_wall = fresh.on ? bench_fresh_mono_to_wall(due) : 0;
+        for (uint32_t k = 0; k < fresh.burst && seq < count; k++) {
+            struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
+            bench_fresh_stamp(&fresh, msg.payload, sizeof msg.payload, due_wall, due);
+            dds_return_t rc = dds_write(writer, &msg);
+            if (rc == DDS_RETCODE_OK) {
+                sent++;
+            } else {
+                dropped++;
+            }
         }
+        due = fresh.on ? now_ns() + interval_ns : due;
         struct timespec pace = {.tv_sec = (time_t)(interval_ns / 1000000000ULL),
                                 .tv_nsec = (long)(interval_ns % 1000000000ULL)};
         nanosleep(&pace, NULL);
@@ -116,8 +135,9 @@ int main(int argc, char** argv) {
     }
 
     printf("RESULT: framework=cyclonedds scenario=history_depth_burst_loss role=client sent=%lu "
-           "write_dropped=%lu\n",
-           (unsigned long)sent, (unsigned long)dropped);
+           "write_dropped=%lu%s\n",
+           (unsigned long)sent, (unsigned long)dropped,
+           bench_fresh_sender_fields(&fresh, fresh_fields, sizeof fresh_fields));
 
     dds_delete(participant);
     return 0;

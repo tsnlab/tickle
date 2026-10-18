@@ -18,6 +18,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the stall, the
  * loss accounting, the QoS and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,6 +39,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -56,9 +58,18 @@ namespace {
         double safety_cap_s = default_safety_cap_s;
     };
 
+    // KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when take_next_sample() has
+    // returned it.
+    struct bench_fresh_receiver g_fresh;
+    std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+
     auto parse_options(int argc, char** argv) -> server_options {
         server_options opts;
+        bench_fresh_receiver_init(&g_fresh);
         for (int i = 1; i < argc; i++) {
+            if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+                continue;
+            }
             if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
                 opts.pause_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -80,6 +91,8 @@ namespace {
             while (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK) {
                 if (info.valid_data) {
                     harness::count_seq(gaps, sample.seq());
+                    bench_fresh_take(&g_fresh, sample.seq(), sample.payload().data(), sample.payload().size(),
+                                     g_fresh.on ? bench_fresh_wall_ns() : 0);
                 }
             }
         }
@@ -137,9 +150,10 @@ auto main(int argc, char** argv) -> int {
     receive_until(reader, harness::now_ns() + harness::seconds_to_ns(opts.safety_cap_s), gaps);
 
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f transport_profile=%s\n",
+           "recv=%lu lost=%lu loss_pct=%.6f transport_profile=%s%s\n",
            opts.pause_s, static_cast<unsigned long>(gaps.received), static_cast<unsigned long>(gaps.lost),
-           harness::seq_gaps_loss_pct(gaps), harness::transport_profile());
+           harness::seq_gaps_loss_pct(gaps), harness::transport_profile(),
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

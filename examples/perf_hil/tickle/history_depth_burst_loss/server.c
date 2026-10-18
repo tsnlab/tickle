@@ -37,6 +37,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchFreshness.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
 //
@@ -63,6 +64,9 @@ static void handle_sigint(int sig) {
 static uint64_t received = 0;
 static uint64_t lost = 0;
 static uint32_t last_seq = 0;
+// KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when this callback has it.
+static struct bench_fresh_receiver g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
@@ -73,6 +77,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
     last_seq = data->seq;
     received++;
+    bench_fresh_take(&g_fresh, data->seq, data->payload, sizeof data->payload, bench_fresh_wall_ns());
 }
 
 static const double default_pause_s = 3.0;
@@ -83,7 +88,11 @@ static const double ns_per_s = 1e9;
 int main(int argc, char** argv) {
     double pause_s = default_pause_s;
     double safety_cap_s = default_safety_cap_s;
+    bench_fresh_receiver_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+            continue;
+        }
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             pause_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -156,8 +165,9 @@ int main(int argc, char** argv) {
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
     printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f\n",
-           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
+           "recv=%lu lost=%lu loss_pct=%.6f%s\n",
+           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct,
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     tt_Context_destroy(&node);
     return 0;

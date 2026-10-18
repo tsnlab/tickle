@@ -30,6 +30,7 @@
  */
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
@@ -52,6 +54,10 @@ static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 static int g_history = BENCH_HISTORY_DEFAULT;
 static char g_history_arg[BENCH_HISTORY_FIELD_MAX];
 static char g_history_field[BENCH_HISTORY_FIELD_MAX];
+
+// KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when dds_take() has returned it.
+static struct bench_fresh_receiver g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -71,7 +77,11 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double safety_cap_s = 30.0;
     BenchWindow_init(&g_window);
+    bench_fresh_receiver_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+            continue;
+        }
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
         } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
@@ -154,6 +164,9 @@ int main(int argc, char** argv) {
             last_recv_ns = now_ns();
             received++;
             BenchWindow_add(&g_window, sample.send_ns);
+            if (g_fresh.on) {
+                bench_fresh_take(&g_fresh, sample.seq, sample.payload, sizeof sample.payload, bench_fresh_wall_ns());
+            }
         }
     }
 
@@ -165,13 +178,14 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f first_seq=%u %s %s %s %s\n",
+           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f first_seq=%u %s %s %s %s%s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, (unsigned)first_seq,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
            cdds_history_field(reader, g_history_field, sizeof g_history_field),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
-                              sizeof g_bench_fields));
+                              sizeof g_bench_fields),
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     dds_delete(participant);
     return 0;

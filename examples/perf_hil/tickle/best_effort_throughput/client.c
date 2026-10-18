@@ -29,6 +29,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchFreshness.h"
 #include "BenchHistory.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
@@ -64,6 +65,10 @@ static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 static uint64_t g_start_ns;
 static uint64_t g_deadline_ns;
+// KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its creation time - the slot's due time with
+// -i, the write's own stamp at max rate - and --burst B writes B samples back to back per slot (default 1).
+static struct bench_fresh_sender g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
@@ -71,11 +76,19 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
         g_interrupted = 1;
         return;
     }
-    struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
-    tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
-    if (ret == tt_RET_OK) {
-        sent++;
-        BenchWindow_add(&g_window, msg.send_ns);
+    int64_t due_wall = g_fresh.on && g_fresh.due_schedule ? bench_fresh_mono_to_wall(time) : 0;
+    for (uint32_t k = 0; k < g_fresh.burst; k++) {
+        struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
+        if (g_fresh.on) {
+            bench_fresh_stamp(&g_fresh, msg.payload, sizeof msg.payload,
+                              g_fresh.due_schedule ? due_wall : bench_fresh_wall_ns(),
+                              g_fresh.due_schedule ? time : msg.send_ns);
+        }
+        tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
+        if (ret == tt_RET_OK) {
+            sent++;
+            BenchWindow_add(&g_window, msg.send_ns);
+        }
     }
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
     tt_Context_schedule(node, next, send_one, NULL);
@@ -86,7 +99,11 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     BenchWindow_init(&g_window);
+    bench_fresh_sender_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+            continue;
+        }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -124,6 +141,10 @@ int main(int argc, char** argv) {
     g_start_ns = tt_get_ns();
     uint64_t send_start = g_start_ns + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(send_s * (double)tt_SECOND);
+    // The measured window on this side's schedule, as BenchWindow.h reads it: after the warm-up, for -d seconds.
+    g_fresh.due_schedule = interval_s > 0.0;
+    uint64_t win_lo = send_start + (uint64_t)(g_window.warmup_s * (double)tt_SECOND);
+    bench_fresh_sender_window(&g_fresh, win_lo, win_lo + (uint64_t)(duration_s * (double)tt_SECOND));
     tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
@@ -166,13 +187,14 @@ int main(int argc, char** argv) {
     snprintf(bells, sizeof bells, "doorbells_sent=%llu bells_rung=%llu",
              (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.6f %s %s history=none segment_slots=%d %s %s %s\n",
+           "send_mbps=%.6f %s %s history=none segment_slots=%d %s %s %s%s\n",
            (unsigned long)sent, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
            tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0, rx_hint, bells,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
-                              sizeof g_bench_fields));
+                              sizeof g_bench_fields),
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     tt_Context_destroy(&node);
     return 0;

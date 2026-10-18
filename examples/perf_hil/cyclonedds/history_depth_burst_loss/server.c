@@ -21,6 +21,7 @@
  * comment for that half of the mechanism).
  */
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../common.h"
 #include "Bench.h"
 
@@ -46,7 +48,14 @@ static uint64_t now_ns(void) {
 int main(int argc, char** argv) {
     double pause_s = 3.0;
     double safety_cap_s = 30.0;
+    // KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when dds_take() has returned it.
+    static struct bench_fresh_receiver fresh;
+    static char fresh_fields[BENCH_FRESH_FIELDS_MAX];
+    bench_fresh_receiver_init(&fresh);
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_receiver_parse_arg(&fresh, argv[i])) {
+            continue;
+        }
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             pause_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -113,6 +122,7 @@ int main(int argc, char** argv) {
         }
         dds_return_t n;
         while ((n = dds_take(reader, samples, infos, BURST_MAX_BATCH, BURST_MAX_BATCH)) > 0) {
+            int64_t take_wall = fresh.on ? bench_fresh_wall_ns() : 0;
             for (dds_return_t i = 0; i < n; i++) {
                 if (!infos[i].valid_data) {
                     continue;
@@ -125,6 +135,7 @@ int main(int argc, char** argv) {
                     last_seq = seq;
                 }
                 received++;
+                bench_fresh_take(&fresh, seq, batch[i].payload, sizeof batch[i].payload, take_wall);
             }
         }
     }
@@ -133,8 +144,9 @@ int main(int argc, char** argv) {
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
     printf("RESULT: framework=cyclonedds scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f\n",
-           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
+           "recv=%lu lost=%lu loss_pct=%.6f%s\n",
+           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct,
+           bench_fresh_receiver_fields(&fresh, fresh_fields, sizeof fresh_fields));
 
     dds_delete(participant);
     return 0;

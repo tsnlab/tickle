@@ -41,6 +41,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
@@ -60,6 +61,11 @@ namespace {
     std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
     // -K <depth>: KEEP_LAST depth of the writer and the reader; absent, the product default (BenchHistory.h).
+    // KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when take_next_sample() has
+    // returned it.
+    struct bench_fresh_receiver g_fresh;
+    std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+
     int g_history = BENCH_HISTORY_DEFAULT;
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_arg {};
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_field {};
@@ -166,7 +172,11 @@ namespace {
     auto parse_safety_cap(int argc, char** argv) -> double {
         double safety_cap_s = default_safety_cap_s;
         BenchWindow_init(&g_window);
+        bench_fresh_receiver_init(&g_fresh);
         for (int i = 1; i < argc; i++) {
+            if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+                continue;
+            }
             if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 safety_cap_s = atof(argv[++i]);
             } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
@@ -196,6 +206,10 @@ namespace {
                 if (info.valid_data) {
                     harness::count_sample(stats, sample.seq());
                     BenchWindow_add(&g_window, sample.send_ns());
+                    if (g_fresh.on) {
+                        bench_fresh_take(&g_fresh, sample.seq(), sample.payload().data(), sample.payload().size(),
+                                         bench_fresh_wall_ns());
+                    }
                 }
             }
         }
@@ -209,14 +223,15 @@ namespace {
         bench_stats_end(&harness::g_bench_stats);
 
         printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-               "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s %s transport_profile=%s\n",
+               "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s %s transport_profile=%s%s\n",
                static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
                mbps,
                BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                                   g_window_fields.size()),
                BenchHistory_arg_field(g_history, g_history_arg.data(), g_history_arg.size()),
                history_field(reader->get_qos().history()), discard_fields(reader),
-               harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile());
+               harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile(),
+               bench_fresh_receiver_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
     }
 
 } // namespace

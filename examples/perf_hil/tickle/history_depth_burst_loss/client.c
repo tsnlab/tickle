@@ -32,6 +32,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchFreshness.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -51,6 +52,10 @@ static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 static bool g_sending_done = false;
+// KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its burst's due time, --burst B writes B
+// samples back to back per scheduled slot (default 1: the schedule as it always was).
+static struct bench_fresh_sender g_fresh;
+static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 
 static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
@@ -58,10 +63,15 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
         g_sending_done = true;
         return;
     }
-    struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
-    tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
-    if (ret == tt_RET_OK) {
-        sent++;
+    // The slot's due time is `time`, when the schedule said to run this callback; every write of the burst has it.
+    int64_t due_wall = g_fresh.on ? bench_fresh_mono_to_wall(time) : 0;
+    for (uint32_t k = 0; k < g_fresh.burst && seq < count; k++) {
+        struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
+        bench_fresh_stamp(&g_fresh, msg.payload, sizeof msg.payload, due_wall, time);
+        tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
+        if (ret == tt_RET_OK) {
+            sent++;
+        }
     }
     tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), send_one, NULL);
 }
@@ -74,7 +84,12 @@ static void stop_draining(struct tt_Context* node, uint64_t time, void* param) {
 }
 
 int main(int argc, char** argv) {
+    bench_fresh_sender_init(&g_fresh);
+    g_fresh.due_schedule = true;
     for (int i = 1; i < argc; i++) {
+        if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+            continue;
+        }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
@@ -138,7 +153,8 @@ int main(int argc, char** argv) {
         ret = tt_Context_poll(&node, -1);
     }
 
-    printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=client sent=%lu\n", (unsigned long)sent);
+    printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=client sent=%lu%s\n", (unsigned long)sent,
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
 
     tt_Context_destroy(&node);
     return 0;

@@ -18,6 +18,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the fixed-count
  * write schedule, the QoS, the ack wait and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +38,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -59,9 +61,19 @@ namespace {
         uint32_t count = default_count;
     };
 
+    // KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its burst's due time, --burst B writes B
+    // samples back to back per slot (default 1: the schedule as it always was).
+    struct bench_fresh_sender g_fresh;
+    std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+
     auto parse_options(int argc, char** argv) -> client_options {
         client_options opts;
+        bench_fresh_sender_init(&g_fresh);
+        g_fresh.due_schedule = true;
         for (int i = 1; i < argc; i++) {
+            if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+                continue;
+            }
             if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
                 opts.interval_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
@@ -80,15 +92,23 @@ namespace {
         write_result result;
         uint32_t seq = 0;
         const uint64_t interval_ns = harness::seconds_to_ns(opts.interval_s);
+        // The schedule is "write, then sleep one interval", so a slot is due one interval after the previous slot's
+        // last write returned, and the first slot when it starts. Kept as it was; the due time only records it.
+        uint64_t due = harness::now_ns();
         while (!harness::interrupted() && seq < opts.count) {
-            Bench msg;
-            msg.seq(++seq);
-            msg.send_ns(harness::now_ns());
-            if (writer->write(&msg)) {
-                result.sent++;
-            } else {
-                result.dropped++;
+            const int64_t due_wall = g_fresh.on ? bench_fresh_mono_to_wall(due) : 0;
+            for (uint32_t k = 0; k < g_fresh.burst && seq < opts.count; k++) {
+                Bench msg;
+                msg.seq(++seq);
+                msg.send_ns(harness::now_ns());
+                bench_fresh_stamp(&g_fresh, msg.payload().data(), msg.payload().size(), due_wall, due);
+                if (writer->write(&msg)) {
+                    result.sent++;
+                } else {
+                    result.dropped++;
+                }
             }
+            due = g_fresh.on ? harness::now_ns() + interval_ns : due;
             harness::sleep_ns(interval_ns);
         }
         return result;
@@ -144,9 +164,10 @@ auto main(int argc, char** argv) -> int {
     writer->wait_for_acknowledgments(eprosima::fastrtps::Duration_t(ack_wait_s, 0));
 
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=client sent=%lu "
-           "write_dropped=%lu transport_profile=%s\n",
+           "write_dropped=%lu transport_profile=%s%s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped),
-           harness::transport_profile());
+           harness::transport_profile(),
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

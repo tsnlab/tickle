@@ -36,6 +36,7 @@
 #include <fastdds/dds/topic/TypeSupport.hpp>
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 
+#include "../../tickle/common/BenchFreshness.h"
 #include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
@@ -55,6 +56,11 @@ namespace {
     std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
     // -K <depth>: KEEP_LAST depth of the writer and the reader; absent, the product default (BenchHistory.h).
+    // KEEP_LAST freshness (BenchFreshness.h): --fresh stamps each write with its creation time - the slot's due time
+    // with -i, the write's own stamp at max rate - and --burst B writes B samples back to back per slot (default 1).
+    struct bench_fresh_sender g_fresh;
+    std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+
     int g_history = BENCH_HISTORY_DEFAULT;
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_arg {};
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_field {};
@@ -95,7 +101,11 @@ namespace {
     auto parse_options(int argc, char** argv) -> client_options {
         client_options opts;
         BenchWindow_init(&g_window);
+        bench_fresh_sender_init(&g_fresh);
         for (int i = 1; i < argc; i++) {
+            if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+                continue;
+            }
             if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 opts.duration_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -120,18 +130,36 @@ namespace {
         });
     }
 
-    auto send_until(DataWriter* writer, uint64_t deadline, double interval_s) -> uint64_t {
+    // --fresh: the write's creation time - the slot's due time with -i, else the write's own stamp (BenchFreshness.h).
+    void fresh_stamp(Bench& msg, int64_t due_wall, uint64_t due) {
+        if (!g_fresh.on) {
+            return;
+        }
+        bench_fresh_stamp(&g_fresh, msg.payload().data(), msg.payload().size(),
+                          g_fresh.due_schedule ? due_wall : bench_fresh_wall_ns(),
+                          g_fresh.due_schedule ? due : msg.send_ns());
+    }
+
+    // With -i the schedule is "write, then sleep one interval": a slot is due one interval after the previous slot's
+    // last write returned (BenchFreshness.h records it; the pacing is as it was).
+    auto send_until(DataWriter* writer, uint64_t start, uint64_t deadline, double interval_s) -> uint64_t {
         uint32_t seq = 0;
         uint64_t sent = 0;
+        uint64_t due = start;
         while (!harness::interrupted() && harness::now_ns() < deadline) {
-            Bench msg;
-            msg.seq(++seq);
-            msg.send_ns(harness::now_ns());
-            if (writer->write(&msg)) {
-                sent++;
-                BenchWindow_add(&g_window, msg.send_ns());
+            const int64_t due_wall = g_fresh.on && g_fresh.due_schedule ? bench_fresh_mono_to_wall(due) : 0;
+            for (uint32_t k = 0; k < g_fresh.burst; k++) {
+                Bench msg;
+                msg.seq(++seq);
+                msg.send_ns(harness::now_ns());
+                fresh_stamp(msg, due_wall, due);
+                if (writer->write(&msg)) {
+                    sent++;
+                    BenchWindow_add(&g_window, msg.send_ns());
+                }
             }
             if (interval_s > 0.0) {
+                due = g_fresh.on ? harness::now_ns() + harness::seconds_to_ns(interval_s) : due;
                 harness::sleep_seconds(interval_s);
             }
         }
@@ -182,19 +210,24 @@ auto main(int argc, char** argv) -> int {
     const uint64_t start = harness::now_ns();
     // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
     const double send_s = g_window.warmup_s + opts.duration_s + g_window.cooldown_s;
-    const uint64_t sent = send_until(writer, start + harness::seconds_to_ns(send_s), opts.interval_s);
+    // The measured window on this side's schedule, as BenchWindow.h reads it: after the warm-up, for -d seconds.
+    g_fresh.due_schedule = opts.interval_s > 0.0;
+    const uint64_t win_lo = start + harness::seconds_to_ns(g_window.warmup_s);
+    bench_fresh_sender_window(&g_fresh, win_lo, win_lo + harness::seconds_to_ns(opts.duration_s));
+    const uint64_t sent = send_until(writer, start, start + harness::seconds_to_ns(send_s), opts.interval_s);
 
     const double elapsed_s = static_cast<double>(harness::now_ns() - start) / harness::ns_per_s_real;
     const double mbps = harness::mbps(sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.6f %s %s %s %s transport_profile=%s\n",
+           "send_mbps=%.6f %s %s %s %s transport_profile=%s%s\n",
            static_cast<unsigned long>(sent), elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                               g_window_fields.size()),
            BenchHistory_arg_field(g_history, g_history_arg.data(), g_history_arg.size()),
            history_field(writer->get_qos().history()), harness::bench_fields(BENCH_ROLE_SENDER, sent),
-           harness::transport_profile());
+           harness::transport_profile(),
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
