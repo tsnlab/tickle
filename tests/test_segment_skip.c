@@ -532,7 +532,7 @@ static struct tt_Publisher pub_missed;
 
 static void announce_writer(const struct tt_Publisher* pub, uint64_t deadline_ns) {
     upsert_discovered_entity(&rig.owner, rig.sender.id, pub->endpoint.id, pub->endpoint.entity_id,
-                             tt_KIND_TOPIC_PUBLISHER, 0, 0, deadline_ns, 0, "skip_topic", "skip_pub");
+                             tt_KIND_TOPIC_PUBLISHER, 0, 0, deadline_ns, 0, 0, 0, "skip_topic", "skip_pub");
 }
 
 static void two_writers_of_one_topic(bool missed_first, bool interleaved) {

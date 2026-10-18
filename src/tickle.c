@@ -4135,7 +4135,8 @@ static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* disc
 // logging macros check their own level instead of every call site checking it.
 static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint32_t entity_id,
                                      uint8_t kind, uint8_t node_index, uint8_t qos, uint64_t deadline_duration_ns,
-                                     uint64_t liveliness_lease_duration_ns, const char* type, const char* name) {
+                                     uint64_t liveliness_lease_duration_ns, uint64_t lifespan_duration_ns,
+                                     uint32_t history_depth, const char* type, const char* name) {
     if (node->discovery == NULL) {
         return;
     }
@@ -4206,6 +4207,8 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
     slot->qos = qos;
     slot->deadline_duration_ns = deadline_duration_ns;
     slot->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
+    slot->lifespan_duration_ns = lifespan_duration_ns; // tt_VERSION 14
+    slot->history_depth = history_depth;
     slot->alive = true;
 #if tt_DISCOVERY_INDEXED
     if (reclaimed) {
@@ -4675,15 +4678,51 @@ static uint8_t endpoint_qos_bits(struct tt_Endpoint* endpoint) {
     switch (endpoint->kind) {
     case tt_KIND_TOPIC_PUBLISHER: {
         struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        // A RELIABLE writer's bit is its blocking promise (pub->keep_all), which readers act on. Since tt_VERSION 14 a
+        // BEST_EFFORT one sets it for a KEEP_ALL history, for the graph (QoS plan D8): no RELIABLE reader matches that
+        // writer, so no reader acts on it.
+        bool keep_all = pub->reliable ? pub->keep_all : pub->qos_history_kind == (uint8_t)tt_QOS_HISTORY_KEEP_ALL;
         return (uint8_t)((pub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (pub->durable ? tt_UPDATE_QOS_DURABLE : 0) |
                          (pub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0) |
-                         (pub->keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)); // Phase 3 - see that bit's doc comment
+                         (keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)); // Phase 3 - see that bit's doc comment
     }
     case tt_KIND_TOPIC_SUBSCRIBER: {
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        // tt_UPDATE_QOS_KEEP_ALL since tt_VERSION 14: the Subscriber's own history, for the graph (QoS plan D8).
+        bool keep_all = sub->qos_history_kind == (uint8_t)tt_QOS_HISTORY_KEEP_ALL;
         return (uint8_t)((sub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (sub->durable ? tt_UPDATE_QOS_DURABLE : 0) |
-                         (sub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0));
+                         (sub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0) |
+                         (keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0));
     }
+    default:
+        return 0;
+    }
+}
+
+// QoS plan D1/D8 (tt_VERSION 14): this endpoint's LIFESPAN (0 = infinite, as the wire has it) and its history depth,
+// what tt_UpdateEntity.lifespan_duration_ns and .history_depth carry. The depth is the one get_actual_qos reports.
+static uint64_t endpoint_lifespan_duration_ns(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER:
+        return ((struct tt_Publisher*)endpoint)->lifespan_duration_ns;
+    case tt_KIND_TOPIC_SUBSCRIBER: {
+        uint64_t lifespan = ((struct tt_Subscriber*)endpoint)->qos_lifespan_ns;
+        return lifespan == tt_QOS_DURATION_INFINITE ? 0 : lifespan;
+    }
+    default:
+        return 0;
+    }
+}
+
+static uint32_t publisher_actual_depth(const struct tt_Publisher* pub);
+static uint32_t subscriber_actual_depth(const struct tt_Subscriber* sub);
+
+static uint32_t endpoint_history_depth(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER:
+        return publisher_actual_depth((const struct tt_Publisher*)endpoint);
+    case tt_KIND_TOPIC_SUBSCRIBER:
+        return subscriber_actual_depth((const struct tt_Subscriber*)endpoint);
     default:
         return 0;
     }
@@ -12374,6 +12413,17 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
 // ---- The actual QoS: read back from the fields the endpoint runs on, so a deprecated create, or a caller that wrote
 // a field after it, still reports what is real.
 
+// The history depth get_actual_qos reports, which an announce carries too (tt_UpdateEntity.history_depth).
+static uint32_t publisher_actual_depth(const struct tt_Publisher* pub) {
+    const struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint32_t cache_depth = cache != NULL ? qos_or_default(cache->sample_depth, cache->depth) : 0;
+    return qos_or_default(pub->qos_history_depth, cache_depth);
+}
+
+static uint32_t subscriber_actual_depth(const struct tt_Subscriber* sub) {
+    return sub->qos_history_depth != 0 ? sub->qos_history_depth : sub->keep_last_depth;
+}
+
 static void publisher_actual_qos_locked(const struct tt_Publisher* pub, struct tt_QosProfile* out) {
     memset(out, 0, sizeof(*out));
     const struct tt_ReliableCache* cache = pub->reliable_cache;
@@ -12382,13 +12432,11 @@ static void publisher_actual_qos_locked(const struct tt_Publisher* pub, struct t
     if (pub->qos_history_kind != 0) {
         out->history.kind = (enum tt_QosHistoryKind)pub->qos_history_kind;
     }
-    uint32_t cache_depth = 0;
     uint32_t cache_bytes = 0;
     if (cache != NULL) {
-        cache_depth = qos_or_default(cache->sample_depth, cache->depth);
         cache_bytes = cache->arena_size;
     }
-    out->history.depth = qos_or_default(pub->qos_history_depth, cache_depth);
+    out->history.depth = publisher_actual_depth(pub);
     out->history.bytes = qos_or_default(pub->qos_history_bytes, cache_bytes);
     out->reliability.kind = pub->reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT;
     out->reliability.max_blocking_ns = pub->qos_max_blocking_ns;
@@ -12413,7 +12461,7 @@ static void subscriber_actual_qos_locked(const struct tt_Subscriber* sub, struct
     memset(out, 0, sizeof(*out));
     bool keep_all = sub->qos_history_kind == (uint8_t)tt_QOS_HISTORY_KEEP_ALL;
     out->history.kind = keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST;
-    out->history.depth = sub->qos_history_depth != 0 ? sub->qos_history_depth : sub->keep_last_depth;
+    out->history.depth = subscriber_actual_depth(sub);
     out->history.bytes = sub->qos_history_bytes;
     out->reliability.kind = sub->reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT;
     out->reliability.tracking_words = subscriber_tracking_words(sub);
@@ -13910,6 +13958,8 @@ static int encode_update_entities(struct tt_Context* node, struct tt_Endpoint* c
                                             : 0;
         update_entity->deadline_duration_ns = endpoint_deadline_duration_ns(endpoint);
         update_entity->liveliness_lease_duration_ns = endpoint_liveliness_lease_duration_ns(endpoint);
+        update_entity->lifespan_duration_ns = endpoint_lifespan_duration_ns(endpoint); // tt_VERSION 14
+        update_entity->history_depth = endpoint_history_depth(endpoint);
 
         if (!encode_string(node, type) || !encode_string(node, endpoint->name)) {
             return -1;
@@ -15497,6 +15547,8 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
 
         uint64_t deadline_duration_ns = rd64(header, update_entity->deadline_duration_ns);
         uint64_t liveliness_lease_duration_ns = rd64(header, update_entity->liveliness_lease_duration_ns);
+        uint64_t lifespan_duration_ns = rd64(header, update_entity->lifespan_duration_ns); // tt_VERSION 14
+        uint32_t history_depth = rd32(header, update_entity->history_depth);
 
         // The node's index, out of the spare bits it rides in, which are then cleared: everything below reads kind
         // and qos as they were before stage 3.
@@ -15556,7 +15608,8 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         // (tt_Context_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
         upsert_discovered_entity(node, header->source, endpoint_id, remote_entity_id, update_entity->kind, node_index,
-                                 update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns, type, name);
+                                 update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns,
+                                 lifespan_duration_ns, history_depth, type, name);
         qos_judge_announced(node, header->source, endpoint_id, remote_entity_id, update_entity->kind,
                             update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns);
     }

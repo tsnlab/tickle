@@ -97,7 +97,8 @@ static void test_publisher_defaults_override_garbage(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "ep",
                                                       &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
 
-    EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&pub)); // what the announce carries
+    // What the announce carries: TEST_QOS_UNRELIABLE is KEEP_ALL, which a v14 announce states (QoS plan D8).
+    EXPECT_EQ_U32(tt_UPDATE_QOS_KEEP_ALL, endpoint_qos_bits((struct tt_Endpoint*)&pub));
     EXPECT_TRUE(!pub.reliable && !pub.durable && !pub.keep_all && !pub.liveliness_manual);
     EXPECT_TRUE(pub.lifespan_duration_ns == 0 && pub.deadline_duration_ns == 0);
     EXPECT_TRUE(pub.liveliness_lease_duration_ns == 0);
@@ -140,7 +141,7 @@ static void test_subscriber_defaults_override_garbage(void) {
                   tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, "ep", &TEST_QOS_UNRELIABLE,
                                             &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
 
-    EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&sub));
+    EXPECT_EQ_U32(tt_UPDATE_QOS_KEEP_ALL, endpoint_qos_bits((struct tt_Endpoint*)&sub)); // KEEP_ALL, as the pub's
     EXPECT_TRUE(!sub.reliable && !sub.durable && !sub.liveliness_manual);
     EXPECT_TRUE(sub.deadline_duration_ns == 0 && sub.liveliness_lease_duration_ns == 0);
     // NULL/0 is documented (tickle.h) as this function's default: "use builtin_tracking[]".

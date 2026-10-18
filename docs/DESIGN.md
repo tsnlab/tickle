@@ -3,7 +3,7 @@
 **TL;DR**
 - A small pub/sub and RPC middleware in C for controlled links and microcontrollers; `rmw_tickle` puts ROS 2 on it.
 - Core never allocates, starts no thread, does not depend on ROS 2, and counts every drop.
-- Own UDP wire (`tt_VERSION` 13), RTPS-like: per-datagram seq_nos, NACK repair, broadcast discovery.
+- Own UDP wire (`tt_VERSION` 14), RTPS-like: per-datagram seq_nos, NACK repair, broadcast discovery.
 - Same-host peers use a shared-memory ring; large samples use caller buffers, a shared region, or IP-fragmented runs.
 - Every constant with its default and reason: section 15. Where this text and the code disagree, the code is right.
 
@@ -76,7 +76,7 @@ Dates are the monotonic reading plus `wall_offset_ns`, re-read every second. A p
 stamp is rebuilt within a 71.6-minute span, so clocks must agree within +-35.8 min. rmw_tickle's lifespan takes a
 sample's age once on arrival, then counts on the monotonic clock.
 
-## 3. Wire format (`tt_VERSION` 13)
+## 3. Wire format (`tt_VERSION` 14)
 
 **Transport.** Two sockets per context: the **well-known socket** (wildcard, `_tt_CONTEXT_PORT` 8282, + ROS domain id)
 receives broadcasts; the **data socket** (own address, ephemeral port) sends everything and receives unicast. A peer's
@@ -115,6 +115,26 @@ source. `source` is the context id (1-254); `receiver` an id or `tt_SUBMESSAGE_I
 | 14 | `FRAG_RUN_L` | `tt_DataHeader`, frag_index, frag_count, run_count (u16), 2 B zero - 24 B | hybrid run, large geometry (section 8) |
 | 15 | `FRAG_RUN` | `tt_DataHeader`, frag_index, frag_count, run_count (u8), 1 B zero - 20 B | hybrid run, 8/9 geometry |
 
+**Announce** (a DATA or FRAG_FIRST/FRAG_CONT of the discovery endpoint, section 5): `tt_AnnounceHeader` - entity_count
+(u8), ip_reassembly_max, loss_p, 2 B zero - 7 B; then per endpoint or node a `tt_UpdateEntity` record and two strings
+(type, name):
+
+| offset | field | bytes | meaning |
+|---:|---|---:|---|
+| 0 | endpoint_id | 4 | as DATA's |
+| 4 | entity_id | 4 | the instance |
+| 8 | kind | 1 | `tt_KIND_*`; node index bits 4-7 in spare bits (v11) |
+| 9 | qos | 1 | RELIABLE, DURABLE, MANUAL liveliness, KEEP_ALL; node index bits 0-3 |
+| 10 | tracking_words | 2 | a Subscriber's ACK window, 0 = default |
+| 12 | deadline_duration_ns | 8 | 0 = infinite |
+| 20 | liveliness_lease_duration_ns | 8 | 0 = infinite |
+| 28 | lifespan_duration_ns | 8 | v14; 0 = infinite. A writer's is applied by its readers (section 9) |
+| 36 | history_depth | 4 | v14; the depth `tt_*_get_actual_qos()` reports. Graph only |
+
+40 B a record (28 before v14); each string is `u16 length` (with the NUL) + bytes, unpadded. KEEP_ALL is a RELIABLE
+writer's blocking promise, which its readers act on; since v14 a Subscriber's or a BEST_EFFORT writer's KEEP_ALL history
+sets it too, for the graph. A 1,472 B datagram holds ~13 endpoints with 63 B of names (15 at v13).
+
 **Identifiers.** `endpoint_id`: FNV-1a hash of the type and endpoint names. `entity_id`: one endpoint instance;
 (source, entity_id) names a writer. `seq_no`: per writer and **per datagram**, compared modulo 2^32. `timestamp`: low
 32 bits of the sender's date in us. A lone sample costs 20 B of framing (24 B with rmw's psn).
@@ -127,7 +147,9 @@ callback. Structs use `#pragma pack(push, 4)`, so fixed-size messages decode in 
 
 **Versions:** 5 wider ACKNACK bitmap; 6 per-subscriber ack identity; 7 discovery as DATA; 8 summary + pulled list;
 9 liveliness flag; 10 32-bit timestamp, rmw psn, single header; 11 nodes announced; 12 types 11/12; 13 runs (14/15),
-`ip_reassembly_max` and `loss_p` in the announce. `LARGE_REF` never crosses the network.
+`ip_reassembly_max` and `loss_p` in the announce; 14 lifespan and history depth in each announce record (+12 B), the
+KEEP_ALL bit on Subscribers (QoS D1, D8, D9: announce only, nothing per sample). `LARGE_REF` never crosses the network.
+Mixed versions refuse each other's every datagram (`tests/version_mix.sh`).
 
 ## 4. Sending: flush, batching and unicast peers
 
@@ -170,7 +192,7 @@ one ~28-byte summary per node per second.
 - **A large list is fragmented at entity boundaries**, each part applied on arrival (no reassembly memory), at most
   `tt_UPDATE_MAX_PARTS`; a context needing more is invisible.
 - **Nodes are announced** (v11) as `tt_KIND_NODE` entries; every entry carries its node index in spare bits of `kind`/`qos`.
-- **The discovery table** (`tt_MAX_DISCOVERED_ENTITIES`, 552 B an entry; indexed above 64) feeds RxO, leases and the
+- **The discovery table** (`tt_MAX_DISCOVERED_ENTITIES`, 568 B an entry; indexed above 64) feeds RxO, leases and the
   rmw graph. RxO **fails open** for an entity with no room: size it to what a context will see (`entities_dropped`).
 - **Discovery range** (`tt_DISCOVERY_OPTIONS`): `SUBNET`, `LOCALHOST`, `OFF`, static `peer` links. Same-host discovery
   stays UDP on Linux and FreeRTOS (the user, 2026-10-09).

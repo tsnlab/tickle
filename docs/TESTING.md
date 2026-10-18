@@ -19,6 +19,7 @@ Run from the repository root. Figures: [RESULTS.md](RESULTS.md).
 | `make sanitize` / `make tsan` | unit tests under ASan+UBSan / TSan | |
 | `make fuzz FUZZ_ARGS='-max_total_time=60'` | packet-parser fuzzing; `make fuzz-corpus` after a wire change | clang |
 | `make headers-cpp` | public headers compile as C and C++ | |
+| `tests/version_mix.sh [PARENT]` | a `tt_VERSION` 13 core and this tree's refuse each other's announce, each applying its own (control) | C compiler, git |
 | `make test-samehost` | two nodes on one host, plus an io_uring-refused pass | |
 | `make test-linux` | two nodes in two netns over a veth pair | `sudo ip` |
 | `make test-freertos` | HAL selftest, then round trips under QEMU | RISC-V toolchain, QEMU |

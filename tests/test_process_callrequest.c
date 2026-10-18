@@ -632,7 +632,7 @@ static void announce_client(struct tt_Context* node, uint32_t entity_id) {
     node->discovery = &discovery;
     forget_discovered_entities_from_source(node, REMOTE_NODE_ID);
     if (entity_id != 0) {
-        upsert_discovered_entity(node, REMOTE_NODE_ID, ENDPOINT_ID, entity_id, tt_KIND_SERVICE_CLIENT, 0, 0, 0, 0,
+        upsert_discovered_entity(node, REMOTE_NODE_ID, ENDPOINT_ID, entity_id, tt_KIND_SERVICE_CLIENT, 0, 0, 0, 0, 0, 0,
                                  "test_service", "client");
     }
 }
