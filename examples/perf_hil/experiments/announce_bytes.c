@@ -16,8 +16,7 @@
 // Build against a tree, from the tree's root:
 //   gcc -I include -I src [-DON_NODE] -o /tmp/announce_bytes examples/perf_hil/experiments/announce_bytes.c
 //       src/encoding.c src/log.c -lm
-// -DON_NODE creates the endpoints on an explicit node (tt_Node_create_*, stage 2 onwards) instead of through the
-// tt_Context_create_*() shorthands.
+// -DON_NODE creates the endpoints on an explicit node (stage 2 onwards) instead of the context's default node.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -125,13 +124,14 @@ int main(void) {
     context.tx_size = tt_MAX_BUFFER_LENGTH * 2;
     context.entity_id_base = ENTITY_ID_BASE;
 
-    static struct tt_Topic topic;
+    static struct tt_TypeSupport topic;
     topic.name = "bytes_topic";
     topic.data_size = 4;
     topic.data_encode_size = data_size;
     topic.data_encode = data_encode;
     topic.data_decode = data_decode;
     topic.data_free = data_free;
+    topic.max_encoded_size = 4;
     static struct tt_Service service;
     service.name = "bytes_service";
     service.request_size = 4;
@@ -149,25 +149,69 @@ int main(void) {
     static struct tt_Subscriber sub;
     static struct tt_Client client;
     static struct tt_Server server;
+    // The QoS the legacy creates gave: BEST_EFFORT, VOLATILE, AUTOMATIC, infinite durations; the Publisher retains
+    // nothing (no storage, so its history sizes nothing), the Subscriber has no reorder buffer, the builtin ACK window,
+    // and never skips in the segment drain (keep_last_depth 0, which KEEP_ALL gives). The Client and Server take
+    // tt_QOS_PROFILE_SERVICES_DEFAULT, spelled out below; services announce none of it.
+    static const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_QosProfile service_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = tt_QOS_DEPTH_DEFAULT, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_PublisherOptions pub_options; // all defaults: no batching, no periodic HEARTBEAT
+    static const struct tt_SubscriberOptions sub_options = {.callback = on_sample};
+    // The service's retry settings (0: adaptive interval, tt_CALL_RETRY_COUNT), which the legacy create read from it;
+    // the inline request and response caches (max_*_bytes 0), as before.
+    const struct tt_ClientOptions client_options = {.callback = on_answer,
+                                                    .call_retry_interval = service.call_retry_interval,
+                                                    .call_retry_count = service.call_retry_count,
+                                                    .max_request_bytes = 0};
+    static const struct tt_ServerOptions server_options = {.callback = on_call, .max_response_bytes = 0};
 #ifdef ON_NODE
-    static struct tt_Node node;
-    if (tt_Node_create(&context, &node, "talker", "/") != tt_RET_OK ||
-        tt_Node_create_publisher_legacy(&node, &pub, &topic, "chatter") != tt_RET_OK ||
-        tt_Node_create_subscriber_legacy(&node, &sub, &topic, "chatter", on_sample) != tt_RET_OK ||
-        tt_Node_create_client_legacy(&node, &client, &service, "add", on_answer) != tt_RET_OK ||
-        tt_Node_create_server_legacy(&node, &server, &service, "add", on_call) != tt_RET_OK) {
+    static struct tt_Node explicit_node;
+    struct tt_Node* node = &explicit_node;
+    if (tt_Node_create(&context, node, "talker", "/") != tt_RET_OK) {
         printf("create failed\n");
         return 1;
     }
 #else
-    if (tt_Context_create_publisher(&context, &pub, &topic, "chatter") != tt_RET_OK ||
-        tt_Context_create_subscriber(&context, &sub, &topic, "chatter", on_sample) != tt_RET_OK ||
-        tt_Context_create_client(&context, &client, &service, "add", on_answer) != tt_RET_OK ||
-        tt_Context_create_server(&context, &server, &service, "add", on_call) != tt_RET_OK) {
+    struct tt_Node* node = tt_Context_default_node(&context);
+#endif
+    if (tt_Node_create_publisher(node, &pub, &topic, "chatter", &pub_qos, &pub_options, NULL, 0) != tt_RET_OK ||
+        tt_Node_create_subscriber(node, &sub, &topic, "chatter", &sub_qos, &sub_options, NULL, 0) != tt_RET_OK ||
+        tt_Node_create_client(node, &client, &service, "add", &service_qos, &client_options, NULL, 0) != tt_RET_OK ||
+        tt_Node_create_server(node, &server, &service, "add", &service_qos, &server_options, NULL, 0) != tt_RET_OK) {
         printf("create failed\n");
         return 1;
     }
-#endif
     test_mock_send_hook = print_datagram;
     printf("-- announce\n");
     context.last_modified = LAST_MODIFIED;
