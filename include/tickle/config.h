@@ -280,6 +280,27 @@
 #ifndef tt_MAX_RELIABLE_HISTORY
 #define tt_MAX_RELIABLE_HISTORY 64
 #endif
+// The computed defaults of struct tt_QosProfile (tickle.h): what a zero field resolves to. depth and the two KEEP_LAST
+// figures are rmw's and rmw_tickle's; the reorder default is a window of held samples a small target can afford.
+#ifndef tt_QOS_DEPTH_DEFAULT
+#define tt_QOS_DEPTH_DEFAULT 10 // rmw_qos_profile_default's KEEP_LAST depth
+#endif
+#ifndef tt_QOS_KEEP_ALL_DEPTH_DEFAULT
+#define tt_QOS_KEEP_ALL_DEPTH_DEFAULT 256 // one default ACK window (tt_RELIABLE_BITMAP_BITS)
+#endif
+#ifndef tt_QOS_HISTORY_BYTES_DEFAULT
+#define tt_QOS_HISTORY_BYTES_DEFAULT \
+    (1024U * 1024U) // KEEP_LAST retained-sample cap, rmw_tickle's RMW_TICKLE_CACHE_BYTES
+#endif
+#ifndef tt_QOS_KEEP_ALL_BYTES_DEFAULT
+#define tt_QOS_KEEP_ALL_BYTES_DEFAULT (512U * 1024U) // KEEP_ALL cap, rmw_tickle's RMW_TICKLE_KEEP_ALL_BYTES
+#endif
+#ifndef tt_QOS_MAX_BLOCKING_DEFAULT_NS
+#define tt_QOS_MAX_BLOCKING_DEFAULT_NS (100U * tt_MILLISECOND) // rmw_tickle's RMW_TICKLE_MAX_BLOCKING_MS
+#endif
+#ifndef tt_QOS_REORDER_SLOTS_DEFAULT
+#define tt_QOS_REORDER_SLOTS_DEFAULT 16 // a RELIABLE Subscriber's held out-of-order samples
+#endif
 // B1 (rmw_tickle/PLAN.md) - sizing helpers for struct tt_ReliableCache's own caller-provided byte
 // arena (tickle.h). tt_RELIABLE_RECORD_BYTES(payload) is what one cached sample actually costs on
 // the wire and in the arena: the submessage header, the DATA header, and the payload itself,

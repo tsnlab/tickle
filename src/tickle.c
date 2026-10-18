@@ -5673,6 +5673,212 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     return schedule_periodic_tasks(node);
 }
 
+// ---- QoS profiles and their resolution (struct tt_QosProfile, tickle.h).
+
+const struct tt_QosProfile tt_QOS_PROFILE_DEFAULT = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = tt_QOS_DEPTH_DEFAULT},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+
+const struct tt_QosProfile tt_QOS_PROFILE_SENSOR_DATA = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 5},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+
+const struct tt_QosProfile tt_QOS_PROFILE_SERVICES_DEFAULT = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = tt_QOS_DEPTH_DEFAULT},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+
+// The shortest finite lease a context can keep: its summary goes out tt_LIVELINESS_LEASE_DIVISOR times a lease, at
+// most once a tx tick (DESIGN.md section 9). rmw_tickle refuses the same floor.
+#define QOS_LEASE_FLOOR_NS ((uint64_t)tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL)
+
+static uint64_t qos_duration(uint64_t requested) {
+    return requested == 0 ? tt_QOS_DURATION_INFINITE : requested;
+}
+
+// A BEST_AVAILABLE duration: what the matched endpoints allow, infinite when none is known.
+static uint64_t qos_best_available_duration(const struct tt_QosMatched* matched, uint64_t matched_ns) {
+    return matched == NULL || matched->count == 0 ? tt_QOS_DURATION_INFINITE : qos_duration(matched_ns);
+}
+
+// A requested value, or its computed default when the request is 0.
+static uint32_t qos_or_default(uint32_t requested, uint32_t fallback) {
+    return requested != 0 ? requested : fallback;
+}
+
+static uint64_t qos_or_default64(uint64_t requested, uint64_t fallback) {
+    return requested != 0 ? requested : fallback;
+}
+
+static tt_ret_t qos_resolve_history(const struct tt_QosHistory* requested, struct tt_QosHistory* out) {
+    switch (requested->kind) {
+    case tt_QOS_HISTORY_SYSTEM_DEFAULT:
+    case tt_QOS_HISTORY_KEEP_LAST:
+        out->kind = tt_QOS_HISTORY_KEEP_LAST;
+        break;
+    case tt_QOS_HISTORY_KEEP_ALL:
+        out->kind = tt_QOS_HISTORY_KEEP_ALL;
+        break;
+    default:
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    bool keep_all = out->kind == tt_QOS_HISTORY_KEEP_ALL;
+    if (requested->depth > UINT16_MAX) {
+        return tt_RET_INVALID_ARGUMENT; // the retained-sample ring and keep_last_depth count in 16 bits
+    }
+    uint32_t depth_default = keep_all ? (uint32_t)tt_QOS_KEEP_ALL_DEPTH_DEFAULT : (uint32_t)tt_QOS_DEPTH_DEFAULT;
+    uint32_t bytes_default =
+        keep_all ? (uint32_t)tt_QOS_KEEP_ALL_BYTES_DEFAULT : (uint32_t)tt_QOS_HISTORY_BYTES_DEFAULT;
+    out->depth = qos_or_default(requested->depth, depth_default);
+    out->bytes = qos_or_default(requested->bytes, bytes_default);
+    return tt_RET_OK;
+}
+
+static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requested, uint8_t kind,
+                                        const struct tt_QosMatched* matched, struct tt_QosReliability* out) {
+    bool service = (kind & tt_KIND_SERVICE) != 0;
+    switch (requested->kind) {
+    case tt_QOS_RELIABILITY_SYSTEM_DEFAULT:
+    case tt_QOS_RELIABILITY_RELIABLE:
+        out->kind = tt_QOS_RELIABILITY_RELIABLE;
+        break;
+    case tt_QOS_RELIABILITY_BEST_EFFORT:
+        out->kind = tt_QOS_RELIABILITY_BEST_EFFORT;
+        break;
+    case tt_QOS_RELIABILITY_BEST_AVAILABLE:
+        if (service) {
+            return tt_RET_INVALID_ARGUMENT;
+        }
+        // A Publisher offering RELIABLE matches any reader; a Subscriber may request it only if every writer offers it.
+        out->kind = kind == tt_KIND_TOPIC_PUBLISHER || matched == NULL || matched->count == 0 || matched->all_reliable
+                        ? tt_QOS_RELIABILITY_RELIABLE
+                        : tt_QOS_RELIABILITY_BEST_EFFORT;
+        break;
+    default:
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (requested->tracking_words > tt_RELIABLE_BITMAP_MAX_WORDS) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    bool subscriber = kind == tt_KIND_TOPIC_SUBSCRIBER;
+    bool reliable = out->kind == tt_QOS_RELIABILITY_RELIABLE;
+    // 0 where the endpoint has no use for the field. tt_QOS_REORDER_NONE stays as it is, so that resolving an actual
+    // profile again gives it back.
+    out->tracking_words = 0;
+    out->reorder_slots = 0;
+    out->max_blocking_ns = 0;
+    if (subscriber) {
+        out->tracking_words = (uint16_t)qos_or_default(requested->tracking_words, tt_RELIABLE_BITMAP_WORDS);
+    }
+    if (subscriber && reliable) {
+        out->reorder_slots = (uint16_t)qos_or_default(requested->reorder_slots, tt_QOS_REORDER_SLOTS_DEFAULT);
+    }
+    if (kind == tt_KIND_TOPIC_PUBLISHER) {
+        out->max_blocking_ns = qos_or_default64(requested->max_blocking_ns, tt_QOS_MAX_BLOCKING_DEFAULT_NS);
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t qos_resolve_durability(enum tt_QosDurabilityKind requested, uint8_t kind,
+                                       const struct tt_QosMatched* matched, enum tt_QosDurabilityKind* out) {
+    bool service = (kind & tt_KIND_SERVICE) != 0;
+    switch (requested) {
+    case tt_QOS_DURABILITY_SYSTEM_DEFAULT:
+    case tt_QOS_DURABILITY_VOLATILE:
+        *out = tt_QOS_DURABILITY_VOLATILE;
+        return tt_RET_OK;
+    case tt_QOS_DURABILITY_TRANSIENT_LOCAL:
+        *out = tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+        return service ? tt_RET_INVALID_ARGUMENT : tt_RET_OK;
+    case tt_QOS_DURABILITY_BEST_AVAILABLE:
+        *out = kind == tt_KIND_TOPIC_PUBLISHER || matched == NULL || matched->count == 0 || matched->all_durable
+                   ? tt_QOS_DURABILITY_TRANSIENT_LOCAL
+                   : tt_QOS_DURABILITY_VOLATILE;
+        return service ? tt_RET_INVALID_ARGUMENT : tt_RET_OK;
+    default:
+        return tt_RET_INVALID_ARGUMENT;
+    }
+}
+
+static tt_ret_t qos_resolve_liveliness(const struct tt_QosLiveliness* requested, uint8_t kind,
+                                       const struct tt_QosMatched* matched, struct tt_QosLiveliness* out) {
+    bool service = (kind & tt_KIND_SERVICE) != 0;
+    switch (requested->kind) {
+    case tt_QOS_LIVELINESS_SYSTEM_DEFAULT:
+    case tt_QOS_LIVELINESS_AUTOMATIC:
+        out->kind = tt_QOS_LIVELINESS_AUTOMATIC;
+        break;
+    case tt_QOS_LIVELINESS_MANUAL_BY_TOPIC:
+        out->kind = tt_QOS_LIVELINESS_MANUAL_BY_TOPIC;
+        break;
+    case tt_QOS_LIVELINESS_BEST_AVAILABLE:
+        out->kind = kind == tt_KIND_TOPIC_PUBLISHER || matched == NULL || matched->count == 0 || matched->all_manual
+                        ? tt_QOS_LIVELINESS_MANUAL_BY_TOPIC
+                        : tt_QOS_LIVELINESS_AUTOMATIC;
+        if (service) {
+            return tt_RET_INVALID_ARGUMENT;
+        }
+        break;
+    default:
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (service && out->kind != tt_QOS_LIVELINESS_AUTOMATIC) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    out->lease_ns = requested->lease_ns == tt_QOS_DURATION_BEST_AVAILABLE
+                        ? qos_best_available_duration(matched, matched != NULL ? matched->lease_ns : 0)
+                        : qos_duration(requested->lease_ns);
+    if (out->lease_ns < QOS_LEASE_FLOOR_NS) {
+        return tt_RET_INVALID_ARGUMENT; // refused, not raised: a lease the context cannot keep is the caller's to fix
+    }
+    return tt_RET_OK;
+}
+
+tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
+                               struct tt_QosProfile* actual) {
+    static const struct tt_QosProfile zeroed;
+    if (actual == NULL || (kind != tt_KIND_TOPIC_PUBLISHER && kind != tt_KIND_TOPIC_SUBSCRIBER &&
+                           kind != tt_KIND_SERVICE_CLIENT && kind != tt_KIND_SERVICE_SERVER)) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    const struct tt_QosProfile* request = requested != NULL ? requested : &zeroed;
+    struct tt_QosProfile out;
+    memset(&out, 0, sizeof(out));
+    tt_ret_t result = qos_resolve_history(&request->history, &out.history);
+    if (result == tt_RET_OK) {
+        result = qos_resolve_reliability(&request->reliability, kind, matched, &out.reliability);
+    }
+    if (result == tt_RET_OK) {
+        result = qos_resolve_durability(request->durability.kind, kind, matched, &out.durability.kind);
+    }
+    if (result == tt_RET_OK) {
+        result = qos_resolve_liveliness(&request->liveliness, kind, matched, &out.liveliness);
+    }
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    out.deadline.period_ns = request->deadline.period_ns == tt_QOS_DURATION_BEST_AVAILABLE
+                                 ? qos_best_available_duration(matched, matched != NULL ? matched->deadline_ns : 0)
+                                 : qos_duration(request->deadline.period_ns);
+    out.lifespan.duration_ns = qos_duration(request->lifespan.duration_ns);
+    *actual = out;
+    return tt_RET_OK;
+}
+
 // A message struct sized 0 or larger than one datagram is a misconfiguration: on the receive
 // path the request/response/data is decoded into a stack buffer of exactly that size (see
 // process_data(), process_callrequest(), process_callresponse()), and nothing on the wire can
