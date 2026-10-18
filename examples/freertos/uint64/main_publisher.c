@@ -34,6 +34,11 @@
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
 static struct tt_Context node;
 static struct tt_Publisher pub;
+// The endpoint's storage for the default QoS (RELIABLE, KEEP_LAST 10): static, so that `size` of the ELF counts it.
+// tt_Publisher_storage_size() asks for less than this for UInt64 (696 bytes on x86-64, fewer on RV32); the create
+// checks rather than trusting it.
+#define PUB_STORAGE_BYTES 1024U
+static uint64_t pub_storage[PUB_STORAGE_BYTES / sizeof(uint64_t)]; // 8-aligned, as the create requires
 static uint64_t next_value = 0;
 
 static void publish_value(struct tt_Context* node, uint64_t time, void* param) {
@@ -83,9 +88,14 @@ static void publisher_task(void* param) {
     }
     printf("publisher: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_publisher(&node, &pub, &UInt64Topic, "uint64_topic");
+    // The default QoS (a NULL profile): RELIABLE, KEEP_LAST 10, VOLATILE - rmw's default. A RELIABLE Publisher keeps
+    // its last samples for resending, in the storage above.
+    size_t storage_size = tt_Publisher_storage_size(&UInt64Topic, NULL);
+    printf("publisher: storage %u of %u bytes\n", (unsigned)storage_size, (unsigned)sizeof(pub_storage));
+    ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &UInt64Topic, "uint64_topic", NULL, NULL,
+                                   pub_storage, sizeof(pub_storage));
     if (ret != tt_RET_OK) {
-        printf("publisher: tt_Context_create_publisher failed: %d\n", ret);
+        printf("publisher: tt_Node_create_publisher failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

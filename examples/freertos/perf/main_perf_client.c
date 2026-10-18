@@ -103,9 +103,17 @@ static void perf_client_task(void* param) {
     }
     printf("perf_client: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_publisher(&node, &pub, &BulkTopic, "bulk_topic");
+    // BEST_EFFORT, as this throughput example always was (a zeroed profile is RELIABLE now): nothing retained, so no
+    // storage.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+    };
+    ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &BulkTopic, "bulk_topic", &qos, NULL, NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("perf_client: tt_Context_create_publisher failed: %d\n", ret);
+        printf("perf_client: tt_Node_create_publisher failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

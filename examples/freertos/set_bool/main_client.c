@@ -80,10 +80,12 @@ static void client_task(void* param) {
     }
     printf("client: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_client(&node, &client, &SetBoolService, "set_bool_server",
-                                   (tt_CLIENT_CALLBACK)set_bool_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)set_bool_callback};
+    ret = tt_Node_create_client(tt_Context_default_node(&node), &client, &SetBoolService, "set_bool_server", NULL,
+                                &client_options, NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("client: tt_Context_create_client failed: %d\n", ret);
+        printf("client: tt_Node_create_client failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

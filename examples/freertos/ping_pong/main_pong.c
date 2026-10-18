@@ -51,10 +51,12 @@ static void pong_task(void* param) {
     }
     printf("pong: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_server(&node, &server, &PingPongService, "ping_pong_server",
-                                   (tt_SERVER_CALLBACK)pong_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ServerOptions server_options = {.callback = (tt_SERVER_CALLBACK)pong_callback};
+    ret = tt_Node_create_server(tt_Context_default_node(&node), &server, &PingPongService, "ping_pong_server", NULL,
+                                &server_options, NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("pong: tt_Context_create_server failed: %d\n", ret);
+        printf("pong: tt_Node_create_server failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

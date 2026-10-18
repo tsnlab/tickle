@@ -61,10 +61,12 @@ static void server_task(void* param) {
     }
     printf("server: node created, id=%u\n", node.id);
 
-    ret = tt_Context_create_server(&node, &server, &SetBoolService, "set_bool_server",
-                                   (tt_SERVER_CALLBACK)set_bool_callback);
+    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
+    struct tt_ServerOptions server_options = {.callback = (tt_SERVER_CALLBACK)set_bool_callback};
+    ret = tt_Node_create_server(tt_Context_default_node(&node), &server, &SetBoolService, "set_bool_server", NULL,
+                                &server_options, NULL, 0);
     if (ret != tt_RET_OK) {
-        printf("server: tt_Context_create_server failed: %d\n", ret);
+        printf("server: tt_Node_create_server failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
