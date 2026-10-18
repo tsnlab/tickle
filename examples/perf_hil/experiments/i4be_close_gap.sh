@@ -52,8 +52,14 @@ if [ "$PC" = 1 ]; then
     OUT=$OUTDIR/i4be_close_pc_$TS
     d=${PF_BUILD:-}
     [ -n "$d" ] || d=$("$X/pc_preflight_build.sh" --find) || { say "no PC preflight build for HEAD"; exit; }
+    # BUFFERS=pc (amended 2026-10-18 after the first PC run, i4be_close_pc_20261018-092932): with the Pis' 425,984 B
+    # receive buffer the PC's x86 subscriber dropped 4-1,146 datagrams at the socket in EVERY tickle run (socket_drops),
+    # so all but 3 of 18 tickle runs fell outside 15 Hz +-1% and were VOID, and Fast DDS delivered nothing in any rep
+    # (it does not run on the PC with these buffers). BUFFERS=pc runs the build as it is (rmw_tickle asks 4 MiB, the PC
+    # grants 8 MiB): the subscriber's cache question does not depend on the socket buffer, the publisher's wakes do.
     sb=$d-sb212992 # large_block_pc.sh's BUFFERS=rig: the build's own sources, rmw_tickle rebuilt with the Pis' buffer
-    if [ ! -f "$sb/SB_OK" ]; then
+    [ "${BUFFERS:-rig}" = pc ] && sb=$d
+    if [ ! -f "$sb/SB_OK" ] && [ "$sb" != "$d" ]; then
         rm -rf "$sb" && mkdir -p "$sb" && cp -a "$d/src" "$d/install" "$sb/" || exit
         sed -i 's/tt_SOCKET_BUFFER_SIZE=4194304/tt_SOCKET_BUFFER_SIZE=212992/' "$sb/src/rmw_tickle/rmw_tickle/CMakeLists.txt"
         grep -q 'tt_SOCKET_BUFFER_SIZE=212992' "$sb/src/rmw_tickle/rmw_tickle/CMakeLists.txt" ||
