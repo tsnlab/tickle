@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -54,13 +55,36 @@
 #define CONTROL_CALLS 200000U
 #define GAP_FILLS 400U
 #define LOCAL_NODE_ID 1
-#define ENDPOINT_ID 0xaabbccddU
 #define BITS_PER_WORD 64U
 
 static struct tt_Context node;
-static struct tt_Topic topic;
+#define SAMPLE_BYTES 4U
 static struct tt_Subscriber sub;
-static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
+static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS]; // the widest window's caller storage
+
+// The type's codec is never called (update_reliable_ack() sees seq_nos only); a Subscriber's create requires one.
+static int32_t sample_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len, bool native) {
+    (void)data;
+    (void)payload;
+    (void)native;
+    return (int32_t)len;
+}
+static void sample_free(struct tt_Data* data) {
+    (void)data;
+}
+static void on_sample(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)subscriber;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+}
+static struct tt_TypeSupport topic = {
+    .name = "bench",
+    .data_size = SAMPLE_BYTES,
+    .data_decode = sample_decode,
+    .data_free = sample_free,
+    .max_encoded_size = SAMPLE_BYTES,
+};
 static int counter = -1;
 
 static void counter_open(void) {
@@ -103,25 +127,32 @@ static void rig_init(uint16_t words) {
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = tt_MAX_BUFFER_LENGTH * 2;
     node.rx_seq_span = 1; // what the socket path sets for every datagram
-    memset(&topic, 0, sizeof(topic));
-    topic.name = "bench";
     memset(&sub, 0, sizeof(sub));
-    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
-    sub.endpoint.id = ENDPOINT_ID;
-    sub.node = &node;
-    sub.topic = &topic;
-    sub.reliable = true;
-    if (words != tt_RELIABLE_BITMAP_WORDS) {
-        sub.tracking_bitmaps = tracking;
-        sub.tracking_words = words;
+    // RELIABLE with a window of `words` (0, the builtin window, at the default width; caller storage otherwise); no
+    // reorder buffer and KEEP_ALL (keep_last_depth 0), as the hand-built Subscriber this replaced had. VOLATILE,
+    // AUTOMATIC, infinite durations.
+    const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                        .tracking_words = words != tt_RELIABLE_BITMAP_WORDS ? words : 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_SubscriberOptions options = {.callback = on_sample};
+    if (tt_Subscriber_storage_size(&topic, &qos) > sizeof(tracking) ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, "bench", &qos, &options, tracking,
+                                  sizeof(tracking)) != tt_RET_OK) {
+        fprintf(stderr, "cannot create the subscriber\n");
+        exit(1);
     }
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
-    }
-    node.endpoint_count = 1;
-    node.endpoints[0] = (struct tt_Endpoint*)&sub;
     // First contact, outside the count: the proxy is created and its watermark set.
     (void)update_reliable_ack(&node, &sub, 1, REMOTE_NODE_ID, 0, SENDER_IP, SENDER_PORT);
+    // Not the Subscriber's QoS: what the writer announced, which update_reliable_ack() would otherwise learn from
+    // discovery. Kept as written before the QoS redesign: no creation argument expresses a remote writer's state.
     find_writer_proxy(&sub, REMOTE_NODE_ID, 0)->keep_all = tt_WRITER_KEEP_ALL_NO;
 }
 
