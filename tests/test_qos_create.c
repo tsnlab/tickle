@@ -361,6 +361,51 @@ static void test_unbounded_type_keeps_the_depth(void) {
     EXPECT_TRUE(pub.reliable_cache->depth_shortfalls > 0);
 }
 
+// What qos_zero_dirty_pages() is for: clearing storage that arrives zeroed adds nothing to the resident set, where a
+// memset of it makes every page resident (QoS step 2b: ~6 MB of peak RSS at p4). The memset is the control - it shows
+// the instrument sees pages being made resident - and a page that holds anything is cleared.
+static long resident_kb(void) {
+    FILE* statm = fopen("/proc/self/statm", "r");
+    long pages = -1;
+    long resident = -1;
+    if (statm != NULL) {
+        if (fscanf(statm, "%ld %ld", &pages, &resident) != 2) {
+            resident = -1;
+        }
+        (void)fclose(statm);
+    }
+    return resident < 0 ? -1 : resident * (sysconf(_SC_PAGESIZE) / 1024);
+}
+
+static void test_zeroed_storage_stays_untouched(void) {
+    const size_t bytes = (size_t)8 * 1024 * 1024;
+    uint8_t* fresh = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t* control = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    EXPECT_TRUE(fresh != MAP_FAILED && control != MAP_FAILED);
+    if (fresh == MAP_FAILED || control == MAP_FAILED) {
+        return;
+    }
+    (void)madvise(fresh, bytes, MADV_NOHUGEPAGE); // a huge page would make one written byte 2 MB resident
+    (void)madvise(control, bytes, MADV_NOHUGEPAGE);
+    long before = resident_kb();
+    qos_zero_dirty_pages(fresh, bytes);
+    long after_clear = resident_kb();
+    memset(control, 0, bytes);
+    long after_memset = resident_kb();
+    printf("test_qos_create: 8 MB of fresh storage: cleared +%ld KB resident, memset (control) +%ld KB\n",
+           after_clear - before, after_memset - after_clear);
+    EXPECT_TRUE(before > 0);
+    EXPECT_TRUE(after_clear - before < 512);
+    EXPECT_TRUE(after_memset - after_clear > 7 * 1024);
+
+    fresh[5 * 4096 + 17] = 0x5A; // a dirty page, and a dirty last byte: both cleared, the rest still untouched
+    fresh[bytes - 1] = 0x01;
+    qos_zero_dirty_pages(fresh, bytes);
+    EXPECT_TRUE(qos_bytes_zero(fresh, bytes));
+    (void)munmap(fresh, bytes);
+    (void)munmap(control, bytes);
+}
+
 // The default Subscriber is RELIABLE with a reorder buffer, which lives in storage; KEEP_LAST tells the segment drain
 // its depth. tt_QOS_REORDER_NONE needs nothing, and reports itself.
 static void test_subscriber_storage(void) {
@@ -651,6 +696,7 @@ int main(void) {
     test_sensor_data_publisher_needs_none();
     test_history_bytes_cap_the_depth();
     test_unbounded_type_keeps_the_depth();
+    test_zeroed_storage_stays_untouched();
     test_subscriber_storage();
     test_best_available_reads_discovery();
     test_client_and_server();
