@@ -68,6 +68,7 @@ static struct tt_Publisher pub;
 static struct tt_ReliableCacheIndex index_storage[RING];
 static struct tt_ReliableCache cache;
 static uint8_t arenas[ARENAS][LIMIT]; // each growth moves to the next, as an owner's allocator would
+static uint64_t created_storage[(size_t)1024U * 1024U / sizeof(uint64_t)]; // replaced by the test's cache below
 static int arena_in_use;
 static int grows;
 
@@ -101,7 +102,15 @@ static void setup(bool (*hook)(struct tt_Publisher*)) {
     topic.data_decode = refuse;
     topic.data_free = free_nothing;
     memset(&pub, 0, sizeof(pub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&context, &pub, &topic, "rt/keep_all"));
+    const struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+                                      .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    size_t storage_size = tt_Publisher_storage_size(&topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(created_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&context), &pub, &topic, "rt/keep_all",
+                                                      &qos, &(struct tt_PublisherOptions) {.cache_grow = hook},
+                                                      created_storage, storage_size));
+    // White-box: the cache under test starts with room for one sample, which no profile asks for (creation sizes
+    // the arena for its depth), so the created one is replaced with it.
     memset(index_storage, 0, sizeof(index_storage));
     memset(&cache, 0, sizeof(cache));
     cache.index = index_storage;
@@ -113,9 +122,6 @@ static void setup(bool (*hook)(struct tt_Publisher*)) {
     arena_in_use = 0;
     grows = 0;
     pub.reliable_cache = &cache;
-    pub.reliable = true;
-    pub.keep_all = true;
-    pub.cache_grow = hook;
 }
 
 static void publish(int from, int to) {
