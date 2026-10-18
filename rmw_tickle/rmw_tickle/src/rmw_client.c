@@ -289,22 +289,32 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         return NULL;
     }
 
-    // Same tt_Context_interrupt()-then-lock pattern rmw_create_publisher()/_subscription() already
-    // established - see rmw_tickle.h's own rmw_tickle_context_impl_t doc comment.
+    // Created with its QoS, its options and that storage (QoS redesign step 3): the retry settings above become this
+    // client's own (tt_ClientOptions, no longer read from the tt_Service), and core lays the outstanding requests out
+    // in request_cache exactly as tt_Client_set_storage() did - tt_CLIENT_MAX_OUTSTANDING slots of max_request_bytes
+    // plus framing, which is the slot computed above.
+    struct tt_QosProfile profile;
+    rmw_tickle_qos_to_tt(qos_policies, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT, NULL, &profile);
+    struct tt_ClientOptions options;
+    memset(&options, 0, sizeof(options));
+    options.callback = client_callback;
+    options.call_retry_interval = client_impl->service.call_retry_interval;
+    options.call_retry_count = client_impl->service.call_retry_count;
+    options.max_request_bytes = (request_cache_bytes / tt_CLIENT_MAX_OUTSTANDING) -
+                                (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader));
+    size_t storage_size = tt_Client_storage_size(&options);
+
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret =
-        tt_Node_create_client_legacy(node_impl->core_node, &client_impl->tickle_client, &client_impl->service,
-                                     client_impl->rmw_client.service_name, client_callback);
-    if (ret == tt_RET_OK) {
-        // After create, under the same lock - see the matching block in rmw_service.c.
-        ret = tt_Client_set_storage(&client_impl->tickle_client, client_impl->request_cache, request_cache_bytes);
-        if (ret != tt_RET_OK) {
-            tt_Client_destroy(&client_impl->tickle_client);
-        }
+    tt_ret_t ret = tt_RET_INVALID_ARGUMENT;
+    if (storage_size <= request_cache_bytes) {
+        ret = tt_Node_create_client(node_impl->core_node, &client_impl->tickle_client, &client_impl->service,
+                                    client_impl->rmw_client.service_name, &profile, &options,
+                                    client_impl->request_cache, storage_size);
     }
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Context_create_client()/tt_Client_set_storage() failed");
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("tt_Node_create_client() failed (%d) for service '%s'", (int)ret,
+                                             service_name);
         allocator->deallocate(client_impl->request_cache, allocator->state);
         allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
         destroy_queue(client_impl);
@@ -535,7 +545,13 @@ static rmw_ret_t client_actual_qos(const rmw_client_t* client, rmw_qos_profile_t
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    *qos = ((const rmw_tickle_client_t*)client->data)->qos;
+    const rmw_tickle_client_t* client_impl = (const rmw_tickle_client_t*)client->data;
+    struct tt_QosProfile actual;
+    if (tt_RET_OK != tt_Client_get_actual_qos(&client_impl->tickle_client, &actual)) {
+        RMW_SET_ERROR_MSG("tt_Client_get_actual_qos() failed");
+        return RMW_RET_ERROR;
+    }
+    rmw_tickle_qos_from_tt(&actual, &client_impl->qos, qos);
     return RMW_RET_OK;
 }
 

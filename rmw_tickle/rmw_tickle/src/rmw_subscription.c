@@ -255,16 +255,6 @@ static bool setup_loans(rmw_tickle_subscriber_t* sub_impl) {
     return true;
 }
 
-// The depth core's segment drain may rely on (tt_Subscriber.keep_last_depth). KEEP_LAST: the queue keeps the newest
-// queue_limit samples and overwrites the rest, so a sample with that many newer ones queued behind it in the ring would
-// only be decoded to be overwritten, and the drain passes over it. KEEP_ALL: 0, which never skips anything.
-static uint16_t keep_last_depth_for(const rmw_tickle_subscriber_t* sub_impl) {
-    if (sub_impl->keep_all) {
-        return 0;
-    }
-    return (uint16_t)(sub_impl->queue_limit > UINT16_MAX ? UINT16_MAX : sub_impl->queue_limit);
-}
-
 // How many samples one subscription's queue holds. KEEP_LAST takes qos_profile->depth, which is
 // what DEPTH means. KEEP_ALL ignores depth - DDS does not define one for it - and divides a byte
 // budget instead, which is the bound DDS actually puts on KEEP_ALL (RESOURCE_LIMITS). See
@@ -621,7 +611,10 @@ static unsigned long long resolve_env_bytes(const char* name, unsigned long long
     return value;
 }
 
-static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_impl) {
+// Returns the payload one slot holds; core adds the slot header and rounds the stride to 8 bytes
+// (tt_REORDER_SLOT_SIZE()). Given to core as the subscription type's sizing bound
+// (tt_TypeSupport.max_encoded_size), which is all a Subscriber's bound sizes.
+static uint32_t resolve_reorder_slot_payload(const rmw_tickle_subscriber_t* sub_impl) {
     unsigned long long payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
     if (NULL != sub_impl->callbacks &&
         ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != sub_impl->callbacks->tickle_max_encoded_size) {
@@ -642,7 +635,7 @@ static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_im
     if (payload > cap) {
         payload = cap;
     }
-    return (uint16_t)(sizeof(struct tt_ReorderSlot) + payload);
+    return (uint32_t)payload;
 }
 
 // How many slots, defaulting to the window bound above. RMW_TICKLE_REORDER_SLOTS trades memory
@@ -696,6 +689,81 @@ static void check_subscription_qos_incompatible(struct tt_Context* node, uint64_
                               sub_impl);
 }
 
+// The profile rmw_create_subscription() hands core (QoS redesign step 3): rmw_tickle's queue depth, tracking window
+// and reorder buffer as the profile's depth and extension fields, and the reorder slot's payload as the type's sizing
+// bound. Split out to keep rmw_create_subscription()'s cognitive complexity under clang-tidy's threshold.
+static void subscription_profile(rmw_tickle_subscriber_t* sub_impl, const rmw_qos_profile_t* qos,
+                                 struct tt_QosProfile* profile) {
+    uint32_t slot_payload = resolve_reorder_slot_payload(sub_impl);
+    sub_impl->topic.max_encoded_size = slot_payload;
+    // As core strides it: never past its 16-bit stride, rounded up to 8.
+    const uint32_t widest = UINT16_MAX - (uint32_t)sizeof(struct tt_ReorderSlot) - 7U;
+    uint16_t slot_bytes = (uint16_t)tt_REORDER_SLOT_SIZE(slot_payload < widest ? slot_payload : widest);
+
+    rmw_tickle_qos_extensions_t ext;
+    memset(&ext, 0, sizeof(ext));
+    ext.depth = sub_impl->queue_limit > UINT32_MAX ? UINT32_MAX : (uint32_t)sub_impl->queue_limit;
+    if (sub_impl->keep_all) {
+        unsigned long long budget = rmw_tickle_reader_keep_all_budget_bytes();
+        ext.history_bytes = budget > UINT32_MAX ? UINT32_MAX : (uint32_t)budget; // reported; the queue is the bound
+    }
+    ext.tracking_words = rmw_tickle_tracking_words_for(sub_impl->callbacks);
+    ext.reorder_slots = resolve_reorder_slots(slot_bytes); // core keeps none for a BEST_EFFORT subscription
+    rmw_qos_profile_t sized = *qos;
+    sized.depth = sub_impl->queue_limit;
+    rmw_tickle_qos_to_tt(&sized, RMW_TICKLE_ENTITY_SUBSCRIPTION, &ext, profile);
+}
+
+// Everything rmw_create_subscription() made before the endpoint exists, given back on a failure.
+static void discard_unborn_subscription(rmw_tickle_subscriber_t* sub_impl, bool mutex_ready) {
+    rcutils_allocator_t* allocator = &sub_impl->allocator;
+    if (mutex_ready) {
+        pthread_mutex_destroy(&sub_impl->queue_mutex);
+    }
+    allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
+    allocator->deallocate(sub_impl->qos_storage, allocator->state);
+    allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+    allocator->deallocate(sub_impl->decode_scratch, allocator->state);
+    allocator->deallocate(sub_impl->queue, allocator->state);
+    allocator->deallocate(sub_impl->owning_node_name, allocator->state);
+    allocator->deallocate(sub_impl->owning_node_namespace, allocator->state);
+    allocator->deallocate(sub_impl, allocator->state);
+}
+
+// After tt_Node_create_subscriber(), with the create's lock held: the profile rmw_tickle keeps, and the parts of each
+// policy rmw_tickle itself enforces, from the actual QoS core resolved.
+static void subscription_adopt_actual_qos(rmw_tickle_subscriber_t* sub_impl, const rmw_qos_profile_t* requested) {
+    struct tt_QosProfile actual;
+    (void)tt_Subscriber_get_actual_qos(&sub_impl->tickle_subscriber, &actual);
+    rmw_tickle_qos_resolve_request(requested, &actual, &sub_impl->qos);
+    // Stated once per subscription rather than left to be inferred from a counter that reads 0 for
+    // two different reasons. "reorder_held_peak=0" means either "nothing needed holding" or "this
+    // subscription has no buffer", and telling those apart from outside cost an experiment.
+    RCUTILS_LOG_DEBUG_NAMED("rmw_tickle", "subscription %s: reorder buffer %p, %u slots of %u bytes",
+                            sub_impl->rmw_subscription.topic_name, (void*)sub_impl->tickle_subscriber.reorder_storage,
+                            (unsigned)sub_impl->tickle_subscriber.reorder_slots,
+                            (unsigned)sub_impl->tickle_subscriber.reorder_slot_bytes);
+
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.deadline_period_ns's own doc
+    // comment. Infinite leaves deadline_period_ns at its zero_allocate() default (0 = not requested).
+    if (tt_QOS_DURATION_INFINITE != actual.deadline.period_ns) {
+        sub_impl->deadline_period_ns = actual.deadline.period_ns;
+        sub_impl->last_activity_time = tt_get_ns();
+        // A failure here just leaves deadline monitoring inactive for this Subscription - see
+        // rmw_publisher.c's own check_publisher_deadline() doc comment on this same pattern.
+        (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context,
+                                  sub_impl->last_activity_time + sub_impl->deadline_period_ns,
+                                  check_subscription_deadline, sub_impl);
+    }
+
+    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment: the
+    // subscription's own lifespan, a plain age check rmw_take_with_info() makes on demand (unchanged
+    // by step 3; which lifespan a reader applies is step 6, D1).
+    if (tt_QOS_DURATION_INFINITE != actual.lifespan.duration_ns) {
+        sub_impl->lifespan_ns = actual.lifespan.duration_ns;
+    }
+}
+
 rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
                                             const char* topic_name, const rmw_qos_profile_t* qos_profile,
                                             const rmw_subscription_options_t* subscription_options) {
@@ -732,17 +800,6 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
     rcutils_allocator_t* allocator = &node_impl->allocator;
 
-    // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21) - see rmw_publisher.
-    // c's own rmw_create_publisher() for the identical Publisher-side counterpart and the full
-    // reasoning (rmw_tickle_resolve_best_available()'s own doc comment, rmw_tickle.h, has the
-    // algorithm). Reassigning the qos_profile parameter itself keeps every downstream reference
-    // below already correct with no further edits needed.
-    tt_Context_lock(&node_impl->context_impl->tickle_context);
-    rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
-                                                                       topic_name, RMW_TICKLE_ENTITY_SUBSCRIPTION);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    qos_profile = &resolved_qos;
-
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_subscriber_t), allocator->state);
     if (NULL == sub_impl) {
@@ -756,9 +813,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->type_support = type_support;
     sub_impl->callbacks = callbacks;
     sub_impl->allocator = *allocator;
-    sub_impl->qos = *qos_profile;
+    sub_impl->qos = *qos_profile; // BEST_AVAILABLE resolved by core, below (subscription_adopt_actual_qos())
 
-    sub_impl->topic.name = callbacks->ros_type_name; // see rmw_tickle_publisher_t.topic's own doc comment
+    sub_impl->topic.name = callbacks->ros_type_name; // see rmw_tickle_publisher_t.topic's own comment
     sub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
     sub_impl->topic.data_encode_size = callbacks->tickle_encode_size;
     sub_impl->topic.data_encode = callbacks->tickle_encode;
@@ -781,44 +838,6 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->queue_capacity = sub_impl->queue_limit + (sub_impl->keep_all ? RMW_TICKLE_KEEP_ALL_HEADROOM : 0);
     sub_impl->queue = (rmw_tickle_queued_message_t*)allocator->zero_allocate(
         sub_impl->queue_capacity, sizeof(rmw_tickle_queued_message_t), allocator->state);
-    if (NULL == sub_impl->queue) {
-        RMW_SET_ERROR_MSG("failed to allocate subscriber queue");
-        allocator->deallocate(sub_impl, allocator->state);
-        return NULL;
-    }
-
-    // Phase 2 - the RELIABLE tracking window (see rmw_tickle_subscriber_t.tracking_bitmaps):
-    // RMW_TICKLE_TRACKING_WORDS words per tracked writer, tt_MAX_PEER_COUNT of them - or, for a type whose samples can
-    // be large, the widest window (large-message stage 2, rmw_tickle_tracking_words_for()).
-    sub_impl->tracking_bitmaps = (uint64_t*)allocator->zero_allocate(
-        (size_t)tt_MAX_PEER_COUNT * rmw_tickle_tracking_words_for(sub_impl->callbacks), sizeof(uint64_t),
-        allocator->state);
-    if (NULL == sub_impl->tracking_bitmaps) {
-        RMW_SET_ERROR_MSG("failed to allocate subscriber tracking bitmaps");
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
-        return NULL;
-    }
-
-    // The RELIABLE reorder buffer (see rmw_tickle_subscription_t.reorder_storage) - for a RELIABLE
-    // subscription only. It used to be allocated for every one, on the grounds that a buffer a
-    // BEST_EFFORT Subscriber never reads costs memory and nothing else; once each buffer is up to a
-    // megabyte (the byte budget above), that memory is the point. The decision reads the same
-    // resolved QoS `tickle_subscriber.reliable` is set from below, so the two cannot disagree.
-    bool reorder_wanted = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
-    uint16_t reorder_slot_bytes = reorder_wanted ? resolve_reorder_slot_bytes(sub_impl) : 0;
-    uint16_t reorder_slots = reorder_wanted ? resolve_reorder_slots(reorder_slot_bytes) : 0;
-    size_t reorder_words = ((size_t)reorder_slots * reorder_slot_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
-    sub_impl->reorder_storage =
-        reorder_wanted ? (uint64_t*)allocator->zero_allocate(reorder_words, sizeof(uint64_t), allocator->state) : NULL;
-    if (reorder_wanted && NULL == sub_impl->reorder_storage) {
-        RMW_SET_ERROR_MSG("failed to allocate subscriber reorder buffer");
-        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state);
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
-        return NULL;
-    }
-
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
     sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
@@ -827,13 +846,25 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->decode_scratch = NULL != callbacks->direct_decode
                                    ? NULL
                                    : allocator->zero_allocate(1, callbacks->tickle_struct_size, allocator->state);
-    if (NULL == sub_impl->shell_pool || (NULL == sub_impl->decode_scratch && NULL == callbacks->direct_decode)) {
-        RMW_SET_ERROR_MSG("failed to allocate subscriber shell_pool");
-        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
-        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
+    if (NULL == sub_impl->queue || NULL == sub_impl->shell_pool ||
+        (NULL == sub_impl->decode_scratch && NULL == callbacks->direct_decode)) {
+        RMW_SET_ERROR_MSG("failed to allocate subscriber queue");
+        discard_unborn_subscription(sub_impl, false);
         return NULL;
+    }
+
+    // The tracking window and the RELIABLE reorder buffer: in caller storage core lays out, sized by the profile
+    // (QoS redesign step 3; rmw_tickle_subscriber_t.qos_storage says what each is for).
+    struct tt_QosProfile profile;
+    subscription_profile(sub_impl, qos_profile, &profile);
+    size_t storage_size = tt_Subscriber_storage_size(&sub_impl->topic, &profile);
+    if (0 != storage_size) {
+        sub_impl->qos_storage = allocator->allocate(storage_size, allocator->state); // core zeroes what it uses
+        if (NULL == sub_impl->qos_storage) {
+            RMW_SET_ERROR_MSG("failed to allocate subscriber storage");
+            discard_unborn_subscription(sub_impl, false);
+            return NULL;
+        }
     }
 
     // (g2) Its callback slots, before anything can be delivered to it.
@@ -846,12 +877,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     rmw_tickle_callback_slot_init(&sub_impl->message_lost.callback);           // (g3)
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
-        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
-        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
-        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
-        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
+        discard_unborn_subscription(sub_impl, false);
         return NULL;
     }
 
@@ -863,130 +889,37 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->rmw_subscription.is_cft_enabled = false;
     if (NULL == sub_impl->rmw_subscription.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
-        pthread_mutex_destroy(&sub_impl->queue_mutex);
-        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
-        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
-        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
-        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
+        discard_unborn_subscription(sub_impl, true);
         return NULL;
     }
 
-    // Held from the create until every announced field is final (reliable, durable, deadline, liveliness), released
-    // after the match count below or on the failure path. Released in between, the poll thread could announce this
-    // subscription with the create's reset QoS under its new generation, and the generation dedup would keep that
-    // wrong record on the remote side for good - see rmw_publisher.c's rmw_create_publisher(), where it was found.
+    // g13 - only a KEEP_ALL subscription sets the accept hook, so a KEEP_LAST one is byte for byte the
+    // subscriber it was before g13 existed: core skips the call on a NULL pointer.
+    struct tt_SubscriberOptions options;
+    memset(&options, 0, sizeof(options));
+    options.callback = subscriber_callback;
+    options.accept_callback = sub_impl->keep_all ? subscriber_accept : NULL;
+    options.accept_callback_param = sub_impl;
+
+    // Held from the create until every field rmw_tickle adds is set, released after the match count below. Core
+    // applies the QoS before its first announce (tt_Node_create_subscriber()), so a remote side never sees this
+    // subscription with a reset QoS - see rmw_publisher.c's rmw_create_publisher() for what that once cost.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret =
-        tt_Node_create_subscriber_legacy(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
-                                         sub_impl->rmw_subscription.topic_name, subscriber_callback);
+    tt_ret_t ret = tt_Node_create_subscriber(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
+                                             sub_impl->rmw_subscription.topic_name, &profile, &options,
+                                             sub_impl->qos_storage, storage_size);
     if (ret != tt_RET_OK) {
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
-        RMW_SET_ERROR_MSG("tt_Context_create_subscriber() failed");
-        pthread_mutex_destroy(&sub_impl->queue_mutex);
-        allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
-        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
-        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
-        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
-        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
-        allocator->deallocate(sub_impl->queue, allocator->state);
-        allocator->deallocate(sub_impl, allocator->state);
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("tt_Node_create_subscriber() failed (%d) for topic '%s'", (int)ret,
+                                             topic_name);
+        discard_unborn_subscription(sub_impl, true);
         return NULL;
     }
-
-    // Caller-owned storage is attached AFTER tt_Context_create_subscriber(), never before.
-    //
-    // That function initialises the fields it owns, which includes setting reorder_storage back to
-    // NULL - so a buffer attached beforehand is silently discarded, and the Subscriber runs the
-    // no-buffer fallback while every pointer here still looks correct. Found by measurement rather
-    // than by reading: under 8% injected loss a RELIABLE subscription reported
-    // reorder_overflow=47195 with reorder_held_peak=0 - forty-seven thousand samples re-requested
-    // by a buffer that never held one - and receive throughput collapsed to a quarter.
-    //
-    // tracking_bitmaps moved with it. It happened to work where it was, because
-    // tt_Context_create_subscriber() did not zero that pair - a property of core's init list rather
-    // than a contract, and the warning here said so. Since 2026-09-24 it does zero it (NULL/0 is
-    // the documented default, and leaving it unset handed non-zeroed callers a garbage pointer), so
-    // attaching it before create would now be discarded exactly like reorder_storage was.
-    sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
-    sub_impl->tickle_subscriber.tracking_words = rmw_tickle_tracking_words_for(sub_impl->callbacks);
-    sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
-    sub_impl->tickle_subscriber.reorder_slots = reorder_slots;
-    sub_impl->tickle_subscriber.reorder_slot_bytes = reorder_slot_bytes;
-    // Stated once per subscription rather than left to be inferred from a counter that reads 0 for
-    // two different reasons. "reorder_held_peak=0" means either "nothing needed holding" or "this
-    // subscription has no buffer", and telling those apart from outside cost an experiment.
-    RCUTILS_LOG_DEBUG_NAMED("rmw_tickle", "subscription %s: reorder buffer %p, %u slots of %u bytes",
-                            sub_impl->rmw_subscription.topic_name, (void*)sub_impl->reorder_storage,
-                            (unsigned)reorder_slots, (unsigned)reorder_slot_bytes);
-
-    // QoS roadmap #5 (RELIABILITY) - see tt_Subscriber.reliable's own doc comment (tickle.h).
-    // Plain field access, no allocation needed (unlike the Publisher side's reliable_cache) -
-    // process_data()/update_reliable_ack() (tickle.c) track ack state directly on tickle_
-    // subscriber itself.
-    // g13 - only a KEEP_ALL subscription sets the hook, so a KEEP_LAST one is byte for byte the
-    // subscriber it was before g13 existed: core skips the call on a NULL pointer, and nothing else
-    // on the path changed.
-    sub_impl->tickle_subscriber.accept_callback = sub_impl->keep_all ? subscriber_accept : NULL;
-    sub_impl->tickle_subscriber.accept_callback_param = sub_impl;
-    sub_impl->tickle_subscriber.keep_last_depth = keep_last_depth_for(sub_impl);
-    sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
-
-    // QoS roadmap #1 (RxO matching, Milestone 31) - see tt_Subscriber.durable's own doc comment
-    // (tickle.h). Requesting TRANSIENT_LOCAL here is what actually activates process_data()'s own
-    // subscriber_incompatible_with_writer() gate against a VOLATILE Publisher for a real ROS 2
-    // Subscription - without this, every rmw_tickle Subscription would keep tickle_subscriber.
-    // durable at its zero_allocate() default (false) regardless of its own requested QoS, and the
-    // new gate could never fire for rmw_tickle's own actual users.
-    sub_impl->tickle_subscriber.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
-
-    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.deadline_period_ns's own doc
-    // comment. rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT
-    // ({0,0}) leaves deadline_period_ns at its zero_allocate() default (0 = not requested).
-    rmw_duration_t deadline_ns = rmw_time_total_nsec(qos_profile->deadline);
-    if (deadline_ns > 0) {
-        sub_impl->deadline_period_ns = (uint64_t)deadline_ns;
-        sub_impl->last_activity_time = tt_get_ns();
-        tt_Context_lock(&node_impl->context_impl->tickle_context);
-        // A failure here just leaves deadline monitoring inactive for this Subscription - see
-        // rmw_publisher.c's own check_publisher_deadline() doc comment on this same pattern.
-        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context,
-                                  sub_impl->last_activity_time + sub_impl->deadline_period_ns,
-                                  check_subscription_deadline, sub_impl);
-        tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    }
-
-    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment.
-    // rmw_qos.c already accepted any finite qos.lifespan; RMW_QOS_LIFESPAN_DEFAULT ({0,0}) leaves
-    // lifespan_ns at its zero_allocate() default (0 = not requested, no cost) - no scheduling
-    // needed, unlike DEADLINE just above, since this is a plain age check rmw_take_with_info()
-    // makes on demand rather than a periodic timer.
-    rmw_duration_t lifespan_ns = rmw_time_total_nsec(qos_profile->lifespan);
-    if (lifespan_ns > 0) {
-        sub_impl->lifespan_ns = (uint64_t)lifespan_ns;
-    }
-
-    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - what this Subscription
-    // announces on the wire (tickle_subscriber.deadline_duration_ns/liveliness_lease_duration_ns/
-    // .liveliness_manual, tickle.h) as *requested*, computed directly from qos_profile here
-    // rather than reusing sub_impl->deadline_period_ns/liveliness_lease_ns above: the latter stays
-    // 0 until/unless the application actually requests the matching RMW_EVENT_* (rmw_subscription_
-    // event_init()'s own lazy-start doc comment for LIVELINESS_CHANGED especially), but RxO
-    // compatibility must reflect what was requested via QoS regardless of which events the
-    // application happens to ask for. deadline_period_ns specifically is *not* lazy (set
-    // unconditionally above), so reusing it here is safe and avoids a redundant conversion.
-    sub_impl->tickle_subscriber.deadline_duration_ns = sub_impl->deadline_period_ns;
-    sub_impl->tickle_subscriber.liveliness_manual =
-        RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
-    sub_impl->tickle_subscriber.liveliness_lease_duration_ns =
-        rmw_tickle_wire_lease_ns(qos_profile->liveliness_lease_duration);
+    subscription_adopt_actual_qos(sub_impl, qos_profile);
 
     // (g3) Its QoS is complete only now: it, and the local Publishers on its topic, count their matches.
-    tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_tickle_update_matches_locked(node_impl->context_impl, sub_impl->rmw_subscription.topic_name, 0);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every announced field is final now
+    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every field is final now
     // (g9) A durable subscription joining late gets the durable backlog of this process's own publishers on its
     // topic, as it would a remote one's - only now, with its durability set.
     tt_Subscriber_deliver_local_backlog(&sub_impl->tickle_subscriber);
@@ -1091,7 +1024,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     allocator.deallocate((void*)sub_impl->shell_pool, allocator.state); // Milestone 45
     allocator.deallocate(sub_impl->loans_out, allocator.state);
     allocator.deallocate(sub_impl->decode_scratch, allocator.state);
-    allocator.deallocate(sub_impl->tracking_bitmaps, allocator.state); // Phase 2 - the tracking window
+    allocator.deallocate(sub_impl->qos_storage, allocator.state); // the tracking window and the reorder buffer
     allocator.deallocate(sub_impl->owning_node_name, allocator.state);
     allocator.deallocate(sub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(sub_impl, allocator.state);
@@ -1283,7 +1216,7 @@ rmw_ret_t rmw_take_sequence(const rmw_subscription_t* subscription, size_t count
     return RMW_RET_OK;
 }
 
-// See rmw_publisher.c's own rmw_publisher_get_actual_qos() doc comment - same reasoning.
+// What core runs the subscription with (tt_Subscriber_get_actual_qos()) - see rmw_publisher_get_actual_qos().
 rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription, rmw_qos_profile_t* qos) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
@@ -1292,8 +1225,13 @@ rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
-    *qos = sub_impl->qos;
+    const rmw_tickle_subscriber_t* sub_impl = (const rmw_tickle_subscriber_t*)subscription->data;
+    struct tt_QosProfile actual;
+    if (tt_RET_OK != tt_Subscriber_get_actual_qos(&sub_impl->tickle_subscriber, &actual)) {
+        RMW_SET_ERROR_MSG("tt_Subscriber_get_actual_qos() failed");
+        return RMW_RET_ERROR;
+    }
+    rmw_tickle_qos_from_tt(&actual, &sub_impl->qos, qos);
     return RMW_RET_OK;
 }
 

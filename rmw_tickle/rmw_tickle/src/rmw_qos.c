@@ -18,13 +18,11 @@
 #include <stdbool.h>
 #include <stdint.h> // uint64_t - duration_offered_satisfies_requested()'s own nanosecond math
 #include <stdio.h>  // snprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
-#include <string.h> // strcmp() - rmw_tickle_resolve_best_available()'s own topic-name matching
+#include <string.h> // memset() - rmw_tickle_qos_to_tt()
 
 #include <tickle/config.h> // tt_CONTEXT_TX_INTERVAL - see Milestone
                            // 18's own note on why this needs a direct include, not just tickle.h
-#include <tickle/tickle.h> // tt_Discovery/tt_DiscoveredEntity, tt_KIND_TOPIC_*, tt_UPDATE_QOS_*,
-                           // tt_CONTEXT_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES - rmw_tickle_resolve_
-                           // best_available()'s own discovery-table scan below
+#include <tickle/tickle.h> // struct tt_QosProfile - rmw_tickle_qos_to_tt() / _from_tt()
 
 #include "rcutils/error_handling.h" // RCUTILS_CHECK_ARGUMENT_FOR_NULL
 #include "rmw/error_handling.h"
@@ -43,7 +41,7 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // rmw_qos_profile_t this validates has already had its own reliability requested explicitly
     // (SYSTEM_DEFAULT/UNKNOWN aren't RELIABLE or BEST_EFFORT - both pass through unchanged below).
     // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21) - BEST_AVAILABLE is
-    // accepted for publishers/subscriptions (rmw_tickle_resolve_best_available(), below, replaces it
+    // accepted for publishers/subscriptions (core's tt_QosProfile_resolve(), at creation, replaces it
     // with a concrete value before anything else reads qos_profile->reliability) - rmw/types.h's own
     // doc comment on RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE explicitly excludes services/clients
     // ("not supported... default to the reliability value in rmw_qos_profile_services_default"), so
@@ -121,7 +119,7 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
     // RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE ({9223372036, 854775806}, one ns short of
     // RMW_DURATION_INFINITE) already clears this floor numerically without needing a special case -
-    // resolved to a real value later (rmw_tickle_resolve_best_available()) before anything reads it.
+    // resolved to a real value at creation (tt_QosProfile_resolve()) before anything reads it.
     if (!rmw_time_equal(qos_profile->liveliness_lease_duration,
                         (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
         !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
@@ -163,119 +161,133 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     return RMW_RET_OK;
 }
 
-// Shared by rmw_tickle_resolve_best_available()'s own three enum-policy branches below - true iff
-// every currently-discovered, alive entity of `opposite_kind` on `topic_name` has `qos_bit` set in
-// its own announced tt_UpdateEntity.qos (tt_UPDATE_QOS_RELIABLE/_DURABLE/_LIVELINESS_MANUAL,
-// refreshed on every UPDATE - struct tt_DiscoveredEntity's own doc comment, tickle.h). Zero matching
-// entities vacuously returns true, matching rmw/types.h's own "[the strict policy] will be chosen
-// if it matches with all discovered endpoints" wording literally - none to disagree with yet.
-static bool all_matching_entities_offer(const struct tt_Discovery* discovery, const char* topic_name,
-                                        uint8_t opposite_kind, uint8_t qos_bit) {
-    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
-        if (tt_CONTEXT_ID_INVALID == entity->context_id || !entity->alive || entity->kind != opposite_kind ||
-            0 != strcmp(entity->name, topic_name)) {
-            continue;
-        }
-        if (0 == (entity->qos & qos_bit)) {
-            return false;
-        }
+// ---- QoS redesign step 3: rmw_qos_profile_t <-> struct tt_QosProfile (rmw_tickle.h says what each side owns).
+
+// The lease rmw_tickle has always enforced, and announced, for a MANUAL_BY_TOPIC Publisher that gave none.
+#define RMW_TICKLE_MANUAL_DEFAULT_LEASE_NS ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL)
+
+// A duration for core: unspecified and infinite are infinite, `best_available` (the policy's sentinel, when it has
+// one) core's tt_QOS_DURATION_BEST_AVAILABLE.
+static uint64_t duration_to_tt(rmw_time_t duration, bool has_best_available, rmw_time_t best_available) {
+    if (has_best_available && rmw_time_equal(duration, best_available)) {
+        return tt_QOS_DURATION_BEST_AVAILABLE;
     }
-    return true;
+    if (rmw_time_equal(duration, (rmw_time_t)RMW_DURATION_UNSPECIFIED) ||
+        rmw_time_equal(duration, (rmw_time_t)RMW_DURATION_INFINITE)) {
+        return tt_QOS_DURATION_INFINITE;
+    }
+    rmw_duration_t nanoseconds = rmw_time_total_nsec(duration);
+    return nanoseconds > 0 ? (uint64_t)nanoseconds : tt_QOS_DURATION_INFINITE;
 }
 
-static uint64_t entity_deadline_ns(const struct tt_DiscoveredEntity* entity) {
-    return entity->deadline_duration_ns;
-}
-static uint64_t entity_lease_ns(const struct tt_DiscoveredEntity* entity) {
-    return entity->liveliness_lease_duration_ns;
-}
-
-// Shared by rmw_tickle_resolve_best_available()'s own two duration-sentinel branches below.
-// `get_ns` selects deadline_duration_ns vs liveliness_lease_duration_ns (entity_deadline_ns()/
-// entity_lease_ns() above). `want_max` selects the Subscription-side aggregation (max of
-// discovered Publisher values) vs. the Publisher-side one (min of discovered Subscription values) -
-// rmw/types.h's own doc comment on RMW_QOS_DEADLINE_BEST_AVAILABLE/_LIVELINESS_LEASE_DURATION_
-// BEST_AVAILABLE spells out exactly which side gets which. A discovered entity's own 0 means "no
-// requirement" (struct tt_DiscoveredEntity's own doc comment, tickle.h) - substituted with
-// UINT64_MAX ("unconstrained") for this computation so it never wins a min (an unconstrained peer
-// shouldn't narrow anything) but always wins a max (an unconstrained peer forces the whole result
-// unconstrained too, since staying compatible with it requires matching its own lack of a bound) -
-// converted back to the same 0 convention on the way out if the final result is still UINT64_MAX
-// (every matching entity was itself unconstrained) or nothing matched at all.
-static uint64_t resolve_best_available_duration(const struct tt_Discovery* discovery, const char* topic_name,
-                                                uint8_t opposite_kind, bool want_max,
-                                                uint64_t (*get_ns)(const struct tt_DiscoveredEntity*)) {
-    uint64_t result = want_max ? 0 : UINT64_MAX;
-    bool any_matched = false;
-    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
-        if (tt_CONTEXT_ID_INVALID == entity->context_id || !entity->alive || entity->kind != opposite_kind ||
-            0 != strcmp(entity->name, topic_name)) {
-            continue;
-        }
-        any_matched = true;
-        uint64_t raw = get_ns(entity);
-        uint64_t effective = 0 == raw ? UINT64_MAX : raw;
-        if (want_max ? (effective > result) : (effective < result)) {
-            result = effective;
-        }
+// Infinite goes back as unspecified, which is what rmw_tickle reported for every default duration before core
+// resolved them, and what rmw reads as infinite.
+static rmw_time_t duration_from_tt(uint64_t nanoseconds) {
+    if (tt_QOS_DURATION_INFINITE == nanoseconds || nanoseconds > (uint64_t)INT64_MAX) {
+        return (rmw_time_t)RMW_DURATION_UNSPECIFIED;
     }
-    return (!any_matched || UINT64_MAX == result) ? 0 : result;
+    return rmw_time_from_nsec((rmw_duration_t)nanoseconds);
 }
 
-rmw_qos_profile_t rmw_tickle_resolve_best_available(const rmw_qos_profile_t* requested,
-                                                    const struct tt_Discovery* discovery, const char* topic_name,
-                                                    rmw_tickle_entity_kind_t entity_kind) {
-    rmw_qos_profile_t resolved = *requested;
-    bool is_publisher = RMW_TICKLE_ENTITY_PUBLISHER == entity_kind;
-    uint8_t opposite_kind = is_publisher ? tt_KIND_TOPIC_SUBSCRIBER : tt_KIND_TOPIC_PUBLISHER;
+static enum tt_QosReliabilityKind reliability_to_tt(rmw_qos_reliability_policy_t reliability) {
+    switch (reliability) {
+    case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
+        return tt_QOS_RELIABILITY_RELIABLE;
+    case RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT:
+        return tt_QOS_RELIABILITY_BEST_EFFORT;
+    case RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE:
+        return tt_QOS_RELIABILITY_BEST_AVAILABLE;
+    default:
+        return tt_QOS_RELIABILITY_SYSTEM_DEFAULT; // rmw_qos_profile_default's: RELIABLE (decision D7)
+    }
+}
 
-    // RELIABILITY/DURABILITY/LIVELINESS - see this function's own doc comment (rmw_tickle.h). An
-    // *offering* Publisher is always RxO-compatible choosing the strict option (rmw_qos_profile_
-    // check_compatible()'s own rules above: an offered-strict value is never the one that conflicts
-    // with a requested value, whatever that request is), so it resolves trivially without scanning
-    // discovery at all; a *requesting* Subscription must actually check every discovered Publisher's
-    // own concrete offer, since requesting strict would be incompatible with one that only offers
-    // loose.
-    if (RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE == requested->reliability) {
-        resolved.reliability =
-            (is_publisher || all_matching_entities_offer(discovery, topic_name, opposite_kind, tt_UPDATE_QOS_RELIABLE))
-                ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
-                : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+static enum tt_QosDurabilityKind durability_to_tt(rmw_qos_durability_policy_t durability) {
+    switch (durability) {
+    case RMW_QOS_POLICY_DURABILITY_VOLATILE:
+        return tt_QOS_DURABILITY_VOLATILE;
+    case RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL:
+        return tt_QOS_DURABILITY_TRANSIENT_LOCAL;
+    case RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE:
+        return tt_QOS_DURABILITY_BEST_AVAILABLE;
+    default:
+        return tt_QOS_DURABILITY_SYSTEM_DEFAULT; // VOLATILE
     }
-    if (RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == requested->durability) {
-        resolved.durability =
-            (is_publisher || all_matching_entities_offer(discovery, topic_name, opposite_kind, tt_UPDATE_QOS_DURABLE))
-                ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
-                : RMW_QOS_POLICY_DURABILITY_VOLATILE;
-    }
-    if (RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE == requested->liveliness) {
-        resolved.liveliness = (is_publisher || all_matching_entities_offer(discovery, topic_name, opposite_kind,
-                                                                           tt_UPDATE_QOS_LIVELINESS_MANUAL))
-                                  ? RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC
-                                  : RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
-    }
+}
 
-    // DEADLINE/LIVELINESS_LEASE_DURATION - genuinely asymmetric per rmw/types.h's own doc comment
-    // (unlike the three enum policies above, BOTH sides do a real discovery-dependent computation,
-    // not a discovery-independent trivial one): a Subscription takes the *maximum* of every
-    // discovered Publisher's own value (the loosest bound still compatible with all of them); a
-    // Publisher takes the *minimum* of every discovered Subscription's own value (only as strict as
-    // the tightest real requirement demands, no stricter).
-    if (rmw_time_equal(requested->deadline, (rmw_time_t)RMW_QOS_DEADLINE_BEST_AVAILABLE)) {
-        uint64_t deadline_ns =
-            resolve_best_available_duration(discovery, topic_name, opposite_kind, !is_publisher, entity_deadline_ns);
-        resolved.deadline = rmw_time_from_nsec((rmw_duration_t)deadline_ns);
+static enum tt_QosLivelinessKind liveliness_to_tt(rmw_qos_liveliness_policy_t liveliness) {
+    switch (liveliness) {
+    case RMW_QOS_POLICY_LIVELINESS_AUTOMATIC:
+        return tt_QOS_LIVELINESS_AUTOMATIC;
+    case RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC:
+        return tt_QOS_LIVELINESS_MANUAL_BY_TOPIC;
+    case RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE:
+        return tt_QOS_LIVELINESS_BEST_AVAILABLE;
+    default:
+        return tt_QOS_LIVELINESS_SYSTEM_DEFAULT; // AUTOMATIC
     }
-    if (rmw_time_equal(requested->liveliness_lease_duration,
-                       (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE)) {
-        uint64_t lease_ns =
-            resolve_best_available_duration(discovery, topic_name, opposite_kind, !is_publisher, entity_lease_ns);
-        resolved.liveliness_lease_duration = rmw_time_from_nsec((rmw_duration_t)lease_ns);
-    }
+}
 
-    return resolved;
+void rmw_tickle_qos_to_tt(const rmw_qos_profile_t* qos, rmw_tickle_entity_kind_t kind,
+                          const rmw_tickle_qos_extensions_t* ext, struct tt_QosProfile* out) {
+    static const rmw_tickle_qos_extensions_t no_extensions;
+    const rmw_tickle_qos_extensions_t* extensions = NULL != ext ? ext : &no_extensions;
+    memset(out, 0, sizeof(*out));
+
+    // HISTORY: rmw_tickle has only ever told KEEP_ALL apart; anything else is KEEP_LAST. rmw has no depth for
+    // KEEP_ALL, so the endpoint's bound is used there.
+    bool keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos->history;
+    out->history.kind = keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST;
+    size_t depth = keep_all || 0 == qos->depth ? (size_t)extensions->depth : qos->depth;
+    if (RMW_TICKLE_ENTITY_PUBLISHER != kind && depth > (size_t)UINT16_MAX) {
+        depth = UINT16_MAX; // the rmw queue keeps all of it; core counts it in 16 bits
+    }
+    out->history.depth = depth > (size_t)UINT32_MAX ? UINT32_MAX : (uint32_t)depth; // core refuses > UINT16_MAX
+    out->history.bytes = extensions->history_bytes;
+
+    out->reliability.kind = reliability_to_tt(qos->reliability);
+    if (RMW_TICKLE_ENTITY_PUBLISHER == kind && NULL != ext) {
+        out->reliability.max_blocking_ns = 0 != ext->max_blocking_ns ? ext->max_blocking_ns : 1U;
+    }
+    out->reliability.tracking_words = extensions->tracking_words;
+    out->reliability.reorder_slots = extensions->reorder_slots;
+
+    out->durability.kind = durability_to_tt(qos->durability);
+    out->deadline.period_ns = duration_to_tt(qos->deadline, true, (rmw_time_t)RMW_QOS_DEADLINE_BEST_AVAILABLE);
+    out->lifespan.duration_ns = duration_to_tt(qos->lifespan, false, (rmw_time_t)RMW_DURATION_UNSPECIFIED);
+    out->liveliness.kind = liveliness_to_tt(qos->liveliness);
+    out->liveliness.lease_ns = duration_to_tt(qos->liveliness_lease_duration, true,
+                                              (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE);
+    if (RMW_TICKLE_ENTITY_PUBLISHER == kind && tt_QOS_LIVELINESS_MANUAL_BY_TOPIC == out->liveliness.kind &&
+        rmw_time_equal(qos->liveliness_lease_duration, (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT)) {
+        out->liveliness.lease_ns = RMW_TICKLE_MANUAL_DEFAULT_LEASE_NS;
+    }
+}
+
+void rmw_tickle_qos_from_tt(const struct tt_QosProfile* actual, const rmw_qos_profile_t* requested,
+                            rmw_qos_profile_t* out) {
+    *out = *requested;
+    bool keep_all = tt_QOS_HISTORY_KEEP_ALL == actual->history.kind;
+    out->history = keep_all ? RMW_QOS_POLICY_HISTORY_KEEP_ALL : RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    // KEEP_ALL's depth means nothing to rmw; a subscription's depth past core's 16 bits is the rmw queue's.
+    if (!keep_all && !(requested->depth > (size_t)UINT16_MAX && actual->history.depth == UINT16_MAX)) {
+        out->depth = actual->history.depth;
+    }
+    out->reliability = tt_QOS_RELIABILITY_RELIABLE == actual->reliability.kind ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
+                                                                               : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    out->durability = tt_QOS_DURABILITY_TRANSIENT_LOCAL == actual->durability.kind
+                          ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
+                          : RMW_QOS_POLICY_DURABILITY_VOLATILE;
+    out->deadline = duration_from_tt(actual->deadline.period_ns);
+    out->lifespan = duration_from_tt(actual->lifespan.duration_ns);
+    out->liveliness = tt_QOS_LIVELINESS_MANUAL_BY_TOPIC == actual->liveliness.kind
+                          ? RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC
+                          : RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
+    out->liveliness_lease_duration = duration_from_tt(actual->liveliness.lease_ns);
+}
+
+uint64_t rmw_tickle_max_blocking_from_tt(const struct tt_QosProfile* actual) {
+    return actual->reliability.max_blocking_ns <= 1U ? 0 : actual->reliability.max_blocking_ns;
 }
 
 #define NSEC_PER_SEC 1000000000ULL
@@ -378,4 +390,27 @@ uint64_t rmw_tickle_wire_lease_ns(rmw_time_t lease) {
     }
     rmw_duration_t lease_ns = rmw_time_total_nsec(lease);
     return lease_ns > 0 ? (uint64_t)lease_ns : 0;
+}
+
+void rmw_tickle_qos_resolve_request(const rmw_qos_profile_t* requested, const struct tt_QosProfile* actual,
+                                    rmw_qos_profile_t* out) {
+    rmw_qos_profile_t resolved;
+    rmw_tickle_qos_from_tt(actual, requested, &resolved);
+    *out = *requested;
+    if (RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE == requested->reliability) {
+        out->reliability = resolved.reliability;
+    }
+    if (RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE == requested->durability) {
+        out->durability = resolved.durability;
+    }
+    if (RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE == requested->liveliness) {
+        out->liveliness = resolved.liveliness;
+    }
+    if (rmw_time_equal(requested->deadline, (rmw_time_t)RMW_QOS_DEADLINE_BEST_AVAILABLE)) {
+        out->deadline = resolved.deadline;
+    }
+    if (rmw_time_equal(requested->liveliness_lease_duration,
+                       (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE)) {
+        out->liveliness_lease_duration = resolved.liveliness_lease_duration;
+    }
 }

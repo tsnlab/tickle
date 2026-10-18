@@ -187,22 +187,46 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 // one alive at least that long (LIVELINESS_PLAN.md), so INFINITE must not go out as a huge number.
 uint64_t rmw_tickle_wire_lease_ns(rmw_time_t lease);
 
-// DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21): resolves every RMW_QOS_
-// POLICY_*_BEST_AVAILABLE value (reliability/durability/liveliness) and the two _BEST_AVAILABLE
-// duration sentinels (deadline/liveliness_lease_duration) in `requested` into a concrete value,
-// computed once against `discovery`'s own currently-known entities matching `topic_name` and the
-// OPPOSITE kind of `entity_kind` - matching every _BEST_AVAILABLE enumerator/sentinel's own doc
-// comment in rmw/types.h verbatim ("the middleware is not expected to update the policy after
-// creating a subscription or publisher, even if the chosen policy is incompatible with newly
-// discovered endpoints" - resolved once, not re-evaluated later). `entity_kind` must be
-// RMW_TICKLE_ENTITY_PUBLISHER or _SUBSCRIPTION - services/clients never reach here (rmw_tickle_
-// validate_qos_profile() already rejects BEST_AVAILABLE for that kind). Caller must already hold
-// the node lock (the same lock every other context_impl->discovery.entities[] reader in
-// this package already requires - rmw_graph.c) - this function itself never locks/unlocks. Fields
-// that weren't requested as BEST_AVAILABLE pass through `requested` unchanged.
-rmw_qos_profile_t rmw_tickle_resolve_best_available(const rmw_qos_profile_t* requested,
-                                                    const struct tt_Discovery* discovery, const char* topic_name,
-                                                    rmw_tickle_entity_kind_t entity_kind);
+// QoS redesign step 3 (2026-10-18): an rmw_qos_profile_t becomes core's struct tt_QosProfile in
+// rmw_tickle_qos_to_tt() and nowhere else, and an endpoint's actual QoS comes back from core
+// (tt_*_get_actual_qos()) through rmw_tickle_qos_from_tt(). Core resolves SYSTEM_DEFAULT and every
+// BEST_AVAILABLE once, at creation, against the discovery table (tt_QosProfile_resolve()) - what
+// rmw_tickle_resolve_best_available() did here until then; test_qos_profile.c checks the two agree.
+//
+// The TickLE extension fields, and the depths rmw_tickle has always used where a profile gives
+// none, computed by each endpoint from its type and the environment (RMW_TICKLE_MAX_BLOCKING_MS,
+// RMW_TICKLE_CACHE_BYTES, RMW_TICKLE_KEEP_ALL_BYTES, RMW_TICKLE_READER_KEEP_ALL_BYTES,
+// RMW_TICKLE_TRACKING_WORDS, RMW_TICKLE_REORDER_SLOTS / _BYTES, the publisher payload): the
+// environment's settings become the profile's defaults. A field left 0 takes core's default.
+typedef struct rmw_tickle_qos_extensions_t {
+    uint32_t depth;           // used where the profile's depth is 0 (KEEP_LAST), and for KEEP_ALL
+    uint32_t history_bytes;   // history.bytes
+    uint64_t max_blocking_ns; // reliability.max_blocking_ns (Publisher); 0 = never block, carried as 1 ns
+    uint16_t tracking_words;  // reliability.tracking_words (Subscription)
+    uint16_t reorder_slots;   // reliability.reorder_slots (RELIABLE Subscription)
+} rmw_tickle_qos_extensions_t;
+
+// `kind` is the endpoint's, and the profile has passed rmw_tickle_validate_qos_profile(). Durations:
+// unspecified ({0, 0}) and RMW_DURATION_INFINITE are infinite, the BEST_AVAILABLE sentinels
+// tt_QOS_DURATION_BEST_AVAILABLE. A MANUAL_BY_TOPIC Publisher given no lease keeps the one rmw_tickle
+// has always enforced and announced for it (tt_LIVELINESS_MISS_THRESHOLD update intervals). A
+// subscription or service depth above UINT16_MAX is carried as UINT16_MAX (core counts in 16 bits; the
+// rmw queue keeps the full depth). `ext` may be NULL.
+void rmw_tickle_qos_to_tt(const rmw_qos_profile_t* qos, rmw_tickle_entity_kind_t kind,
+                          const rmw_tickle_qos_extensions_t* ext, struct tt_QosProfile* out);
+// The other way, for rmw_*_get_actual_qos(): an infinite duration is reported unspecified ({0, 0}), as
+// rmw_tickle always has; a KEEP_ALL depth, which means nothing to rmw, is `requested`'s, as is
+// avoid_ros_namespace_conventions, which core does not know.
+void rmw_tickle_qos_from_tt(const struct tt_QosProfile* actual, const rmw_qos_profile_t* requested,
+                            rmw_qos_profile_t* out);
+// `requested` with only its BEST_AVAILABLE policies replaced by what core resolved them to: the
+// profile rmw_tickle keeps for an endpoint (its graph entry, the compatibility checks), as
+// rmw_tickle_resolve_best_available() returned it until core took the resolution over.
+void rmw_tickle_qos_resolve_request(const rmw_qos_profile_t* requested, const struct tt_QosProfile* actual,
+                                    rmw_qos_profile_t* out);
+// How long rmw_publish() waits on a KEEP_ALL refusal, from the actual profile: 1 ns carries "never
+// block", since 0 is "the default" there.
+uint64_t rmw_tickle_max_blocking_from_tt(const struct tt_QosProfile* actual);
 
 // Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
@@ -659,7 +683,7 @@ typedef struct rmw_tickle_publisher_t {
     // every struct passed to tt_Context_create_publisher() must stay valid and unmoved until
     // tt_Publisher_destroy()) - .name points at callbacks->ros_type_name, a generated code string
     // literal that outlives the whole process, so no separate storage/copy is needed for it.
-    struct tt_Topic topic;
+    struct tt_TypeSupport topic;
     rmw_tickle_node_t* node;
     // Milestone 34 - an owned copy (rcutils_strdup(), not a pointer back into `node` - avoids any
     // lifetime coupling if this outlives its own node in a misuse case) of whichever logical node
@@ -673,25 +697,23 @@ typedef struct rmw_tickle_publisher_t {
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
     rcutils_allocator_t allocator;
     // The qos_profile rmw_create_publisher() was given, after rmw_tickle_validate_qos_profile()
-    // already accepted it - rmw_publisher_get_actual_qos() just returns this back verbatim, since
-    // this rmw never negotiates/downgrades a QoS policy the way a real DDS vendor might.
+    // accepted it, with its BEST_AVAILABLE policies replaced by what core resolved them to
+    // (rmw_tickle_qos_resolve_request()): what graph queries and the compatibility checks read.
+    // rmw_publisher_get_actual_qos() reads core instead (tt_Publisher_get_actual_qos()).
     rmw_qos_profile_t qos;
-    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - NULL unless qos.reliability is RMW_QOS_
-    // POLICY_RELIABILITY_RELIABLE and/or qos.durability is RMW_QOS_POLICY_DURABILITY_TRANSIENT_
-    // LOCAL, in which case rmw_create_publisher() allocator->zero_allocate()s one, plus a second
-    // allocation for its own entries[] backing array sized exactly to qos.depth (rmw_tickle/
-    // PLAN.md's own "DDS semantic-parity backlog" row 2 - no longer clamped to a single build-wide
-    // tt_MAX_RELIABLE_HISTORY ceiling, only to struct tt_ReliableCache.depth/capacity's own
-    // uint16_t width), and points tickle_publisher.reliable_cache at it, setting tickle_publisher.
-    // reliable/.durable to match whichever of the two was actually requested - see struct tt_
-    // ReliableCache's own doc comment (tickle.h) for why one cache/one depth now serves both
-    // policies (used to be two independently-allocated caches here, struct tt_DurableCache, since
-    // removed - PLAN.md's Milestone 24). Both allocations freed in rmw_destroy_publisher() (entries
-    // first, then the struct that pointed at it); NULL is also this field's own "neither policy
-    // requested" sentinel. No matching field exists on rmw_tickle_subscriber_t below (or on struct
-    // tt_Subscriber itself) for durability specifically - it's purely a Publisher-side decision, a
-    // Subscription just receives whatever backlog arrives.
+    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - core's tickle_publisher.reliable_cache, NULL
+    // unless the publisher is RELIABLE or TRANSIENT_LOCAL: one cache serves both policies (struct
+    // tt_ReliableCache's own doc comment, tickle.h; PLAN.md's Milestone 24). Since QoS redesign step 3
+    // (2026-10-18) it lives in qos_storage, the caller storage tt_Node_create_publisher() was given
+    // (tt_Publisher_storage_size() bytes, NULL when the profile needs none), sized from the depth,
+    // record and budget rmw_tickle works out (rmw_publisher.c, above cdr_for_record()). arena_base is
+    // where core put the arena in it, sized for the whole budget; the cache starts on a slice of it and
+    // grows into the rest (grow_reliable_cache()). arena_scratch: a growth that could not finish leaves
+    // the arena on its scratch copy, freed with the publisher (never expected to be set).
     struct tt_ReliableCache* reliable_cache;
+    void* qos_storage;
+    uint8_t* arena_base;
+    uint8_t* arena_scratch;
 
     // QoS roadmap #2 (DEADLINE) - deadline_period_ns == 0 (rmw_create_publisher()'s own default):
     // not requested, no tt_Context_schedule() entry ever armed, costs nothing. Non-zero: qos.deadline
@@ -989,24 +1011,20 @@ typedef struct rmw_tickle_subscription_loan_t {
 typedef struct rmw_tickle_subscriber_t {
     rmw_subscription_t rmw_subscription; // RMW subscription structure (must be first)
     struct tt_Subscriber tickle_subscriber;
-    // Phase 2 (rmw_tickle/PLAN.md) - the caller-owned RELIABLE tracking window
-    // tickle_subscriber points at (tt_Subscriber.tracking_bitmaps): one window per simultaneously
-    // tracked remote Publisher. TickLE core defaults to tt_RELIABLE_BITMAP_BITS because it is
-    // embedded-first (Project Goal 1); rmw_tickle is the Linux-class consumer (Goal 5) that asks
-    // for more - at TickLE's own max rate a 256-sample window lasts ~1.35ms, shorter than one
-    // retry plus a round trip, which is what leaves an occasional burst unrecoverable.
-    uint64_t* tracking_bitmaps;
-    // Phase 2 follow-up (2026-09-24) - the RELIABLE reorder buffer core holds out-of-order samples
-    // in until the gap in front of them fills (struct tt_Subscriber.reorder_storage, tickle.h).
-    //
-    // Not optional for rmw_tickle even though core defaults it to NULL. Without it a RELIABLE
-    // Subscriber still delivers in order - it declines to record an out-of-order sample as
-    // received, so the ACKNACK exchange fetches it again - but under real loss that turns one lost
-    // datagram into a re-request for everything behind it. Measured: reliable receive throughput
-    // more than halved on the HIL rig the moment ordered delivery landed, which is a cost core can
-    // reasonably ask a microcontroller to pay and rmw_tickle cannot.
-    uint64_t* reorder_storage;
-    struct tt_Topic topic; // see rmw_tickle_publisher_t.topic's own comment
+    // The caller storage tt_Node_create_subscriber() was given (tt_Subscriber_storage_size() bytes,
+    // NULL when none is needed; QoS redesign step 3), where core lays out:
+    //   - Phase 2 (rmw_tickle/PLAN.md): the RELIABLE tracking window, one per simultaneously tracked
+    //     remote Publisher, when it is not the builtin width (reliability.tracking_words). TickLE
+    //     core defaults to tt_RELIABLE_BITMAP_BITS because it is embedded-first; rmw_tickle asks for
+    //     more - at TickLE's own max rate a 256-sample window lasts ~1.35ms, shorter than one retry
+    //     plus a round trip, which is what leaves an occasional burst unrecoverable.
+    //   - Phase 2 follow-up (2026-09-24): the RELIABLE reorder buffer core holds out-of-order samples
+    //     in until the gap in front of them fills (reliability.reorder_slots). Not optional for
+    //     rmw_tickle: without it a RELIABLE Subscriber still delivers in order, but under real loss
+    //     one lost datagram becomes a re-request for everything behind it - reliable receive
+    //     throughput more than halved on the HIL rig the moment ordered delivery landed.
+    void* qos_storage;
+    struct tt_TypeSupport topic; // see rmw_tickle_publisher_t.topic's own comment
     rmw_tickle_node_t* node;
     // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at
     // rmw_create_subscription() time instead.
@@ -1074,8 +1092,7 @@ typedef struct rmw_tickle_subscriber_t {
     // still owns (a real use-after-free/double-free, not a hypothetical one).
     void** shell_pool;
     size_t shell_pool_count;
-    // See rmw_tickle_publisher_t.qos's own doc comment - same reasoning, for rmw_subscription_
-    // get_actual_qos().
+    // See rmw_tickle_publisher_t.qos's own doc comment - the same, for a subscription.
     rmw_qos_profile_t qos;
 
     // QoS roadmap #2 (DEADLINE) - RMW_EVENT_REQUESTED_DEADLINE_MISSED. Same shape/threading as
@@ -1195,8 +1212,9 @@ typedef struct rmw_tickle_client_t {
     rmw_client_t rmw_client; // RMW client structure (must be first)
     struct tt_Client tickle_client;
     // The profile rmw_create_client() was given. TickLE has no separate request writer and response
-    // reader for it to differ from, so it is what rmw_client_request_publisher_get_actual_qos()/
-    // rmw_client_response_subscription_get_actual_qos() report - rcl asks both on every client.
+    // reader for it to differ from, so rmw_client_request_publisher_get_actual_qos()/
+    // rmw_client_response_subscription_get_actual_qos() both report what core resolved it to
+    // (tt_Client_get_actual_qos()) - rcl asks both on every client.
     rmw_qos_profile_t qos;
     // .name is service_callbacks->ros_type_name (a generated-code string literal - see
     // rmw_tickle_publisher_t.topic's own doc comment for the identical reasoning applied there).
@@ -1341,14 +1359,14 @@ void rmw_tickle_large_stats(rmw_tickle_context_impl_t* context_impl, struct rmw_
 // a type with no bound on its size - one whose sample can be large - the widest window core allows, since all of one
 // large sample's datagrams must fit it (DESIGN.md section 8: 8192 bits, 1 KiB per tracked writer).
 uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
-// Large-message step B (DESIGN.md section 8): gives a publisher of a type whose message can be large a shared region -
-// chunks for its retained depth (at most tt_LARGE_RETAINED) plus tt_LARGE_REGION_SPARE, each for the type's largest
-// message, or RMW_TICKLE_MAX_SAMPLE_BYTES for a type without a bound. Nothing is created until a large message goes to
-// a same-host subscriber. RMW_TICKLE_LARGE_REGION=0 turns it off (every same-host large message then goes as
-// fragments through the subscriber's ring, as before step B). Call with the context locked.
-void rmw_tickle_large_region_attach(struct tt_Publisher* pub,
-                                    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
-                                    bool keep_all);
+// Large-message step B (DESIGN.md section 8): the shared region a publisher of a type whose message can be large is
+// created with (options->large_region_chunks, _chunk_bytes) - chunks for its retained depth (at most
+// tt_LARGE_RETAINED) plus tt_LARGE_REGION_SPARE, each for the type's largest message, or RMW_TICKLE_MAX_SAMPLE_BYTES
+// for a type without a bound. Nothing is created until a large message goes to a same-host subscriber.
+// RMW_TICKLE_LARGE_REGION=0 turns it off (every same-host large message then goes as fragments through the
+// subscriber's ring, as before step B), and so does a build without shared regions: the two fields are left 0.
+void rmw_tickle_large_region_options(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
+                                     bool keep_all, struct tt_PublisherOptions* options);
 
 #ifdef __cplusplus
 }
