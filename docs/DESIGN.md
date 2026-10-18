@@ -383,8 +383,9 @@ DATA from an incompatible writer is dropped (`rxo_drops`).
 | summaries | every interval or lease / `tt_LIVELINESS_LEASE_DIVISOR`; extra ones skipped when every peer heard us |
 | descheduled host | the check defers up to `tt_LIVELINESS_MAX_DEFERRALS` x `tt_LIVELINESS_DEFER_NS` while datagrams wait |
 
-**Deadline:** announced for RxO; rmw_tickle enforces it. **Lifespan:** an older cached sample is neither resent nor
-replayed. **Durability (TRANSIENT_LOCAL):** a durable Publisher unicasts its cache to a new Subscriber, once per
+**Deadline:** announced for RxO; rmw_tickle enforces it: one miss per period P with no activity, checked at the last
+activity + P (a timestamp store per sample, no scheduler call). **Lifespan:** an older cached sample is neither resent
+nor replayed. **Durability (TRANSIENT_LOCAL):** a durable Publisher unicasts its cache to a new Subscriber, once per
 (context id, generation); a durable Subscriber refuses a VOLATILE writer. **Local delivery** (`tt_LOCAL_DELIVERY`):
 in-process delivery under the same rules; otherwise own DATA is dropped.
 
