@@ -9,14 +9,22 @@
  */
 
 // QoS plan D1, D8, D9 (tt_VERSION 14): the announce carries each topic endpoint's LIFESPAN and history depth (and a
-// Subscriber's or BEST_EFFORT writer's KEEP_ALL), and the discovery table keeps them.
+// Subscriber's or BEST_EFFORT writer's KEEP_ALL), the discovery table keeps them, and a reader is held to the shorter
+// of its writer's lifespan and its own.
 //
 // What must hold, decided before the code:
 //   1. the record is the one DESIGN.md section 3 gives: 40 bytes, lifespan_duration_ns at 28, history_depth at 36;
 //   2. an announce from one context, applied by another, leaves in the discovery table exactly the lifespan, depth
 //      and history kind each endpoint resolved to (get_actual_qos) - the control: a RELIABLE KEEP_LAST writer and
 //      a writer with no lifespan read back 0 and no KEEP_ALL, so a match is the value, not a constant;
-//   3. a v13 announce is refused by this v14 context, the whole datagram, counted as a version mismatch, nothing in
+//   3. a sample delivered from a remote writer is subject to min(writer, reader), 0 being infinite: writer only,
+//      reader only, both either way round, neither. The falsifiers: the reader's alone (D1 not applied: the writer
+//      only arm reads 0), the writer's alone (the reader only arm reads 0), the longer of the two;
+//   4. per writer, not per topic: two writers of one topic, one with a lifespan and one without, each sample gets
+//      its own writer's;
+//   5. no lookup without a writer lifespan: a Subscriber no writer with one reaches keeps writer_lifespans false
+//      (the inline answer is its own); one created after such a writer is announced learns it at creation;
+//   6. a v13 announce is refused by this v14 context, the whole datagram, counted as a version mismatch, nothing in
 //      the table; the control, this tree's own v14 announce (the fuzz corpus seed), is applied. The other direction,
 //      a v13 build refusing a v14 announce, is tests/version_mix.sh, which builds the parent.
 
@@ -70,8 +78,9 @@ static void free_nothing(struct tt_Data* data) {
     (void)data;
 }
 
-// Which writer each delivery came from, in order.
+// What each delivery was subject to, in order.
 #define MAX_DELIVERIES 16
+static uint64_t delivered_lifespan[MAX_DELIVERIES];
 static uint32_t delivered_entity[MAX_DELIVERIES];
 static int deliveries;
 
@@ -80,6 +89,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
     (void)seq_no;
     (void)data;
     if (deliveries < MAX_DELIVERIES) {
+        delivered_lifespan[deliveries] = tt_Subscriber_delivering_lifespan(sub);
         uint8_t source = 0;
         tt_Subscriber_delivering_writer(sub, &source, &delivered_entity[deliveries]);
     }
@@ -190,6 +200,17 @@ static void announce(struct tt_Context* from) {
     test_mock_now += MS;
 }
 
+static void publish(struct tt_Publisher* pub) {
+    test_mock_send_hook = sim_capture;
+    sim_head = sim_tail = 0;
+    sim_acting = pub->node->id; // a publish may send at once, before the flush
+    uint8_t sample[8] = {0};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(pub, (struct tt_Data*)sample));
+    flush_and_drain(pub->node);
+    test_mock_send_hook = NULL;
+    test_mock_now += MS;
+}
+
 static struct tt_QosProfile profile(enum tt_QosHistoryKind history, uint32_t depth, uint64_t lifespan_ns,
                                     enum tt_QosReliabilityKind reliability) {
     struct tt_QosProfile qos;
@@ -289,7 +310,120 @@ static void test_the_announce_carries_lifespan_depth_and_history(void) {
     EXPECT_EQ_U32(5, entry_of(&b_discovery, A_ID, (const struct tt_Endpoint*)&sub_lifespan)->history_depth);
 }
 
-// --- 3. mixed versions refuse each other
+// --- 3. min(writer, reader) per delivered sample
+// ----------------------------------------------------------------------
+
+struct lifespan_arm {
+    const char* name;
+    uint64_t writer_ns;
+    uint64_t reader_ns;
+    uint64_t expected_ns;
+    bool sub_first; // the Subscriber exists before the writer's announce (the flag from the announce) or after
+};
+
+static void run_arm(const struct lifespan_arm* arm) {
+    init();
+    static struct tt_Publisher pub;
+    static struct tt_Subscriber sub;
+    struct tt_QosProfile writer = profile(tt_QOS_HISTORY_KEEP_LAST, 4, arm->writer_ns, tt_QOS_RELIABILITY_BEST_EFFORT);
+    struct tt_QosProfile reader = profile(tt_QOS_HISTORY_KEEP_LAST, 4, arm->reader_ns, tt_QOS_RELIABILITY_BEST_EFFORT);
+    create_pub(&a, &pub, &writer);
+    if (arm->sub_first) {
+        create_sub(&b, &sub, &reader);
+        announce(&a);
+    } else {
+        announce(&a);
+        create_sub(&b, &sub, &reader);
+    }
+    announce(&b); // the writer learns its reader
+    publish(&pub);
+    EXPECT_EQ_INT(1, deliveries);
+    bool flag_expected = arm->writer_ns != 0;
+    printf("test_lifespan_announce: %s (%s): writer %llu ms, reader %llu ms -> %llu ms (writer_lifespans %d)\n",
+           arm->name, arm->sub_first ? "reader first" : "writer first", (unsigned long long)(arm->writer_ns / MS),
+           (unsigned long long)(arm->reader_ns / MS), (unsigned long long)(delivered_lifespan[0] / MS),
+           sub.writer_lifespans);
+    EXPECT_TRUE(delivered_lifespan[0] == arm->expected_ns);
+    EXPECT_EQ_INT(flag_expected, sub.writer_lifespans);
+    EXPECT_EQ_U32(pub.endpoint.entity_id, delivered_entity[0]);
+}
+
+static void test_a_reader_is_held_to_the_shorter_lifespan(void) {
+    const struct lifespan_arm arms[] = {
+        {"writer only", 300 * MS, 0, 300 * MS, true},
+        {"reader only", 0, 200 * MS, 200 * MS, true},
+        {"both, writer shorter", 100 * MS, 400 * MS, 100 * MS, true},
+        {"both, reader shorter", 400 * MS, 100 * MS, 100 * MS, true},
+        {"neither", 0, 0, 0, true},
+        {"writer only", 300 * MS, 0, 300 * MS, false},
+        {"both, writer shorter", 100 * MS, 400 * MS, 100 * MS, false},
+    };
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
+        run_arm(&arms[i]);
+    }
+}
+
+// --- 4. per writer --------------------------------------------------------------------------------------------------
+
+static void test_each_sample_gets_its_own_writers_lifespan(void) {
+    init();
+    static struct tt_Publisher with;
+    static struct tt_Publisher without;
+    static struct tt_Subscriber sub;
+    struct tt_QosProfile q_with = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 150 * MS, tt_QOS_RELIABILITY_BEST_EFFORT);
+    struct tt_QosProfile q_without = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 0, tt_QOS_RELIABILITY_BEST_EFFORT);
+    struct tt_QosProfile q_reader = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 0, tt_QOS_RELIABILITY_BEST_EFFORT);
+    create_pub(&a, &with, &q_with);
+    create_pub(&a, &without, &q_without);
+    create_sub(&b, &sub, &q_reader);
+    announce(&a);
+    announce(&b);
+    publish(&with);
+    publish(&without);
+    publish(&with);
+    EXPECT_EQ_INT(3, deliveries);
+    EXPECT_TRUE(delivered_lifespan[0] == 150 * MS && delivered_entity[0] == with.endpoint.entity_id);
+    EXPECT_TRUE(delivered_lifespan[1] == 0 && delivered_entity[1] == without.endpoint.entity_id);
+    EXPECT_TRUE(delivered_lifespan[2] == 150 * MS && delivered_entity[2] == with.endpoint.entity_id);
+    // A writer the table does not hold counts as having none: the reader's own (infinite here).
+    EXPECT_TRUE(tt_Subscriber_writer_lifespan(&sub, A_ID, 0xDEADBEEFU) == 0);
+    // A local writer (local delivery, source == this context): found among the context's own endpoints.
+    static struct tt_Publisher local;
+    struct tt_QosProfile q_local = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 70 * MS, tt_QOS_RELIABILITY_BEST_EFFORT);
+    create_pub(&b, &local, &q_local);
+    EXPECT_TRUE(tt_Subscriber_writer_lifespan(&sub, B_ID, local.endpoint.entity_id) == 70 * MS);
+}
+
+// --- 5. no lookup without a writer lifespan
+// ---------------------------------------------------------------------------
+
+static void test_no_writer_lifespan_means_no_lookup(void) {
+    init();
+    static struct tt_Publisher pub;
+    static struct tt_Subscriber sub;
+    static struct tt_Subscriber late;
+    static struct tt_Publisher local;
+    struct tt_QosProfile none = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 0, tt_QOS_RELIABILITY_BEST_EFFORT);
+    struct tt_QosProfile reader = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 80 * MS, tt_QOS_RELIABILITY_BEST_EFFORT);
+    create_pub(&a, &pub, &none);
+    create_sub(&b, &sub, &reader);
+    announce(&a);
+    EXPECT_TRUE(!sub.writer_lifespans); // the writer has none: the reader's own, from the inline, no lookup
+    // The inline answers without the table: emptied, it still gives the reader's own.
+    memset(&b_discovery.entities, 0, sizeof(b_discovery.entities));
+    sub.delivering_source = A_ID;
+    sub.delivering_entity_id = pub.endpoint.entity_id;
+    EXPECT_TRUE(tt_Subscriber_delivering_lifespan(&sub) == 80 * MS);
+    // A local writer with a lifespan, created after the reader, is noted on it at its creation ...
+    struct tt_QosProfile with = profile(tt_QOS_HISTORY_KEEP_LAST, 4, 60 * MS, tt_QOS_RELIABILITY_BEST_EFFORT);
+    create_pub(&b, &local, &with);
+    EXPECT_TRUE(sub.writer_lifespans);
+    // ... and one created after it learns it from the context at its own.
+    create_sub(&b, &late, &none);
+    EXPECT_TRUE(late.writer_lifespans);
+}
+
+// --- 6. mixed versions refuse each other
 // ------------------------------------------------------------------------------
 
 static size_t read_file(const char* path, uint8_t* buf, size_t size) {
@@ -341,6 +475,9 @@ int main(void) {
     tt_current_log_level = getenv("LIFESPAN_DEBUG") != NULL ? TT_LOG_DEBUG : TT_LOG_NONE;
     test_the_record_is_the_designed_one();
     test_the_announce_carries_lifespan_depth_and_history();
+    test_a_reader_is_held_to_the_shorter_lifespan();
+    test_each_sample_gets_its_own_writers_lifespan();
+    test_no_writer_lifespan_means_no_lookup();
     test_a_v13_announce_is_refused();
     if (test_result() != 0) {
         return 1;
