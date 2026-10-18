@@ -38,4 +38,4 @@ void BoundedStringData_free(struct BoundedStringData* data);
 
 #define BoundedStringData_FITS_ONE_DATAGRAM (22 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic BoundedStringTopic;
+extern struct tt_TypeSupport BoundedStringTopic;

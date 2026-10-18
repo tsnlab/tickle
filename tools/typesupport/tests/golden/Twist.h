@@ -37,4 +37,4 @@ void TwistData_free(struct TwistData* data);
 _Static_assert(sizeof(struct TwistData) == 48, "TwistData must match its CDR-4 wire size - ABI mismatch");
 #define TwistData_FITS_ONE_DATAGRAM (48 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic TwistTopic;
+extern struct tt_TypeSupport TwistTopic;

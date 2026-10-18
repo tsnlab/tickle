@@ -10,4 +10,4 @@
 @[end for]@
 
 @(data_struct_h)
-extern struct tt_Topic @(name)Topic;
+extern struct tt_TypeSupport @(name)Topic;

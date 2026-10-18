@@ -37,4 +37,4 @@ void BulkData_free(struct BulkData* data);
 
 #define BulkData_FITS_ONE_DATAGRAM (1444 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic BulkTopic;
+extern struct tt_TypeSupport BulkTopic;

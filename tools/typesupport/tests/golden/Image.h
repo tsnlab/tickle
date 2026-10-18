@@ -42,4 +42,4 @@ void ImageData_free(struct ImageData* data);
 
 #define ImageData_FITS_ONE_DATAGRAM (1430 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic ImageTopic;
+extern struct tt_TypeSupport ImageTopic;

@@ -143,6 +143,8 @@ def render_topic(topic_ir):
         needs_hal_h=ctx["needs_hal_h"],
         nested_includes=ctx["nested_includes"],
         data_has_inplace=ctx["has_inplace"],
+        # tt_TypeSupport.max_encoded_size: the type's bound, left out (0, unbounded) when it has none.
+        max_encoded_size=layout.max_encoded_size(topic_ir.data),
     )
     return header, source
 
@@ -181,7 +183,7 @@ def render_service(service_ir):
 
 def render_nested(struct):
     """A nested dependency (std_msgs__Header, say) gets its own <c_name>.h/.c pair - same struct
-    content as a top-level interface's own data struct, but with no tt_Topic/tt_Service wrapper
+    content as a top-level interface's own data struct, but with no tt_TypeSupport/tt_Service wrapper
     of its own (DESIGN.md: nesting has "no header" on the wire, and the same is true of its
     generated C - it's just the struct + codec functions a parent's #include reaches into)."""
     ctx = _struct_context(struct)

@@ -19,7 +19,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic BoundedStringTopic = {
+struct tt_TypeSupport BoundedStringTopic = {
     .name = "BoundedStringTopic",
     .data_size = sizeof(struct BoundedStringData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BoundedStringData_encode_size,

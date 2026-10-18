@@ -41,4 +41,4 @@ void NestedArraysData_free(struct NestedArraysData* data);
 
 #define NestedArraysData_FITS_ONE_DATAGRAM (152 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic NestedArraysTopic;
+extern struct tt_TypeSupport NestedArraysTopic;

@@ -39,4 +39,4 @@ void ArraysData_free(struct ArraysData* data);
 
 #define ArraysData_FITS_ONE_DATAGRAM (100 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic ArraysTopic;
+extern struct tt_TypeSupport ArraysTopic;

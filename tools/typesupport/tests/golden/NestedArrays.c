@@ -20,13 +20,14 @@
 
 #include "nested_arrays_pkg__OddAlign.h"
 
-struct tt_Topic NestedArraysTopic = {
+struct tt_TypeSupport NestedArraysTopic = {
     .name = "NestedArraysTopic",
     .data_size = sizeof(struct NestedArraysData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)NestedArraysData_encode_size,
     .data_encode = (tt_DATA_ENCODE)NestedArraysData_encode,
     .data_decode = (tt_DATA_DECODE)NestedArraysData_decode,
     .data_free = (tt_DATA_FREE)NestedArraysData_free,
+    .max_encoded_size = 152,
 };
 
 static int32_t NestedArraysData_encode_nested_arrays_pkg__OddAlign_element(struct nested_arrays_pkg__OddAlign* item,

@@ -36,4 +36,4 @@ void BenchData_free(struct BenchData* data);
 _Static_assert(sizeof(struct BenchData) == 76, "BenchData must match its CDR-4 wire size - ABI mismatch");
 #define BenchData_FITS_ONE_DATAGRAM (76 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic BenchTopic;
+extern struct tt_TypeSupport BenchTopic;

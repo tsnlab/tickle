@@ -19,7 +19,7 @@
 
 #include "geometry_msgs__Vector3.h"
 
-struct tt_Topic TwistTopic = {
+struct tt_TypeSupport TwistTopic = {
     .name = "TwistTopic",
     .data_size = sizeof(struct TwistData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)TwistData_encode_size,
@@ -28,6 +28,7 @@ struct tt_Topic TwistTopic = {
     .data_decode = (tt_DATA_DECODE)TwistData_decode,
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)TwistData_decode_inplace,
     .data_free = (tt_DATA_FREE)TwistData_free,
+    .max_encoded_size = 48,
 };
 
 int32_t TwistData_encode_size(struct TwistData* data) {

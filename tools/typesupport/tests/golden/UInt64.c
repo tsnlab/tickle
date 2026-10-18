@@ -18,7 +18,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic UInt64Topic = {
+struct tt_TypeSupport UInt64Topic = {
     .name = "UInt64Topic",
     .data_size = sizeof(struct UInt64Data),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)UInt64Data_encode_size,
@@ -27,6 +27,7 @@ struct tt_Topic UInt64Topic = {
     .data_decode = (tt_DATA_DECODE)UInt64Data_decode,
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)UInt64Data_decode_inplace,
     .data_free = (tt_DATA_FREE)UInt64Data_free,
+    .max_encoded_size = 8,
 };
 
 int32_t UInt64Data_encode_size(struct UInt64Data* data) {

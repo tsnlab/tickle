@@ -34,4 +34,4 @@ void UInt64Data_free(struct UInt64Data* data);
 _Static_assert(sizeof(struct UInt64Data) == 8, "UInt64Data must match its CDR-4 wire size - ABI mismatch");
 #define UInt64Data_FITS_ONE_DATAGRAM (8 <= tt_MAX_BUFFER_LENGTH)
 
-extern struct tt_Topic UInt64Topic;
+extern struct tt_TypeSupport UInt64Topic;

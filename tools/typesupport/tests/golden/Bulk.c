@@ -19,7 +19,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-struct tt_Topic BulkTopic = {
+struct tt_TypeSupport BulkTopic = {
     .name = "BulkTopic",
     .data_size = sizeof(struct BulkData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BulkData_encode_size,
@@ -28,6 +28,7 @@ struct tt_Topic BulkTopic = {
     .data_decode = (tt_DATA_DECODE)BulkData_decode,
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)BulkData_decode_inplace,
     .data_free = (tt_DATA_FREE)BulkData_free,
+    .max_encoded_size = 1444,
 };
 
 int32_t BulkData_encode_size(struct BulkData* data) {
