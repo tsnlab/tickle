@@ -221,7 +221,10 @@ static void init_context(struct tt_Context* context, uint8_t id) {
     context->last_modified = CLOCK_NS;
 }
 
-static void setup(void) {
+// The Clients' call retry (tt_ClientOptions; 0, 0: adaptive, the default count), and clients[0]'s request storage
+// (max_request_bytes 0: the inline cache).
+static void setup_clients(uint32_t retry_interval, uint32_t retry_count, uint32_t max_request_bytes, void* storage,
+                          size_t storage_size) {
     test_mock_reset();
     test_mock_now = CLOCK_NS;
     init_context(&server_context, SERVER_ID);
@@ -236,16 +239,30 @@ static void setup(void) {
     wrong_answers = 0;
     deferred_count = 0;
     mode = SERVE_ECHO;
-    service.call_retry_interval = 0;
-    service.call_retry_count = 0;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_server(&server_context, &server, &service, "multi_call/echo",
-                                                      (tt_SERVER_CALLBACK)serve));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(
+                                 tt_Context_default_node(&server_context), &server, &service, "multi_call/echo", NULL,
+                                 &(struct tt_ServerOptions) {.callback = (tt_SERVER_CALLBACK)serve}, NULL, 0));
     for (int i = 0; i < CLIENTS; i++) {
         struct tt_Context* context = i < 2 ? &client_context : &other_context;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(context, &clients[i], &service, "multi_call/echo",
-                                                          (tt_CLIENT_CALLBACK)answered));
+        struct tt_ClientOptions options = {.callback = (tt_CLIENT_CALLBACK)answered,
+                                           .call_retry_interval = retry_interval,
+                                           .call_retry_count = retry_count};
+        if (i == 0) {
+            options.max_request_bytes = max_request_bytes;
+        }
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_client(tt_Context_default_node(context), &clients[i], &service, "multi_call/echo",
+                                            NULL, &options, i == 0 ? storage : NULL, i == 0 ? storage_size : 0));
     }
     test_mock_send_hook = capture;
+}
+
+static void setup_with_retry(uint32_t retry_interval, uint32_t retry_count) {
+    setup_clients(retry_interval, retry_count, 0, NULL, 0);
+}
+
+static void setup(void) {
+    setup_with_retry(0, 0);
 }
 
 static void teardown(void) {
@@ -364,9 +381,8 @@ static void test_one_more_than_n_is_refused(void) {
 // answer must outlive theirs at the server. Each lost call is retried on its own timer and answered once; the server
 // runs its callback once per call.
 static void test_loss_and_retry_per_slot(void) {
-    setup();
-    service.call_retry_interval = tt_MILLISECOND; // fixed, so the timers are predictable
-    service.call_retry_count = 5;
+    // fixed, so the timers are predictable
+    setup_with_retry(tt_MILLISECOND, 5);
     requests.count = 0;
     for (int k = 0; k < N; k++) {
         EXPECT_EQ_INT(tt_RET_OK, call(0, (uint32_t)k, &requests));
@@ -406,9 +422,7 @@ static void test_loss_and_retry_per_slot(void) {
 // A call that is never answered times out on its own, naming itself; the others are answered meanwhile, and its slot
 // takes a new call afterwards.
 static void test_one_call_times_out_alone(void) {
-    setup();
-    service.call_retry_interval = tt_MILLISECOND;
-    service.call_retry_count = 2;
+    setup_with_retry(tt_MILLISECOND, 2);
     requests.count = 0;
     for (int k = 0; k < N; k++) {
         EXPECT_EQ_INT(tt_RET_OK, call(0, (uint32_t)k, &requests));
@@ -497,9 +511,7 @@ static void test_deferred_server_many_clients_many_calls(void) {
 // tt_CALL_IGNORED: the first request is turned away with nothing sent or cached; the retry runs the callback again
 // and is answered.
 static void test_ignored_request_is_answered_on_retry(void) {
-    setup();
-    service.call_retry_interval = tt_MILLISECOND;
-    service.call_retry_count = 3;
+    setup_with_retry(tt_MILLISECOND, 3);
     mode = SERVE_IGNORE_ONCE;
     requests.count = 0;
     EXPECT_EQ_INT(tt_RET_OK, call(0, 7, &requests));
@@ -525,16 +537,18 @@ static void test_ignored_request_is_answered_on_retry(void) {
     teardown();
 }
 
-// With storage attached (tt_Client_set_storage(), as rmw_tickle does), each call keeps its request in its own share
+// With storage given at creation (max_request_bytes, as rmw_tickle will), each call keeps its request in its own share
 // of the area: all N requests lost, the retries carry each call's own request, and each is answered with its own.
 #define SLOT_BYTES 64
 static tt_ALIGNAS(8) uint8_t attached[N * SLOT_BYTES];
 
 static void test_attached_storage_keeps_each_request(void) {
-    setup();
-    service.call_retry_interval = tt_MILLISECOND;
-    service.call_retry_count = 3;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Client_set_storage(&clients[0], attached, sizeof(attached)));
+    // SLOT_BYTES a call: the submessage, its call header and the largest request (tt_Client_storage_size()).
+    const uint32_t max_request =
+        SLOT_BYTES - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader));
+    const struct tt_ClientOptions sized = {.callback = (tt_CLIENT_CALLBACK)answered, .max_request_bytes = max_request};
+    EXPECT_EQ_U32((uint32_t)sizeof(attached), (uint32_t)tt_Client_storage_size(&sized));
+    setup_clients(tt_MILLISECOND, 3, max_request, attached, sizeof(attached));
     for (int k = 0; k < N; k++) {
         EXPECT_EQ_INT(tt_RET_OK, call(0, (uint32_t)(10 + k), NULL)); // every first send lost
     }
@@ -552,7 +566,8 @@ static void test_attached_storage_keeps_each_request(void) {
     EXPECT_EQ_INT(N, total(1));
     EXPECT_EQ_INT(0, wrong_answers);
     EXPECT_EQ_U32(0, tt_Client_outstanding(&clients[0]));
-    // Too small a share for the request: refused, as one call's storage always was.
+    // Too small a share for the request: refused, as one call's storage always was. No max_request_bytes makes a
+    // share this small (it is rounded up to 8 past the headers), so the area is swapped with tt_Client_set_storage().
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_set_storage(&clients[0], attached, N * 8));
     EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, call(0, 99, NULL));
     teardown();
@@ -566,9 +581,7 @@ static void test_window_keeps_a_lost_answer(void) {
     if (N == 1) {
         return; // a second call is refused by the slots already
     }
-    setup();
-    service.call_retry_interval = tt_MILLISECOND;
-    service.call_retry_count = 5;
+    setup_with_retry(tt_MILLISECOND, 5);
     requests.count = 0;
     EXPECT_EQ_INT(tt_RET_OK, call(0, 0, &requests));
     responses.count = 0;

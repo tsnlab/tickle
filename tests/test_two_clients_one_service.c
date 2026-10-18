@@ -173,7 +173,8 @@ static void init_context(struct tt_Context* context, uint8_t id) {
     context->last_modified = CLOCK_NS;
 }
 
-static void setup(void) {
+// The Clients' call retry is theirs (tt_ClientOptions): 0, 0 for the adaptive interval and the default count.
+static void setup_with_retry(uint32_t retry_count, uint32_t retry_interval) {
     test_mock_reset();
     test_mock_now = CLOCK_NS;
     init_context(&server_context, SERVER_ID);
@@ -188,15 +189,25 @@ static void setup(void) {
         last_answer[i] = 0;
         expected_tag[i] = 0;
     }
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_server(&server_context, &server, &service, "two_clients/echo",
-                                                      (tt_SERVER_CALLBACK)serve));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(
+                                 tt_Context_default_node(&server_context), &server, &service, "two_clients/echo", NULL,
+                                 &(struct tt_ServerOptions) {.callback = (tt_SERVER_CALLBACK)serve}, NULL, 0));
     for (int i = 0; i < CLIENTS; i++) {
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&client_context, &clients[i], &service, "two_clients/echo",
-                                                          (tt_CLIENT_CALLBACK)answered));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_client(tt_Context_default_node(&client_context), &clients[i], &service,
+                                            "two_clients/echo", NULL,
+                                            &(struct tt_ClientOptions) {.callback = (tt_CLIENT_CALLBACK)answered,
+                                                                        .call_retry_interval = retry_interval,
+                                                                        .call_retry_count = retry_count},
+                                            NULL, 0));
     }
     EXPECT_EQ_U32(clients[0].endpoint.id, clients[1].endpoint.id); // the shape under test: one endpoint_id
     EXPECT_EQ_U32(server.endpoint.id, clients[0].endpoint.id);
     test_mock_send_hook = capture;
+}
+
+static void setup(void) {
+    setup_with_retry(0, 0);
 }
 
 static uint16_t outstanding_seq_no(const struct tt_Client* client) {
@@ -470,13 +481,11 @@ static bool soak_done(const uint32_t issued[CLIENTS]) {
 // each Client gets each of its own answers once, and the server never holds more than one live answer per Client
 // (tt_CLIENT_CALL_WINDOW, built with several calls per Client).
 static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
-    setup();
     // A fixed retry interval, and enough sends that no call gives up at this loss (4 sends all fail 3.7% of the time
     // at 25% each way; 21, never in practice): a timeout is the retry budget, not the cache, and counts as a wrong
     // answer below. Fixed, because the mock clock jumps to whichever Client retries next, so a round trip measured
     // here includes the other Client's waits, and the auto path backs off to its deadline within a few sends.
-    service.call_retry_count = SOAK_RETRY_COUNT;
-    service.call_retry_interval = SOAK_RETRY_INTERVAL;
+    setup_with_retry(SOAK_RETRY_COUNT, SOAK_RETRY_INTERVAL);
     rng_state = 20261009U;
     uint32_t issued[CLIENTS] = {0};
     int max_live = 0;
@@ -514,8 +523,6 @@ static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
     EXPECT_TRUE(max_live <= (tt_CLIENT_MAX_OUTSTANDING == 1 ? CLIENTS : CLIENTS * tt_CLIENT_CALL_WINDOW));
     EXPECT_TRUE(retries > 100); // the shape under test: many retries, interleaved with the other Client's calls
     printf("soak: %d calls, %d retries, at most %d live answers\n", SOAK_CALLS_PER_CLIENT * CLIENTS, retries, max_live);
-    service.call_retry_count = 0;
-    service.call_retry_interval = 0;
     test_mock_send_hook = NULL;
 }
 
