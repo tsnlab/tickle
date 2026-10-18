@@ -39,6 +39,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -94,30 +95,42 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "ping");
+    // RELIABLE + KEEP_LAST tt_MAX_RELIABLE_HISTORY (64), TRANSIENT_LOCAL with -D and VOLATILE without, no
+    // DEADLINE, LIFESPAN or LIVELINESS lease. The retained samples are sized by core from the profile; the history
+    // bytes are never below the arena this file used to declare, (64 + 1) records of this shape.
+    const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = tt_MAX_RELIABLE_HISTORY,
+                    .bytes = BenchCreate_history_bytes(
+                        tt_MAX_RELIABLE_HISTORY,
+                        tt_RELIABLE_CACHE_ARENA_BYTES(tt_MAX_RELIABLE_HISTORY,
+                                                      tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = durable ? tt_QOS_DURABILITY_TRANSIENT_LOCAL : tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "ping", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // entries[]/capacity are this file's own backing array now, not an embedded
-    // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
-    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own
-    // fixed sizeof(struct BenchData)-byte sample, instead of a 1472-byte buffer per slot.
-    static struct tt_ReliableCacheIndex pub_cache_index[tt_MAX_RELIABLE_HISTORY];
-    static uint8_t pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(tt_MAX_RELIABLE_HISTORY,
-                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.index = pub_cache_index;
-    pub_cache.capacity = tt_MAX_RELIABLE_HISTORY;
-    pub_cache.depth = tt_MAX_RELIABLE_HISTORY;
-    pub_cache.arena = pub_cache_arena;
-    pub_cache.arena_size = (uint32_t)sizeof(pub_cache_arena);
-    pub.reliable_cache = &pub_cache;
-    pub.reliable = true;
-    pub.durable = durable;
 
     struct tt_Subscriber ack_sub;
-    ret = tt_Context_create_subscriber(&node, &ack_sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)ack_callback);
+    // BEST_EFFORT and VOLATILE, no reorder buffer, the builtin tracking window, no DEADLINE or LIVELINESS lease: what
+    // the deprecated create left. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    static const struct tt_QosProfile ack_sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &ack_sub, "pong", &ack_sub_qos, (tt_SUBSCRIBER_CALLBACK)ack_callback);
     if (ret != 0) {
         printf("Cannot create ack subscriber: %d\n", ret);
         return ret;

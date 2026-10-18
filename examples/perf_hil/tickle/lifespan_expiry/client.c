@@ -34,6 +34,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -104,27 +105,27 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
+    // RELIABLE + KEEP_LAST tt_MAX_RELIABLE_HISTORY (64) + LIFESPAN of -T, VOLATILE, no DEADLINE or LIVELINESS
+    // lease. The retained samples are sized by core from the profile; the history bytes are never below the arena
+    // this file used to declare, (64 + 1) records of this shape.
+    const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = tt_MAX_RELIABLE_HISTORY,
+                    .bytes = BenchCreate_history_bytes(
+                        tt_MAX_RELIABLE_HISTORY,
+                        tt_RELIABLE_CACHE_ARENA_BYTES(tt_MAX_RELIABLE_HISTORY,
+                                                      tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = (uint64_t)(lifespan_s * (double)tt_SECOND)},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "stream", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // entries[]/capacity are this file's own backing array now, not an embedded
-    // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
-    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own
-    // fixed sizeof(struct BenchData)-byte sample, instead of a 1472-byte buffer per slot.
-    static struct tt_ReliableCacheIndex pub_cache_index[tt_MAX_RELIABLE_HISTORY];
-    static uint8_t pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(tt_MAX_RELIABLE_HISTORY,
-                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.index = pub_cache_index;
-    pub_cache.capacity = tt_MAX_RELIABLE_HISTORY;
-    pub_cache.depth = tt_MAX_RELIABLE_HISTORY;
-    pub_cache.arena = pub_cache_arena;
-    pub_cache.arena_size = (uint32_t)sizeof(pub_cache_arena);
-    pub.reliable_cache = &pub_cache;
-    pub.reliable = true;
-    pub.lifespan_duration_ns = (uint64_t)(lifespan_s * (double)tt_SECOND);
     g_pub = &pub;
 
     // A near-zero (not zero) discovery margin - see run_scenario.sh's own PRE_CLIENT_SLEEP=0 note

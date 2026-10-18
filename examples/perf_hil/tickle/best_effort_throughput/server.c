@@ -28,6 +28,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 #include "BenchFreshness.h"
 #include "BenchHistory.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
@@ -202,7 +203,19 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    // BEST_EFFORT and VOLATILE, no reorder buffer, the builtin tracking window, no DEADLINE or LIVELINESS lease: what
+    // the deprecated create left. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    static const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = tt_QOS_REORDER_NONE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &sub, "stream", &sub_qos, (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;

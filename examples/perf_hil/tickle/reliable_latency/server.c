@@ -25,6 +25,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchCreate.h"
 #include "BenchWindow.h"
 #include "CpuFreq.h"
 
@@ -40,9 +41,8 @@
 // 4096: tt_RELIABLE_BITMAP_MAX_BITS until large-message stage 2 raised it to 8192 (docs/DESIGN.md section 8), pinned
 // so these cells stay the experiment they were - the same ring, warmed the same way.
 #define BENCH_REORDER_SLOTS 4096
-// tt_REORDER_SLOT_SIZE rounds up to a multiple of 8. This was a bare sizeof(...) + 16 = 116, which
-// core then addressed with a 120-byte stride - so the last slots of the array were past its end.
-#define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
+// The slot stride is core's since the QoS redesign: tt_Subscriber_storage_size() sizes it from BenchTopic's
+// max_encoded_size, a datagram's payload at most (docs/DESIGN.md section 9).
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -123,35 +123,31 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "pong");
+    // RELIABLE + HISTORY depth=8, as the client's (COMPARISON.md's QoS value matrix).
+    // VOLATILE, no DEADLINE, LIFESPAN or LIVELINESS lease. The retained samples are sized by core from the profile;
+    // the history bytes are never below the arena this file used to declare, (8 + 1) records of this shape.
+    const struct tt_QosProfile pub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = 8,
+                    .bytes = BenchCreate_history_bytes(
+                        8, tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_publisher(&node, &pub, "pong", &pub_qos, NULL);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // entries[]/capacity are this file's own backing array now, not an embedded
-    // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
-    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own
-    // fixed sizeof(struct BenchData)-byte sample, instead of a 1472-byte buffer per slot.
-    static struct tt_ReliableCacheIndex pub_cache_index[8];
-    static uint8_t
-        pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-    static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.index = pub_cache_index;
-    pub_cache.capacity = 8;
-    pub_cache.depth = 8;
-    pub_cache.arena = pub_cache_arena;
-    pub_cache.arena_size = (uint32_t)sizeof(pub_cache_arena);
-    pub.reliable_cache = &pub_cache;
-    pub.reliable = true;
     g_pub = &pub;
 
     struct tt_Subscriber sub;
-    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "ping", (tt_SUBSCRIBER_CALLBACK)ping_callback);
-    if (ret != 0) {
-        printf("Cannot create subscriber: %d\n", ret);
-        return ret;
-    }
-    sub.reliable = true;
+    // RELIABLE and VOLATILE, the builtin tracking window, BENCH_REORDER_SLOTS reorder slots (below), no DEADLINE or
+    // LIVELINESS lease. KEEP_ALL keeps keep_last_depth 0, never skip (BenchCreate.h).
+    //
     // Ordered delivery (2026-09-24) - somewhere to hold a sample that arrives ahead of a gap.
     //
     // Not optional for a benchmark. A RELIABLE Subscriber with no reorder buffer is still correct
@@ -163,10 +159,19 @@ int main(int argc, char** argv) {
     // Sized to hold a full tracking window of samples: the window is exactly how far ahead of its
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
-    static uint64_t reorder[BENCH_REORDER_SLOTS * BENCH_REORDER_SLOT_BYTES / sizeof(uint64_t)];
-    sub.reorder_storage = reorder;
-    sub.reorder_slots = BENCH_REORDER_SLOTS;
-    sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
+    const struct tt_QosProfile sub_qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = BENCH_REORDER_SLOTS},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    ret = BenchCreate_subscriber(&node, &sub, "ping", &sub_qos, (tt_SUBSCRIBER_CALLBACK)ping_callback);
+    if (ret != 0) {
+        printf("Cannot create subscriber: %d\n", ret);
+        return ret;
+    }
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
