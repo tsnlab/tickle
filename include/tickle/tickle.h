@@ -3451,12 +3451,14 @@ struct tt_Subscriber { // extends endpoint
     uint32_t qos_history_depth;
     uint32_t qos_history_bytes;
     uint8_t qos_history_kind;
-    // Publishers offering less than this Subscriber requests (QoS plan D2). Last.
-    struct tt_QosIncompatibleStatus qos_incompatible;
     // Core-owned (QoS plan D1): some writer this Subscriber may receive from has announced a LIFESPAN - a remote one
     // in its announce, a local one at its creation. Sticky. While it is false the lifespan a sample is subject to is
-    // the Subscriber's own, with no lookup (tt_Subscriber_delivering_lifespan()). Last, for the reason above.
+    // the Subscriber's own, with no lookup (tt_Subscriber_delivering_lifespan()). In the padding before
+    // qos_incompatible, so that the struct keeps its size and nothing after it in a struct that embeds it moves
+    // (rmw_tickle_subscriber_t, whose delivery callback reads its own fields past this one per sample).
     bool writer_lifespans;
+    // Publishers offering less than this Subscriber requests (QoS plan D2). Last.
+    struct tt_QosIncompatibleStatus qos_incompatible;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
