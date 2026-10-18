@@ -106,6 +106,21 @@
 #define CHILD_ID 62
 #define BROADCAST "127.255.255.255" // loopback only, as test_samehost.sh
 
+// BEST_EFFORT, as every endpoint was before the QoS profile (a zeroed one is RELIABLE now). The Subscribers are
+// KEEP_ALL, so the segment drain never passes a sample over (keep_last_depth 0, as before). No storage is needed.
+static const struct tt_QosProfile k_pub_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+};
+static const struct tt_QosProfile k_sub_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+};
+
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 
 // What the child rang, written by the child into memory shared across the fork for the parent's verdict: the check
@@ -289,9 +304,11 @@ static int child_main(void) {
     }
     g_child_node = &node;
     struct tt_Subscriber sub;
-    if (tt_Context_create_publisher(&node, &g_child_pub, &UInt64Topic, "bell_wake_pong") != tt_RET_OK ||
-        tt_Context_create_subscriber(&node, &sub, &UInt64Topic, "bell_wake_ping", (tt_SUBSCRIBER_CALLBACK)child_ping) !=
-            tt_RET_OK) {
+    struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)child_ping};
+    if (tt_Node_create_publisher(tt_Context_default_node(&node), &g_child_pub, &UInt64Topic, "bell_wake_pong",
+                                 &k_pub_qos, NULL, NULL, 0) != tt_RET_OK ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &UInt64Topic, "bell_wake_ping", &k_sub_qos,
+                                  &sub_options, NULL, 0) != tt_RET_OK) {
         return CHECK_SETUP_FAILED;
     }
     uint64_t start = tt_get_ns();
@@ -448,9 +465,11 @@ static int parent_main(pid_t child) {
         return CHECK_SETUP_FAILED;
     }
     struct tt_Subscriber sub;
-    if (tt_Context_create_publisher(&node, &g_parent_pub, &UInt64Topic, "bell_wake_ping") != tt_RET_OK ||
-        tt_Context_create_subscriber(&node, &sub, &UInt64Topic, "bell_wake_pong",
-                                     (tt_SUBSCRIBER_CALLBACK)parent_pong) != tt_RET_OK) {
+    struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)parent_pong};
+    if (tt_Node_create_publisher(tt_Context_default_node(&node), &g_parent_pub, &UInt64Topic, "bell_wake_ping",
+                                 &k_pub_qos, NULL, NULL, 0) != tt_RET_OK ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &UInt64Topic, "bell_wake_pong", &k_sub_qos,
+                                  &sub_options, NULL, 0) != tt_RET_OK) {
         return CHECK_SETUP_FAILED;
     }
     uint64_t start = tt_get_ns();

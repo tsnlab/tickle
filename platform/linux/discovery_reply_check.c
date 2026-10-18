@@ -94,6 +94,14 @@
 #define A_ID 1
 #define B_ID 2
 
+// BEST_EFFORT, as every endpoint was before the QoS profile (a zeroed one is RELIABLE now). No storage is needed.
+static const struct tt_QosProfile k_pub_qos = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+};
+
 static struct tt_Context g_a;
 static struct tt_Context g_b;
 static struct tt_Publisher g_b_pub;
@@ -321,7 +329,8 @@ int main(int argc, char** argv) {
         printf("discovery_reply_check: VOID - A's send buffer never filled\n");
         return 3;
     }
-    if (tt_Context_create_publisher(&g_b, &g_b_pub, &UInt64Topic, "discovery_reply_check") != tt_RET_OK) {
+    if (tt_Node_create_publisher(tt_Context_default_node(&g_b), &g_b_pub, &UInt64Topic, "discovery_reply_check",
+                                 &k_pub_qos, NULL, NULL, 0) != tt_RET_OK) {
         fprintf(stderr, "discovery_reply_check: publisher create failed\n");
         return 2;
     }
