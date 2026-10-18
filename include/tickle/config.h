@@ -1278,9 +1278,10 @@
 // unicast peer selection do not. Size it to the remote entities a context will see. Each entry costs roughly 2 *
 // (tt_MAX_NAME_LENGTH + 1) bytes (552 in all), so the default is small for FreeRTOS; rmw_tickle builds set 2048.
 // Fragments one discovery announce may be split into, and so how many endpoints a context can announce: each fragment
-// is one datagram of at most tt_CONTROL_MAX_LENGTH (1472 bytes on Ethernet), which holds ~15 ROS-sized endpoints, so 32
-// announce ~480 (CONTEXT_NODE_PLAN.md 4a, 2026-09-27). At most 255: a fragment's index and count are uint8_t on the
-// wire. rmw_tickle builds set 255, ~3800 endpoints, past its tt_MAX_ENDPOINT_COUNT of 2048. Each context tracks the
+// is one datagram of at most tt_CONTROL_MAX_LENGTH (1472 bytes on Ethernet), which holds ~13 ROS-sized endpoints (63
+// bytes of names; 15 before tt_VERSION 14 added 12 bytes to each), so 32 announce ~416 (CONTEXT_NODE_PLAN.md 4a,
+// 2026-09-27). At most 255: a fragment's index and count are uint8_t on the wire. rmw_tickle builds set 255, ~3300
+// endpoints, past its tt_MAX_ENDPOINT_COUNT of 2048 while names average under ~115 bytes. Each context tracks the
 // fragments received from every peer in tt_UPDATE_PART_WORDS 32-bit words.
 #ifndef tt_UPDATE_MAX_PARTS
 #define tt_UPDATE_MAX_PARTS 32

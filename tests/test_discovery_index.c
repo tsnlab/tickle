@@ -64,7 +64,7 @@ static void setup(void) {
 
 static void add(uint8_t source, uint32_t endpoint_id) {
     upsert_discovered_entity(&context, source, endpoint_id, ENTITY_ID_OF(endpoint_id), tt_KIND_TOPIC_PUBLISHER, 0, 0, 0,
-                             0, "t", "e");
+                             0, 0, 0, "t", "e");
 }
 
 static bool known(uint8_t source, uint32_t endpoint_id) {
@@ -181,7 +181,7 @@ static void test_entity_id_is_kept_beside_endpoint_id(void) {
     // forgets what the source announced before (process_announce()). The table must follow the instance, or the
     // gid goes on naming the process that died.
     forget_discovered_entities_from_source(&context, 7);
-    upsert_discovered_entity(&context, 7, 0x11112222, 0xABCD1234U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, 0x11112222, 0xABCD1234U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
     found = tt_Discovery_find(&discovery, 7, 0x11112222);
     EXPECT_TRUE(found != NULL);
     if (found != NULL) {
@@ -206,12 +206,12 @@ static void test_two_entities_of_one_endpoint_are_two_entries(void) {
         }
     }
 #endif
-    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
     add(7, 0x6161U);
-    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
     uint32_t before = tt_Discovery_count(&discovery);
-    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
-    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
     EXPECT_EQ_U32(before, tt_Discovery_count(&discovery));
     const struct tt_DiscoveredEntity* first = tt_Discovery_find_entity(&discovery, 7, endpoint, 0xA1U);
     const struct tt_DiscoveredEntity* second = tt_Discovery_find_entity(&discovery, 7, endpoint, 0xA2U);

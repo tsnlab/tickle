@@ -66,15 +66,15 @@ static void fill(bool last) {
     memset(&discovery, 0, sizeof(discovery));
     if (!last) {
         upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, ENTITY_ID_OF(PUBLISHER_ENDPOINT),
-                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "p");
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "p");
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES - 1U; i++) {
         upsert_discovered_entity(&context, OTHER_SOURCE, i + 1U, ENTITY_ID_OF(i + 1U), tt_KIND_TOPIC_PUBLISHER, 0, 0, 0,
-                                 0, "t", "o");
+                                 0, 0, 0, "t", "o");
     }
     if (last) {
         upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, ENTITY_ID_OF(PUBLISHER_ENDPOINT),
-                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "p");
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "p");
     }
 }
 

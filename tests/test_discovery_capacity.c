@@ -193,7 +193,7 @@ static void test_a_full_table_counts_what_it_drops_and_warns_once(void) {
     // Fill every slot with entities of a third context, so the remote's publishers find none free.
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         upsert_discovered_entity(&local, REMOTE_ID + 1, (uint32_t)i + 1U, ENTITY_ID_OF((uint32_t)i + 1U),
-                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, 0, 0, "t", "e");
     }
     EXPECT_EQ_U32(0, discovery.entities_dropped);
     for (int i = 0; i < PUBLISHERS; i++) {

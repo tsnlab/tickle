@@ -18,6 +18,8 @@
 // Since tt_VERSION 13 (the hybrid transport, DESIGN.md section 8) the capture also holds a discovery announce, the one
 // other datagram that version changed: its three new tt_AnnounceHeader fields are cut out before comparing (a tree
 // without them has nothing to cut), and its trailing padding, which those six bytes move, is masked with them.
+// tt_VERSION 14 changed the announce again, and only it: the 12 bytes it added to each entity record are cut out too,
+// so the golden (the parent of tt_VERSION 13's capture) still decides every other byte.
 //
 // The same source is the capture tool: built with -DWIRE_CAPTURE_OUT=path (and -DTICKLE_C= the tree's tickle.c) it
 // writes what it captured instead of comparing it, so the parent's capture comes from this exact procedure.
@@ -72,6 +74,9 @@ static void mask(uint8_t* bytes, uint32_t len) {
     }
 }
 
+// struct tt_UpdateEntity before tt_VERSION 14 added lifespan_duration_ns and history_depth.
+#define WIRE_V13_ENTITY_BYTES 28U
+
 // A discovery announce (a DATA of the built-in endpoint): the fields tt_VERSION 13 added to tt_AnnounceHeader cut out,
 // the submessage length of the classic form zeroed, and the trailing padding dropped - all three move with the six
 // bytes, and nothing else may. Returns the new length.
@@ -93,6 +98,30 @@ static uint32_t mask_announce(uint8_t* bytes, uint32_t len) {
     if (added != 0 && cut + added <= len) {
         memmove(bytes + cut, bytes + cut + added, len - cut - added);
         len -= added;
+    }
+    // tt_VERSION 14 (QoS plan D1, D8): every entity record's lifespan_duration_ns and history_depth, its last 12 fixed
+    // bytes, cut out the same way (a tree before 14 has nothing to cut, and nothing below is touched). Each record is
+    // followed by its type and name, a uint16_t length (the sender's order: this capture's is little endian) and that
+    // many bytes.
+    uint32_t record = (uint32_t)sizeof(struct tt_UpdateEntity);
+    uint32_t entity_added = record > WIRE_V13_ENTITY_BYTES ? record - WIRE_V13_ENTITY_BYTES : 0U;
+    uint8_t entities = bytes[body + sizeof(data)];
+    uint32_t at = cut;
+    for (uint8_t i = 0; entity_added != 0 && i < entities && at + record <= len; i++) {
+        // 14 also sets tt_UPDATE_QOS_KEEP_ALL for a Subscriber's KEEP_ALL history and a BEST_EFFORT writer's (D8),
+        // where 13 left it clear: masked there. A RELIABLE writer's bit is its blocking promise, as before, compared.
+        uint8_t kind = (uint8_t)(bytes[at + 8U] & tt_UPDATE_KIND_MASK);
+        uint8_t* qos = &bytes[at + 9U];
+        if (kind == tt_KIND_TOPIC_SUBSCRIBER ||
+            (kind == tt_KIND_TOPIC_PUBLISHER && (*qos & tt_UPDATE_QOS_RELIABLE) == 0)) {
+            *qos = (uint8_t)(*qos & ~tt_UPDATE_QOS_KEEP_ALL);
+        }
+        at += WIRE_V13_ENTITY_BYTES;
+        memmove(bytes + at, bytes + at + entity_added, len - at - entity_added);
+        len -= entity_added;
+        for (int string = 0; string < 2 && at + 2U <= len; string++) {
+            at += 2U + ((uint32_t)bytes[at] | ((uint32_t)bytes[at + 1] << 8U));
+        }
     }
     if (!single) {
         memset(bytes + sizeof(struct tt_Header) + 2, 0, 2); // tt_SubmessageHeader.length
@@ -257,7 +286,7 @@ int main(void) {
     }
     printf("test_wire_identity_largemsg: %u datagrams (64 B, 1,472 B and 64,000 B samples, best effort and "
            "RELIABLE) byte-identical to the parent's, version and timestamp masked; the announce but for its "
-           "tt_VERSION 13 fields\n",
+           "tt_VERSION 13 and 14 fields\n",
            captured_datagrams);
     return 0;
 #endif

@@ -2295,7 +2295,7 @@ static void run_first_contact_stream(bool writer_keep_all, int* sends_after_firs
     const uint32_t writer_entity_id = 0;
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, writer_entity_id, tt_KIND_TOPIC_PUBLISHER, 0,
                              (uint8_t)(tt_UPDATE_QOS_RELIABLE | (writer_keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)), 0, 0,
-                             "type", "name");
+                             0, 0, "type", "name");
 
     struct tt_Header header;
     init_header(&header);
@@ -2434,7 +2434,7 @@ static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
 
     // Control 2: an entity discovery holds as presumed dead (tombstoned) is not revived either.
     upsert_discovered_entity(&node, REMOTE_NODE_ID + 1, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID + 1, tt_KIND_TOPIC_SUBSCRIBER,
-                             0, tt_UPDATE_QOS_RELIABLE, 0, 0, "type", "name");
+                             0, tt_UPDATE_QOS_RELIABLE, 0, 0, 0, 0, "type", "name");
     tombstone_discovered_entities_from_source(&node, REMOTE_NODE_ID + 1);
     header.source = REMOTE_NODE_ID + 1;
     tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID + 1, 3, NULL, 0);

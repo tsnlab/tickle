@@ -1647,6 +1647,11 @@ struct tt_DiscoveredEntity {
     // writers of one endpoint on one node share it. Set when the entity is (re)announced. Unused for any
     // other entity, whose lease runs from the last datagram of its node (tt_Context.traffic_last_seen).
     uint64_t last_asserted_ns;
+
+    // Since tt_VERSION 14 (QoS plan D1, D8): the announced struct tt_UpdateEntity.lifespan_duration_ns (0 = infinite)
+    // and .history_depth, refreshed on every announce as qos is. Last, so that no field the receive path reads moves.
+    uint64_t lifespan_duration_ns;
+    uint32_t history_depth;
 };
 
 // Fixed-capacity table a caller opts a struct tt_Context into via tt_Context_set_discovery() - every remote entity any
@@ -3967,7 +3972,10 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node);
 // Bumped 12 -> 13 for the hybrid transport (DESIGN.md section 8): tt_AnnounceHeader gained the reassembly ceiling, the
 // reader's frame loss and 2 reserved bytes, and two run types, FRAG_RUN_L and FRAG_RUN, carry several fragments in one
 // IP-fragmented datagram. Types 2, 8, 9, 11 and 12 are unchanged byte for byte.
-#define tt_VERSION 13
+// Bumped 13 -> 14 for QoS plan D1/D8/D9 (2026-10-19): struct tt_UpdateEntity gained lifespan_duration_ns and
+// history_depth, 12 bytes per announced entity, and a Subscriber sets tt_UPDATE_QOS_KEEP_ALL for its own KEEP_ALL
+// history. Only the discovery announce changed; every other submessage, and every sample, is unchanged byte for byte.
+#define tt_VERSION 14
 
 struct tt_Header {
     union {
@@ -4145,8 +4153,12 @@ struct tt_AnnounceHeader {
 // (tt_Publisher.keep_all): it will refuse a write rather than evict an unacknowledged sample, so a
 // matched Subscriber must not give up on a gap either - acknack_retry()'s own tt_RELIABLE_RETRY
 // budget is disabled for that writer (struct tt_WriterProxy.keep_all). Absent means KEEP_LAST, i.e.
-// today's bounded give-up on both sides; a Subscriber never sets it (KEEP_ALL is a Publisher-side
-// retention policy, and the Subscriber's matching obligation is what this bit conveys).
+// today's bounded give-up on both sides. On a Publisher's entity it is the retention promise a matched Subscriber
+// acts on (KEEP_ALL is a Publisher-side retention policy, and the Subscriber's matching obligation is what this bit
+// conveys).
+//
+// Since tt_VERSION 14 a Subscriber sets it too, for a KEEP_ALL history of its own (QoS plan D8): it is reported by the
+// graph and changes no matching - nothing reads it off a Subscriber's entity but the graph.
 //
 // Neither side may give up under KEEP_ALL, or the Subscriber would abandon a gap, advance its ack,
 // and unblock the Publisher having silently dropped a sample - the same hole per-Subscriber ack
@@ -4190,6 +4202,15 @@ struct tt_UpdateEntity {
     // lease_duration) as one combined unit, so e.g. a Subscriber may legitimately request
     // AUTOMATIC with a tight lease requirement, not just MANUAL_BY_TOPIC ones.
     uint64_t liveliness_lease_duration_ns;
+    // Since tt_VERSION 14 (QoS plan D1, D8): this entity's LIFESPAN, in nanoseconds, 0 = infinite as for the two
+    // durations above. A Publisher's is what a matched reader applies with its own, the shorter of the two;
+    // a Subscriber's is reported by the graph only. 0 for a service, client or
+    // node entry.
+    uint64_t lifespan_duration_ns;
+    // Since tt_VERSION 14 (QoS plan D8): this entity's history depth in samples, as tt_Publisher_get_actual_qos() /
+    // tt_Subscriber_get_actual_qos() report it; the kind is tt_UPDATE_QOS_KEEP_ALL. Reported by the graph only. 0 for
+    // a service, client or node entry.
+    uint32_t history_depth;
     /* Dynamically allocated
     uint16_t type_len;
     char type[];
