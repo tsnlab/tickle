@@ -17,7 +17,7 @@ which keeps the numbers that commits and source comments cite.
    default, labelled, as rmw_cyclonedds sets no resource limits). **Open:** (b) `s6_transport_cells.sh` still runs each
    framework's repetitions back to back (one loop per framework), not interleaved.
 5a. **Testbed-independent constants** (the user, 2026-10-05): inventory done, the fitted values that stay are in
-   README.md "Options you may tune"; retry granularity G is measured (`33b2cdfc`), discovery and dead-reader timing
+   RMW.md "Options you may tune"; retry granularity G is measured (`33b2cdfc`), discovery and dead-reader timing
    follow what they protect (`075a3476`), RPC retry bounds and the server cache are link-relative (`38d3e9ce`), the RX
    idle recheck is by time (`12036197`, `TT_RX_IDLE_RECHECK_NS`). **Open:**
    - Kept off main after their rig A/Bs (2026-10-06, `ab/hotpath-split`): the segment attach backoff by time (c10 RTT

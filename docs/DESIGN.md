@@ -95,8 +95,8 @@ concurrently with the poll on another; `tt_THREAD_SAFE=0` compiles the locks out
 - **io_uring receive hint** (`tt_HAL_RX_HINT`): a busy loop's `tt_rx_maybe_ready()` reads an io_uring completion queue
   in shared memory instead of making an empty `recvmmsg()` (one-shot `POLLIN` only; datagrams are read normally; no
   thread). `tt_RX_HINT_AUTO` (0, default): used if the kernel allows it, else one warning (container seccomp,
-  `kernel.io_uring_disabled`, Linux < 5.1; README.md has the seccomp recipe). `tt_RX_HINT_READ` (1): compiled out.
-  `tt_RX_HINT_URING` (2): required, else context creation fails with `tt_RET_UNSUPPORTED`.
+  `kernel.io_uring_disabled`, Linux < 5.1; recipe in "Containers: allowing io_uring" below). `tt_RX_HINT_READ`
+  (1): compiled out. `tt_RX_HINT_URING` (2): required, else context creation fails with `tt_RET_UNSUPPORTED`.
 
 **Receive path (FreeRTOS HAL).** lwIP's socket layer keeps its netconn callback to itself, so the HAL is on the netconn
 API (`tt_HAL_FREERTOS_NETCONN=1`, default; `0` = BSD sockets and `select()`, kept as the test control).
