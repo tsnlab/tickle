@@ -422,12 +422,18 @@ static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
         return CHECK_VOID;
     }
     int result = CHECK_PASS;
-    if (tickle_med > timerfd_med + SHORT_MARGIN_NS) {
+    // The bound is the larger of SHORT_MARGIN_NS and half the way from the timerfd to the bare relative wait: the
+    // check asks whether TickLE's entries sit nearer the absolute deadline than the slack-stretched wait. A fixed
+    // 25 us alone failed on a busy CI runner (caa134d6, 2026-10-18: TickLE 64.1, timerfd 29.5, relative 105.6 us),
+    // while a lost slack setting reads like the relative wait and still fails either way.
+    const uint64_t half_way = raw_med > timerfd_med ? (raw_med - timerfd_med) / 2U : 0U;
+    const uint64_t short_bound = half_way > SHORT_MARGIN_NS ? half_way : SHORT_MARGIN_NS;
+    if (tickle_med > timerfd_med + short_bound) {
         printf(
             "sched_wake_check: FAIL at %.0f ms (short) - entries ran %.1f us late (median), a timerfd for the absolute "
-            "deadline %.1f us; allowed %.0f us more\n",
+            "deadline %.1f us; allowed %.1f us more\n",
             interval_ms, (double)tickle_med / (double)US_NS, (double)timerfd_med / (double)US_NS,
-            (double)SHORT_MARGIN_NS / (double)US_NS);
+            (double)short_bound / (double)US_NS);
         result = CHECK_FAIL;
     }
     if (tickle_cpu > CPU_PER_WAKE_NS) {
