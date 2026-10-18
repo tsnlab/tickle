@@ -161,9 +161,9 @@ static void create_shape(int node_count, int per_node) {
         for (int e = 0; e < per_node; e++) {
             int i = (n * per_node) + e;
             (void)snprintf(endpoint_names[i], sizeof(endpoint_names[i]), "rt/node_%03d/topic_%02d", n, e);
-            tt_ret_t ret = e % 2 == 0
-                               ? tt_Node_create_publisher(&nodes[n], &pubs[i], &topic, endpoint_names[i])
-                               : tt_Node_create_subscriber(&nodes[n], &subs[i], &topic, endpoint_names[i], on_sample);
+            tt_ret_t ret = e % 2 == 0 ? tt_Node_create_publisher_legacy(&nodes[n], &pubs[i], &topic, endpoint_names[i])
+                                      : tt_Node_create_subscriber_legacy(&nodes[n], &subs[i], &topic, endpoint_names[i],
+                                                                         on_sample);
             created += ret == tt_RET_OK ? 1 : 0;
         }
     }

@@ -3484,6 +3484,10 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 // simply not exist yet when a service starts; see that code's own comment in hal.h), or
 // tt_RET_OUT_OF_SCHEDULE. The create_* helpers return tt_RET_OUT_OF_BUFFER /
 // tt_RET_OUT_OF_SCHEDULE when the node's fixed endpoint table or scheduler is full.
+//
+// DEPRECATED (QoS redesign, 2026-10-18): tt_Context_create_publisher/_subscriber/_client/_server(),
+// tt_Node_create_*_legacy(), and QoS set by writing endpoint fields after creation. Use tt_Node_create_publisher() and
+// its siblings, which take the QoS, the options and the storage at creation. Both stay until every caller has moved.
 tt_ret_t tt_Context_create(struct tt_Context* node);
 tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
                                   const char* endpoint_name, tt_CLIENT_CALLBACK callback);
@@ -3512,9 +3516,9 @@ tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscri
                                       const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 
 // Nodes (CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node. The tt_Context_create_*() shorthands above create
-// their endpoint on the context's default node; these create it on `node`, which must have been created on a
-// context with tt_Node_create(). Same arguments and results otherwise, and tt_RET_INVALID_ARGUMENT for a node
-// that is not (or no longer) created.
+// their endpoint on the context's default node; tt_Node_create_*_legacy() (deprecated, the old tt_Node_create_*())
+// create it on `node`, which must have been created on a context with tt_Node_create(). Same arguments and results
+// otherwise, and tt_RET_INVALID_ARGUMENT for a node that is not (or no longer) created.
 //
 // tt_Node_create(): `name` and `namespace_name` are kept, not copied, and must outlive the node. tt_RET_OUT_OF_BUFFER
 // when the context already hosts tt_MAX_NODES nodes, the default node included once it is in use. Index 0 is taken
@@ -3529,14 +3533,14 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 struct tt_Node* tt_Context_default_node(struct tt_Context* context);
 // The node that owns `endpoint`, created on `context`: context->nodes[endpoint->node_index]. NULL for NULL arguments.
 struct tt_Node* tt_Endpoint_node(const struct tt_Context* context, const struct tt_Endpoint* endpoint);
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name);
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback);
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback);
+tt_ret_t tt_Node_create_publisher_legacy(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                         const char* endpoint_name);
+tt_ret_t tt_Node_create_subscriber_legacy(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                          const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+tt_ret_t tt_Node_create_client_legacy(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                                      const char* endpoint_name, tt_CLIENT_CALLBACK callback);
+tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                                      const char* endpoint_name, tt_SERVER_CALLBACK callback);
 // Runs `function` at `time` from inside tt_Context_poll(). Callable from any thread. When a poll is blocked
 // waiting for something later than `time`, this wakes it (that poll returns tt_RET_INTERRUPTED and the
 // caller's next poll runs the entry on time); no tt_Context_interrupt() is needed.

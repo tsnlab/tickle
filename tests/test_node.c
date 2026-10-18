@@ -187,10 +187,10 @@ static void test_endpoints_on_two_nodes_each_report_their_own(void) {
     struct tt_Subscriber sub;
     struct tt_Client client;
     struct tt_Server server;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&a, &pub, &topic, "chatter"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&b, &sub, &topic, "chatter", stub_subscriber_callback));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&a, &client, &service, "add", stub_client_callback));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&b, &server, &service, "add", stub_server_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher_legacy(&a, &pub, &topic, "chatter"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber_legacy(&b, &sub, &topic, "chatter", stub_subscriber_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client_legacy(&a, &client, &service, "add", stub_client_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server_legacy(&b, &server, &service, "add", stub_server_callback));
     EXPECT_TRUE(tt_Endpoint_node(&context, &pub.endpoint) == &a);
     EXPECT_TRUE(tt_Endpoint_node(&context, &sub.endpoint) == &b);
     EXPECT_TRUE(tt_Endpoint_node(&context, &client.endpoint) == &a);
@@ -206,7 +206,7 @@ static void test_a_node_with_endpoints_refuses_destroy(void) {
     memset(&a, 0, sizeof(a));
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &a, "talker", "/"));
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&a, &pub, &topic, "chatter"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher_legacy(&a, &pub, &topic, "chatter"));
 
     EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Node_destroy(&a));
     EXPECT_TRUE(a.context == &context && context.nodes[a.index] == &a);
@@ -215,7 +215,7 @@ static void test_a_node_with_endpoints_refuses_destroy(void) {
     uint8_t index = a.index;
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_destroy(&a));
     EXPECT_TRUE(a.context == NULL && context.nodes[index] == NULL);
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_create_publisher(&a, &pub, &topic, "chatter"));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_create_publisher_legacy(&a, &pub, &topic, "chatter"));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_destroy(&a));
 }
 
@@ -272,8 +272,8 @@ static void test_explicit_nodes_leave_no_default_node(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &a, "talker", "/"));
     struct tt_Publisher pub;
     struct tt_Server server;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&a, &pub, &topic, "chatter"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&a, &server, &service, "add", stub_server_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher_legacy(&a, &pub, &topic, "chatter"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server_legacy(&a, &server, &service, "add", stub_server_callback));
     EXPECT_TRUE(context.default_node.context == NULL && context.nodes[0] == NULL);
 }
 
@@ -294,7 +294,7 @@ static void test_without_a_default_node_every_index_is_usable(void) {
     struct tt_Publisher pub;
     EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Context_create_publisher(&context, &pub, &topic, "chatter"));
     EXPECT_TRUE(tt_Context_default_node(&context) == NULL);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&nodes[tt_MAX_NODES - 1], &pub, &topic, "chatter"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher_legacy(&nodes[tt_MAX_NODES - 1], &pub, &topic, "chatter"));
     EXPECT_TRUE(tt_Endpoint_node(&context, &pub.endpoint) == &nodes[tt_MAX_NODES - 1]);
 
     uint8_t freed = nodes[3].index;
