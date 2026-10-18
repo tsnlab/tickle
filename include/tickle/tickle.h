@@ -2641,7 +2641,7 @@ struct tt_Publisher { // extends endpoint
     // says why). This Publisher's override of the context's large_fragmentation (tt_LARGE_FRAGMENTATION_INHERIT, the
     // default, takes the context's), and of the largest run datagram, in bytes (0, the default: inherit, i.e. what
     // each peer advertises). The sender takes the more conservative of its own setting and each peer's advertisement.
-    // Plain fields, set after tt_Context_create_publisher() like `batch`.
+    // Set at creation from tt_PublisherOptions' fields of the same names.
     uint8_t large_fragmentation;
     uint16_t ip_datagram_max;
 #if tt_HYBRID_TRANSPORT
@@ -3467,6 +3467,15 @@ struct tt_PublisherOptions {
     tt_PUBLISHER_WRITABLE_CALLBACK writable_callback; // tt_Publisher.writable_callback
     void* writable_callback_param;
     bool (*cache_grow)(struct tt_Publisher* pub); // tt_Publisher.cache_grow
+    // Large samples (DESIGN.md section 8). large_fragmentation: a tt_LARGE_FRAGMENTATION_* value (config.h), 0 =
+    // tt_LARGE_FRAGMENTATION_INHERIT, the context's; ip_datagram_max: the largest run datagram in bytes, 0 = inherit.
+    // Both are tt_Publisher's fields of those names. large_region_chunks / _chunk_bytes: the shared region of
+    // tt_Publisher_set_large_region(), checked as it checks them; 0 chunks = none, and only a tt_LARGE_SHM build takes
+    // more.
+    uint8_t large_fragmentation;
+    uint16_t ip_datagram_max;
+    uint32_t large_region_chunks;
+    uint32_t large_region_chunk_bytes;
 };
 
 struct tt_SubscriberOptions {
