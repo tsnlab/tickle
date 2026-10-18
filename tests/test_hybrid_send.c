@@ -34,6 +34,15 @@
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: the send path is static
 #include "test_mock.h"
 
+// tests/wire_identity_hybrid.sh builds this source against cores that predate the QoS creation API (DESIGN.md section
+// 9), with their own test_common.h: there it creates as they did. tt_QOS_REORDER_NONE is a macro of the profile's.
+#ifdef tt_QOS_REORDER_NONE
+#define HYBRID_QOS_AT_CREATION 1
+#else
+#define HYBRID_QOS_AT_CREATION 0
+#define tt_TypeSupport tt_Topic
+#endif
+
 #define SENDER_ID 1
 #define SENDER_IP 0x0a000001
 #define PORT 8282
@@ -227,7 +236,12 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
     sender_topic.data_encode = sized_encode;
     sender_topic.data_encode_range = ranged ? sized_encode_range : NULL;
     range_call_count = 0;
+#if HYBRID_QOS_AT_CREATION
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+#else
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+#endif
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, test_acquire, test_release, NULL));
     pub.seq_no = first_seq_no - 1U; // before any reader is matched: each one's baseline is where the writer is
     if (reliable) {
@@ -262,7 +276,14 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
         r->topic.data_size = 8;
         r->topic.data_decode = checking_decode;
         r->topic.data_free = free_nothing;
+#if HYBRID_QOS_AT_CREATION
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_subscriber(tt_Context_default_node(&r->ctx), &r->sub, &r->topic, ENDPOINT_NAME,
+                                                &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+#else
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&r->ctx, &r->sub, &r->topic, ENDPOINT_NAME, on_data));
+#endif
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&r->ctx, test_acquire, test_release, r));
         pub.peers[i] = (struct tt_Peer) {reader_id(i), r->ip, PORT};
         sender.peer_ip_reassembly_max[reader_id(i)] = (uint16_t)ceilings[i];
