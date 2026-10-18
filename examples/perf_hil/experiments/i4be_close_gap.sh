@@ -78,7 +78,7 @@ if [ "$PC" = 1 ]; then
     fi
     say "=== PC: build $sb, $REPS reps x ${DUR} s, attach $ATTACH, arms: $ARMS, load $(cut -d' ' -f1-3 /proc/loadavg) ==="
     # x86 has no exc_svc/exc_irq (Arm PMU exception counters): the rest of the rig's events.
-    env PC_PREFLIGHT=1 PF_TICKLE_INSTALL="$sb/install" PF_PERF_WS="$d/perf/install" \
+    env INSN_COUNT=0 PC_PREFLIGHT=1 PF_TICKLE_INSTALL="$sb/install" PF_PERF_WS="$d/perf/install" \
         PERF_EVENTS=task-clock,context-switches,cpu-migrations,instructions:u,instructions:k,cycles:u,cycles:k \
         PF_SHAPE="tbf rate 1gbit burst 64kb latency 100ms" HEAD_SHA="$(git -C "$REPO" rev-parse --short=8 HEAD)" \
         PERF_ATTACH="$ATTACH" REPS="$REPS" DUR="$DUR" PUB_RATE=15 QOS_ARGS="$QOS" CELLS="Array4m:0" ARMS="$ARMS" \
@@ -87,7 +87,7 @@ if [ "$PC" = 1 ]; then
 else
     say "--- rig lock held: $(cat /tmp/tickle-hil.lock 2>/dev/null) ---"
     OUT=$HOME/rig_results_safe/i4be_close_rig_$TS
-    env KCOUNTERS=1 CLOCK_PROBE=1 HEAD_SHA="$HEAD_SHA" PERF_ATTACH=10_40 SKIP_BUILD=0 REPS="${REPS:-5}" DUR=60 \
+    env INSN_COUNT=0 KCOUNTERS=1 CLOCK_PROBE=1 HEAD_SHA="$HEAD_SHA" PERF_ATTACH=10_40 SKIP_BUILD=0 REPS="${REPS:-5}" DUR=60 \
         PUB_RATE=15 QOS_ARGS="$QOS" CELLS="Array4m:0" ARMS="$ARMS" SUMMARY="$X/largemsg_rig_summary.py" OUT="$OUT" \
         "$X/rmw_keepall_rig.sh" > "$OUT.launch.log" 2>&1
     say "  rmw_keepall_rig.sh rc=$? -> $OUT.txt"
