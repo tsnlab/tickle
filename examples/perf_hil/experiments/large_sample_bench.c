@@ -87,6 +87,9 @@
 #define BLOCKED_POLL_NS 1000000        // 1 ms, while KEEP_ALL waits for acknowledgements
 #define CACHE_RECORDS 64U              // small traffic only: large samples are kept by reference, outside the cache
 #define KEEP_LAST_DEPTH 10U            // ROS's default
+// The retained-sample arena this bench gave its hand-built cache until the QoS creation API: CACHE_RECORDS control
+// datagrams and one of wrap slack. Now history.bytes, so the arena the profile sizes is never larger than it was.
+#define CACHE_ARENA_BYTES tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_RECORDS, tt_RELIABLE_RECORD_BYTES(tt_CONTROL_MAX_LENGTH))
 #define PATTERN_STEP 31U
 #define PATTERN_HIGH_SHIFT 11U
 #define PERCENT_99 99U
@@ -233,7 +236,8 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     (void)data;
 }
 
-static struct tt_Topic topic = {
+// max_encoded_size is the run's sample size (-s), set before either endpoint is created.
+static struct tt_TypeSupport topic = {
     .name = "large_sample_bench",
     .data_size = 8,
     .data_encode_size = bench_encode_size,
@@ -507,8 +511,50 @@ static void poll_for(struct tt_Context* node, uint64_t span_ns) {
     }
 }
 
-// The Publisher as the options make it: the message's encode (-M, -G), the reliable cache (-R, -A) and a forced run
-// length (-n). False when it cannot be made.
+// A KEEP_ALL Publisher's depth: the hand-built cache it had held CACHE_RECORDS datagrams, and KEEP_ALL may hold that
+// many unacknowledged (keep_all_bound()). The profile's index ring is (depth + 1) times a sample's datagrams, so the
+// depth that gives exactly CACHE_RECORDS where a sample takes at most half of them, and 1 - the least - otherwise.
+static uint32_t keep_all_depth(void) {
+    uint32_t cdr = sample_size < (uint32_t)tt_MAX_SAMPLE_LENGTH ? sample_size : (uint32_t)tt_MAX_SAMPLE_LENGTH;
+    uint32_t samples = CACHE_RECORDS / tt_sample_datagrams(cdr);
+    return samples > 1U ? samples - 1U : 1U;
+}
+
+// The Publisher's profile: -R RELIABLE, KEEP_LAST 10 or (-A) KEEP_ALL, retaining at most the arena the hand-built
+// cache had; BEST_EFFORT otherwise, which retains nothing. VOLATILE, AUTOMATIC and every duration infinite either way.
+static struct tt_QosProfile publisher_qos(const struct options* opts) {
+    if (!opts->reliable) {
+        return (struct tt_QosProfile) {
+            // BEST_EFFORT VOLATILE retains nothing: the history sizes nothing for it.
+            .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+            .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                            .tracking_words = 0,
+                            .reorder_slots = 0,
+                            .max_blocking_ns = 0},
+            .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+            .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+            .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+            .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+        };
+    }
+    return (struct tt_QosProfile) {
+        .history = {.kind = opts->keep_all ? tt_QOS_HISTORY_KEEP_ALL : tt_QOS_HISTORY_KEEP_LAST,
+                    .depth = opts->keep_all ? keep_all_depth() : KEEP_LAST_DEPTH,
+                    .bytes = CACHE_ARENA_BYTES},
+        // max_blocking_ns 0: the default, which only tt_Publisher_get_actual_qos() reports.
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+}
+
+// The Publisher as the options make it: the message's encode (-M, -G), the profile (-R, -A), a forced run length (-n)
+// and the shared region (-B). False when it cannot be made.
 static bool setup_publisher(struct tt_Context* node, struct tt_Publisher* pub, const struct options* opts) {
     if (opts->message) {
         message = (uint8_t*)malloc(sample_size);
@@ -520,31 +566,50 @@ static bool setup_publisher(struct tt_Context* node, struct tt_Publisher* pub, c
         topic.data_encode_range = opts->ranged ? message_encode_range : NULL;
 #endif
     }
-    if (tt_Context_create_publisher(node, pub, &topic, "stream") != tt_RET_OK) {
-        fprintf(stderr, "cannot create the publisher\n");
-        return false;
-    }
-    static struct tt_ReliableCacheIndex index[CACHE_RECORDS];
-    static uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_RECORDS, tt_RELIABLE_RECORD_BYTES(tt_CONTROL_MAX_LENGTH))];
-    static struct tt_ReliableCache cache;
-    if (opts->reliable) {
-        cache.index = index;
-        cache.capacity = CACHE_RECORDS;
-        cache.depth = CACHE_RECORDS;
-        cache.arena = arena;
-        cache.arena_size = (uint32_t)sizeof(arena);
-        cache.sample_depth = opts->keep_all ? 0 : KEEP_LAST_DEPTH;
-        pub->reliable_cache = &cache;
-        pub->reliable = true;
-        pub->keep_all = opts->keep_all;
-    }
+    topic.max_encoded_size = sample_size;
+    struct tt_QosProfile qos = publisher_qos(opts);
+    struct tt_PublisherOptions options = {
+        .batch = false,
+        .heartbeat_piggyback_every = 0,
+        .heartbeat_period_ns = 0,
+        .ack_solicit_period_ns = 0,
+        .ack_solicit_watermark_pct = 0,
+        .idle_heartbeat_ns = 0, // tt_IDLE_HEARTBEAT_PERIOD
+        .writable_callback = NULL,
+        .writable_callback_param = NULL,
+        .cache_grow = NULL,
+        .large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT, // the context's: -F sets _tt_CONFIG's
+        .ip_datagram_max = 0,
+        .large_region_chunks = 0,
+        .large_region_chunk_bytes = 0,
+    };
 #if BENCH_HYBRID
     if (opts->run_units != 0) {
         // Runs of exactly run_units large units (types 11/12's geometry): the run's 28 bytes of framing and the units.
-        pub->large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
-        pub->ip_datagram_max = (uint16_t)(BENCH_RUN_FRAMING + (opts->run_units * BENCH_LARGE_UNIT));
+        options.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+        options.ip_datagram_max = (uint16_t)(BENCH_RUN_FRAMING + (opts->run_units * BENCH_LARGE_UNIT));
     }
 #endif
+#if defined(tt_LARGE_SHM) && tt_LARGE_SHM
+    if (opts->region_chunks != 0) {
+        options.large_region_chunks = opts->region_chunks;
+        options.large_region_chunk_bytes =
+            tt_LARGE_CHUNK_BYTES(sample_size > tt_MAX_SAMPLE_LENGTH ? sample_size : tt_MAX_SAMPLE_LENGTH + 1U);
+    }
+#else
+    if (opts->region_chunks != 0) {
+        fprintf(stderr, "-B needs a build with large samples and the segment (tt_LARGE_SHM)\n");
+        return false;
+    }
+#endif
+    size_t storage_size = tt_Publisher_storage_size(&topic, &qos);
+    void* storage = storage_size != 0 ? calloc(1, storage_size) : NULL; // calloc: 8-byte aligned
+    if ((storage_size != 0 && storage == NULL) ||
+        tt_Node_create_publisher(tt_Context_default_node(node), pub, &topic, "stream", &qos, &options, storage,
+                                 storage_size) != tt_RET_OK) {
+        fprintf(stderr, "cannot create the publisher\n");
+        return false;
+    }
     return true;
 }
 
@@ -581,21 +646,6 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
     if (!setup_publisher(node, &pub, opts)) {
         return 1;
     }
-#if defined(tt_LARGE_SHM) && tt_LARGE_SHM
-    if (opts->region_chunks != 0 &&
-        tt_Publisher_set_large_region(
-            &pub, opts->region_chunks,
-            tt_LARGE_CHUNK_BYTES(sample_size > tt_MAX_SAMPLE_LENGTH ? sample_size : tt_MAX_SAMPLE_LENGTH + 1U)) !=
-            tt_RET_OK) {
-        fprintf(stderr, "cannot set the large region\n");
-        return 1;
-    }
-#else
-    if (opts->region_chunks != 0) {
-        fprintf(stderr, "-B needs a build with large samples and the segment (tt_LARGE_SHM)\n");
-        return 1;
-    }
-#endif
     poll_for(node, discovery_ns);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     double halve_after_s = opts->halve_after_s;
@@ -662,32 +712,59 @@ static double latency_us_at(uint32_t counted, uint32_t index) {
     return counted > 0 ? (double)latencies_ns[index] / NS_PER_US : 0.0;
 }
 
-static int run_subscriber(struct tt_Context* node, const struct options* opts) {
-    latencies_ns = (uint64_t*)calloc(MAX_SAMPLES, sizeof(uint64_t));
-    static struct tt_Subscriber sub;
-    if (latencies_ns == NULL || tt_Context_create_subscriber(node, &sub, &topic, "stream", on_sample) != tt_RET_OK) {
-        fprintf(stderr, "cannot create the subscriber\n");
-        return 1;
+// The Subscriber's profile: -R RELIABLE, else BEST_EFFORT; VOLATILE, AUTOMATIC, every duration infinite. KEEP_ALL:
+// keep_last_depth 0, never skips in the segment drain, as the legacy create left it.
+static struct tt_QosProfile subscriber_qos(const struct options* opts) {
+    if (!opts->reliable) {
+        return (struct tt_QosProfile) {
+            .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+            .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                            .tracking_words = 0, // the builtin window
+                            .reorder_slots = tt_QOS_REORDER_NONE,
+                            .max_blocking_ns = 0},
+            .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+            .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+            .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+            .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+        };
     }
-    static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
-    if (opts->reliable) {
-        sub.reliable = true;
-        sub.tracking_bitmaps = tracking;
+    bool large = sample_size > tt_MAX_SAMPLE_LENGTH;
+    return (struct tt_QosProfile) {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
         // The widest window for a large sample, which needs it; rmw's 16 words (RMW_TICKLE_TRACKING_WORDS) otherwise,
         // so a small-sample A/B against a parent with a narrower maximum compares the same window.
-        sub.tracking_words =
-            sample_size > tt_MAX_SAMPLE_LENGTH ? (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS : SMALL_TRACKING_WORDS;
         // A RELIABLE Subscriber of a sample that fragments holds each fragment in a reorder slot until the sample is
         // whole (tickle.h, tt_Subscriber.reorder_storage) - without one nothing fragmented is ever delivered. One
-        // window of slots of one control datagram each, as rmw_tickle sizes it. A large sample does not use them.
-        if (sample_size <= tt_MAX_SAMPLE_LENGTH) {
-            size_t slot_bytes = (sizeof(struct tt_ReorderSlot) + tt_CONTROL_MAX_LENGTH + sizeof(uint64_t) - 1) &
-                                ~(sizeof(uint64_t) - 1);
-            uint16_t slots = (uint16_t)(SMALL_TRACKING_WORDS * BITS_PER_WORD);
-            sub.reorder_storage = (uint64_t*)calloc(slots, slot_bytes);
-            sub.reorder_slots = sub.reorder_storage != NULL ? slots : 0;
-            sub.reorder_slot_bytes = (uint16_t)slot_bytes;
-        }
+        // window of slots, as rmw_tickle sizes it, each one datagram's payload of this type. A large sample does not
+        // use them.
+        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                        .tracking_words =
+                            large ? (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS : (uint16_t)SMALL_TRACKING_WORDS,
+                        .reorder_slots =
+                            large ? (uint16_t)tt_QOS_REORDER_NONE : (uint16_t)(SMALL_TRACKING_WORDS * BITS_PER_WORD),
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+}
+
+static int run_subscriber(struct tt_Context* node, const struct options* opts) {
+    latencies_ns = (uint64_t*)calloc(MAX_SAMPLES, sizeof(uint64_t));
+    topic.max_encoded_size = sample_size;
+    struct tt_QosProfile qos = subscriber_qos(opts);
+    struct tt_SubscriberOptions options = {.callback = on_sample,
+                                           .accept_callback = NULL,
+                                           .accept_callback_param = NULL};
+    size_t storage_size = tt_Subscriber_storage_size(&topic, &qos);
+    void* storage = storage_size != 0 ? calloc(1, storage_size) : NULL; // calloc: 8-byte aligned
+    static struct tt_Subscriber sub;
+    if (latencies_ns == NULL || (storage_size != 0 && storage == NULL) ||
+        tt_Node_create_subscriber(tt_Context_default_node(node), &sub, &topic, "stream", &qos, &options, storage,
+                                  storage_size) != tt_RET_OK) {
+        fprintf(stderr, "cannot create the subscriber\n");
+        return 1;
     }
     long peak_rss_kb = 0;
     double cpu_before = cpu_ms(&peak_rss_kb);
