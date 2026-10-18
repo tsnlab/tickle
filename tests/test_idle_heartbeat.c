@@ -96,10 +96,8 @@ static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 
-#define CACHE_DEPTH 256
-static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(64))];
-static struct tt_ReliableCache cache;
+#define CACHE_DEPTH 256 // samples, one datagram each
+static uint64_t pub_storage[(size_t)64U * 1024U / sizeof(uint64_t)];
 #define WORDS 16
 static uint64_t tracking[tt_MAX_PEER_COUNT * WORDS];
 static bool pair_up;
@@ -124,7 +122,8 @@ static void teardown_pair(void) {
 
 // A RELIABLE KEEP_LAST writer and a RELIABLE reader, the reader matched on the writer as its announce would match it.
 // reliable_reader false matches it as a BEST_EFFORT reader's announce does (register_subscriber_peer_on_publisher()).
-static void init_pair(bool reliable_reader) {
+// The writer's idle HEARTBEAT period is `idle_ns` (0: off) and it piggybacks one every `piggyback_every` samples.
+static void init_pair_with(bool reliable_reader, uint64_t idle_ns, uint32_t piggyback_every) {
     teardown_pair();
     test_mock_reset();
     memset(delivered_at, 0, sizeof(delivered_at));
@@ -136,10 +135,18 @@ static void init_pair(bool reliable_reader) {
     sender_topic.data_size = sizeof(uint32_t);
     sender_topic.data_encode_size = u32_encode_size;
     sender_topic.data_encode = u32_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
-    EXPECT_EQ_U64(tt_IDLE_HEARTBEAT_PERIOD, pub.idle_heartbeat_ns); // on by default
-    EXPECT_TRUE(tt_IDLE_HEARTBEAT_PERIOD != 0);
-    pub.idle_heartbeat_ns = PERIOD; // the cases' own period, whatever the default
+    sender_topic.max_encoded_size = sizeof(uint32_t);
+    const struct tt_QosProfile pub_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = CACHE_DEPTH},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    const struct tt_PublisherOptions options = {
+        .idle_heartbeat_ns = idle_ns != 0 ? idle_ns : tt_QOS_DURATION_INFINITE, // tt_QOS_DURATION_INFINITE: off
+        .heartbeat_piggyback_every = piggyback_every};
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, &pub_qos);
+    EXPECT_TRUE(pub_storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic, ENDPOINT_NAME,
+                                           &pub_qos, &options, pub_storage, pub_storage_size));
+    EXPECT_EQ_U64(idle_ns, pub.idle_heartbeat_ns);
 
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
@@ -147,21 +154,15 @@ static void init_pair(bool reliable_reader) {
     receiver_topic.data_size = sizeof(uint32_t);
     receiver_topic.data_decode = u32_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
-
-    memset(cache_index, 0, sizeof(cache_index));
-    memset(&cache, 0, sizeof(cache));
-    cache.index = cache_index;
-    cache.capacity = CACHE_DEPTH;
-    cache.depth = CACHE_DEPTH;
-    cache.arena = cache_arena;
-    cache.arena_size = (uint32_t)sizeof(cache_arena);
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
-    sub.reliable = reliable_reader;
-    memset(tracking, 0, sizeof(tracking));
-    sub.tracking_bitmaps = tracking;
-    sub.tracking_words = WORDS;
+    receiver_topic.max_encoded_size = sizeof(uint32_t);
+    struct tt_QosProfile sub_qos = reliable_reader ? TEST_QOS_RELIABLE_READER : TEST_QOS_UNRELIABLE;
+    sub_qos.reliability.tracking_words = WORDS;
+    size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, &sub_qos);
+    EXPECT_TRUE(sub_storage_size <= sizeof(tracking));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME,
+                                            &sub_qos, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            sub_storage_size != 0 ? tracking : NULL, sub_storage_size));
     struct tt_PeerAck* ack = claim_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
     EXPECT_TRUE(ack != NULL);
     if (ack != NULL) {
@@ -170,6 +171,30 @@ static void init_pair(bool reliable_reader) {
     }
     (void)upsert_peer(pub.peers, RECEIVER_ID, RECEIVER_IP, PORT);
     pair_up = true;
+}
+
+static void init_pair(bool reliable_reader) {
+    init_pair_with(reliable_reader, PERIOD, 0); // the cases' own period, whatever the default
+}
+
+// On by default: a Publisher created with no options has the idle HEARTBEAT at tt_IDLE_HEARTBEAT_PERIOD.
+static void test_the_idle_heartbeat_is_on_by_default(void) {
+    teardown_pair();
+    test_mock_reset();
+    init_bare_node(&sender, SENDER_ID);
+    memset(&sender_topic, 0, sizeof(sender_topic));
+    sender_topic.name = TOPIC_NAME;
+    sender_topic.data_size = sizeof(uint32_t);
+    sender_topic.data_encode_size = u32_encode_size;
+    sender_topic.data_encode = u32_encode;
+    sender_topic.max_encoded_size = sizeof(uint32_t);
+    size_t storage_size = tt_Publisher_storage_size(&sender_topic, NULL);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, NULL, NULL, pub_storage, storage_size));
+    EXPECT_EQ_U64(tt_IDLE_HEARTBEAT_PERIOD, pub.idle_heartbeat_ns);
+    EXPECT_TRUE(tt_IDLE_HEARTBEAT_PERIOD != 0);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_destroy(&pub));
 }
 
 // --- the link
@@ -444,9 +469,7 @@ static bool heap_ordered(const struct tt_Context* node) {
 // non-FINAL HEARTBEAT. The control, the idle HEARTBEAT off, is the behaviour before it: nothing reveals the tail, and a
 // second later it is still missing.
 static uint64_t burst_with_lost_tail(uint64_t period, uint32_t piggyback_every) {
-    init_pair(true);
-    pub.idle_heartbeat_ns = period;
-    pub.heartbeat_piggyback_every = piggyback_every;
+    init_pair_with(true, period, piggyback_every);
     sim_start();
     drop_sample(10);
     sim_burst(1, 10, tt_MILLISECOND);
@@ -514,8 +537,7 @@ static void test_a_lost_idle_heartbeat_is_sent_again(void) {
 static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
     uint32_t piggyback[] = {0, 64};
     for (size_t i = 0; i < sizeof(piggyback) / sizeof(piggyback[0]); i++) {
-        init_pair(true);
-        pub.heartbeat_piggyback_every = piggyback[i];
+        init_pair_with(true, PERIOD, piggyback[i]);
         sim_start();
         int most = 0;
         bool ordered = true;
@@ -658,8 +680,7 @@ static void test_any_heartbeat_pushes_the_next_back(void) {
 
 // The period never goes below tt_IDLE_HEARTBEAT_RETRY_MULTIPLE retry intervals: asked for 1 ms, it is 4 ms.
 static void test_the_period_has_a_floor(void) {
-    init_pair(true);
-    pub.idle_heartbeat_ns = tt_MILLISECOND;
+    init_pair_with(true, tt_MILLISECOND, 0);
     sim_start();
     drop_reader = true;
     sim_publish(1);
@@ -711,6 +732,7 @@ static void test_destroy_unschedules_it(void) {
 }
 
 int main(void) {
+    test_the_idle_heartbeat_is_on_by_default();
     test_a_lost_tail_is_delivered_within_the_period();
     test_a_lone_lost_sample_waits_one_period();
     test_a_lost_idle_heartbeat_is_sent_again();
