@@ -128,9 +128,25 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // BEST_EFFORT, as the legacy create left them, so each announced entity carries the same QoS bits: VOLATILE,
+    // AUTOMATIC, infinite durations. Nothing is retained, so the Publishers need no storage and the history sizes
+    // nothing.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_PublisherOptions options; // all defaults: no batching, no periodic HEARTBEAT
     for (long i = 0; i < endpoints; i++) {
         (void)snprintf(names[i], NAME_BYTES, "robot_%02ld/sensor_%02ld/points", node_id, i);
-        ret = tt_Context_create_publisher(&node, &pubs[i], &BenchTopic, names[i]);
+        ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pubs[i], &BenchTopic, names[i], &qos, &options,
+                                       NULL, 0);
         if (ret != 0) {
             (void)fprintf(stderr, "cannot create publisher %ld: %d\n", i, ret);
             return 1;
