@@ -431,8 +431,78 @@ static void micro(uint8_t reader, struct tt_Subscriber* sub, const struct tt_Pub
 static struct tt_Publisher pubs[MAX_WRITERS + 1];
 static struct tt_Subscriber sub;
 
+// The profiles, every field spelled out. VOLATILE, AUTOMATIC, no deadline, lifespan or lease throughout.
+// BEST_EFFORT writer, the deprecated create's default: it retains nothing, so its history sizes nothing.
+static const struct tt_QosProfile best_effort_writer = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                    .tracking_words = 0,
+                    .reorder_slots = 0,
+                    .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+// -R's writer: RELIABLE KEEP_LAST RELIABLE_DEPTH, as reliable_throughput/client.c at Q2 (-K 64). Not KEEP_ALL: its
+// acknowledgement requests are rate-limited in time, and a loop this fast would spend itself refused. history.bytes is
+// the arena the hand-built cache had, (RELIABLE_DEPTH + 1) records of the one-datagram Bench sample, so the arena is
+// the same size. The layout is not quite the old one: the index ring is (RELIABLE_DEPTH + 1) slots where it was
+// RELIABLE_DEPTH, and the cache evicts by sample count (sample_depth RELIABLE_DEPTH) where it evicted by ring wrap -
+// both keep RELIABLE_DEPTH samples.
+static const struct tt_QosProfile reliable_writer = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_LAST,
+                .depth = RELIABLE_DEPTH,
+                .bytes =
+                    tt_RELIABLE_CACHE_ARENA_BYTES(RELIABLE_DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = 0, .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+// The Subscriber: BEST_EFFORT, or RELIABLE with -R; the builtin ACK window (tracking_words 0) and no reorder buffer
+// either way, as before. KEEP_ALL: keep_last_depth 0, never skips, as the legacy create.
+static const struct tt_QosProfile best_effort_reader = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+    .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                    .tracking_words = 0,
+                    .reorder_slots = tt_QOS_REORDER_NONE,
+                    .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+static const struct tt_QosProfile reliable_reader = {
+    .history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 0, .bytes = 0},
+    .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
+                    .tracking_words = 0,
+                    .reorder_slots = tt_QOS_REORDER_NONE,
+                    .max_blocking_ns = 0},
+    .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+    .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+    .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+    .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+};
+static const struct tt_PublisherOptions writer_options = {0}; // every option its default, as before
+
+// A Publisher of the Bench sample on `node`'s default node, its storage (none for BEST_EFFORT) allocated here and kept
+// for the run - 8-aligned, as calloc's is.
+static bool create_writer(struct tt_Context* node, struct tt_Publisher* pub, const char* name,
+                          const struct tt_QosProfile* qos) {
+    size_t bytes = tt_Publisher_storage_size(&BenchTopic, qos);
+    void* storage = bytes != 0 ? calloc(1, bytes) : NULL;
+    if (bytes != 0 && storage == NULL) {
+        return false;
+    }
+    return tt_Node_create_publisher(tt_Context_default_node(node), pub, &BenchTopic, name, qos, &writer_options,
+                                    storage, bytes) == tt_RET_OK;
+}
+
 // Writer nodes 1..W with a Publisher each, `extra` more Publishers on node 1, the reader node W+1 with the
-// Subscriber (and a discovery table, with -D).
+// Subscriber (and a discovery table, with -D). With -R, writer 1 and the Subscriber are RELIABLE from creation, so
+// the announces carry it.
 static bool set_up(const struct options* opt, uint8_t reader) {
     for (uint8_t id = 1; id <= reader; id++) {
         next_node_id = id;
@@ -448,7 +518,8 @@ static bool set_up(const struct options* opt, uint8_t reader) {
     }
     for (uint8_t id = 1; id < reader; id++) {
         acting = id;
-        if (tt_Context_create_publisher(&nodes[id], &pubs[id], &BenchTopic, "bench") != tt_RET_OK) {
+        const struct tt_QosProfile* qos = opt->reliable && id == 1 ? &reliable_writer : &best_effort_writer;
+        if (!create_writer(&nodes[id], &pubs[id], "bench", qos)) {
             return false;
         }
     }
@@ -457,31 +528,19 @@ static bool set_up(const struct options* opt, uint8_t reader) {
     for (uint32_t i = 0; i < opt->extra; i++) {
         acting = 1;
         (void)snprintf(extra_names[i], sizeof(extra_names[i]), "x%u", i % MAX_EXTRA);
-        if (tt_Context_create_publisher(&nodes[1], &extra[i], &BenchTopic, extra_names[i]) != tt_RET_OK) {
+        if (!create_writer(&nodes[1], &extra[i], extra_names[i], &best_effort_writer)) {
             return false;
         }
     }
     acting = reader;
-    if (tt_Context_create_subscriber(&nodes[reader], &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
+    static const struct tt_SubscriberOptions reader_options = {.callback = on_sample};
+    const struct tt_QosProfile* reader_qos = opt->reliable ? &reliable_reader : &best_effort_reader;
+    size_t reader_bytes = tt_Subscriber_storage_size(&BenchTopic, reader_qos);
+    void* reader_storage = reader_bytes != 0 ? calloc(1, reader_bytes) : NULL;
+    if ((reader_bytes != 0 && reader_storage == NULL) ||
+        tt_Node_create_subscriber(tt_Context_default_node(&nodes[reader]), &sub, &BenchTopic, "bench", reader_qos,
+                                  &reader_options, reader_storage, reader_bytes) != tt_RET_OK) {
         return false;
-    }
-    if (opt->reliable) {
-        // As reliable_throughput/client.c at Q2 (-K 64): a KEEP_LAST cache on writer 1, a RELIABLE Subscriber - set
-        // before discovery, so the announces carry them. Not KEEP_ALL: its acknowledgement requests are rate-limited
-        // in time, and a loop this fast would spend itself refused.
-        static struct tt_ReliableCacheIndex cache_index[RELIABLE_DEPTH];
-        static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(RELIABLE_DEPTH,
-                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
-        static struct tt_ReliableCache cache;
-        cache.index = cache_index;
-        cache.capacity = RELIABLE_DEPTH;
-        cache.depth = RELIABLE_DEPTH;
-        cache.arena = cache_arena;
-        cache.arena_size = sizeof(cache_arena);
-        pubs[1].reliable_cache = &cache;
-        pubs[1].reliable = true;
-        pubs[1].keep_all = false;
-        sub.reliable = true;
     }
     return true;
 }
@@ -715,7 +774,7 @@ int main(int argc, char** argv) {
         acting = reader;
         publish_ns = calloc(PUBLISH_SAMPLES_MAX, sizeof(*publish_ns));
         if (publish_ns == NULL || pin_to(false) < 0 ||
-            tt_Context_create_publisher(&nodes[reader], &back_pub, &BenchTopic, "back") != tt_RET_OK ||
+            !create_writer(&nodes[reader], &back_pub, "back", &best_effort_writer) ||
             pthread_create(&publisher, NULL, publish_loop, NULL) != 0) {
             return 1;
         }
