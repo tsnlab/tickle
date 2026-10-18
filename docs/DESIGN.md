@@ -429,8 +429,13 @@ first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2
 | descheduled host | the check defers up to `tt_LIVELINESS_MAX_DEFERRALS` x `tt_LIVELINESS_DEFER_NS` while datagrams wait |
 
 **Deadline:** announced for RxO; rmw_tickle enforces it: one miss per period P with no activity, checked at the last
-activity + P (a timestamp store per sample, no scheduler call). **Lifespan:** an older cached sample is neither resent
-nor replayed. **Durability (TRANSIENT_LOCAL):** a durable Publisher unicasts its cache to a new Subscriber, once per
+activity + P (a timestamp store per sample, no scheduler call). **Lifespan:** a writer's older cached sample is neither
+resent nor replayed. A reader is held to the **shorter of the writer's lifespan and its own** (D1, v14): the writer's
+travels in its announce, and `tt_Subscriber_delivering_lifespan()` answers inside the delivery callback. Core delivers
+on arrival and keeps no queue, so it drops nothing itself; rmw_tickle drops a queued sample when its age reaches it.
+No lookup unless a writer with a lifespan has been seen (`tt_Subscriber.writer_lifespans`). The age is the reader's date
+minus the writer's source timestamp, so **across hosts it is off by their clock offset**, as in DDS: a writer clock
+behind the reader's shortens a sample's life, one ahead reads as age 0 (`test_lifespan_writer`). **Durability (TRANSIENT_LOCAL):** a durable Publisher unicasts its cache to a new Subscriber, once per
 (context id, generation); a durable Subscriber refuses a VOLATILE writer. **Local delivery** (`tt_LOCAL_DELIVERY`):
 in-process delivery under the same rules; otherwise own DATA is dropped.
 

@@ -4431,6 +4431,77 @@ static void qos_judge_created(struct tt_Context* node, struct tt_Endpoint* endpo
     }
 }
 
+// ---- A writer's LIFESPAN at the reader (QoS plan D1, tt_VERSION 14): a reader applies the shorter of the writer's
+// announced lifespan and its own (tt_Subscriber_delivering_lifespan(), tickle.h). Which Subscribers may receive from
+// a writer with a lifespan is noted on them (tt_Subscriber.writer_lifespans) when an announce or a creation shows one,
+// so that a Subscriber no such writer reaches answers with its own lifespan and looks nothing up per sample.
+
+static void note_writer_lifespan(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    UNUSED(node);
+    UNUSED(ctx_ptr);
+    ((struct tt_Subscriber*)endpoint)->writer_lifespans = true;
+}
+
+// A topic endpoint just created: a Publisher with a lifespan is noted on this context's Subscribers of its topic (local
+// delivery reaches them with no announce), and a Subscriber learns of the writers with one that the discovery table
+// and this context already hold.
+static void writer_lifespan_note_created(struct tt_Context* node, struct tt_Endpoint* endpoint) {
+    if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        if (((const struct tt_Publisher*)endpoint)->lifespan_duration_ns != 0) {
+            for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint->id, note_writer_lifespan, NULL);
+        }
+        return;
+    }
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (node->discovery != NULL) {
+        for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES && !sub->writer_lifespans; i++) {
+            const struct tt_DiscoveredEntity* entity = &node->discovery->entities[i];
+            sub->writer_lifespans = entity->context_id != tt_CONTEXT_ID_INVALID &&
+                                    entity->kind == tt_KIND_TOPIC_PUBLISHER && entity->endpoint_id == endpoint->id &&
+                                    entity->lifespan_duration_ns != 0;
+        }
+    }
+    for (uint32_t i = 0; i < node->endpoint_count && !sub->writer_lifespans; i++) {
+        const struct tt_Endpoint* local = node->endpoints[i];
+        sub->writer_lifespans = local != NULL && local->kind == tt_KIND_TOPIC_PUBLISHER && local->id == endpoint->id &&
+                                ((const struct tt_Publisher*)local)->lifespan_duration_ns != 0;
+    }
+}
+
+// The shorter of two lifespans, 0 being infinite.
+static uint64_t lifespan_min(uint64_t a, uint64_t b) {
+    if (a == 0) {
+        return b;
+    }
+    return b != 0 && b < a ? b : a;
+}
+
+uint64_t tt_Subscriber_writer_lifespan(const struct tt_Subscriber* sub, uint8_t source, uint32_t entity_id) {
+    uint64_t own = sub->qos_lifespan_ns == tt_QOS_DURATION_INFINITE ? 0 : sub->qos_lifespan_ns;
+    const struct tt_Context* node = sub->node;
+    if (node == NULL) {
+        return own;
+    }
+    uint64_t writer = 0;
+    if (source == node->id) { // local delivery (tt_LOCAL_DELIVERY): the writer is this context's own
+        for (uint32_t i = 0; i < node->endpoint_count; i++) {
+            const struct tt_Endpoint* local = node->endpoints[i];
+            if (local != NULL && local->kind == tt_KIND_TOPIC_PUBLISHER && local->entity_id == entity_id &&
+                local->id == sub->endpoint.id) {
+                writer = ((const struct tt_Publisher*)local)->lifespan_duration_ns;
+                break;
+            }
+        }
+    } else {
+        const struct tt_DiscoveredEntity* entity =
+            tt_Discovery_find_entity(node->discovery, source, sub->endpoint.id, entity_id);
+        if (entity != NULL && entity->kind == tt_KIND_TOPIC_PUBLISHER) {
+            writer = entity->lifespan_duration_ns;
+        }
+    }
+    return lifespan_min(own, writer);
+}
+
 // The discovery-cache counterpart to forget_peers_from_source() - same "authoritative announce
 // supersedes old state" reasoning (a fresh announce means decode_update_entities() is about to
 // re-add whatever `node_id` still actually hosts, so anything not re-added here first must have
@@ -6608,7 +6679,8 @@ static tt_ret_t subscriber_reset(struct tt_Context* node, struct tt_Subscriber* 
 #if tt_LARGE_SAMPLES
     sub->large_held = 0;
 #endif
-    sub->qos_lifespan_ns = 0; // the resolved QoS no hot field holds: tt_Node_create_subscriber() sets it
+    sub->qos_lifespan_ns = 0;      // the resolved QoS no hot field holds: tt_Node_create_subscriber() sets it
+    sub->writer_lifespans = false; // QoS plan D1: set when a writer with a lifespan is announced or created
     sub->qos_history_depth = 0;
     sub->qos_history_bytes = 0;
     sub->qos_history_kind = 0;
@@ -12230,6 +12302,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         return result;
     }
     qos_judge_created(node, (struct tt_Endpoint*)pub);
+    writer_lifespan_note_created(node, (struct tt_Endpoint*)pub);
     return tt_RET_OK;
 }
 
@@ -12300,6 +12373,7 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
     result = register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
     if (result == tt_RET_OK) {
         qos_judge_created(node, (struct tt_Endpoint*)sub);
+        writer_lifespan_note_created(node, (struct tt_Endpoint*)sub);
     }
     return result;
 }
@@ -15612,6 +15686,9 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
                                  lifespan_duration_ns, history_depth, type, name);
         qos_judge_announced(node, header->source, endpoint_id, remote_entity_id, update_entity->kind,
                             update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns);
+        if (update_entity->kind == tt_KIND_TOPIC_PUBLISHER && lifespan_duration_ns != 0) {
+            for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, note_writer_lifespan, NULL);
+        }
     }
 
     return true;

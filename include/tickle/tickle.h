@@ -3453,6 +3453,10 @@ struct tt_Subscriber { // extends endpoint
     uint8_t qos_history_kind;
     // Publishers offering less than this Subscriber requests (QoS plan D2). Last.
     struct tt_QosIncompatibleStatus qos_incompatible;
+    // Core-owned (QoS plan D1): some writer this Subscriber may receive from has announced a LIFESPAN - a remote one
+    // in its announce, a local one at its creation. Sticky. While it is false the lifespan a sample is subject to is
+    // the Subscriber's own, with no lookup (tt_Subscriber_delivering_lifespan()). Last, for the reason above.
+    bool writer_lifespans;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -3767,6 +3771,23 @@ static inline void tt_Subscriber_delivering_writer(const struct tt_Subscriber* s
                                                    uint32_t* out_entity_id) {
     *out_source = sub->delivering_source;
     *out_entity_id = sub->delivering_entity_id;
+}
+
+// The LIFESPAN the sample being delivered is subject to (QoS plan D1): the shorter of the delivering writer's announced
+// lifespan and the Subscriber's own, in nanoseconds; 0 when neither has one (infinite). Call ONLY from inside a
+// tt_Subscriber callback, as tt_Subscriber_delivering_writer(). The sample's age is the caller's to judge, from the
+// source timestamp the callback gets (the writer's clock: across hosts it is subject to their clock offset, as in DDS).
+// Core delivers a sample on arrival and keeps no queue, so it applies no lifespan itself: a caller that queues samples
+// (rmw_tickle) drops those whose age reaches this. Without a writer lifespan known to this Subscriber
+// (tt_Subscriber.writer_lifespans) it is the Subscriber's own, with no lookup; a writer the discovery table does not
+// hold counts as having none.
+uint64_t tt_Subscriber_writer_lifespan(const struct tt_Subscriber* sub, uint8_t source, uint32_t entity_id);
+static inline uint64_t tt_Subscriber_delivering_lifespan(const struct tt_Subscriber* sub) {
+    uint64_t own = sub->qos_lifespan_ns == tt_QOS_DURATION_INFINITE ? 0 : sub->qos_lifespan_ns;
+    if (!sub->writer_lifespans) {
+        return own;
+    }
+    return tt_Subscriber_writer_lifespan(sub, sub->delivering_source, sub->delivering_entity_id);
 }
 
 #if tt_LOCAL_DELIVERY
@@ -4222,8 +4243,8 @@ struct tt_UpdateEntity {
     // AUTOMATIC with a tight lease requirement, not just MANUAL_BY_TOPIC ones.
     uint64_t liveliness_lease_duration_ns;
     // Since tt_VERSION 14 (QoS plan D1, D8): this entity's LIFESPAN, in nanoseconds, 0 = infinite as for the two
-    // durations above. A Publisher's is what a matched reader applies with its own, the shorter of the two;
-    // a Subscriber's is reported by the graph only. 0 for a service, client or
+    // durations above. A Publisher's is what a matched reader applies with its own, the shorter of the two
+    // (tt_Subscriber_delivering_lifespan()); a Subscriber's is reported by the graph only. 0 for a service, client or
     // node entry.
     uint64_t lifespan_duration_ns;
     // Since tt_VERSION 14 (QoS plan D8): this entity's history depth in samples, as tt_Publisher_get_actual_qos() /
