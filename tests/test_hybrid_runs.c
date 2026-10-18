@@ -158,10 +158,10 @@ static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
-static uint64_t tracking[tt_MAX_PEER_COUNT * WIDE_WORDS];
 #define REORDER_SLOTS 64
 #define REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
-static uint64_t reorder[REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)];
+// A RELIABLE Subscriber's storage: its wide window, then its reorder buffer (tt_Subscriber_storage_size()).
+static uint64_t sub_storage[(tt_MAX_PEER_COUNT * WIDE_WORDS) + (REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t))];
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
@@ -218,7 +218,8 @@ static void init_pair(uint32_t len, bool reliable) {
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, tx_acquire, tx_release, NULL));
 
     init_bare_node(&receiver, RECEIVER_ID);
@@ -227,18 +228,20 @@ static void init_pair(uint32_t len, bool reliable) {
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, rx_acquire, rx_release, NULL));
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
     if (reliable) {
-        sub.reliable = true;
-        memset(tracking, 0, sizeof(tracking));
-        sub.tracking_bitmaps = tracking;
-        sub.tracking_words = WIDE_WORDS;
-        memset(reorder, 0, sizeof(reorder));
-        sub.reorder_storage = reorder;
-        sub.reorder_slots = REORDER_SLOTS;
-        sub.reorder_slot_bytes = REORDER_SLOT_BYTES;
+        qos = TEST_QOS_RELIABLE_READER;
+        qos.reliability.tracking_words = WIDE_WORDS;
+        qos.reliability.reorder_slots = REORDER_SLOTS;
     }
+    size_t storage_size = tt_Subscriber_storage_size(&receiver_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(sub_storage));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME,
+                                            &qos, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            storage_size != 0 ? sub_storage : NULL, storage_size));
+    EXPECT_TRUE(!reliable || sub.reorder_slot_bytes == REORDER_SLOT_BYTES); // the buffer the cases were written for
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, rx_acquire, rx_release, NULL));
 
     // A Publisher with no matched reader sends nothing (2026-10-15): known peers past the unicast threshold keep the
     // broadcast this capture is about.
