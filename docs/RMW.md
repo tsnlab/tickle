@@ -1,453 +1,178 @@
 # rmw_tickle
 
-`rmw_tickle` is a ROS 2 middleware (`rmw`) implementation backed by TickLE. Select it with
-`RMW_IMPLEMENTATION=rmw_tickle`; `rclcpp` and `rclpy` applications then run over TickLE's own wire format instead of
-DDS. The package lives in `rmw_tickle/rmw_tickle/`, with its typesupport in `rmw_tickle/rosidl_typesupport_tickle_c`
-and `rmw_tickle/rosidl_typesupport_tickle_cpp`.
+**TL;DR**
+- A ROS 2 `rmw` on TickLE: `RMW_IMPLEMENTATION=rmw_tickle`. Linux, jazzy, 83 of 94 rmw functions, Quality Level 4.
+- Build the three packages, then the standard interface packages once (below).
+- It does not talk to DDS. Unsupported features are refused with `RMW_RET_UNSUPPORTED`, never silently downgraded.
+- Knobs: [Options you may tune](#options-you-may-tune); DDS differences: [below](#how-tickle-differs-from-dds).
 
-- Linux only. CI builds against ROS 2 jazzy. Version `0.0.1`, Quality Level 4
-  ([QUALITY_DECLARATION.md](../rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md)).
-- Core stays embedded-minded (no malloc, small footprint). `rmw_tickle` is not bound by that: it uses threads and
-  the caller's `rcutils` allocator wherever they help.
-- Anything it cannot honour is refused explicitly (`RMW_RET_UNSUPPORTED` with an error message), never silently
-  downgraded.
+Older text: `git show 0a7926a0:docs/RMW.md`. Core: [DESIGN.md](DESIGN.md); figures: [RESULTS.md](RESULTS.md).
 
-Core design is in [DESIGN.md](DESIGN.md), measured results in [RESULTS.md](RESULTS.md), the test suites in
-[TESTING.md](TESTING.md), and planned work in [ROADMAP.md](ROADMAP.md).
-
-## API coverage
-
-Of the 94 functions `rmw_implementation` dispatches on jazzy, `rmw_tickle` serves 83. The remaining 11 are features
-TickLE has no counterpart for. Checked function by function against each
-implementation's source on 2026-09-27, and updated as gaps closed.
-
-| Area | functions | rmw_tickle | Fast DDS | CycloneDDS |
-|---|---:|---:|---:|---:|
-| Init/context, nodes, graph, publishers, subscriptions, services, waiting, QoS | 62 | 62 | 62 | 62 |
-| Serialization | 7 | 7 | 6 | 6 |
-| Events and on-new-data callbacks | 8 | 8 | 8 | 8 |
-| Loaned messages | 6 | 6 (plain fixed-size types) | 6 (shared memory only) | 6 (shared memory only) |
-| Pre-allocation | 4 | – | – | – |
-| Content filter, network flow endpoints, dynamic messages | 7 | – | 7 | – |
-| **Fully supported** | **94** | **83** | **83** (+6 loans with shared memory) | **76** (+6 loans with shared memory) |
-
-`rmw_get_serialized_message_size` is the one entry point `rmw_tickle` serves and neither vendor does.
-
-## What works, and what does not
+## What is supported
 
 | Feature | Status | Note |
 |---|---|---|
-| Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info equals the writer's own `rmw_get_gid_for_publisher` and its graph gid (`test_gid_two_process`) |
-| Services and clients | ✅ | **Up to `tt_CLIENT_MAX_OUTSTANDING` (4) requests in flight per client** (compile time; `-DRMW_TICKLE_CLIENT_MAX_OUTSTANDING=`), answered in any order, each response under its own request's sequence id. With all in flight - or one of them 8 calls old while its lost answer waits for a retry - `rmw_send_request` waits up to 100 ms for one to end, then fails, as a DDS writer with full resources does (`max_blocking_time`). A service queues up to 64 untaken requests from any clients. `request_id.writer_guid` is the client's gid on both sides; zero on the server for a request that beats the client's announce, or when one context has two clients of the service |
-| Actions (`rclcpp_action`) | ✅ | Built from the implicit messages and services. CI runs Fibonacci across two processes |
-| Serialized messages (`rmw_publish/take_serialized_message*`, `rmw_serialize`) | ✅ | Served by the direct codec. `ros2 topic echo --raw` works. Format string is `"tickle"` |
-| `ros2 bag record` / `ros2 bag play` | ✅ | The acceptance test replayed 77 samples, the same as CycloneDDS |
-| All 11 event types | ✅ | Deadline, liveliness, QoS-incompatible, incompatible-type, matched, message-lost |
-| On-new-data callbacks (EventsExecutor) | ✅ | One call per item. Whatever is already queued is reported when the callback is set |
-| Graph: node, topic and service names and types, counts, `*_info_by_topic` | ✅ | Remote nodes included (wire v11). Reported QoS profiles are ones `rmw_tickle` accepts back |
-| `*_info_by_service` (lyrical) | ✅ | Endpoint count 1 where vendors show 2; type hash is INVALID; remote QoS unknown |
-| Several nodes in one process (composition, containers) | ✅ | Delivered in-process, with the same QoS rules as remote delivery. Nothing is sent twice |
-| Several processes on one host | ✅ | Each claims its own context id through a registry in `/dev/shm` |
-| `ROS_DOMAIN_ID` | ✅ | Port 8282 + domain id, maximum 232 |
-| `ROS_AUTOMATIC_DISCOVERY_RANGE`, `ROS_STATIC_PEERS` | ✅ | Matches rmw_cyclonedds. `NOT_SET` refuses to create a node |
-| Messages up to 64 KB | ✅ | Samples go out in 1472-byte DATA_FRAG fragments. Service requests and responses are not fragmented; the OS fragments them at the IP layer |
-| Messages above 64 KB | ✅ | Up to `RMW_TICKLE_MAX_SAMPLE_BYTES` (8 MiB): the hybrid transport (DESIGN.md section 8), and a writer-owned shared region on one host |
-| Loaned messages (`rmw_borrow_loaned_message` + 5) | ✅ | For types whose wire bytes are their message in memory (Array1k, `geometry_msgs/Pose`, `std_msgs/Float64`: 67 generated types of the shipped set); `can_loan_messages` is false for the rest. Where copies remain: [Loaned messages](#loaned-messages) |
-| SROS2 security | ❌ | `ROS_SECURITY_ENFORCEMENT=Enforce` makes `rmw_init` fail. In permissive mode it warns once that security is not applied. Parked until the user starts it |
-| Pre-allocation, content filters, network flow endpoints, dynamic messages | ➖ | Not supported, by design. `RMW_RET_UNSUPPORTED`, as CycloneDDS does |
-| `wstring` | ➖ | Not supported, by decision. Only `example_interfaces/msg/WString` is affected; use UTF-8 `string` |
-| Multi-dimensional arrays, 128-bit types, `string<=N[]`, defaults on nested fields | ➖ | Refused when the code is generated, not at run time |
-| Unbounded sequences | ⚠️ | Each gets a fixed capacity (e.g. `LaserScan` 4096 beams, `Image` 64,000 B). Override with a `.capacities` file. A longer sequence fails to publish |
-| Introspection typesupport | ➖ | Only the C and C++ TickLE typesupports are registered |
+| Pub/sub, `rmw_take*`, serialized messages, `ros2 bag` | ✅ | Serialization format `"tickle"`; `rmw_get_serialized_message_size` too, which neither DDS rmw serves |
+| **Services** and clients, actions | ✅ | Up to `tt_CLIENT_MAX_OUTSTANDING` (4) requests in flight per client (`-DRMW_TICKLE_CLIENT_MAX_OUTSTANDING=`), answered in any order; when all are busy `rmw_send_request` waits 100 ms, then fails. A service queues 64 untaken requests |
+| All 11 events, EventsExecutor callbacks | ✅ | |
+| Graph and introspection | ✅ | Remote nodes included. `*_info_by_service`: one endpoint, INVALID type hash, remote QoS unknown |
+| Several nodes per process; several processes per host | ✅ | In-process delivery; context ids claimed in `/dev/shm`; shared memory between processes is automatic |
+| `ROS_DOMAIN_ID`, `ROS_AUTOMATIC_DISCOVERY_RANGE`, `ROS_STATIC_PEERS` | ✅ | Port 8282 + domain id (max 232). `NOT_SET` refuses to create a node |
+| Messages to 64 KB / above 64 KB | ✅ | 1472-byte fragments / up to `RMW_TICKLE_MAX_SAMPLE_BYTES` (8 MiB). Services are not fragmented (the OS does it, max 64 KB) |
+| [Loaned messages](#loaned-messages) | ✅ | Plain fixed-size types only (67 shipped types) |
+| Unbounded sequences | ⚠️ | Fixed capacity per field (`LaserScan` 4096, `Image` 64,000 B), `.capacities` file to override |
+| SROS2 security | ❌ | `Enforce` fails `rmw_init`; permissive warns once. Parked |
+| Pre-allocation, content filter, flow endpoints, dynamic messages, `wstring`, introspection typesupport | ➖ | By design; multi-dim arrays, 128-bit types, `string<=N[]` refused at generation |
 
-## How ROS 2 maps onto TickLE
+Threads: `rmw_wait()` receives on the executor's thread; a poll thread takes over after 10 ms without one, and a
+watchdog raises LIVELINESS_LOST if it stalls for 3 s.
 
-| ROS 2 / rmw | TickLE | rmw_tickle glue |
-|---|---|---|
-| `rmw_context_t` | one `struct tt_Context` per context (socket, discovery, scheduler) | `rmw_tickle_context_impl_t`: poll thread, watchdog thread, graph guard condition, a single condvar shared by all waits, node registry |
-| `rmw_node_t` | a `struct tt_Node` on the shared context, carrying the node's name and namespace | `rmw_tickle_node_t`: a thin wrapper. Nodes share the context's transport, as DDS participants are shared |
-| `rmw_publisher_t` | `tt_Publisher` + `tt_Topic` | `rmw_tickle_publisher_t`: retained-sample cache sized by depth and a byte budget |
-| `rmw_subscription_t` | `tt_Subscriber` + `tt_Topic` | `rmw_tickle_subscriber_t`: a bounded queue sized from depth, reorder slots for RELIABLE |
-| `rmw_client_t` | `tt_Client` + `tt_Service` | `tt_CLIENT_CALLBACK` already is the async completion that `rmw_take_response` needs |
-| `rmw_service_t` | `tt_Server` + `tt_Service` | The callback defers (`tt_CALL_DEFERRED`), and `rmw_send_response` answers with `tt_Server_send_response()` |
-| Topic match rule (same name and type) | `tt_hash_id(type_name, topic_name)` | The ROS type name is `tt_Topic.name`, and the ROS topic name is the endpoint name |
-| Graph | `struct tt_Discovery` (remote) + the context's endpoint table (local) | `rmw_graph.c` scans both. Any discovery change triggers the graph guard condition |
-| Events | core timers (`tt_Context_schedule`) and discovery data | `rmw_event.c`. LIVELINESS_LOST comes from a separate watchdog thread, so a hung poll thread is still detected |
-| Guard condition, wait set | none (rmw only) | An atomic flag plus the context's condvar. `rmw_wait` holds `wait_mutex` across check and wait, so no wakeup is lost |
-| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike. Discovery keys an entity on its `entity_id`, so two writers of one topic in one remote context are listed as two |
-| Typesupport | `tools/typesupport` CDR-4 codec | `rosidl_typesupport_tickle_c`/`_cpp`, registered as rosidl extensions and package-qualified so same-named types never collide |
-
-### Threading
-
-- Core is thread-safe, and `rmw_tickle` holds no lock of its own around it. Entry points call core directly and take
-  `tt_Context_lock` only where rmw state has to agree with core's. Lock order is always the node lock, then
-  `wait_mutex`.
-- **Executor-driven receive** is on by default (`RMW_TICKLE_EXECUTOR_POLL=0` turns it off): a blocking `rmw_wait()`
-  polls the socket itself, so a message is received and handed back on the executor's own thread. The poll thread
-  takes over only when no executor has waited for more than 10 ms.
-- A separate watchdog thread checks that the poll thread is still returning, and raises LIVELINESS_LOST if it stops.
-  Besides its 1 s tick it wakes at the moment a silence (3 s) or a MANUAL_BY_TOPIC lease would run out, so a stall
-  just past the threshold is seen; ticking alone missed stalls that ended before the next tick (2026-10-17).
-
-### Loaned messages
-
-**Which types.** A type lends when its wire bytes are its ROS message in memory: every field at the same offset in
-the CDR-4 wire form (8-byte scalars 4-aligned) as in the C struct (8-aligned), recursively, with no string, sequence or
-bool. The generator emits that as a compile-time expression of the C compiler's own `offsetof()`
-(`inplace_bytes` in the callbacks struct; the C++ shim keeps it only for a trivially copyable, standard-layout object of
-the same size). 67 of the types generated for the shipped interface set qualify (service and action parts
-included), among them Array1k, `builtin_interfaces/Time`, `geometry_msgs/Pose`, `Twist`
-and `Accel`; `std_msgs/Header` (a string) and anything with a sequence do not. **Interface packages must be rebuilt**:
-the callbacks struct grew two fields, and `rmw_tickle` refuses one of the old size by name.
-
-**Subscription.** `rmw_take_loaned_message` hands out the queued message itself, so a take copies nothing and
-allocates nothing (an ordinary `rmw_take` copies it into the caller's message, and rclcpp allocates that message):
-- a sample in a **receive buffer** (the socket path: another host, or before the ring attaches) is kept where it
-  arrived (`tt_Sample_retain`) and lent as those bytes. rmw_tickle attaches 8 receive buffers (`tt_Context_set_rx_pool`,
-  64 KiB each) when the context's first loaning subscription is created;
-- a sample from the **shared-memory ring** is decoded into a pooled shell, as for any subscription, and the shell is
-  lent: one copy, in the delivery. Keeping it in its ring slot instead (`RMW_TICKLE_LOAN_RING_SLOTS=1`) saves that copy
-  too, but a held slot stops its ring one lap later (512 records) for **every** topic into the context, for as long as
-  the application holds the loan (core DESIGN.md 10; `test_loaned_messages` held-pinned shows it: the ring refuses the
-  writer and its KEEP_ALL publish times out). So it is off by default, and a held loan blocks nothing (`held`: every
-  one of 1,600 flood samples delivered on another topic while three loans were held, 0 refusals);
-- a sample **larger than a datagram** (a type up to `RMW_TICKLE_MAX_SAMPLE_BYTES`, e.g. perf_test's Array4m) is
-  lent where core put it together, its own large buffer (core DESIGN.md 8), which holds up nothing else; the
-  publisher's borrow stays limited to types within a datagram. Before 2026-10-11 such a type did not lend: a 4 MB
-  sample was decoded into a shell in the delivery and copied again by the take, two copies after its last fragment
-  where a DDS makes one. Now a loaned take copies nothing and an ordinary take once (`test_large_loans`);
-- at most 8 queued samples per subscription stay in a buffer (core holds 16 per context); the rest are decoded;
-- a byte-swapped sample, a fragmented, reorder-released or locally delivered one, or one not aligned for its type is
-  decoded, never lent as is. Every receive buffer is 8-aligned (core's `rx_buffer` since 2026-10-09), so a message
-  alone in its datagram lands aligned for 64-bit members: on the PC socket path 296 of 300 Array1k samples are read in
-  place, where 8 of 300 were while `rx_buffer` sat 4 bytes off 8. A sample sharing its datagram may still land off
-  its alignment and is decoded.
-
-**Publisher.** `rmw_borrow_loaned_message` lends a buffer the publisher keeps (at most 64 out at once), so rclcpp
-builds the message there instead of allocating one. A new buffer is initialised as a new message is; a kept one is
-lent as its last loan left it (clearing it would write as many bytes as the copy a loan saves), so set every field,
-defaults included. `rmw_publish_loaned_message` then encodes it into the ring slot (encode-in-slot) or `tx_buffer`
-exactly as `rmw_publish` does: **one copy remains on the publish**.
-
-**A large sample's publish copy goes while it is sent** (on main since 2026-10-11). For a type whose wire
-bytes are its message, and for `rmw_publish_serialized_message`, the publisher offers core a ranged encode (the psn,
-then a `memcpy` of the message's bytes; `test_encode_range`), so a sample above a datagram is copied a send call at a
-time, just ahead of the datagrams that carry it, instead of all of it before the first leaves (core DESIGN.md 8,
-"Encoding while sending"). The copy count is unchanged; it leaves the latency path. Every other type is encoded whole,
-as before. An in-place message's padding holes go as its memory holds them, as a loaned message's always have.
-
-**Slot loans (`RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, off by default).** The borrow lends the subscriber's ring slot itself
-(core's `tt_Publisher_claim`, DESIGN.md 10), when the publisher sends to one same-host subscriber whose ring is
-attached, has no other loan out, and the slot holds the message aligned; otherwise a kept buffer, as above. The
-publish then writes the psn ahead of the message and sends the slot: **no copy on the publish** (BEST_EFFORT; RELIABLE
-still copies into its retention cache). With ring-slot takes (`RMW_TICKLE_LOAN_RING_SLOTS=1`) the subscriber reads it
-in that same slot: `test_loaned_messages` claimed, 286 of 300 built in a slot and 296 of 300 read in place, 0 copies
-between them. The slot is lent as the ring left it (another record's bytes): set every field. Off by default because
-**a claimed slot stops its ring** for every writer into that subscriber until it is published or returned, and
-because **while a slot loan is out, every other publish of that publisher fails** (`RMW_RET_ERROR`, core holds one
-claim per publisher and the claim's sequence number is taken at its publish): publish or return the loan first.
-
-`RMW_TICKLE_LOANS=0` turns loans off (`can_loan_messages` false everywhere). rcl's `ROS_DISABLE_LOANED_MESSAGES=1`
-does the same from above.
-
-**Measured** (PC only, rmw level, Array1k at max rate, 8 reps, RESULTS.md "Loaned messages (PC)"): no difference the
-reading rule can see, in either direction, between loans and plain publish/take - the PC's own scatter (other jobs
-running) is wider than any effect. Medians: BEST_EFFORT with ring slots lent +8% delivered and -10% subscriber CPU per
-message, RELIABLE -5% and +6%; the default loan arm (decoded shells) within a few percent of plain take, its
-publisher's median CPU +10% (RELIABLE) and +33% (BEST_EFFORT).
-
-**Rig A/B** (same host, one rig Pi, `ab_loans.sh`, phases A B B A B A A B, rclcpp perf_test and ping; raw files
-`~/rig_results_safe/ab_loans_<stamp>.*`). Two questions each time: D, the shipped defaults, where rclcpp takes no
-loan; L, `ROS_DISABLE_LOANED_MESSAGES=0`, where it takes them.
-- Loans (the `ab/loans2` head, landed as `7a321d26`..`e521bbba`) against main `9d924607`, 2026-10-09
-  (`20261009-011554`): D PASS on all 12 metrics; L IMPROVED, from RELIABLE Array4k throughput +14.3% and CPU per
-  sample -10.3%, the other 10 PASS. Control (RadarDetection, not loanable) held.
-- Slot loans (`324f6ced`) against the loans build `d5ec0a38`, 2026-10-10 (`20261010-092329`), the ping publishing in
-  the ring slot (98.4-100% of its publishes in every RTT run of B): D PASS, L PASS, no metric IMPROVED or WORSE.
-  Slot loans stay off by default (the user, 2026-10-10) for the two limits above, not for cost.
-
-### Large samples: blocking publish
-
-**Off by default.** Core's publish of a large sample (above one datagram, DESIGN.md section 8) never blocks: it sends
-until the socket's buffer is full and returns, and the send goes on from the poll. A KEEP_LAST sample published while
-one is still going waits behind it inside core, and a newer one replaces it there (core's `tail_abandoned`). A DDS
-`publish()` instead blocks in its own send, and the application stamps its next sample only after it returns. At a
-rate that saturates the link (RESULTS.md L4, I4s: 4 MB at 30 Hz on 1 Gbit/s) the difference is the latency rmw_tickle
-loses there: every sample waits behind the one before it, after it was stamped.
-Nor does the poll thread hold a publish up behind a large send: a discovery reply that finds the send buffer full is
-skipped rather than waited for (DESIGN.md section 5), which removed the ~220 ms publishes seen in
-`test_large_publish_block`'s off scenario on a 100 Mbit link.
-
-`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=<ms>` makes rmw_tickle behave like the vendors: after `rmw_publish()` has handed a
-large sample to core, it waits until that sample has gone into the socket, up to that long.
-
-- **Semantics.** It applies to RELIABLE and BEST_EFFORT alike: the vendors' wait is their transport's (a synchronous
-  send into a small socket buffer; RESULTS.md's I4s note counts their publishers publishing only what the link
-  carried), not a QoS. When the time runs out the publish still returns `RMW_RET_OK`, and the next publish meets
-  core's KEEP_LAST as before. It never returns `RMW_RET_TIMEOUT`: DDS's `max_blocking_time` bounds a writer blocked on
-  a full KEEP_ALL history or its resource limits, never a KEEP_LAST write, and rclcpp turns a failed publish into an
-  exception.
-- **Who never waits.** A KEEP_ALL publisher (core already refuses its large publish while a send is in progress, and
-  it waits up to `RMW_TICKLE_MAX_BLOCKING_MS`), a type that can never be larger than a datagram, and any other
-  publisher, small or large, while this one waits. The serialized and buffer-loan publish paths wait like
-  `rmw_publish()`.
-- **How.** Core's `tt_Publisher_large_in_flight()` says whether a large sample is still being sent or waits behind
-  one; answering true, it arms one writable callback, fired from the poll when the last of them has gone. The publish
-  sleeps on the context's condvar with the KEEP_ALL wait's locking, so no wake is lost and nothing polls. With
-  executor-driven receive, it ends the lease of an executor that has just left `rmw_wait()`, so the parked poll
-  thread carries the send on at once.
-- **After the hand-off, not before.** The first version waited before handing the sample to core, for the previous
-  one to go; the sample was already stamped, so it waited for the whole of the previous one's send, and the PC's I4s
-  median latency rose to 69.7 ms against 53.8 ms without the option.
-- **"Gone" means in the socket.** A send buffer that holds more than a sample keeps the sample waiting there instead:
-  rmw_tickle asks for 4 MiB, and the Pis grant 425,984 bytes, this PC 8 MiB.
-- **Seen it act**: the context's rmw_tickle stats line, printed when its poll thread stops,
-  `large_block_waits=<n> large_block_timeouts=<n>` (context-wide counters).
-
-**Measured on the PC only** (`experiments/large_block_pc.sh` on the build that added the option, 2026-10-16: the I4s
-cell over a veth shaped by tbf to 1 Gbit/s, 3 reps x 30 s, medians; not a rig figure; Fast DDS does not run on this
-PC's veth):
-
-| socket buffers | arm | published of 900 | abandoned at the sender | delivered of offered | latency median / p99 ms |
-|---|---|---:|---:|---:|---:|
-| rig's (425,984 B) | option off | 902 | 28-29 | 96.9% | 53.5 / 70.0 |
-| rig's (425,984 B) | `=1000` | 871-874 | 0 | 96.7% | 36.5 / 37.4 |
-| rig's (425,984 B) | CycloneDDS | 857-864 | - | 95.9% | 36.9 / 40.9 |
-| this PC's (8 MiB) | option off | 902 | 27-28 | 97.0% | 79.9 / 96.6 |
-| this PC's (8 MiB) | `=1000` | 873-875 | 0 | 97.1% | 68.9 / 79.0 |
-| this PC's (8 MiB) | CycloneDDS | 859-868 | - | 96.0% | 36.9 / 40.0 |
-
-With the Pis' buffers the option takes the median from 53.5 to 36.5 ms, CycloneDDS's 36.9, at the same delivered
-share of the offered ticks; it publishes fewer samples, as the vendors do. With this PC's 8 MiB a sample still queues
-behind about two others in the socket. One rep of each rmw_tickle arm with the Pis' buffers lost ~8% at the reader
-(PC load; the same rep in both). CycloneDDS, which neither socket buffer touches, read the same in both runs.
-Raw files (PC, outside the repository): `~/largemsg_pc/large_block/v2_rig_r3d30.txt` and `v2_pc_r3d30.txt`, with
-their `.runs/` directories.
-
-The rig decides it: `rmw_keepall_rig.sh` arm `tickle@block` (tickle@head's binary with the option at `BLOCK_MS`,
-default 1000) against `tickle@head` in the I4s cell.
-
-## QoS
-
-All six policies are supported for topics. `rmw_tickle_validate_qos_profile()` (`src/rmw_qos.c`) enforces the rules
-below.
-
-| Policy | Accepted | Note |
-|---|---|---|
-| RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE (topics) | RELIABLE uses core ACKNACK, retransmission and Heartbeats. Services retry in core |
-| DURABILITY | VOLATILE; TRANSIENT_LOCAL and BEST_AVAILABLE for topics | Late joiners get the backlog from the publisher's retained-sample cache |
-| HISTORY / DEPTH | KEEP_LAST and KEEP_ALL, for both publishers and subscriptions | KEEP_ALL is bounded by a byte budget: a publisher blocks (`RMW_TICKLE_MAX_BLOCKING_MS`); a full subscription refuses new samples, so a RELIABLE writer resends them. A KEEP_LAST publish of a large sample never blocks unless `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` is set |
-| DEADLINE | any finite value | Checked locally by timers |
-| LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE (topics) | The lease counts from the last sign of life. Leases under 6 ms are refused |
-| LIFESPAN | any finite value | Expires samples in both the publisher cache and the subscriber queue |
-
-- **RESOURCE_LIMITS (for reference; not an rmw QoS policy).** ROS 2's QoS profile has no RESOURCE_LIMITS, but
-  KEEP_ALL cannot be kept without one: in DDS, KEEP_ALL means "refuse rather than overwrite" and RESOURCE_LIMITS
-  says when to refuse. rmw_tickle bounds it differently from DDS:
-
-  | | DDS `ResourceLimitsQosPolicy` | rmw_tickle |
-  |---|---|---|
-  | unit | samples: `max_samples`, `max_instances`, `max_samples_per_instance` | bytes, plus fixed sample-count ceilings below |
-  | where it is set | each writer's, reader's and topic's QoS | process-wide environment (`RMW_TICKLE_KEEP_ALL_BYTES`, `RMW_TICKLE_READER_KEEP_ALL_BYTES`, 512 KiB each); a publisher can override its own through `rmw_specific_publisher_payload` (`publisher_payload.h`); a subscription cannot |
-  | instances | per key | none: rmw_tickle has no keyed topics |
-  | writer bound | samples in the writer's history | unacknowledged bytes, and at most the readers' tracking window (1,024 samples) and the index ring (2,048 datagrams); TRANSIENT_LOCAL is bounded by its replay depth (8,192), not bytes |
-  | reader bound | `max_samples` | the byte budget divided by one decoded ROS message plus its queue entry, at most 4,096 |
-  | consistency check | `max_samples >= max_samples_per_instance >= HISTORY.depth`, refused at creation | none needed: KEEP_ALL has no depth, and a budget below one sample is raised to one |
-  | memory | preallocated up to a limit (Fast DDS `allocated_samples`) or as needed | as needed, doubling toward the budget |
-  | defaults | CycloneDDS: unlimited (the writer is held by its non-standard byte watermark `WhcHigh`, 500 kB); Fast DDS: 5,000 samples | 512 KiB per publisher and per subscription |
-
-  When the bound is reached both behave alike: a KEEP_ALL publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (DDS:
-  `max_blocking_time`) and then fails the publish with a timeout; a RELIABLE subscription declines new samples, so
-  the writer holds and resends them (DDS: the sample is rejected and resent); a BEST_EFFORT one drops and counts them.
-  The subscription asks for what it declined on its retry timer, so a writer that has stopped publishing still gets
-  asked (since 2026-10-09; before, the samples declined after the writer's last Heartbeat were never asked for).
-- RxO matching covers RELIABILITY, DURABILITY, DEADLINE and LIVELINESS. An incompatible pair does not match, and both
-  sides get an event.
-- `BEST_AVAILABLE` is resolved once, when the endpoint is created, against the endpoints already discovered.
-- Services and clients accept VOLATILE only.
-
-## Build and install
-
-`rmw_tickle` compiles TickLE core (`src/tickle.c`, `encoding.c`, `log.c`, `hal_linux.c`) straight into
-`librmw_tickle`, so there is nothing separate to install. It defaults to a Release build.
+## Build and use
 
 ```sh
 source /opt/ros/$ROS_DISTRO/setup.bash
 pip install ./tools/typesupport          # the code generator, once
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
-  --cmake-args -DBUILD_SHARED_LIBS=ON     # shared, so rosidl can dlopen the typesupport
+  --cmake-args -DBUILD_SHARED_LIBS=ON
 source install/setup.bash
-```
-
-**Standard interface packages need a one-time build.** The ones installed with ROS 2 have no TickLE typesupport, and
-without it even a plain `rclcpp::Node` cannot start, because it creates `/rosout` and the parameter services.
-
-```sh
-rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # all 24 jazzy interface packages
+rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # all 24 jazzy interface packages, once
 source ~/tickle_ifaces_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_tickle
 ```
 
-- Build your own interface packages with the `rmw_tickle` install sourced.
-- A package configured before the interface workspace existed has the stock packages in its CMake cache. Build it
-  afresh once.
-- `-DTICKLE_MAX_BUFFER_LENGTH=<N>` lowers the 65507-byte maximum. The interface packages must then be rebuilt, because
-  a type generated for a different maximum is refused.
-
-Compile-time sizing `rmw_tickle` sets for core: up to 256 nodes per context, 2048 endpoints and 2048 discovered
-entities, and 4 MiB socket receive buffers. The kernel caps the buffer request at `net.core.rmem_max`, and the log
-says so when it does.
-
-- `-DRMW_TICKLE_MAX_RELIABLE_READERS=<N>` (1-1024, default 16, core's `tt_MAX_ACK_ENTRIES`): how many readers one
-  RELIABLE publisher can have. The next one is not matched, and the log says `Ack table full`; a BEST_EFFORT reader of
-  a RELIABLE publisher counts too. Each entry is 64 bytes in every publisher (24 for its acknowledgement, 40 for the
-  hybrid transport's watch), so 64 readers add 3 KiB per publisher, and the acknowledgement scans (per publish for
-  KEEP_ALL) walk them all. A build option and not an environment variable: the entries are fixed arrays inside core's
-  `struct tt_Publisher`, and core allocates nothing. rmw_tickle could allocate them per publisher, but every reader of
-  the table would then follow a pointer and a run-time bound on the publish path; that waits for a deployment that
-  needs the limit to vary at run time.
+- The stock interface packages have no TickLE typesupport; without the step above not even `rclcpp::Node` starts.
+- Build your own interface packages with `rmw_tickle` sourced. A package configured earlier: build it afresh once.
+- Build options: `-DTICKLE_MAX_BUFFER_LENGTH=<N>` (below 65507; rebuild the interfaces), and
+  `-DRMW_TICKLE_MAX_RELIABLE_READERS=<N>` (1-1024, default 16; 64 B per entry in every publisher; the next reader is
+  not matched, log `Ack table full`).
+- Fixed sizing: 256 nodes per context, 2048 endpoints, 2048 discovered entities, 4 MiB socket receive buffers
+  (capped by `net.core.rmem_max`, logged).
 
 ### Runtime environment
 
 | Variable | Effect | Default |
 |---|---|---|
-| `TICKLE_BROADCAST_ADDR` | broadcast address, and with it the interface used. Unset means the limited broadcast on the default route; since 2026-10-06 two processes on one host still find each other and use shared memory then (before, they only did with this set) | limited broadcast |
+| `TICKLE_BROADCAST_ADDR` | broadcast address, and with it the interface | limited broadcast |
 | `TICKLE_NODE_ID` | fixed context id | claimed automatically |
-| `RMW_TICKLE_EXECUTOR_POLL` | `0` turns executor-driven receive off | on |
-| `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | tracking window / 16 (64) |
-| `RMW_TICKLE_IDLE_HEARTBEAT_NS` | while a RELIABLE publisher has something unacknowledged and has sent neither a sample nor a Heartbeat for this long, send a Heartbeat asking for an answer: a lost last sample of a burst is repaired within this, not at the next sample. `0` turns it off ([DESIGN 6](DESIGN.md#6-reliability)) | 250 ms |
-| `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a FINAL Heartbeat at this fixed rate, acknowledged or not; each one pushes the idle Heartbeat back | off |
-| `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish may block | 100 |
-| `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | longest a KEEP_LAST publish of a large sample waits for it to be sent ("Large samples: blocking publish") | 0 (off) |
-| `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |
-| `RMW_TICKLE_KEEP_ALL_BYTES` / `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget, and the space reserved per sample | 512 KiB / 1472 B |
-| `RMW_TICKLE_READER_KEEP_ALL_BYTES` | what one KEEP_ALL subscription may hold untaken; when full it declines arriving samples (a RELIABLE writer sends them again, BEST_EFFORT ones are dropped and counted) | 512 KiB |
-| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples a subscription may hold | the tracking window (1024) |
-| `RMW_TICKLE_REORDER_BYTES` | reorder buffer budget per RELIABLE subscription; slots are the fewer of the above and this / slot size | 1024 x (24 + 1472) B, ~1.5 MiB |
-| `RMW_TICKLE_REORDER_SLOT_PAYLOAD` | largest sample a reorder slot holds; a larger one out of order is requested again instead | 2 KiB (never above one datagram) |
-| `RMW_TICKLE_MAX_SAMPLE_BYTES` | largest message published or received; a larger publish fails naming the limit | 8 MiB (at most ~11.3 MiB, one reader window of datagrams) |
-| `RMW_TICKLE_LARGE_REGION` | `0` turns off the shared region for same-host large messages (they then go as fragments through the ring) | on |
-| `RMW_TICKLE_LOANS` | `0` turns loaned messages off | on |
-| `RMW_TICKLE_LOAN_RING_SLOTS` | `1` lends samples in their shared-memory ring slot; a held one then stops the ring a lap later | off |
-| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1` lets a publisher lend the subscriber's ring slot for a publish without a copy ("Loaned messages") | off |
+| `TICKLE_ID_REGISTRY` | directory of the context id registry, `off` for none | `/dev/shm` |
+| `RMW_TICKLE_EXECUTOR_POLL` | `0`: receive on the poll thread only | on |
+| `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | Heartbeat on every Nth RELIABLE sample; `0` off | 64 (window / 16) |
+| `RMW_TICKLE_IDLE_HEARTBEAT_NS` | Heartbeat when unacknowledged and idle this long ([DESIGN 6](DESIGN.md#6-reliability)); `0` off | 250 ms |
+| `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also a FINAL Heartbeat at this fixed rate | off |
+| `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish blocks | 100 |
+| `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | see [below](#large-samples-blocking-publish) | 0 (off) |
+| `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache | 1 MiB |
+| `RMW_TICKLE_KEEP_ALL_BYTES` / `_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget / space reserved per sample | 512 KiB / 1472 B |
+| `RMW_TICKLE_READER_KEEP_ALL_BYTES` | untaken bytes one KEEP_ALL subscription holds; then it declines | 512 KiB |
+| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples held | tracking window (1024) |
+| `RMW_TICKLE_REORDER_BYTES` | reorder budget per RELIABLE subscription | 1024 x (24 + 1472) B |
+| `RMW_TICKLE_REORDER_SLOT_PAYLOAD` | largest sample a reorder slot holds | 2 KiB |
+| `RMW_TICKLE_MAX_SAMPLE_BYTES` | largest message (max ~11.3 MiB) | 8 MiB |
+| `RMW_TICKLE_LARGE_REGION` | `0`: no shared region for same-host large messages | on |
+| `RMW_TICKLE_LOANS` | `0`: no loans (as `ROS_DISABLE_LOANED_MESSAGES=1`) | on |
+| `RMW_TICKLE_LOAN_RING_SLOTS` | `1`: lend received samples in their ring slot | off |
+| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1`: borrow lends the subscriber's ring slot | off |
 
-The two publisher storage budgets can also be set per publisher, with `rmw_tickle_publisher_payload_t`
-(`rmw_tickle_c/publisher_payload.h`) passed through `rmw_publisher_options_t.rmw_specific_publisher_payload`.
+Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSEMBLY_CAP_OFF`, `RMW_TICKLE_RUN_UNITS`
+(forced hybrid arms, DESIGN.md section 8), `RMW_TICKLE_TRACE_FILE` (counters at shutdown), the Linux HAL's `TT_*`
+(DESIGN.md section 15). Publisher budgets can also be set per publisher: `rmw_tickle_publisher_payload_t`
+(`publisher_payload.h`) via `rmw_specific_publisher_payload`.
+
+## QoS
+
+| Policy | Accepted | Note |
+|---|---|---|
+| RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE | Services retry in core |
+| DURABILITY | VOLATILE, TRANSIENT_LOCAL, BEST_AVAILABLE | Services: VOLATILE only |
+| HISTORY | KEEP_LAST, KEEP_ALL | KEEP_ALL is bounded in bytes, not samples (no RESOURCE_LIMITS in rmw): a full publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` then times out; a full RELIABLE subscription declines (the writer resends), BEST_EFFORT drops |
+| DEADLINE, LIFESPAN | any finite value | Lifespan expires samples in the publisher cache and the subscriber queue |
+| LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE | Lease at least 6 ms |
+
+RxO matching covers reliability, durability, deadline and liveliness; both sides get the event. BEST_AVAILABLE is
+resolved at creation against endpoints already discovered.
+
+## Loaned messages
+
+- **Which types:** those whose CDR-4 wire bytes equal the C struct (no string, sequence or bool), e.g. Array1k,
+  `geometry_msgs/Pose`. `can_loan_messages` is false for the rest. Interface packages built before loans must be rebuilt.
+- **Take:** a sample in a receive buffer (socket path) or a large sample is lent where it lies: no copy. A ring sample
+  is decoded once into a shell. At most 8 queued samples per subscription stay in buffers; byte-swapped, fragmented,
+  local or misaligned ones are decoded.
+- **Publish:** the borrow lends a kept buffer (up to 64); one copy remains. Set every field: a reused buffer is not cleared.
+  A large in-place type is copied a send at a time, just ahead of the datagrams (DESIGN.md section 8, "Encoding while sending").
+- **Ring slots (both off by default, the user, 2026-10-10):** `RMW_TICKLE_LOAN_RING_SLOTS=1` lends the ring slot, but
+  a held slot stops that ring for every topic one lap (512 records) later. `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1` builds in
+  the subscriber's slot (no publish copy for BEST_EFFORT); while it is out the ring is stopped and every other publish
+  of that publisher fails.
+- **Measured:** PC, no visible difference (RESULTS.md "Loaned messages (PC)"). Rig A/B 2026-10-09 (`7a321d26`..`e521bbba`
+  against `9d924607`): defaults PASS 12/12; with rclcpp taking loans, RELIABLE Array4k throughput +14.3%. Slot loans
+  (`324f6ced`, 2026-10-10): PASS, nothing better or worse.
+
+## Large samples: blocking publish
+
+Off by default: a large publish hands the sample to core and returns; core sends it from the poll and a newer
+KEEP_LAST sample replaces a waiting one. `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=<ms>` waits after the hand-off until the
+sample is in the socket, as a DDS `publish()` does; it then returns `RMW_RET_OK` even on time-out. KEEP_ALL publishers
+and types that fit one datagram never wait. Counters: `large_block_waits`, `large_block_timeouts` in the stats line.
+Rig figures: RESULTS.md, I4s note.
 
 ## Performance
 
-Cross-host round trip through `rclcpp`, with ping on one rig Raspberry Pi and pong on the other over eth0. All four rmw
-implementations run in one session, 3 repetitions, median shown; the same application binary is used for every rmw.
-Build `934f90de`; raw files `examples/perf_hil/results/rmw_4way_block_934f90de_2026-09-30.txt` and
-`rmw_4way_poll*_cb_r7_934f90de_2026-10-01.txt` (7 repetitions). **Bold** marks a lead beyond 2xSE.
-The round-trip figures here (rows 48-67, and the same-host RTT below) are from the send stamp, a diagnostic since
-2026-10-18. The scored latency rows are measured from creation time at `18f16b85`: cross host 48c-67c and same
-host R1c-R12 (RESULTS.md, "rmw layer" and "rmw layer, same host").
-
-| Row | Metric (Bench = 64 B, Array1k = 1 KB) | rmw_tickle | Fast DDS | CycloneDDS | rmw_zenoh |
-|---|---|---:|---:|---:|---:|
-| 48 | RTT ms, block wait, Bench, BEST_EFFORT | **0.246** | 0.320 | 0.269 | 0.381 |
-| 49 | RTT ms, block wait, Bench, RELIABLE | **0.247** | 0.335 | 0.269 | 0.386 |
-| 50 | RTT ms, block wait, Array1k, BEST_EFFORT | **0.263** | 0.338 | 0.294 | 0.611 |
-| 51 | RTT ms, block wait, Array1k, RELIABLE | **0.269** | 0.354 | 0.284 | 0.609 |
-| 52-67 | RTT, busy poll and 50/100/200 us poll sleeps, random phase (16 rows) | 9 rows won, 7 tied | none won | 7 tied | none won |
-| 68 | ping peak RSS, KB | **12,544** | 23,748 | 14,592 | 70,072 |
-| 70 | pong CPU over the whole run, ms (BEST_EFFORT) | **37.4** | 57.7 | 43.5 | 91.8 |
-| 71 | pong CPU over the whole run, ms (RELIABLE) | **37.2** | 60.4 | 48.5 | 94.1 |
-
-- Every tie in rows 52-67 is with CycloneDDS, at the larger poll sleeps, where half a poll cycle of waiting dominates.
-- Only the rig's numbers count. The dev PC is used to check correctness, never to measure performance.
-- **Same host** (one rig Pi, each rmw on its shipped transport, build `06dd78d8`, 2026-10-09, 3 reps): rmw_tickle
-  wins all 52 scored rows against both DDS rmws, e.g. RTT mean 40.0 us (Bench, RELIABLE, block) against 151.2 and
-  112.7, 140,885 delivered Array1k samples/s at BEST_EFFORT KEEP_LAST 1 against 17,547 and 70,420, and peak RSS
-  13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB (since `718220d8`; at `a7e02807` six peak-RSS rows were DRAW or
-  LOSE). Rows R1-R21 in RESULTS.md.
-- A cross-host rmw throughput comparison exists only for RELIABLE + KEEP_ALL (rows 72-75).
-- The generated converters now cost what a `memcpy` costs: a 64 KB `Image` through `rmw_serialize` takes 3.6 us,
-  against 2.6 us for Fast DDS and 21.2 us for CycloneDDS (PC, 2026-09-27).
-
-The full tables are in [RESULTS.md](RESULTS.md).
+Rig figures against Fast DDS, CycloneDDS and rmw_zenoh: [RESULTS.md](RESULTS.md), "rmw layer" (cross host) and
+"rmw layer, same host" (R1-R21).
 
 ## Open items
 
-- Loaned messages: a ring that skips a held slot (so ring slots could be lent safely) would make more of them
-  zero-copy. The other two core changes are done: `tt_Context.rx_buffer` is 8-aligned and the publisher has a
-  claimed-slot API (`tt_Publisher_claim`, used by `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`), both since 2026-10-09.
-- Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
-  `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
-  `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes.
-- `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
-- Shared-memory tests. Done: a writer leaves a reader killed with SIGKILL at its next revalidation and attaches its
-  successor (`test_segment_owner`, real HAL, 2026-10-09); the same-host comparison against both vendors on their
-  shipped transports (RESULTS.md R1-R21 and the core same-host rows); CI's `linux-netns` job runs with shared memory
-  on, `linux-netns-shm-off` is its control; both windows where one stream takes two paths were measured (pre-attach:
-  257 datagrams, 0 out of order, 2026-09-30, `RMW_GAPS_PLAN.md` S9 at `3c0c505b`; service oversize: 2026-10-09,
-  ROADMAP "Done"). Open: a kill test at the rmw level, two ROS processes with the subscriber killed mid-stream.
-- rmw behaviour tests still CI-only: the upstream conformance suite (`test_rmw_implementation`), the interface
-  workspace controls and the direct-codec identity harness. The ctest suite and `check_ros2_interfaces.sh`'s
-  pub/sub, rclcpp and action cases run locally in a private netns (`make test-rmw-behaviour`, and the
-  `rmw suite (as CI)` gate). The acceptance suite (`rmw_gap_acceptance.sh`) is run by hand.
-- A cross-vendor rmw throughput benchmark that can run across two hosts.
-- SROS2 security: parked until the user starts it.
-- Line and branch coverage tracking for rmw_tickle (core has it: `make coverage` and CI's `coverage` job; CI's colcon
-  build of rmw_tickle has none; needed for a higher quality level).
+- A segment ring that skips held slots, so ring slots can be lent safely.
+- Event counts across processes; `*_info_by_service` with two endpoints, a type hash and remote QoS.
+- An rmw-level shared-memory kill test (two ROS processes, subscriber killed mid-stream).
+- A two-host cross-vendor rmw throughput benchmark; rmw_tickle coverage in CI; SROS2 (parked).
 
 ## Tuning and differences from DDS
 
-*(Moved from README.md on 2026-10-18.)*
-
 ### Options you may tune
 
-The defaults were checked on the test rig (two Raspberry Pi 5s, 1 GbE). They depend on the hardware: derive yours
-rather than copy ours. Core constants are `-D` build overrides (each is `#ifndef`-guarded in
-`include/tickle/config.h`); `(env)` marks an environment variable.
+Defaults were checked on the rig (two Raspberry Pi 5s, 1 GbE); derive yours. Core constants are `-D` overrides
+(`include/tickle/config.h`); `(env)` is an environment variable. Every core knob: DESIGN.md section 15.
 
 | option | default | derive it as |
 |---|---|---|
-| `tt_SEGMENT_BYTES` (shared-memory ring) | 768 KiB | slots = peak datagram rate x longest reader stall; bytes = slots x (16 + `tt_SEGMENT_SLOT_BYTES`). Slots round **down** to a power of two: 768 KiB is 512 slots of 1472 B. |
-| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | peak receive rate (bytes/s) x longest drain stall. The kernel caps it at `net.core.rmem_max` / `wmem_max`; raise those too. |
-| `tt_RX_BATCH` (Linux HAL) | 32 | datagrams one wake-up drains at peak rate (p95); the rig drained about 30. rmw_tickle uses 1 (64 KB datagrams), not yet measured. |
-| `tt_RX_CLOCK_REFRESH` | 16 | accepted clock staleness of receive stamps / time per datagram (16 x ~85 ns = ~1.4 us on the dev PC). |
-| `tt_RX_LOCK_CHUNK` | 8 | longest accepted wait for a publishing thread while the poll thread receives / time per datagram. |
-| `tt_RELIABLE_RETRY_INITIAL` | 1 ms | about 4 x the link's round trip; used only until the first round trip is measured. |
-| `tt_DISCOVERY_REQUEST_RETRY` | 10 ms | above round trip + `tt_CONTEXT_TX_INTERVAL`; used only until a peer's first list answer is timed. |
-| `RMW_TICKLE_KEEP_ALL_BYTES` (env) | 512 KiB | link rate x the longest acknowledgement stall a KEEP_ALL writer should ride out (42 ms at 100 Mbit/s, 420 ms at 10 Mbit/s). |
-| `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x the samples an application may leave untaken before its writers are pushed back. |
-| `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x time to repair a lost sample. Tracking beyond what the writer retains recovers nothing. |
-| `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | heartbeats piggybacked per tracking window; the interval is window / this (64 at 1,024). Chosen by a rig sweep at max rate and 8% loss (every 64 left 0-1 window jumps a run, as a 1 ms periodic heartbeat did); raise it if a reader still jumps its window under your loss. |
+| `tt_SEGMENT_BYTES` | 768 KiB | slots = peak datagram rate x longest reader stall, rounded **down** to a power of two; bytes = slots x (16 + `tt_SEGMENT_SLOT_BYTES`) |
+| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | peak receive rate x longest drain stall; raise `net.core.rmem_max` / `wmem_max` too |
+| `tt_RX_BATCH` | 32 | datagrams one wake drains at peak (p95). rmw_tickle uses 1 |
+| `tt_RX_CLOCK_REFRESH` | 16 | accepted receive-stamp staleness / time per datagram |
+| `tt_RX_LOCK_CHUNK` | 8 | longest wait for a publishing thread / time per datagram |
+| `tt_RELIABLE_RETRY_INITIAL` | 1 ms | ~4 x round trip; only until the first is measured |
+| `tt_DISCOVERY_REQUEST_RETRY` | 10 ms | above round trip + `tt_CONTEXT_TX_INTERVAL`; only until timed |
+| `RMW_TICKLE_KEEP_ALL_BYTES` (env) | 512 KiB | link rate x longest acknowledgement stall to ride out |
+| `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x samples left untaken before writers are pushed back |
+| `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x repair time |
+| `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | piggyback interval = window / this; raise it if a reader jumps its window under loss |
 
-Constants that stand in for a time or a rate are being replaced by algorithms (ROADMAP.md, "Now" 5a) and are not
-listed. The retry timers' granularity G in `srtt + max(G, 4 x rttvar)` (`tt_RELIABLE_RETRY_GRANULARITY`,
-`tt_CALL_RETRY_GRANULARITY`) is measured by the context itself; set one non-zero only to fix G (DESIGN.md,
-"Reliability"). Every core knob: DESIGN.md section 15.
+Retry granularity G (`tt_RELIABLE_RETRY_GRANULARITY`, `tt_CALL_RETRY_GRANULARITY`) is measured by the context; set it
+only to fix G (DESIGN.md section 6).
 
 ### How TickLE differs from DDS
 
-TickLE borrows DDS/RTPS ideas: writers keep samples, readers report gaps with a NACK (negative acknowledgement), and
-QoS is matched requested-against-offered. But it is its own protocol and does **not** interoperate with any DDS
-vendor. "DDS" below is the default behaviour of Fast DDS and CycloneDDS.
+DDS ideas, own protocol: **no interoperation with DDS**. "DDS" means Fast DDS and CycloneDDS defaults.
 
 | Behaviour | TickLE | DDS | What to expect |
 |---|---|---|---|
-| Wire protocol | Own UDP framing; payload in TickLE CDR-4 (4-byte max alignment) | RTPS; CDR / XCDR | No mixing with DDS nodes; 20 B framing per sample. |
-| Discovery | Link broadcast, 1 s summaries, endpoint lists pulled on change; UDP even on one host | Multicast SPDP/SEDP | Set `TICKLE_BROADCAST_ADDR` to the link's directed broadcast. |
-| Peer departure | 3.5 s of silence (up to 10 s with long leases) | ~10 s (Cyclone), ~20 s (Fast DDS) | Faster failover; a host stalled for seconds is dropped and re-learned. |
-| Contexts per link | One 8-bit id per process, at most 254 per link | 12-byte GUID prefix | Plan large systems around it. |
-| Several readers | Unicast to up to 2 readers, broadcast to more | Unicast per reader, or multicast | One send reaches many; hosts not subscribed discard it. |
-| RELIABLE readers per publisher | 16; the next is not matched (logged). `-DRMW_TICKLE_MAX_RELIABLE_READERS=N` (core `tt_MAX_ACK_ENTRIES`), 64 B each per publisher | Unlimited | Raise it for topics every node subscribes to, e.g. `/clock`. |
-| RELIABLE heartbeats | While unacknowledged, 250 ms after the last send (`RMW_TICKLE_IDLE_HEARTBEAT_NS`), repeated while unanswered; none at 8 Hz and up. Also every 64th sample, at match, after a large sample | Periodic while unacknowledged (Cyclone 100 ms, Fast DDS 3 s) | A lost **last** sample of a burst is repaired 125-250 ms after sending; below 4 Hz each sample costs a heartbeat and its acknowledgements. |
-| Repair timing | Immediate NACK and resend; retry from the measured round trip | Fixed response delays (ms) | Far better throughput under loss; a few duplicate repairs. |
-| Large samples | MTU-sized units with their own sequence numbers: up to 45 per IP-fragmented datagram on a clean path, one per datagram under loss; only lost units resent. Max 8 MiB in rmw (`RMW_TICKLE_MAX_SAMPLE_BYTES`) | IP-fragmented 64 KB datagrams + DATA_FRAG | Robust under loss, cheap on a clean link. |
-| UDP checksum | 0 on a large sample's IP fragments (Linux default) | On | DESIGN.md, "UDP checksum 0"; `TT_UDP_CSUM0=0` restores it. |
-| KEEP_ALL bound | 512 KiB per publisher and per subscription (`RMW_TICKLE_KEEP_ALL_BYTES`, `RMW_TICKLE_READER_KEEP_ALL_BYTES`) | Samples (`max_samples`: Fast DDS 5,000, Cyclone unlimited) | At the bound a publish blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (100). |
-| KEEP_LAST publisher history | At most 1 MiB (`RMW_TICKLE_CACHE_BYTES`) | `depth` samples | Large samples: fewer than `depth` kept for repair and late joiners (warned). Raise it for latched maps or images. |
-| TRANSIENT_LOCAL | Publisher pushes its history to a new subscriber | Reader pulls it (HEARTBEAT/ACKNACK) | Late joiners get the backlog sooner. No TRANSIENT or PERSISTENT. |
-| LIFESPAN | Publisher's lifespan stops resends and replay; a subscription expires queued samples by **its own** lifespan | Writer's lifespan applies at the reader | Set lifespan on the subscription too. |
-| Source timestamp | 32-bit microseconds; clocks must agree within ±35 minutes | 64-bit, sub-ns | Sync clocks (NTP/PTP) if you use source timestamps or subscription lifespan. Everything else runs on the monotonic clock. |
-| Same-host transport | Automatic shared-memory ring per peer, no daemon; a full ring drops the datagram (RELIABLE repairs it) | Fast DDS SHM / data-sharing; Cyclone via iceoryx (opt-in, RouDi daemon) | Nothing to configure. |
-| Loaned messages | Plain fixed-size types, also lent from socket receive buffers | Plain types, shared memory only | "Loaned messages" above. |
-| Services | 4 requests in flight per client (`tt_CLIENT_MAX_OUTSTANDING`), answered in any order; a 5th waits up to 100 ms, then fails. IP-fragmented above 1472 B, max 64 KB; unanswered after 5 s = dropped | Unbounded, fragmented like topics, no timeout | Raise the constant for more concurrent calls; keep service messages small on lossy links. A client with no known server still finds one. |
-| Unbounded sequences | Fixed capacity per field (e.g. `Image` 64,000 B, `LaserScan` 4,096) unless set in a `.capacities` file | Unbounded | A longer sequence fails to publish. |
-| QoS policies | RELIABILITY, DURABILITY, HISTORY, DEADLINE, LIFESPAN, LIVELINESS (AUTOMATIC, MANUAL_BY_TOPIC; lease ≥ 6 ms) | All | Ownership, partitions, content filters, keyed instances, `wstring` and security return `RMW_RET_UNSUPPORTED`. |
-
-Anything TickLE cannot honour is refused with an error, never silently downgraded. QoS compatibility (reliability,
-durability, deadline, liveliness) is checked as in DDS, and both sides get the incompatible-QoS event.
+| Wire | Own UDP framing, CDR-4 | RTPS, CDR/XCDR | 20 B framing per sample |
+| Discovery | Link broadcast, 1 s summaries; UDP even on one host | Multicast SPDP/SEDP | Set `TICKLE_BROADCAST_ADDR` to the directed broadcast |
+| Peer departure | 3.5 s silence (to 10 s with long leases) | ~10 s Cyclone, ~20 s Fast DDS | Faster failover |
+| Contexts | 8-bit id, max 254 per link | 12-byte GUID prefix | Plan large systems around it |
+| Several readers | Unicast to 2, broadcast to more | Unicast per reader or multicast | Unsubscribed hosts discard |
+| RELIABLE readers per publisher | 16, `-DRMW_TICKLE_MAX_RELIABLE_READERS=N` | Unlimited | Raise for e.g. `/clock` |
+| Heartbeats | 250 ms after the last send while unacknowledged; every 64th sample | Periodic (Cyclone 100 ms, Fast DDS 3 s) | A lost last sample is repaired in 125-250 ms |
+| Repair | Immediate NACK; retry from measured RTT | Fixed delays | Better under loss; a few duplicates |
+| Large samples | MTU units, own sequence numbers; only lost units resent; 8 MiB max | 64 KB IP fragments + DATA_FRAG | Robust under loss |
+| UDP checksum | 0 on large-sample IP fragments (Linux) | On | DESIGN.md, "UDP checksum 0"; `TT_UDP_CSUM0=0` restores it |
+| KEEP_ALL bound | 512 KiB per publisher and subscription | Samples (Fast DDS 5,000, Cyclone unlimited) | Publish blocks up to 100 ms at the bound |
+| KEEP_LAST history | At most 1 MiB (`RMW_TICKLE_CACHE_BYTES`) | `depth` samples | Fewer than depth for large samples (warned) |
+| TRANSIENT_LOCAL | Publisher pushes history | Reader pulls | No TRANSIENT or PERSISTENT |
+| LIFESPAN | Subscription uses **its own** lifespan | Writer's, at the reader | Set it on the subscription too |
+| Source timestamp | 32-bit us, clocks within ±35 min | 64-bit | Sync clocks if you use them |
+| Same host | Automatic shared-memory ring, no daemon | SHM / iceoryx (opt-in) | Nothing to configure |
+| Services | 4 in flight per client; max 64 KB; dropped after 5 s | Unbounded, no timeout | Keep requests small on lossy links |
+| QoS | No ownership, partitions, filters, keys, `wstring`, security | All | `RMW_RET_UNSUPPORTED` |
