@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     }
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    static struct tt_Topic topic = {
+    static struct tt_TypeSupport topic = {
         .name = "g15_zerocopy",
         .data_size = sizeof(struct body),
         .data_encode_size = body_encode_size,
@@ -104,7 +104,24 @@ int main(int argc, char** argv) {
     memset(&sample, FILL_BYTE, sizeof(sample));
     // The sample's own size, not the buffer's: a topic larger than this build's largest sample is refused at create.
     topic.data_size = g_body_len;
-    if (tt_Context_create(&node) != tt_RET_OK || tt_Context_create_publisher(&node, &pub, &topic, "g15") != tt_RET_OK) {
+    topic.max_encoded_size = g_body_len;
+    // Best-effort, as the legacy create left it: BEST_EFFORT, VOLATILE, AUTOMATIC, infinite durations. Nothing is
+    // retained, so the Publisher needs no storage and its history sizes nothing.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_PublisherOptions options; // all defaults: no batching, no periodic HEARTBEAT
+    if (tt_Context_create(&node) != tt_RET_OK ||
+        tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &topic, "g15", &qos, &options, NULL, 0) !=
+            tt_RET_OK) {
         fprintf(stderr, "cannot create the context or its publisher\n");
         return 1;
     }
