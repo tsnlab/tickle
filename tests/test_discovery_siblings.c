@@ -184,12 +184,18 @@ static void setup(void) {
     topic.data_encode = data_encode;
     topic.data_decode = data_decode;
     topic.data_free = data_free;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &kept, &topic, "pub"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &missed, &topic, "pub"));
-    kept.deadline_duration_ns = KEPT_DEADLINE_NS;
-    missed.deadline_duration_ns = MISSED_DEADLINE_NS;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "pub", on_sample));
-    sub.deadline_duration_ns = REQUESTED_DEADLINE_NS;
+    // TEST_QOS_UNRELIABLE, with each endpoint's deadline.
+    struct tt_QosProfile qos = TEST_QOS_UNRELIABLE;
+    qos.deadline.period_ns = KEPT_DEADLINE_NS;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&remote), &kept, &topic, "pub", &qos,
+                                                      NULL, NULL, 0));
+    qos.deadline.period_ns = MISSED_DEADLINE_NS;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&remote), &missed, &topic, "pub", &qos,
+                                                      NULL, NULL, 0));
+    qos.deadline.period_ns = REQUESTED_DEADLINE_NS;
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&local), &sub, &topic, "pub", &qos,
+                                            &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
     // The premise: one endpoint_id, two entities.
     EXPECT_EQ_U32(kept.endpoint.id, missed.endpoint.id);
     EXPECT_TRUE(kept.endpoint.entity_id != missed.endpoint.entity_id);

@@ -137,11 +137,15 @@ static void test_the_last_of_many_publishers_is_known_and_refused(void) {
         topics[i].data_encode = data_encode;
         topics[i].data_decode = data_decode;
         topics[i].data_free = data_free;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &pubs[i], &topics[i], "pub"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&remote), &pubs[i], &topics[i], "pub",
+                                                          &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     }
     const int last = PUBLISHERS - 1;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topics[last], "pub", on_sample));
-    sub.reliable = true; // requested RELIABLE; every remote publisher offers BEST_EFFORT
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(
+                      tt_Context_default_node(&local), &sub, &topics[last], "pub",
+                      &TEST_QOS_RELIABLE_READER, // requested RELIABLE; every remote publisher offers BEST_EFFORT
+                      &(struct tt_SubscriberOptions) {.callback = on_sample}, NULL, 0));
 
     captured_count = 0;
     EXPECT_TRUE(build_and_send_update(&remote, NULL, 0));
@@ -201,7 +205,8 @@ static void test_a_full_table_counts_what_it_drops_and_warns_once(void) {
         topics[i].data_encode = data_encode;
         topics[i].data_decode = data_decode;
         topics[i].data_free = data_free;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &pubs[i], &topics[i], "pub"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&remote), &pubs[i], &topics[i], "pub",
+                                                          &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     }
     char* log_text = NULL;
     size_t log_size = 0;
