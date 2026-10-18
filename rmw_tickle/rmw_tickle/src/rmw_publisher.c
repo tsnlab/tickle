@@ -34,7 +34,6 @@
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
-#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - check_publisher_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/serialized_message.h"
@@ -73,62 +72,6 @@ static void check_publisher_deadline(struct tt_Context* node, uint64_t time, voi
     // exhausted) - no logging facility in this package to report it through, and no return path
     // out of a scheduled void callback anyway.
     (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context, next, check_publisher_deadline, pub_impl);
-}
-
-// Milestone 31/28(a) observability follow-on - how often check_publisher_qos_incompatible() below
-// re-scans the discovery table. No QoS-provided duration applies here (unlike DEADLINE/LIVELINESS,
-// this isn't itself a QoS policy with its own configurable period) - tt_CONTEXT_UPDATE_INTERVAL is
-// the natural choice, the same cadence a newly (in)compatible remote Subscriber's own discovery
-// announce would actually refresh at, so checking faster could never see a genuinely newer answer.
-#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_CONTEXT_UPDATE_INTERVAL
-
-// Milestone 31/28(a) observability follow-on - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own periodic
-// check: no wire-level trigger exists for this (Milestone 31's own Publisher-side gate just
-// silently skips upsert_peer()/deliver_durability_backlog()/send_initial_heartbeat() for an
-// incompatible remote Subscriber, tickle.c), so this instead periodically re-derives a live count
-// from the existing discovery table - the same delta-tracking pattern check_subscription_
-// liveliness() (rmw_subscription.c) already established for RMW_EVENT_LIVELINESS_CHANGED, an
-// analogous "no wire trigger, just periodically re-scan discovery" event. Fires from inside tt_
-// Node_poll() - poll_thread already holds the node lock (rmw_tickle_context_impl_t's
-// own doc comment) - so this calls the *_locked() variant directly, never the public rmw_tickle_
-// count_incompatible_subscribers_locked() name's own "_locked" caller-already-holds-it contract
-// implies otherwise.
-static void check_publisher_qos_incompatible(struct tt_Context* node, uint64_t time, void* param) {
-    (void)node;
-    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
-    rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
-    size_t current = rmw_tickle_count_incompatible_subscribers_locked(
-        pub_impl->node->context_impl, pub_impl->rmw_publisher.topic_name, pub_impl->tickle_publisher.reliable,
-        pub_impl->tickle_publisher.durable, pub_impl->tickle_publisher.liveliness_manual,
-        pub_impl->tickle_publisher.deadline_duration_ns, pub_impl->tickle_publisher.liveliness_lease_duration_ns,
-        &last_kind);
-    rmw_tickle_qos_incompatible_status_t* status = &pub_impl->offered_qos_incompatible;
-    if ((int)current > status->last_incompatible_count) {
-        int delta = (int)current - status->last_incompatible_count;
-        atomic_fetch_add(&status->base.total_count, delta);
-        atomic_fetch_add(&status->base.unread_count, delta);
-        status->last_policy_kind = last_kind;
-        rmw_tickle_callback_slot_notify(&status->base.callback, (size_t)delta); // (g2)
-        // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
-        // wait_cond check_publisher_deadline() above already broadcasts on, identical reasoning.
-        rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
-        pthread_mutex_lock(&context_impl->wait_mutex);
-        pthread_cond_broadcast(&context_impl->wait_cond);
-        pthread_mutex_unlock(&context_impl->wait_mutex);
-        rmw_tickle_poke_polling_executor(context_impl);
-    }
-    // current can also fall back to 0 (the remote Subscriber departed, or a QoS change made it
-    // compatible again) - matching real DDS's own total_count being cumulative regardless, this
-    // deliberately never *decrements* total_count/unread_count, only ever tracks the high-water
-    // mark of newly-appeared incompatible matches, the same way check_subscription_liveliness()'s
-    // own not_alive.total_count only counts departures, never "un-counts" a return.
-    status->last_incompatible_count = (int)current;
-
-    // Monitoring simply stops here on a reschedule failure - same reasoning as check_publisher_
-    // deadline()'s own identical pattern above.
-    (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context,
-                              time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_publisher_qos_incompatible,
-                              pub_impl);
 }
 
 // DDS QoS policy coverage inventory (rmw_tickle/PLAN.md, 2026-09-21) gap 2 - KEEP_ALL conceptually
@@ -1223,11 +1166,6 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     if (pub_impl->deadline_period_ns != 0) {
         tt_Context_unschedule(&pub_impl->node->context_impl->tickle_context, check_publisher_deadline, pub_impl);
     }
-    // As rmw_destroy_subscription(): the self-rescheduling QoS-incompatible check, once armed, goes too.
-    if (pub_impl->offered_qos_incompatible_monitoring_started) {
-        tt_Context_unschedule(&pub_impl->node->context_impl->tickle_context, check_publisher_qos_incompatible,
-                              pub_impl);
-    }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
     // (g3) The Subscriptions it was matched with, and those it had another type from, recount without it.
     rmw_tickle_update_matches_locked(pub_impl->node->context_impl, pub_impl->rmw_publisher.topic_name,
@@ -1639,31 +1577,7 @@ rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t
     switch (event_type) {
     case RMW_EVENT_OFFERED_DEADLINE_MISSED:
     case RMW_EVENT_LIVELINESS_LOST:
-        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
-        rmw_event->data = publisher->data;
-        rmw_event->event_type = event_type;
-        return RMW_RET_OK;
-    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE: {
-        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
-        rmw_event->data = publisher->data;
-        rmw_event->event_type = event_type;
-        // Lazy, idempotent start - see rmw_tickle_publisher_t.offered_qos_incompatible_monitoring_
-        // started's own doc comment (rmw_tickle.h). Only the first rmw_publisher_event_init() call
-        // for this event type actually arms the periodic check; a later one just rewires the same
-        // rmw_event_t.
-        rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
-        if (!pub_impl->offered_qos_incompatible_monitoring_started) {
-            pub_impl->offered_qos_incompatible_monitoring_started = true;
-            tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
-            // A failure here just leaves this monitoring inactive for this Publisher - same
-            // reasoning as check_publisher_deadline()'s own scheduling failure handling.
-            (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context,
-                                      tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
-                                      check_publisher_qos_incompatible, pub_impl);
-            tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
-        }
-        return RMW_RET_OK;
-    }
+    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE:    // counted by core from creation (QoS plan D2), whether asked for or not
     case RMW_EVENT_PUBLICATION_MATCHED:         // (g3) counted from creation, whether asked for or not
     case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE: // (g3)
         rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;

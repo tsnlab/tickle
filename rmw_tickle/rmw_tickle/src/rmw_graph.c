@@ -313,7 +313,8 @@ size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* con
 // against struct tt_DiscoveredEntity's own fields (already populated by Milestone 31/49) instead
 // of a live DATA/UPDATE packet's own sender - see this function's own two callers below for which
 // side's own local values play which role. Reports which policy was found incompatible via
-// *out_kind.
+// *out_kind. Its one caller now is the (g3) matched recount (compatible() below); the INCOMPATIBLE_QOS events
+// come from core's own judgement at announce time (QoS plan D2, rmw_node.c's qos_incompatible_callback()).
 static bool qos_incompatible(bool requested_reliable, bool requested_durable, bool requested_manual,
                              uint64_t requested_deadline_ns, uint64_t requested_lease_ns, bool offered_reliable,
                              bool offered_durable, bool offered_manual, uint64_t offered_deadline_ns,
@@ -339,68 +340,6 @@ static bool qos_incompatible(bool requested_reliable, bool requested_durable, bo
         return true;
     }
     return false;
-}
-
-// rmw_tickle.h's own declaration - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own live count: how many
-// currently-alive discovered remote Subscribers on `topic_name` request something this Publisher
-// (offering `offered_*`) doesn't. Same "poll-thread-only, no locking of its own" rule as count_
-// matching_locked() - called only from check_publisher_qos_incompatible() (rmw_publisher.c),
-// which already holds the node lock via the same tt_Context_schedule()-callback contract
-// that function's own doc comment explains.
-size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
-                                                        bool offered_reliable, bool offered_durable,
-                                                        bool offered_manual, uint64_t offered_deadline_ns,
-                                                        uint64_t offered_lease_ns,
-                                                        rmw_qos_policy_kind_t* out_last_policy_kind) {
-    size_t matched = 0;
-    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
-        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
-            strcmp(entity->name, topic_name) != 0) {
-            continue;
-        }
-        bool requested_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
-        bool requested_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
-        bool requested_manual = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
-        rmw_qos_policy_kind_t kind;
-        if (qos_incompatible(requested_reliable, requested_durable, requested_manual, entity->deadline_duration_ns,
-                             entity->liveliness_lease_duration_ns, offered_reliable, offered_durable, offered_manual,
-                             offered_deadline_ns, offered_lease_ns, &kind)) {
-            matched++;
-            *out_last_policy_kind = kind;
-        }
-    }
-    return matched;
-}
-
-// rmw_tickle.h's own declaration - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own counterpart: how
-// many currently-alive discovered remote Publishers on `topic_name` offer less than this
-// Subscription (requesting `requested_*`) needs. Called only from check_subscription_qos_
-// incompatible() (rmw_subscription.c) - same threading rule.
-size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
-                                                       bool requested_reliable, bool requested_durable,
-                                                       bool requested_manual, uint64_t requested_deadline_ns,
-                                                       uint64_t requested_lease_ns,
-                                                       rmw_qos_policy_kind_t* out_last_policy_kind) {
-    size_t matched = 0;
-    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
-        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_PUBLISHER ||
-            strcmp(entity->name, topic_name) != 0) {
-            continue;
-        }
-        bool offered_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
-        bool offered_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
-        bool offered_manual = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
-        rmw_qos_policy_kind_t kind;
-        if (qos_incompatible(requested_reliable, requested_durable, requested_manual, requested_deadline_ns,
-                             requested_lease_ns, offered_reliable, offered_durable, offered_manual,
-                             entity->deadline_duration_ns, entity->liveliness_lease_duration_ns, &kind)) {
-            matched++;
-            *out_last_policy_kind = kind;
-        }
-    }
-    return matched;
 }
 
 // The tt_Context_interrupt()-then-lock-then-scan-then-unlock sequence every count_matching_locked()

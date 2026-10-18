@@ -8,8 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// A Publisher or Subscription whose QoS-incompatible event was initialised arms a check that reschedules
-// itself every RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (1 s). Destroying the entity must cancel it:
+// A Publisher or Subscription whose QoS-incompatible event was initialised armed a check that rescheduled
+// itself every second, until QoS plan D2 moved the judgement into core (2026-10-19). Destroying the entity had to
+// cancel it, and the test stays as the guard that nothing an event arms outlives its entity:
 // until 2026-09-27 neither destroy did, and the check ran on the freed entity at its next period - a
 // SIGSEGV in strcmp() on the freed topic name, in test_events about one run in twenty (found while
 // benchmarking OPTIMIZATION_PLAN.md 11's D3, which only moved the timing).

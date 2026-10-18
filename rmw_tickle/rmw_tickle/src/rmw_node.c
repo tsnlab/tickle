@@ -39,8 +39,9 @@
 #include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
-#include "rmw/init.h"      // rmw_context_t
-#include "rmw/ret_types.h" // rmw_ret_t, RMW_RET_*
+#include "rmw/init.h"            // rmw_context_t
+#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - qos_incompatible_callback()
+#include "rmw/ret_types.h"       // rmw_ret_t, RMW_RET_*
 #include "rmw/rmw.h"
 #include "rmw/types.h" // rmw_node_t
 #include "rmw/validate_namespace.h"
@@ -97,6 +98,53 @@ static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_
     }
 
     atomic_store(&context_impl->graph_guard_condition.has_triggered, true);
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
+}
+
+static rmw_qos_policy_kind_t policy_kind_from_tt(uint8_t policy_kind) {
+    switch (policy_kind) {
+    case tt_QOS_POLICY_RELIABILITY:
+        return RMW_QOS_POLICY_RELIABILITY;
+    case tt_QOS_POLICY_DURABILITY:
+        return RMW_QOS_POLICY_DURABILITY;
+    case tt_QOS_POLICY_DEADLINE:
+        return RMW_QOS_POLICY_DEADLINE;
+    case tt_QOS_POLICY_LIVELINESS:
+        return RMW_QOS_POLICY_LIVELINESS;
+    default:
+        return RMW_QOS_POLICY_INVALID;
+    }
+}
+
+// RMW_EVENT_OFFERED_QOS_INCOMPATIBLE / RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE (QoS plan D2): core judges each pair when
+// the other side's announce is applied, or when the local endpoint is created, and calls this once per newly
+// incompatible pair (struct tt_QosIncompatibleStatus) - on the poll thread, or on the creating thread inside
+// tt_Node_create_*(), with the context lock held either way. Every topic endpoint of an rmw_tickle context is the
+// tickle_publisher / tickle_subscriber of an rmw_tickle_publisher_t / _subscriber_t, whose event state is initialised
+// before the core create.
+static void qos_incompatible_callback(struct tt_Context* node, struct tt_Endpoint* endpoint, uint8_t policy_kind,
+                                      void* param) {
+    (void)node;
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)param;
+    rmw_tickle_qos_incompatible_status_t* status = NULL;
+    if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        rmw_tickle_publisher_t* pub_impl =
+            (rmw_tickle_publisher_t*)((char*)endpoint - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+        status = &pub_impl->offered_qos_incompatible;
+    } else if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+        rmw_tickle_subscriber_t* sub_impl =
+            (rmw_tickle_subscriber_t*)((char*)endpoint - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
+        status = &sub_impl->requested_qos_incompatible;
+    } else {
+        return;
+    }
+    status->last_policy_kind = policy_kind_from_tt(policy_kind);
+    atomic_fetch_add(&status->base.total_count, 1);
+    atomic_fetch_add(&status->base.unread_count, 1);
+    rmw_tickle_callback_slot_notify(&status->base.callback, 1); // (g2)
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
@@ -446,6 +494,9 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
         tt_Context_destroy(&context_impl->tickle_context);
         return RMW_RET_ERROR;
     }
+    // Cannot fail with a context; the endpoints' event counts come from it (QoS plan D2).
+    (void)tt_Context_set_qos_incompatible_callback(&context_impl->tickle_context, qos_incompatible_callback,
+                                                   context_impl);
     // Large-message stage 2 (DESIGN.md section 8): the buffers samples above tt_MAX_SAMPLE_LENGTH go in (rmw_large.c).
     if (!rmw_tickle_large_attach(context_impl)) {
         RMW_SET_ERROR_MSG("failed to set up the large-sample buffers");
