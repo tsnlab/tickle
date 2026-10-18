@@ -29,6 +29,10 @@ RULES, in this order:
   F  LAZY FAULTS: tickle bench/reliable minor faults per rt, B - A. Below 0.01 per round trip -> the hypothesis that
      718220d8's lazily faulted context costs microseconds per round trip is FALSIFIED (one extra fault per 100 round
      trips cannot); otherwise its size and t are printed.
+
+REUSE (2026-10-18, QoS redesign step 3, before that run): the rules above are read for any A and B - the question
+becomes "did B regress R2 / R9 against A". A VOID tput run (ab_rmw_regress.sh with TPUT_TOPICS) does not void an
+rtt phase; the throughput cells are ab_rmw_tput.py's, whose docstring is their reading.
 """
 import math
 import pathlib
@@ -40,7 +44,10 @@ import rmw_rtt_bisect as rb  # noqa: E402
 
 T_CRIT = 3.29
 CELLS = ("bench/reliable/block", "bench/best_effort/block")
-LINE = re.compile(r"^rtt/(\w+)/(\w+)/(\w+) (\w+)\s+r(\d+) n=(\d+) p50 ([\d.]+) p99 ([\d.]+) mean ([\d.]+) us\s+cpu ([\d.]+) us/rt")
+# Since 6f7cc7b7 (2026-10-17) the summary prints "creation ... | stamp " between n= and p50; without the optional group
+# below every run line failed to match and every phase read "0 reps" (found 2026-10-18, before the QoS step-3 A/B).
+LINE = re.compile(r"^rtt/(\w+)/(\w+)/(\w+) (\w+)\s+r(\d+) n=(\d+) (?:creation [^|]*\| stamp )?"
+                  r"p50 ([\d.]+) p99 ([\d.]+) mean ([\d.]+) us\s+cpu ([\d.]+) us/rt")
 
 
 def phase(path, sha):
@@ -56,9 +63,17 @@ def phase(path, sha):
     except StopIteration:
         return None, f"{txt.name}: no '=== runs done'"
     out = {}
+    in_void = False
     for l in lines[start:]:
-        if l.startswith("VOID"):
-            return None, f"{txt.name}: {l}"
+        # A VOID rtt run voids the phase; a VOID tput run (TPUT_TOPICS set) is ab_rmw_tput.py's to count.
+        if l.startswith("VOID runs:"):
+            in_void = True
+            continue
+        if in_void and l.startswith("  "):
+            if l.startswith("  rtt_"):
+                return None, f"{txt.name}: VOID {l.strip()}"
+            continue
+        in_void = False
         m = LINE.match(l)
         if not m:
             continue
