@@ -22,7 +22,8 @@ complete. P1-P4 = 76, 1292, 1424, 2800-byte payloads.
 | Same host, round trip from creation, P3 (ms) | **0.037** | 0.164 | 0.130 | S9c, `2579e822` |
 
 Across the network TickLE scores 139 wins, 11 draws, 0 losses in 150 cells; through ROS 2 it wins all 52 same-host
-rows. It still loses 2 rows: CPU per MB against FastDDS for 4 MB messages at 15 Hz (+3-4%). Every figure, and where TickLE does not come first: [docs/RESULTS.md](docs/RESULTS.md).
+rows. It still loses 2 rows: subscriber CPU per MB against FastDDS for 4 MB messages at 15 Hz (+4.5%), and one
+100 us poll round trip against CycloneDDS through ROS 2 (+1.2%, row 63c). Every figure, and where TickLE does not come first: [docs/RESULTS.md](docs/RESULTS.md).
 
 ## Build
 

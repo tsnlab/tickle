@@ -2,8 +2,8 @@
 
 **TL;DR.** TickLE against FastDDS and CycloneDDS on two Raspberry Pi 5s; zenoh is reference only and never scored.
 - Core, cross-host: WIN 139, DRAW 11, LOSE 0 of 150. Core, same host: WIN 18 of 18.
-- ROS 2 (rmw), cross-host: WIN 22, DRAW 6, LOSE 0 of 28. Same host: WIN 52 of 52.
-- Large messages (L4): WIN 55, DRAW 23, LOSE 2 of 80. Both LOSEs are CPU per MB against FastDDS at 4 MB, 15 Hz.
+- ROS 2 (rmw), cross-host: WIN 21, DRAW 6, LOSE 1 of 28 (row 63c). Same host: WIN 52 of 52.
+- Large messages (L4): WIN 56, DRAW 23, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
 - Latency is measured from creation time, throughput is goodput, and nothing is pinned.
 
 Older text: `git show a89aefe2:docs/RESULTS.md` (full provenance prose, superseded readings, pinned figures, history).
@@ -26,20 +26,20 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 | BEST_EFFORT goodput, P2, Mbps | **20,867** | 0.31 | 934 | S1 |
 | RTT mean from creation, P3, 200/s, ms | **0.037** | 0.164 | 0.130 | S9c |
 
-**rmw, cross-host** ([rmw layer](#rmw-layer)): WIN 22, DRAW 6, LOSE 0 of 28.
+**rmw, cross-host** ([rmw layer](#rmw-layer)): WIN 21, DRAW 6, LOSE 1 of 28.
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean from creation, block wait, Bench 64 B, ms | **0.302** | 0.389 | 0.336 | 48c |
+| RTT mean from creation, block wait, Bench 64 B, ms | **0.250** | 0.379 | 0.336 | 48c |
 | delivered msg/s, RELIABLE KEEP_ALL, Array1k, 5% loss | **74,129** | does not run | 1,808 | 73 |
 
 **rmw, same host** ([rmw layer, same host](#rmw-layer-same-host)): WIN 52, DRAW 0, LOSE 0 of 52.
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean from creation, block wait, Bench 64 B, us | **94.9** | 184.1 | 166.3 | R1c |
+| RTT mean from creation, block wait, Bench 64 B, us | **45.1** | 194.3 | 167.8 | R1c |
 
-**rmw, large messages** ([L4](#rmw-large-messages-l4-cross-host)): WIN 55, DRAW 23, LOSE 2 of 80 (one letter per vendor).
+**rmw, large messages** ([L4](#rmw-large-messages-l4-cross-host)): WIN 56, DRAW 23, LOSE 1 of 80 (one letter per vendor).
 
 | headline | rmw_tickle | FastDDS / FastDDS 1472 | CycloneDDS | cell |
 |---|---:|---:|---:|---|
@@ -48,16 +48,20 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 
 ### Every LOSE
 
-- **L4 I4 best effort (Array4m 15 Hz), subscriber CPU per MB against FastDDS as shipped**, 2.19 against 2.10 ms/MB:
-  the kernel's copy into a cold 4 MB buffer (`i4be_cpu_gap.sh`).
-- **The same cell, publisher CPU per MB**, 3.72 against 3.62: interrupt billing. eth0's interrupt is on CPU 0 and the
-  Pi kernel has no `IRQ_TIME_ACCOUNTING`; with every process pinned off CPU 0 the gap is 0.004 ms per sample.
+- **L4 I4 best effort (Array4m 15 Hz), subscriber CPU per MB against FastDDS as shipped**, 2.20 against 2.11 ms/MB
+  (+4.5%, `HP`): the 4 MB in-place buffer is larger than the Pi 5's 2 MB L3. Five candidates changed nothing: THP,
+  `nt`, `rev`, `ntrev` and no in-place read (`i4be_cpu_gap.sh`).
+- **rmw row 63c (Array1k RELIABLE, 100 us poll) against CycloneDDS**, 0.4006 against 0.3957 ms (interquartile rule;
+  DRAW on range and on the stamp). CycloneDDS's `spin_some` sleeps ~42 us in a futex each call (a zero timeout
+  stretched by the kernel's default 50 us timer slack) and takes replies that arrive meanwhile; rmw_tickle's makes no
+  syscall and returns in 8.5 us. At busy poll rmw_tickle is 13.6 us faster, and it executes fewer instructions and
+  syscalls per round trip on both sides. Kept as measured (user, 2026-10-18).
 
 ### Every DRAW
 
 - **Row 5c, +10 ms netem:** 10 ms of netem swamps a 0.2 ms RTT (counted as one DRAW in `A`).
 - **Loss TIEs** (10 in `A`, 2 in `T`): TickLE lost nothing, and each vendor lost nothing or had a range touching zero.
-- **rmw rows 63c-67c against CycloneDDS:** at 100-200 us poll sleeps the half poll cycle dominates every rmw.
+- **rmw rows 59c, 61c, 65c-67c against CycloneDDS:** at 50-200 us poll sleeps the poll cycle dominates (see 63c).
 - **rmw row 74, Array4k KEEP_ALL at 0% loss:** all three sit at the link ceiling.
 - **L4, 23 letters:** delivered % where everyone delivered 100% (13); against FastDDS as shipped, latency at I1 and I1
   best effort (2) and CPU per MB at I1, I1 best effort, I4 RELIABLE and I4s (8).
@@ -132,20 +136,20 @@ apex `perf_test`; 3 reps. Every row is a WIN.
 | # | metric, cell | rmw_tickle | FastDDS | CycloneDDS | src |
 |---|---|---:|---:|---:|---|
 | | **RTT mean from creation, us** | | | | |
-| R1c | block wait, Bench 64 B, BEST_EFFORT | **94.9** | 184.1 | 166.3 | RSc |
-| R2c | block wait, Bench 64 B, RELIABLE | **95.8** | 205.9 | 168.9 | RSc |
-| R3c | block wait, Array1k, BEST_EFFORT | **96.9** | 189.0 | 178.7 | RSc |
-| R4c | block wait, Array1k, RELIABLE | **99.2** | 214.3 | 174.1 | RSc |
-| R5c | poll wait 100 us, Bench, BEST_EFFORT | **207.4** | 247.5 | 239.6 | RSc |
-| R6c | poll wait 100 us, Bench, RELIABLE | **208.2** | 262.9 | 245.0 | RSc |
-| R7c | poll wait 100 us, Array1k, BEST_EFFORT | **209.4** | 251.3 | 240.5 | RSc |
-| R8c | poll wait 100 us, Array1k, RELIABLE | **208.8** | 262.7 | 244.6 | RSc |
+| R1c | block wait, Bench 64 B, BEST_EFFORT | **45.1** | 194.3 | 167.8 | RSc |
+| R2c | block wait, Bench 64 B, RELIABLE | **46.8** | 211.8 | 167.8 | RSc |
+| R3c | block wait, Array1k, BEST_EFFORT | **46.5** | 192.2 | 167.7 | RSc |
+| R4c | block wait, Array1k, RELIABLE | **48.0** | 207.2 | 171.1 | RSc |
+| R5c | poll wait 100 us, Bench, BEST_EFFORT | **209.8** | 247.6 | 242.1 | RSc |
+| R6c | poll wait 100 us, Bench, RELIABLE | **208.1** | 261.9 | 244.3 | RSc |
+| R7c | poll wait 100 us, Array1k, BEST_EFFORT | **208.7** | 249.6 | 243.7 | RSc |
+| R8c | poll wait 100 us, Array1k, RELIABLE | **212.0** | 260.0 | 245.2 | RSc |
 | | **CPU, ping + pong, us per round trip** | | | | |
-| R9 | block, Bench RELIABLE | **63.5** | 247.9 | 151.0 | RSc |
-| R10 | block, Array1k RELIABLE | **67.6** | 259.6 | 157.2 | RSc |
+| R9 | block, Bench RELIABLE | **64.4** | 254.3 | 150.0 | RSc |
+| R10 | block, Array1k RELIABLE | **66.0** | 251.6 | 153.3 | RSc |
 | | **Peak RSS, larger process, kB** | | | | |
-| R11 | RTT, Bench BEST_EFFORT block | **14,592** | 27,124 | 16,100 | RSc |
-| R12 | RTT, Bench RELIABLE block | **14,676** | 27,148 | 16,172 | RSc |
+| R11 | RTT, Bench BEST_EFFORT block | **14,664** | 27,124 | 16,104 | RSc |
+| R12 | RTT, Bench RELIABLE block | **14,752** | 27,144 | 16,236 | RSc |
 | R13 | throughput, Array1k RELIABLE | **16,000** | 35,796 | 17,152 | RS |
 | | **Delivered msg/s, max rate** | | | | |
 | R14 | Array1k BEST_EFFORT KEEP_LAST 1 | **140,885** | 17,547 | 70,420 | RS |
@@ -159,7 +163,8 @@ apex `perf_test`; 3 reps. Every row is a WIN.
 | R21 | Array4k RELIABLE | **8.64** | 83.84 | 38.72 | RS |
 
 - **The 31 cells not shown** (RTT p50 and p99, CPU and RSS of the other RTT cells, three RSS cells) are WIN too.
-- **Re-run on `d0650110`** (`RSd`) agrees: every RTT-cell metric a WIN, all 8 controls PASS.
+- **Re-read 2026-10-18:** R1c-R12 come from `29826912` (was `18f16b85`); the polling thread's 1 ns timer slack
+  (`119d14bd`) halved block-wait RTT (R1c 94.9 -> 45.1 us). All 8 controls PASS.
 - **Corrected 2026-10-18:** R9-R12 replaced the `06dd78d8` figures; CycloneDDS rose alike (the session).
 
 ### Loaned messages (PC)
@@ -250,15 +255,16 @@ control (`Ctl`, not scored): RTT median 0.32 / 0.42 / 0.35 ms. Not yet from crea
 `rclcpp` with one ping/pong pair; `RMW_IMPLEMENTATION` alone picks the rmw (checked in `/proc/PID/maps`). Block wait
 is `spin()`; poll wait loops on `spin_some()` with a sleep, at a random phase, scored by interquartile overlap.
 
-RTT mean from creation, ms, rmw_tickle / FastDDS / CycloneDDS; WIN unless marked DRAW (against CycloneDDS):
+RTT mean from creation, ms, rmw_tickle / FastDDS / CycloneDDS; WIN unless marked (DRAW or LOSE against CycloneDDS;
+every cell is a WIN against FastDDS):
 
 | wait | Bench 64 B BEST_EFFORT | Bench RELIABLE | Array1k BEST_EFFORT | Array1k RELIABLE | src |
 |---|---|---|---|---|---|
-| block | 48c **0.302** / 0.389 / 0.336 | 49c **0.305** / 0.396 / 0.334 | 50c **0.322** / 0.406 / 0.354 | 51c **0.326** / 0.423 / 0.342 | Wc |
-| busy poll | 52c **0.301** / 0.383 / 0.331 | 53c **0.304** / 0.394 / 0.331 | 54c **0.320** / 0.404 / 0.350 | 55c **0.323** / 0.414 / 0.342 | Jc |
-| poll 50 us | 56c **0.352** / 0.416 / 0.371 | 57c **0.354** / 0.417 / 0.365 | 58c **0.372** / 0.437 / 0.390 | 59c **0.377** / 0.446 / 0.380 | Jc |
-| poll 100 us | 60c **0.377** / 0.433 / 0.393 | 61c **0.383** / 0.445 / 0.391 | 62c **0.399** / 0.454 / 0.412 | 63c 0.402 / 0.467 / 0.400 DRAW | Jc |
-| poll 200 us | 64c 0.426 / 0.468 / 0.426 DRAW | 65c 0.431 / 0.486 / 0.428 DRAW | 66c 0.450 / 0.499 / 0.457 DRAW | 67c 0.454 / 0.509 / 0.443 DRAW | Jc |
+| block | 48c **0.250** / 0.379 / 0.336 | 49c **0.251** / 0.395 / 0.327 | 50c **0.270** / 0.402 / 0.351 | 51c **0.276** / 0.419 / 0.335 | Wc |
+| busy poll | 52c **0.299** / 0.377 / 0.331 | 53c **0.301** / 0.389 / 0.325 | 54c **0.320** / 0.398 / 0.350 | 55c **0.320** / 0.413 / 0.334 | Jc |
+| poll 50 us | 56c **0.348** / 0.413 / 0.370 | 57c **0.353** / 0.421 / 0.368 | 58c **0.373** / 0.427 / 0.388 | 59c 0.376 / 0.438 / 0.377 DRAW | Jc |
+| poll 100 us | 60c **0.370** / 0.431 / 0.389 | 61c 0.377 / 0.444 / 0.378 DRAW | 62c **0.394** / 0.452 / 0.410 | 63c 0.401 / 0.465 / 0.396 LOSE | Jc |
+| poll 200 us | 64c **0.424** / 0.470 / 0.437 | 65c 0.423 / 0.486 / 0.428 DRAW | 66c 0.450 / 0.492 / 0.446 DRAW | 67c 0.442 / 0.509 / 0.433 DRAW | Jc |
 
 | # | metric, cell | rmw_tickle | FastDDS | CycloneDDS | verdict | src |
 |---|---|---:|---:|---:|:-:|---|
@@ -272,11 +278,12 @@ RTT mean from creation, ms, rmw_tickle / FastDDS / CycloneDDS; WIN unless marked
 | 75 | the same, Array4k, 5% loss | **26,897** | ✗ refused | 347 | WIN | Ke |
 
 - **Rows 73 and 75, "refused":** FastDDS's KEEP_ALL `write()` timed out at its 100 ms bound in every run.
-- **VOID(loss):** 14 of 496 reps (rmw_tickle 10, CycloneDDS 4). rmw_tickle's 10 were its reply to seq 1, sent before
-  its publisher matched (`rmw_loss_attribution.py`); `ping_node` now warms up first. In the re-run with that warm-up
-  (`d0650110`, `Wd`/`Jd`) `rmw_loss_attribution.py` reports "no lossy rep" on `J` and `W`.
-- **The `d0650110` re-run does not agree everywhere** (`J` 3 reps, not 7; 20 cells CONTROL PASS): it reads 63c a
-  LOSE against CycloneDDS (0.403 against 0.390 ms, on the stamp too) and 59c, 61c DRAWs. The rows stay `18f16b85`.
+- **Row 63c LOSE:** the cause is in [Every LOSE](#every-lose).
+- **VOID(loss):** none of 494 reps; 20 cells CONTROL PASS. The `18f16b85` run lost 14 reps, mostly rmw_tickle's reply to
+  seq 1 sent before its publisher matched; `ping_node` warms up first since `d0650110`.
+- **Re-read 2026-10-18:** 48c-67c come from `29826912` (7 poll reps, as `18f16b85`). The 1 ns polling-thread timer
+  slack (`119d14bd`) cut block wait (48c 0.302 -> 0.250 ms). 59c, 61c WIN -> DRAW, 63c DRAW -> LOSE, 64c DRAW -> WIN;
+  the 3-rep `d0650110` run (`Wd`/`Jd`) had read 59c, 61c and 63c the same.
 - **Corrected 2026-10-18:** 48c-67c replace the send-stamp rows 48-67 (`934f90de`); 59 and 62 went DRAW -> WIN with
   the session, not the definition.
 
@@ -291,9 +298,9 @@ apex `perf_test` across the link, 5 reps of 60 s. Letters: FastDDS as shipped / 
 | I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 ¹ | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W | L15 |
 | I4s Array4m | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | **55.83** / UNBOUND | 1.40 / 3.60 | 30,952 | W–W–W | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC |
 | I4 Array4m | RELIABLE KL10, 15 Hz | 100 | **36.68** / 36.77 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC |
-| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | **36.60** / 36.66 | 2.19 / 3.72 | 30,580 | D–D–D | W–W–W | L–W–W | L–W–W | W–W–W | L15, LC |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | **36.60** / 36.66 | 2.20 / 3.55 ² | 30,580 | D–D–D | W–W–W | L–W–W | W–W–W | W–W–W | L15, LC, HP |
 
-¹ Send stamp; not yet measured from creation time.
+¹ Send stamp; not yet measured from creation time. ² `HP`, perf task-clock at `e00c1ddd` (FastDDS 2.11 / 3.65).
 
 - **I4s note.** I4s offers more than the link carries. A DDS `publish()` of 4 MB blocks, so its publisher falls
   behind every tick; the send stamp hides that wait (I4s LOSE on the stamp, 54.91 against 37.55 ms) and creation time
@@ -301,6 +308,10 @@ apex `perf_test` across the link, 5 reps of 60 s. Letters: FastDDS as shipped / 
   is UNBOUND for every arm and not scored.
 - **Corrected 2026-10-16:** I1L was a LOSE on incomplete delivery (f5fcda06, 2 samples in 1 run); first-n3 fixed it.
 - **Corrected 2026-10-17:** publisher CPU per MB delivered; I4s CPU pub W–W–W -> D–W–W. Same host: not published.
+- **2026-10-18, I4 BE CPU pub L -> W against FastDDS** (`HP`): publisher huge pages (`e00c1ddd`) cut it 3.712 ->
+  3.553 ms/MB (FastDDS 3.650; floor 0.022). Part of the old gap was interrupt billing (eth0's interrupt on CPU 0, no
+  `IRQ_TIME_ACCOUNTING`; pinned off CPU 0 it was 0.004 ms per sample); huge pages removed the rest. No harm in I1 or
+  I4s (I4s publisher -0.133 ms/MB, letters not rescored).
 
 ### Hybrid transport (large samples), rig
 
@@ -325,7 +336,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | S | `comparison_resweep.sh` | `659013e9` | 2026-09-24 | |
 | L | `liveliness_l2.sh` | `0f220ba0` | 2026-09-27 | `results/liveliness_l2e_2026-09-27.txt` |
 | W | rmw block wait | `934f90de` | 2026-09-30 | `results/rmw_4way_block_934f90de_2026-09-30.txt` |
-| Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `18f16b85` | 2026-10-18 | `creation_rtt_rmw{W,J}_18f16b85_20261018-001954.*` |
+| Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `29826912` | 2026-10-18 | `creation_rtt_rmw{W,J}_29826912_20261018-111338.*` |
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
 | K, Ke | `rmw_keepall_rig.sh` (Ke: equal bounds) | `ae724688`, `29dff630` | 2026-10-06, -08 | `rmw_keepall_rig_O2_20261006-123017.txt`, `rmw_keepall_equal_main_29dff630_20261008-134901.*` |
 | Ctl | perf_test ping-pong | `4fca013b` | 2026-10-17 | `creation_latency_ctl_20261017-094944.*` |
@@ -335,10 +346,11 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
-| RS, RSc, RSd | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `18f16b85`, `d0650110` | 2026-10-09, -18, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_{18f16b85_20261018-001954,d0650110_20261018-062244}.*` |
+| RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
 | L15, L16 | `rmw_keepall_rig.sh`, `largemsg_rig_summary.py` | f5fcda06, dde87857 | 2026-10-15, -16 | `l4main2_*_20261015-094605.txt`, `l4main3_i1rel_20261016-065517.*` |
 | LC | the same, `CREATION_TRACE=1` | `4fca013b` | 2026-10-17 | `creation_latency_{i4s,i4be,i4rel}_20261017-094944.*` |
+| HP | `pub_hugepage_ab.sh`: pre `26c70597`, head, aa, FastDDS; 5 reps | `e00c1ddd` | 2026-10-18 | `pub_hugepage_rig_20261018-150541.read.txt` |
 | HY | hybrid arms | d8980f9b | 2026-10-12 | `hybridLand_s2_loss_20261012-021743.*` |
 | NS | `nosend_benefit_rig.sh` | b265e86f vs branch | 2026-10-16 | `nosend_benefit/20261016-020518/reading.txt` |
 
