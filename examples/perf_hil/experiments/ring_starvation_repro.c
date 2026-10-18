@@ -96,7 +96,22 @@ int main(int argc, char** argv) {
         printf("REPRO: error=create\n");
         return 1;
     }
-    if (tt_Context_create_publisher(&node, &g_pub, &BenchTopic, "stream") != tt_RET_OK) {
+    // BEST_EFFORT, as the legacy create left it (the rig's starving stream is BEST_EFFORT): VOLATILE, AUTOMATIC,
+    // infinite durations. Nothing is retained, so the Publisher needs no storage and its history sizes nothing.
+    static const struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 1, .bytes = 0},
+        .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT,
+                        .tracking_words = 0,
+                        .reorder_slots = 0,
+                        .max_blocking_ns = 0},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
+        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
+    };
+    static const struct tt_PublisherOptions options; // all defaults: no batching, no periodic HEARTBEAT
+    if (tt_Node_create_publisher(tt_Context_default_node(&node), &g_pub, &BenchTopic, "stream", &qos, &options, NULL,
+                                 0) != tt_RET_OK) {
         printf("REPRO: error=publisher\n");
         return 1;
     }
