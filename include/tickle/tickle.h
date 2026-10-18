@@ -1662,6 +1662,122 @@ struct tt_Discovery {
 #endif
 };
 
+// ---- QoS (rmw-shaped, docs/DESIGN.md section 9). One struct per policy: the rmw fields first, then the TickLE
+// extensions that policy needs. A zero field, and so a zeroed profile, means "the computed default", which is
+// rmw_qos_profile_default: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, every duration infinite. Not binary-compatible
+// with rmw_qos_profile_t, and the enum values are TickLE's own: rmw_tickle converts.
+
+enum tt_QosHistoryKind {
+    tt_QOS_HISTORY_SYSTEM_DEFAULT = 0, // KEEP_LAST
+    tt_QOS_HISTORY_KEEP_LAST,
+    tt_QOS_HISTORY_KEEP_ALL,
+};
+
+enum tt_QosReliabilityKind {
+    tt_QOS_RELIABILITY_SYSTEM_DEFAULT = 0, // RELIABLE
+    tt_QOS_RELIABILITY_RELIABLE,
+    tt_QOS_RELIABILITY_BEST_EFFORT,
+    tt_QOS_RELIABILITY_BEST_AVAILABLE, // topics only: decided at creation from the matched endpoints discovery knows
+};
+
+enum tt_QosDurabilityKind {
+    tt_QOS_DURABILITY_SYSTEM_DEFAULT = 0, // VOLATILE
+    tt_QOS_DURABILITY_VOLATILE,
+    tt_QOS_DURABILITY_TRANSIENT_LOCAL, // topics only
+    tt_QOS_DURABILITY_BEST_AVAILABLE,  // topics only, as RELIABILITY's
+};
+
+enum tt_QosLivelinessKind {
+    tt_QOS_LIVELINESS_SYSTEM_DEFAULT = 0, // AUTOMATIC
+    tt_QOS_LIVELINESS_AUTOMATIC,
+    tt_QOS_LIVELINESS_MANUAL_BY_TOPIC, // topics only
+    tt_QOS_LIVELINESS_BEST_AVAILABLE,  // topics only, as RELIABILITY's
+};
+
+// Durations are nanoseconds. 0 is the computed default, which for every duration is infinite.
+#define tt_QOS_DURATION_INFINITE UINT64_MAX
+// DEADLINE period and LIVELINESS lease only: decided at creation from the matched endpoints, as rmw's
+// RMW_QOS_DEADLINE_BEST_AVAILABLE - a Subscriber takes the loosest Publisher's, a Publisher the tightest Subscriber's.
+#define tt_QOS_DURATION_BEST_AVAILABLE (UINT64_MAX - 1U)
+// reliability.reorder_slots: no reorder buffer (0 is the computed default, tt_QOS_REORDER_SLOTS_DEFAULT).
+#define tt_QOS_REORDER_NONE UINT16_MAX
+
+struct tt_QosHistory {
+    enum tt_QosHistoryKind kind;
+    uint32_t depth; // samples; 0 = tt_QOS_DEPTH_DEFAULT (KEEP_LAST) or tt_QOS_KEEP_ALL_DEPTH_DEFAULT (KEEP_ALL)
+    // TickLE: the byte cap on what a Publisher retains; 0 = tt_QOS_HISTORY_BYTES_DEFAULT (KEEP_LAST) or
+    // tt_QOS_KEEP_ALL_BYTES_DEFAULT (KEEP_ALL). When `depth` samples of the type's largest size do not fit, creation
+    // warns and the actual QoS reports the depth that does.
+    uint32_t bytes;
+};
+
+struct tt_QosReliability {
+    enum tt_QosReliabilityKind kind;
+    uint16_t tracking_words;  // TickLE, Subscriber: ACK window per writer in 64-bit words; 0 = tt_RELIABLE_BITMAP_WORDS
+    uint16_t reorder_slots;   // TickLE, Subscriber: held out-of-order samples; 0 = default, tt_QOS_REORDER_NONE = none
+    uint64_t max_blocking_ns; // TickLE, KEEP_ALL Publisher: longest a full writer waits; 0 = default (100 ms)
+};
+
+struct tt_QosDurability {
+    enum tt_QosDurabilityKind kind;
+};
+
+struct tt_QosDeadline {
+    uint64_t period_ns; // 0 = infinite
+};
+
+struct tt_QosLifespan {
+    uint64_t duration_ns; // 0 = infinite
+};
+
+struct tt_QosLiveliness {
+    enum tt_QosLivelinessKind kind;
+    uint64_t lease_ns; // 0 = infinite; a finite lease below tt_LIVELINESS_LEASE_DIVISOR tx intervals is refused
+};
+
+struct tt_QosProfile {
+    struct tt_QosHistory history;
+    struct tt_QosReliability reliability;
+    struct tt_QosDurability durability;
+    struct tt_QosDeadline deadline;
+    struct tt_QosLifespan lifespan;
+    struct tt_QosLiveliness liveliness;
+};
+
+// rmw_qos_profile_default, rmw_qos_profile_sensor_data (BEST_EFFORT, KEEP_LAST 5) and
+// rmw_qos_profile_services_default, with every field spelled out. A zeroed profile resolves to the first.
+// Named as constants, like rmw's RMW_QOS_PROFILE_* they stand for, not as variables.
+// NOLINTBEGIN(readability-identifier-naming)
+extern const struct tt_QosProfile tt_QOS_PROFILE_DEFAULT;
+extern const struct tt_QosProfile tt_QOS_PROFILE_SENSOR_DATA;
+extern const struct tt_QosProfile tt_QOS_PROFILE_SERVICES_DEFAULT;
+// NOLINTEND(readability-identifier-naming)
+
+// What discovery shows of the matched endpoints on the other side, for the BEST_AVAILABLE policies. The creation
+// functions gather it from the context's discovery table; tt_QosProfile_resolve() takes it as an argument, so the
+// resolution itself is a pure function. NULL, or count 0, is "none known": every BEST_AVAILABLE takes its strict choice
+// and a BEST_AVAILABLE duration is infinite.
+struct tt_QosMatched {
+    uint32_t count;       // alive matched endpoints seen; the fields below mean nothing when 0
+    bool all_reliable;    // every one announced RELIABLE
+    bool all_durable;     // ... TRANSIENT_LOCAL
+    bool all_manual;      // ... MANUAL_BY_TOPIC
+    uint64_t deadline_ns; // a Subscriber's: the largest Publisher period; a Publisher's: the smallest Subscriber one
+    uint64_t lease_ns;    // as deadline_ns, for the lease. Both tt_QOS_DURATION_INFINITE where unbounded wins
+};
+
+// Resolves `requested` for an endpoint of `kind` (tt_KIND_TOPIC_PUBLISHER, _SUBSCRIBER, tt_KIND_SERVICE_CLIENT,
+// _SERVER) into `actual`: no SYSTEM_DEFAULT or BEST_AVAILABLE kind, no BEST_AVAILABLE duration, 0 durations made
+// tt_QOS_DURATION_INFINITE, 0 extension fields made their defaults - or 0 where the endpoint has no use for one (a
+// Publisher's tracking_words and reorder_slots, a BEST_EFFORT Subscriber's reorder_slots, max_blocking_ns on anything
+// but a Publisher). Resolving an actual profile again gives it back. It does not size storage: the depth the history
+// bytes really hold is reported by tt_Publisher_get_actual_qos(). `requested` NULL is the zeroed profile; `actual` may
+// alias it. tt_RET_INVALID_ARGUMENT, `actual` untouched, for: an unknown kind or enum value; a depth above UINT16_MAX;
+// tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; a lease, BEST_AVAILABLE ones included, below the floor; and on a
+// Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
+tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
+                               struct tt_QosProfile* actual);
+
 struct tt_Service;
 struct tt_Client;
 struct tt_Response;
@@ -1718,6 +1834,13 @@ struct tt_Client { // extends endpoint
     // Known Servers matching this Client's service, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
+
+    // tt_ClientOptions' retry settings, used in place of tt_Service.call_retry_* when call_retry_own is set: by
+    // tt_Node_create_client(). The deprecated creates leave it clear, so a service's settings still apply there.
+    uint32_t call_retry_interval;
+    uint32_t call_retry_count;
+    bool call_retry_own;
+    struct tt_QosProfile qos; // resolved, for tt_Client_get_actual_qos(); zeroed by the deprecated creates
 };
 
 struct tt_Server;
@@ -1816,6 +1939,8 @@ struct tt_Server { // extends endpoint
     // before it returns (2026-09-27), so the pending_response_buf / pending_storage that held one are gone.
     struct server_cache_clean_config pending_timeout_config[tt_MAX_SERVER_CACHE_COUNT];
     bool pending_timeout_scheduled[tt_MAX_SERVER_CACHE_COUNT];
+
+    struct tt_QosProfile qos; // resolved, for tt_Server_get_actual_qos(); zeroed by the deprecated creates
 };
 
 // slot_state[] values - see struct tt_Server's own field comment on why these guard a plain
@@ -2206,7 +2331,7 @@ struct tt_PeerWatch {
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Context* node;
-    struct tt_Topic* topic;
+    const struct tt_TypeSupport* topic; // the message type (was struct tt_Topic); the topic name is endpoint.name
     // (g10, rmw_tickle/RMW_GAPS_PLAN.md) Grows reliable_cache's arena and returns whether it did - called, with the
     // context locked, when caching a KEEP_LAST sample would evict one of the newest sample_depth - 1 for bytes, until
     // it would not or this returns false. NULL (the default): the arena never grows, and such evictions are counted
@@ -2550,6 +2675,13 @@ struct tt_Publisher { // extends endpoint
     uint64_t idle_check_ns;
     uint32_t idle_heartbeats;
     bool idle_heartbeat_armed;
+
+    // The resolved QoS no field above holds, for tt_Publisher_get_actual_qos(); set by tt_Node_create_publisher(), 0
+    // from the deprecated creates. Last, so that no field the hot path reads moves.
+    uint64_t qos_max_blocking_ns;
+    uint32_t qos_history_depth; // the depth retained of the type's largest samples (history.bytes may cap it)
+    uint32_t qos_history_bytes;
+    uint8_t qos_history_kind; // enum tt_QosHistoryKind
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -3008,7 +3140,7 @@ struct tt_ReorderSlot {
 struct tt_Subscriber { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Context* node;
-    struct tt_Topic* topic;
+    const struct tt_TypeSupport* topic; // the message type (was struct tt_Topic); the topic name is endpoint.name
     tt_SUBSCRIBER_CALLBACK callback;
 
     // g13 (rmw_tickle/RMW_GAPS_PLAN.md) - optional flow control, consulted before this sample is
@@ -3261,6 +3393,12 @@ struct tt_Subscriber { // extends endpoint
     // any are, its drain looks for a large sample at each seq_no it walks (DESIGN.md section 8).
     uint16_t large_held;
 #endif
+
+    // As tt_Publisher's: the resolved QoS no field above holds, for tt_Subscriber_get_actual_qos(). Last.
+    uint64_t qos_lifespan_ns;
+    uint32_t qos_history_depth;
+    uint32_t qos_history_bytes;
+    uint8_t qos_history_kind;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -3314,122 +3452,6 @@ struct tt_TypeSupport {
     // unbounded type is sized for tt_MAX_SAMPLE_LENGTH.
     uint32_t max_encoded_size;
 };
-
-// ---- QoS (rmw-shaped, docs/DESIGN.md section 9). One struct per policy: the rmw fields first, then the TickLE
-// extensions that policy needs. A zero field, and so a zeroed profile, means "the computed default", which is
-// rmw_qos_profile_default: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, every duration infinite. Not binary-compatible
-// with rmw_qos_profile_t, and the enum values are TickLE's own: rmw_tickle converts.
-
-enum tt_QosHistoryKind {
-    tt_QOS_HISTORY_SYSTEM_DEFAULT = 0, // KEEP_LAST
-    tt_QOS_HISTORY_KEEP_LAST,
-    tt_QOS_HISTORY_KEEP_ALL,
-};
-
-enum tt_QosReliabilityKind {
-    tt_QOS_RELIABILITY_SYSTEM_DEFAULT = 0, // RELIABLE
-    tt_QOS_RELIABILITY_RELIABLE,
-    tt_QOS_RELIABILITY_BEST_EFFORT,
-    tt_QOS_RELIABILITY_BEST_AVAILABLE, // topics only: decided at creation from the matched endpoints discovery knows
-};
-
-enum tt_QosDurabilityKind {
-    tt_QOS_DURABILITY_SYSTEM_DEFAULT = 0, // VOLATILE
-    tt_QOS_DURABILITY_VOLATILE,
-    tt_QOS_DURABILITY_TRANSIENT_LOCAL, // topics only
-    tt_QOS_DURABILITY_BEST_AVAILABLE,  // topics only, as RELIABILITY's
-};
-
-enum tt_QosLivelinessKind {
-    tt_QOS_LIVELINESS_SYSTEM_DEFAULT = 0, // AUTOMATIC
-    tt_QOS_LIVELINESS_AUTOMATIC,
-    tt_QOS_LIVELINESS_MANUAL_BY_TOPIC, // topics only
-    tt_QOS_LIVELINESS_BEST_AVAILABLE,  // topics only, as RELIABILITY's
-};
-
-// Durations are nanoseconds. 0 is the computed default, which for every duration is infinite.
-#define tt_QOS_DURATION_INFINITE UINT64_MAX
-// DEADLINE period and LIVELINESS lease only: decided at creation from the matched endpoints, as rmw's
-// RMW_QOS_DEADLINE_BEST_AVAILABLE - a Subscriber takes the loosest Publisher's, a Publisher the tightest Subscriber's.
-#define tt_QOS_DURATION_BEST_AVAILABLE (UINT64_MAX - 1U)
-// reliability.reorder_slots: no reorder buffer (0 is the computed default, tt_QOS_REORDER_SLOTS_DEFAULT).
-#define tt_QOS_REORDER_NONE UINT16_MAX
-
-struct tt_QosHistory {
-    enum tt_QosHistoryKind kind;
-    uint32_t depth; // samples; 0 = tt_QOS_DEPTH_DEFAULT (KEEP_LAST) or tt_QOS_KEEP_ALL_DEPTH_DEFAULT (KEEP_ALL)
-    // TickLE: the byte cap on what a Publisher retains; 0 = tt_QOS_HISTORY_BYTES_DEFAULT (KEEP_LAST) or
-    // tt_QOS_KEEP_ALL_BYTES_DEFAULT (KEEP_ALL). When `depth` samples of the type's largest size do not fit, creation
-    // warns and the actual QoS reports the depth that does.
-    uint32_t bytes;
-};
-
-struct tt_QosReliability {
-    enum tt_QosReliabilityKind kind;
-    uint16_t tracking_words;  // TickLE, Subscriber: ACK window per writer in 64-bit words; 0 = tt_RELIABLE_BITMAP_WORDS
-    uint16_t reorder_slots;   // TickLE, Subscriber: held out-of-order samples; 0 = default, tt_QOS_REORDER_NONE = none
-    uint64_t max_blocking_ns; // TickLE, KEEP_ALL Publisher: longest a full writer waits; 0 = default (100 ms)
-};
-
-struct tt_QosDurability {
-    enum tt_QosDurabilityKind kind;
-};
-
-struct tt_QosDeadline {
-    uint64_t period_ns; // 0 = infinite
-};
-
-struct tt_QosLifespan {
-    uint64_t duration_ns; // 0 = infinite
-};
-
-struct tt_QosLiveliness {
-    enum tt_QosLivelinessKind kind;
-    uint64_t lease_ns; // 0 = infinite; a finite lease below tt_LIVELINESS_LEASE_DIVISOR tx intervals is refused
-};
-
-struct tt_QosProfile {
-    struct tt_QosHistory history;
-    struct tt_QosReliability reliability;
-    struct tt_QosDurability durability;
-    struct tt_QosDeadline deadline;
-    struct tt_QosLifespan lifespan;
-    struct tt_QosLiveliness liveliness;
-};
-
-// rmw_qos_profile_default, rmw_qos_profile_sensor_data (BEST_EFFORT, KEEP_LAST 5) and
-// rmw_qos_profile_services_default, with every field spelled out. A zeroed profile resolves to the first.
-// Named as constants, like rmw's RMW_QOS_PROFILE_* they stand for, not as variables.
-// NOLINTBEGIN(readability-identifier-naming)
-extern const struct tt_QosProfile tt_QOS_PROFILE_DEFAULT;
-extern const struct tt_QosProfile tt_QOS_PROFILE_SENSOR_DATA;
-extern const struct tt_QosProfile tt_QOS_PROFILE_SERVICES_DEFAULT;
-// NOLINTEND(readability-identifier-naming)
-
-// What discovery shows of the matched endpoints on the other side, for the BEST_AVAILABLE policies. The creation
-// functions gather it from the context's discovery table; tt_QosProfile_resolve() takes it as an argument, so the
-// resolution itself is a pure function. NULL, or count 0, is "none known": every BEST_AVAILABLE takes its strict choice
-// and a BEST_AVAILABLE duration is infinite.
-struct tt_QosMatched {
-    uint32_t count;       // alive matched endpoints seen; the fields below mean nothing when 0
-    bool all_reliable;    // every one announced RELIABLE
-    bool all_durable;     // ... TRANSIENT_LOCAL
-    bool all_manual;      // ... MANUAL_BY_TOPIC
-    uint64_t deadline_ns; // a Subscriber's: the largest Publisher period; a Publisher's: the smallest Subscriber one
-    uint64_t lease_ns;    // as deadline_ns, for the lease. Both tt_QOS_DURATION_INFINITE where unbounded wins
-};
-
-// Resolves `requested` for an endpoint of `kind` (tt_KIND_TOPIC_PUBLISHER, _SUBSCRIBER, tt_KIND_SERVICE_CLIENT,
-// _SERVER) into `actual`: no SYSTEM_DEFAULT or BEST_AVAILABLE kind, no BEST_AVAILABLE duration, 0 durations made
-// tt_QOS_DURATION_INFINITE, 0 extension fields made their defaults - or 0 where the endpoint has no use for one (a
-// Publisher's tracking_words and reorder_slots, a BEST_EFFORT Subscriber's reorder_slots, max_blocking_ns on anything
-// but a Publisher). Resolving an actual profile again gives it back. It does not size storage: the depth the history
-// bytes really hold is reported by tt_Publisher_get_actual_qos(). `requested` NULL is the zeroed profile; `actual` may
-// alias it. tt_RET_INVALID_ARGUMENT, `actual` untouched, for: an unknown kind or enum value; a depth above UINT16_MAX;
-// tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; a lease, BEST_AVAILABLE ones included, below the floor; and on a
-// Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
-tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
-                               struct tt_QosProfile* actual);
 
 // Settings that are not QoS, read at creation only. A zeroed struct is the default for every field; NULL is a zeroed
 // struct where nothing in it is required.

@@ -5954,9 +5954,24 @@ static uint8_t free_client_tag(const struct tt_Context* node, uint32_t endpoint_
     return 0; // 255 Clients of this service already: this one shares the untold tag, as every Client once did
 }
 
-static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
-                                          const char* endpoint_name, tt_CLIENT_CALLBACK callback,
-                                          struct tt_Node* owner) {
+// Adds a reset endpoint to the context, which announces it: the last step of every create. `reprocess` replays the
+// announces already known, which a sender (Publisher, Client) needs to learn its peers.
+static tt_ret_t register_endpoint_locked(struct tt_Context* node, struct tt_Endpoint* endpoint, struct tt_Node* owner,
+                                         bool reprocess) {
+    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
+    if (result != tt_RET_OK) {
+        return result;
+    }
+    node->last_modified = tt_get_ns();
+    if (reprocess) {
+        reprocess_known_announces(node);
+    }
+    return tt_RET_OK;
+}
+
+// Every field of a Client set to its default, as a create does, before the endpoint is added to the context.
+static tt_ret_t client_reset(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
+                             const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_encode_size == NULL || service->request_encode == NULL || service->response_decode == NULL ||
@@ -5985,19 +6000,25 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->latency_backed_off = false;
     client->latency_backed_off_at = 0;
     client->client_tag = free_client_tag(node, endpoint->id);
+    client->call_retry_own = false; // the service's settings, until tt_Node_create_client() sets its own
+    client->call_retry_interval = 0;
+    client->call_retry_count = 0;
+    memset(&client->qos, 0, sizeof(client->qos));
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
+    return tt_RET_OK;
+}
+
+static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
+                                          const char* endpoint_name, tt_CLIENT_CALLBACK callback,
+                                          struct tt_Node* owner) {
+    tt_ret_t result = client_reset(node, client, service, endpoint_name, callback);
     if (result != tt_RET_OK) {
         return result;
     }
-
-    node->last_modified = tt_get_ns();
-    reprocess_known_announces(node);
-
-    return tt_RET_OK;
+    return register_endpoint_locked(node, (struct tt_Endpoint*)client, owner, true);
 }
 
 tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
@@ -6013,9 +6034,9 @@ tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* cli
     return result;
 }
 
-static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
-                                          const char* endpoint_name, tt_SERVER_CALLBACK callback,
-                                          struct tt_Node* owner) {
+// Every field of a Server set to its default, as a create does, before the endpoint is added to the context.
+static tt_ret_t server_reset(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
+                             const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     if (node == NULL || server == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_decode == NULL || service->request_free == NULL || service->response_encode_size == NULL ||
@@ -6043,15 +6064,19 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
     server->cache_storage = NULL; // inline - see server_cache_entry()
     server->cache_entry_length = 0;
     server->client_retry_gap = 0;
+    memset(&server->qos, 0, sizeof(server->qos));
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
+    return tt_RET_OK;
+}
+
+static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
+                                          const char* endpoint_name, tt_SERVER_CALLBACK callback,
+                                          struct tt_Node* owner) {
+    tt_ret_t result = server_reset(node, server, service, endpoint_name, callback);
     if (result != tt_RET_OK) {
         return result;
     }
-
-    node->last_modified = tt_get_ns();
-
-    return tt_RET_OK;
+    return register_endpoint_locked(node, (struct tt_Endpoint*)server, owner, false);
 }
 
 tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
@@ -6153,8 +6178,9 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
     return result;
 }
 
-static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                             const char* endpoint_name, struct tt_Node* owner) {
+// Every field of a Publisher set to its default, as a create does, before the endpoint is added to the context.
+static tt_ret_t publisher_reset(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_TypeSupport* topic,
+                                const char* endpoint_name) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
         !valid_topic_size(topic->data_size, true) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -6233,6 +6259,10 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->departed_next = 0;
     pub->keep_all_unmatched_until_ns = 0; // 0 = the pre-match window not yet opened (keep_all_room_before_match())
     pub->cache_grow = NULL;               // the caller's hook, set after creation (rmw_tickle's g10)
+    pub->qos_max_blocking_ns = 0;         // the resolved QoS no hot field holds: tt_Node_create_publisher() sets it
+    pub->qos_history_depth = 0;
+    pub->qos_history_bytes = 0;
+    pub->qos_history_kind = 0;
 #if tt_LARGE_SAMPLES
     memset(pub->large, 0, sizeof(pub->large)); // no large sample held, sent or waiting
     memset(&pub->large_cursor, 0, sizeof(pub->large_cursor));
@@ -6245,15 +6275,16 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->large_idle_notify = false;
 #endif
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
+    return tt_RET_OK;
+}
+
+static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                             const char* endpoint_name, struct tt_Node* owner) {
+    tt_ret_t result = publisher_reset(node, pub, topic, endpoint_name);
     if (result != tt_RET_OK) {
         return result;
     }
-
-    node->last_modified = tt_get_ns();
-    reprocess_known_announces(node);
-
-    return tt_RET_OK;
+    return register_endpoint_locked(node, (struct tt_Endpoint*)pub, owner, true);
 }
 
 tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
@@ -6269,9 +6300,9 @@ tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publishe
     return result;
 }
 
-static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt_Subscriber* sub,
-                                              struct tt_Topic* topic, const char* endpoint_name,
-                                              tt_SUBSCRIBER_CALLBACK callback, struct tt_Node* owner) {
+// Every field of a Subscriber set to its default, as a create does, before the endpoint is added to the context.
+static tt_ret_t subscriber_reset(struct tt_Context* node, struct tt_Subscriber* sub, const struct tt_TypeSupport* topic,
+                                 const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
         topic->name == NULL || !valid_topic_size(topic->data_size, topic->data_decode_inplace != NULL) ||
         topic->data_decode == NULL || topic->data_free == NULL) {
@@ -6329,18 +6360,26 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
 #if tt_LARGE_SAMPLES
     sub->large_held = 0;
 #endif
+    sub->qos_lifespan_ns = 0; // the resolved QoS no hot field holds: tt_Node_create_subscriber() sets it
+    sub->qos_history_depth = 0;
+    sub->qos_history_bytes = 0;
+    sub->qos_history_kind = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
+        sub->writers[i].acknack_scheduled = false;          // read by destroy, which may follow at once
     }
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
+    return tt_RET_OK;
+}
+
+static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt_Subscriber* sub,
+                                              struct tt_Topic* topic, const char* endpoint_name,
+                                              tt_SUBSCRIBER_CALLBACK callback, struct tt_Node* owner) {
+    tt_ret_t result = subscriber_reset(node, sub, topic, endpoint_name, callback);
     if (result != tt_RET_OK) {
         return result;
     }
-
-    node->last_modified = tt_get_ns();
-
-    return tt_RET_OK;
+    return register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
 }
 
 tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
@@ -6667,11 +6706,21 @@ static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, u
     *ceiling = unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
 }
 
+// A Client's retry settings: its own, from tt_ClientOptions (tt_Node_create_client()), or its service's (the
+// deprecated creates, whose callers may set them on the tt_Service after creation).
+static uint32_t client_retry_interval(const struct tt_Client* client) {
+    return client->call_retry_own ? client->call_retry_interval : client->service->call_retry_interval;
+}
+
+static uint32_t client_retry_count_setting(const struct tt_Client* client) {
+    return client->call_retry_own ? client->call_retry_count : client->service->call_retry_count;
+}
+
 // The wait after a call's `retry`-th send (0: the call itself). An explicit call_retry_interval is used as given, every
 // time. The auto path (0) doubles the first wait at each retry, up to the ceiling (call_retry_bounds()).
 static uint64_t compute_retry_interval(const struct tt_Client* client, uint32_t retry) {
-    if (client->service->call_retry_interval != 0) {
-        return client->service->call_retry_interval;
+    if (client_retry_interval(client) != 0) {
+        return client_retry_interval(client);
     }
     uint64_t first = 0;
     uint64_t ceiling = 0;
@@ -6690,14 +6739,14 @@ static uint32_t call_retry_count(const struct tt_Client* client) {
     // its first retry interval (~7.5 ms), and a response arriving after that was ignored as
     // "CallResponse with no outstanding call". Found 2026-09-24 by the first rmw test to make a real
     // service call, where the deferred response took longer than that to be sent.
-    return client->service->call_retry_count != 0 ? client->service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
+    return client_retry_count_setting(client) != 0 ? client_retry_count_setting(client) : (uint32_t)tt_CALL_RETRY_COUNT;
 }
 
 // How long after it was made an auto-path call reports failure at the latest: (count + 1) x tt_CALL_DEADLINE_PER_SEND,
 // the worst case the old fixed 250 ms ceiling gave (config.h). An explicit call_retry_interval has no deadline: its
 // (count + 1) waits are used as given, as before.
 static uint64_t call_deadline(const struct tt_Client* client) {
-    if (client->service->call_retry_interval != 0) {
+    if (client_retry_interval(client) != 0) {
         return UINT64_MAX;
     }
     uint64_t sends = (uint64_t)call_retry_count(client) + 1;
@@ -6729,7 +6778,7 @@ static bool call_past_deadline(const struct tt_ClientCall* call, uint64_t now) {
 // estimate outright (latency_backed_off), so a server that is fast again gets its budget back at once.
 static void back_off_retry_interval(struct tt_ClientCall* call, uint64_t now) {
     struct tt_Client* client = call->client;
-    if (client->service->call_retry_interval != 0) {
+    if (client_retry_interval(client) != 0) {
         return;
     }
     // A call sent before the last backoff ran on the estimate that backoff already doubled (struct
@@ -10421,8 +10470,8 @@ static tt_ret_t publish_claim_by_copy(struct tt_Publisher* pub, uint32_t length)
     struct tt_SegmentSlot* slot = pub->claim_slot;
     struct claimed_bytes claimed = {segment_slot_payload(slot) + CLAIM_FRAMING, length};
     pub->claim_slot = NULL; // or publisher_publish_locked() refuses it as a publish behind a claim
-    struct tt_Topic* topic = pub->topic;
-    struct tt_Topic copy_topic = *topic;
+    const struct tt_TypeSupport* topic = pub->topic;
+    struct tt_TypeSupport copy_topic = *topic;
     copy_topic.data_encode_size = claimed_bytes_size;
     copy_topic.data_encode = claimed_bytes_encode;
     pub->topic = &copy_topic;
@@ -14887,7 +14936,7 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
 static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
                             uint8_t source, uint32_t entity_id, const uint8_t* payload, uint32_t length, bool is_native,
                             bool via_data_port, bool* out_decode_failed) {
-    struct tt_Topic* topic = sub->topic;
+    const struct tt_TypeSupport* topic = sub->topic;
 #if tt_SAMPLE_LENDING
     // What tt_Sample_retain() may keep, for the length of the callback: the payload, and whose callback it is. On this
     // thread's stack, and the outer delivery put back afterwards - a callback may publish, and a local delivery nests.
