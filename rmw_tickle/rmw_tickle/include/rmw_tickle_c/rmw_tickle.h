@@ -933,7 +933,7 @@ typedef struct rmw_tickle_queued_message_t {
     void* ros_message;           // callbacks->ros_struct_size bytes, allocator-owned
     uint64_t source_timestamp;   // the writer's date (tt_get_wall_ns()), rebuilt from the wire's 32 bits
     uint64_t received_timestamp; // this host's date at the enqueue
-    uint64_t expires_ns;         // LIFESPAN: tt_get_ns() from which it is dropped; set only when lifespan_ns is
+    uint64_t expires_ns;         // LIFESPAN: tt_get_ns() from which it is dropped; 0 = never (D1: per sample)
     uint64_t publication_sequence_number;
     uint64_t reception_sequence_number;
     // Which writer sent this one, read from the core at delivery and carried here because
@@ -1091,11 +1091,10 @@ typedef struct rmw_tickle_subscriber_t {
     // discards any queue[] entry whose source_timestamp is already this old before returning it (the age taken
     // against the date on arrival, then counted on the monotonic clock: queued_message_t.expires_ns) -
     // "as if it had never been sent" (RMW_RET_OK, *taken = false, same as an empty queue), matching
-    // tt_Publisher.lifespan_duration_ns's own reliable_cache-side wording exactly. Deliberately
-    // independent of the Publisher's own lifespan_duration_ns (tickle.h) rather than negotiated
-    // with it - both read the same underlying data_header->timestamp (already on the wire
-    // regardless of either side's QoS, carried through to source_timestamp below), so a
-    // Subscription can enforce its own age floor with no coordination needed.
+    // tt_Publisher.lifespan_duration_ns's own reliable_cache-side wording exactly. Since tt_VERSION 14 (QoS plan D1)
+    // a sample is held to the shorter of this and its writer's announced lifespan
+    // (tt_Subscriber_delivering_lifespan()); this field is the subscription's own, and the whole answer while no writer
+    // with a lifespan is known.
     uint64_t lifespan_ns;
 
     // Loaned messages (docs/RMW.md, "Loaned messages"). `loans` is rmw_subscription.can_loan_messages: the type's

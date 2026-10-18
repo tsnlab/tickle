@@ -86,7 +86,7 @@ Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSE
 | RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE | Services retry in core |
 | DURABILITY | VOLATILE, TRANSIENT_LOCAL, BEST_AVAILABLE | Services: VOLATILE only |
 | HISTORY | KEEP_LAST, KEEP_ALL | KEEP_ALL is bounded in bytes, not samples (no RESOURCE_LIMITS in rmw): a full publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` then times out; a full RELIABLE subscription declines (the writer resends), BEST_EFFORT drops |
-| DEADLINE, LIFESPAN | any finite value | Deadline: one miss per period P with no publish (offered) or no sample received (requested), checked at the last activity + P. Lifespan expires samples in the publisher cache and the subscriber queue |
+| DEADLINE, LIFESPAN | any finite value | Deadline: one miss per period P with no publish (offered) or no sample received (requested), checked at the last activity + P. Lifespan expires samples in the publisher cache and the subscriber queue; a subscription applies the shorter of the writer's and its own (both announced, `tt_VERSION` 14) |
 | LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE | Lease at least 6 ms |
 
 RxO matching covers reliability, durability, deadline and liveliness; both sides get the event, once per incompatible
@@ -174,7 +174,7 @@ DDS ideas, own protocol: **no interoperation with DDS**. "DDS" means Fast DDS an
 | KEEP_ALL bound | 512 KiB per publisher and subscription | Samples (Fast DDS 5,000, Cyclone unlimited) | Publish blocks up to 100 ms at the bound |
 | KEEP_LAST history | At most 1 MiB (`RMW_TICKLE_CACHE_BYTES`) | `depth` samples | Fewer than depth for large samples (warned) |
 | TRANSIENT_LOCAL | Publisher pushes history | Reader pulls | No TRANSIENT or PERSISTENT |
-| LIFESPAN | Subscription uses **its own** lifespan | Writer's, at the reader | Set it on the subscription too |
+| LIFESPAN | The shorter of the writer's and the subscription's own | Cyclone the writer's (not verified); Fast DDS 2.14.7 the reader's own (`DataReaderImpl.cpp`) | Covers both; aged by the source timestamp, so cross-host it shifts by the clock offset, as in DDS |
 | Source timestamp | 32-bit us, clocks within ±35 min | 64-bit | Sync clocks if you use them |
 | Same host | Automatic shared-memory ring, no daemon | SHM / iceoryx (opt-in) | Nothing to configure |
 | Services | 4 in flight per client; max 64 KB; dropped after 5 s | Unbounded, no timeout | Keep requests small on lossy links |
