@@ -56,9 +56,13 @@ static struct tt_Publisher pubs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][48];
 static uint8_t sample[8];
 
+// Retained-sample storage for pubs[0] when it is created RELIABLE.
+static uint64_t first_storage[16384];
+
 // A node with `count` publishers named the way rmw_tickle names them - a ROS topic path of ~36
 // characters and a ~22-character endpoint name - which puts each announce entity near 91 bytes.
-static void init_node_with_endpoints(int count) {
+// pubs[0] is created with `first_qos`, in first_storage; the others with TEST_QOS_UNRELIABLE.
+static void init_node_with_endpoints_qos(int count, const struct tt_QosProfile* first_qos) {
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = 1;
@@ -72,13 +76,22 @@ static void init_node_with_endpoints(int count) {
         topics[i].data_size = sizeof(sample);
         topics[i].data_encode_size = sized_encode_size;
         topics[i].data_encode = sized_encode;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
+        const struct tt_QosProfile* qos = i == 0 ? first_qos : &TEST_QOS_UNRELIABLE;
+        size_t storage_size = tt_Publisher_storage_size(&topics[i], qos);
+        EXPECT_TRUE(storage_size <= sizeof(first_storage));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &pubs[i], &topics[i],
+                                                          "my_robot_node_endpoint", qos, NULL,
+                                                          storage_size != 0 ? first_storage : NULL, storage_size));
         // A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast
         // threshold, so expect_node_still_publishes()'s publish still goes out, by broadcast.
         for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
             (void)upsert_peer(pubs[i].peers, (uint8_t)(10 + peer), 0x0a000010U + peer, 8282);
         }
     }
+}
+
+static void init_node_with_endpoints(int count) {
+    init_node_with_endpoints_qos(count, &TEST_QOS_UNRELIABLE);
 }
 
 // After whatever happened before, the node must still be able to publish, and that publish must
@@ -135,7 +148,8 @@ static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     huge_topic.data_size = sizeof(sample);
     huge_topic.data_encode_size = sized_encode_size;
     huge_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &huge_pub, &huge_topic, "my_robot_node_endpoint"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&node), &huge_pub, &huge_topic,
+                                                      "my_robot_node_endpoint", &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
 
     EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
     node_flush(&node, 0, NULL);
@@ -151,23 +165,23 @@ static void test_sample_that_cannot_fit_is_refused_and_not_cached(void) {
     // framed submessage does not fit: the same wedge, reached from publish. It must also not be
     // retained, or a reliable reader could later be offered a sample it was never sent.
     test_mock_reset();
-    init_node_with_endpoints(1);
-    static struct tt_ReliableCacheIndex index[4];
-    static uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(4, tt_MAX_BUFFER_LENGTH * 2)];
-    static struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    EXPECT_EQ_INT(tt_RET_OK, tt_ReliableCache_init(&cache, index, 4, arena, sizeof(arena)));
-    pubs[0].reliable_cache = &cache;
-    pubs[0].reliable = true;
+    const struct tt_QosProfile reliable = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 4},
+                                           .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    init_node_with_endpoints_qos(1, &reliable);
+    const struct tt_ReliableCache* cache = pubs[0].reliable_cache;
+    EXPECT_TRUE(cache != NULL);
+    if (cache == NULL) {
+        return;
+    }
 
     sample_size = tt_MAX_BUFFER_LENGTH;
     EXPECT_EQ_INT(tt_RET_PROTOCOL_ERROR, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     EXPECT_EQ_U32(1, (uint32_t)node.tx_dropped_oversize);
-    EXPECT_EQ_U32(0, cache.newest_seq_no); // nothing retained
-    EXPECT_EQ_U32(0, pubs[0].seq_no);      // and no sequence number consumed
+    EXPECT_EQ_U32(0, cache->newest_seq_no); // nothing retained
+    EXPECT_EQ_U32(0, pubs[0].seq_no);       // and no sequence number consumed
 
     expect_node_still_publishes();
-    EXPECT_EQ_U32(1, cache.newest_seq_no); // the sample that fit is retained as seq 1
+    EXPECT_EQ_U32(1, cache->newest_seq_no); // the sample that fit is retained as seq 1
 }
 
 static void test_flush_of_an_unsendable_buffer_drops_it(void) {

@@ -191,7 +191,8 @@ static void capture_hook(const void* buf, size_t len) {
     datagram_len[datagram_count++] = (uint32_t)len;
 }
 
-static void init_pair(bool reliable) {
+// A RELIABLE Subscriber tracks `words` 64-bit words per writer (in `tracking`), and has no reorder buffer.
+static void init_pair_window(bool reliable, uint16_t words) {
     test_mock_reset();
     for (int i = 0; i < LIVE_MAX; i++) {
         if (live_buffers[i] != NULL) {
@@ -209,7 +210,8 @@ static void init_pair(bool reliable) {
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, tx_acquire, tx_release, NULL));
 
     init_bare_node(&receiver, RECEIVER_ID);
@@ -219,14 +221,17 @@ static void init_pair(bool reliable) {
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, rx_acquire, rx_release, NULL));
+    struct tt_QosProfile qos = reliable ? TEST_QOS_RELIABLE_READER : TEST_QOS_UNRELIABLE;
     if (reliable) {
-        sub.reliable = true;
-        memset(tracking, 0, sizeof(tracking));
-        sub.tracking_bitmaps = tracking;
-        sub.tracking_words = WIDE_WORDS;
+        qos.reliability.tracking_words = words; // a best-effort one keeps the builtin window, as it always had
     }
+    size_t storage_size = tt_Subscriber_storage_size(&receiver_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(tracking));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME,
+                                            &qos, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            storage_size != 0 ? tracking : NULL, storage_size));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, rx_acquire, rx_release, NULL));
 
     // A Publisher with no matched reader sends nothing (2026-10-15): known peers past the unicast threshold keep the
     // broadcast this capture is about.
@@ -246,6 +251,10 @@ static void init_pair(bool reliable) {
         unit_payload_at[i] = (uint32_t)sizeof(struct tt_SingleHeader) +
                              (uint32_t)(first ? sizeof(struct tt_FragFirstLHeader) : sizeof(struct tt_FragContLHeader));
     }
+}
+
+static void init_pair(bool reliable) {
+    init_pair_window(reliable, WIDE_WORDS);
 }
 
 static uint32_t unit_length(uint32_t i) {
@@ -607,8 +616,7 @@ static void test_batch_run_across_the_watermark(void) {
 // A run reaching past the window (64 bits here): a unit at a time, as before - the units past it jump the watermark
 // and the sample below it is given up - not as a span, which would leave them landed and unrecorded.
 static void test_batch_run_past_the_window(void) {
-    init_pair(true);
-    sub.tracking_words = 1;
+    init_pair_window(true, 1);
     feed(run_bytes, build_run(0, 2));
     feed(run_bytes, build_run(58, RUN_N)); // offsets 56-65 from the watermark at 2
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
@@ -619,7 +627,9 @@ static void test_batch_run_past_the_window(void) {
 // A best-effort Subscriber beside the RELIABLE one: every run a unit at a time, so both get the sample.
 static void test_batch_not_with_a_best_effort_subscriber(void) {
     init_pair(true);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub_be, &receiver_topic, ENDPOINT_NAME, on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic,
+                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
     feed(run_bytes, build_run(0, RUN_N));
     feed_rest_from(RUN_N);
     EXPECT_EQ_INT(2, delivered);
@@ -646,7 +656,9 @@ static void test_batch_not_with_a_best_effort_subscriber(void) {
 // go to it a unit at a time as before, so it completes and is freed with the RELIABLE one.
 static void test_batch_not_with_a_best_effort_assembly(void) {
     init_pair(true);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub_be, &receiver_topic, ENDPOINT_NAME, on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic,
+                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
     feed(run_bytes, build_run(0, RUN_N));
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub_be));
     feed_rest_from(RUN_N);

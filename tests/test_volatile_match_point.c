@@ -256,14 +256,14 @@ static struct tt_Context reader;
 static struct tt_TypeSupport writer_topic = {.name = "match_point",
                                              .data_size = 4,
                                              .data_encode_size = sample_encode_size,
-                                             .data_encode = sample_encode};
+                                             .data_encode = sample_encode,
+                                             .max_encoded_size = 4};
 static struct tt_TypeSupport reader_topic = {.name = "match_point",
                                              .data_size = 4,
                                              .data_decode = sample_decode,
-                                             .data_free = free_nothing};
-static struct tt_ReliableCacheIndex cache_index[DEPTH];
-static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(4))];
-static struct tt_ReliableCache cache;
+                                             .data_free = free_nothing,
+                                             .max_encoded_size = 4};
+static uint64_t pub_storage[(size_t)32U * 1024U / sizeof(uint64_t)];
 static uint64_t reorder_storage[REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 static void init_node(struct tt_Context* node, uint8_t id) {
@@ -291,22 +291,23 @@ static void start(void) {
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&writer));
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&reader));
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &pub, &writer_topic, "match_point_ep"));
-    memset(&cache, 0, sizeof(cache));
-    EXPECT_EQ_INT(tt_RET_OK, tt_ReliableCache_init(&cache, cache_index, DEPTH, cache_arena, sizeof(cache_arena)));
-    pub.reliable_cache = &cache;
-    pub.reliable = true;
-    pub.keep_all = true;
+    const struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = DEPTH},
+                                      .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    size_t storage_size = tt_Publisher_storage_size(&writer_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(pub_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&writer), &pub, &writer_topic,
+                                                      "match_point_ep", &qos, NULL, pub_storage, storage_size));
     topic_endpoint_id = pub.endpoint.id;
 }
 
 static void create_reader(void) {
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&reader, &sub, &reader_topic, "match_point_ep", on_data));
-    sub.reliable = true;
-    memset(reorder_storage, 0, sizeof(reorder_storage));
-    sub.reorder_storage = reorder_storage;
-    sub.reorder_slots = REORDER_SLOTS;
-    sub.reorder_slot_bytes = REORDER_SLOT_BYTES;
+    struct tt_QosProfile qos = TEST_QOS_RELIABLE_READER;
+    qos.reliability.reorder_slots = REORDER_SLOTS;
+    size_t storage_size = tt_Subscriber_storage_size(&reader_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(reorder_storage));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&reader), &sub, &reader_topic, "match_point_ep", &qos,
+                                 &(struct tt_SubscriberOptions) {.callback = on_data}, reorder_storage, storage_size));
 }
 
 static void publish(uint32_t from, uint32_t to) {
@@ -359,7 +360,7 @@ static void prematch_then_reader(bool (*drop_rule)(const struct datagram*), uint
     run_until(&writer, &reader, test_mock_now + (2 * tt_SECOND));
     publish(1, 3); // nobody to send to yet
     EXPECT_TRUE(!any_peer_ack_matched(&pub));
-    EXPECT_EQ_U32(1, cache.oldest_seq_no); // control: they are retained, so they could be resent
+    EXPECT_EQ_U32(1, pub.reliable_cache->oldest_seq_no); // control: they are retained, so they could be resent
 
     drop_data_seq_no = dropped;
     drop = drop_rule;
