@@ -2209,6 +2209,14 @@ struct tt_ReliableCache {
     // costs the one-time redundant delivery this milestone exists to avoid, never a correctness
     // problem.
     struct tt_DurableDeliveryRecord durable_delivered[tt_MAX_PEER_COUNT];
+    // Core-owned (g10), set by tt_Node_create_publisher(): a KEEP_LAST cache whose ring and arena keep sample_depth
+    // samples by themselves. While every sample takes depth_assured_datagrams datagrams and at most depth_assured_len
+    // encoded bytes, the ring's own count eviction is the sample bound and the arena never evicts inside it, so the
+    // per-sample depth bookkeeping is skipped (make_depth_room(), tickle.c). 0: not assured; the first sample outside
+    // the bounds sets it to 0 for good, and so must a caller that makes arena_size smaller after creation (rmw_tickle's
+    // lazily reserved arena). Last, away from the hot fields.
+    uint16_t depth_assured_datagrams;
+    uint32_t depth_assured_len;
 };
 
 #if tt_LARGE_SAMPLES

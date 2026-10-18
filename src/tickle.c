@@ -7854,11 +7854,15 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
 }
 
 // Makes room for one more sample under tt_ReliableCache.sample_depth, KEEP_LAST-evicting whole samples
-// oldest first. Called before a sample's first record is reserved; a no-op when sample_depth is 0.
+// oldest first. Called before a sample's first record is reserved; a no-op when sample_depth is 0, and while the depth
+// is assured (depth_assured_datagrams): the ring then indexes sample_depth samples exactly, so the eviction
+// reliable_cache_reserve() makes for this sample's first slot is this one, of the same sample.
 static void reliable_cache_admit_sample(struct tt_ReliableCache* cache) {
+    if (cache->sample_depth == 0 || cache->depth_assured_datagrams != 0) {
+        return; // before reliable_cache_depth(): the common cases pay two loads and nothing else
+    }
     uint16_t depth = reliable_cache_depth(cache);
-    while (depth != 0 && cache->sample_depth != 0 && reliable_cache_retains(cache) &&
-           cache->retained_samples >= cache->sample_depth) {
+    while (depth != 0 && reliable_cache_retains(cache) && cache->retained_samples >= cache->sample_depth) {
         RSTAT_INC(evicted_by_count);
         reliable_cache_evict_oldest(cache, depth);
     }
@@ -8354,10 +8358,10 @@ static void keep_all_room_before_match(struct tt_Context* node, struct tt_Publis
 }
 
 // (g10) Room for this KEEP_LAST sample without evicting inside the depth: grown through the Publisher's hook while it
-// can, else counted.
+// can, else counted. `datagrams` is the sample's (sample_datagram_count()).
 static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
                             const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len,
-                            uint32_t whole_limit) {
+                            uint32_t whole_limit, uint32_t datagrams) {
     struct tt_ReliableCache* cache = pub->reliable_cache;
     if (pub->keep_all) {
         keep_all_room_before_match(node, pub, submessage_header, encoded_len, whole_limit);
@@ -8366,6 +8370,10 @@ static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
     if (cache->sample_depth == 0) {
         return;
     }
+    if (datagrams == cache->depth_assured_datagrams && encoded_len <= cache->depth_assured_len) {
+        return; // the ring and the arena keep the depth by themselves (publisher_assure_depth())
+    }
+    cache->depth_assured_datagrams = 0; // for good: a sample the assurance does not cover may now be retained
     uint32_t footprint = sample_cache_footprint(node, submessage_header, encoded_len, whole_limit);
     while (!reliable_cache_keeps_depth(cache, footprint)) {
         if (pub->cache_grow == NULL || !pub->cache_grow(pub)) {
@@ -8395,9 +8403,13 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
             keep_last_bound_across_kinds(node, pub, 1);
         }
 #endif
-        make_depth_room(node, pub, submessage_header, encoded_len, whole_limit); // (g10)
 #if tt_FRAG_ENABLED
         uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len, whole_limit);
+#else
+        const uint32_t datagrams = 1;
+#endif
+        make_depth_room(node, pub, submessage_header, encoded_len, whole_limit, datagrams); // (g10)
+#if tt_FRAG_ENABLED
         if (datagrams > 1) {
             cache_sample_fragments(node, pub->reliable_cache, encoded_len, whole_limit, submessage_header,
                                    pub->seq_no + 1, datagrams);
@@ -11780,6 +11792,51 @@ static void publisher_apply_large_options(struct tt_Publisher* pub, const struct
 #endif
 }
 
+// Whether this KEEP_LAST cache keeps its sample_depth by its ring and arena alone, and for which samples
+// (tt_ReliableCache.depth_assured_datagrams / _len). It does for a bounded type whose largest sample takes k datagrams
+// when the ring is sample_depth x k slots - not capped by the arena - and the arena (sample_depth + 1) records of the
+// largest: a sample of exactly k datagrams then frees, by the count eviction its first slot makes
+// (reliable_cache_reserve()), the whole sample sample_depth back (reliable_cache_evict_oldest()), and nothing else;
+// and of at most depth_assured_len encoded bytes its records take no more than arena / (sample_depth + 1), so the
+// sample_depth - 1 left and it fit with the wrap's slack and the arena evicts nothing inside the depth. That is what
+// make_depth_room() and reliable_cache_admit_sample() would establish a sample at a time, at ~20 instructions a sample
+// (2026-10-19: the rig latency benches, KEEP_LAST 8, which built their caches as a ring of depth before the QoS
+// creation API and paid nothing for the bound). A smaller or larger sample, or one the datagram limit splits
+// differently, falls back to them for good.
+static void publisher_assure_depth(struct tt_ReliableCache* cache, const struct tt_TypeSupport* type,
+                                   const struct publisher_layout* layout) {
+    cache->depth_assured_datagrams = 0;
+    cache->depth_assured_len = 0;
+    if (cache->sample_depth == 0 || type->max_encoded_size == 0 || type->max_encoded_size_estimated ||
+        layout->depth_kept < cache->sample_depth) {
+        return;
+    }
+    const uint32_t datagrams = tt_sample_datagrams(qos_type_max_cdr(type));
+    if ((uint32_t)layout->ring != (uint32_t)cache->sample_depth * datagrams) {
+        return; // capped: the ring holds fewer than sample_depth samples of the largest
+    }
+    // The longest encoded sample whose records take at most `room` arena bytes. One datagram: one record of the encoded
+    // length padded to 4 (record_length_checked()). k: one record per fragment, each its fragment header and its part
+    // of the CDR padded to 4 - at most the CDR (the padded length less the DATA's two headers, sample_cdr_length()),
+    // the k headers and 3 bytes each; for the largest sample of a bounded type that is tt_sample_cache_bytes().
+    const uint32_t room = cache->arena_size / ((uint32_t)cache->sample_depth + 1U);
+    uint64_t longest = room;
+#if tt_FRAG_ENABLED
+    if (datagrams > 1) {
+        const uint64_t headers =
+            frag_header_length(0) + ((uint64_t)(datagrams - 1U) * frag_header_length(1)) + (3ULL * datagrams);
+        const uint64_t data_headers = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+        longest = (uint64_t)room + data_headers > headers ? (uint64_t)room + data_headers - headers : 0;
+    }
+#endif
+    longest &= ~(uint64_t)3U; // an encoded length up to it pads to no more than it
+    if (longest == 0) {
+        return;
+    }
+    cache->depth_assured_datagrams = (uint16_t)datagrams;
+    cache->depth_assured_len = longest < UINT32_MAX ? (uint32_t)longest : UINT32_MAX;
+}
+
 static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct tt_Publisher* pub,
                                                  const struct tt_TypeSupport* type, const char* topic_name,
                                                  const struct tt_QosProfile* qos,
@@ -11838,6 +11895,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         cache->arena_limit = layout.arena;
         // KEEP_LAST bounds what it keeps in samples; KEEP_ALL never evicts, it refuses (tt_RET_WOULD_BLOCK).
         cache->sample_depth = actual.history.kind == tt_QOS_HISTORY_KEEP_LAST ? (uint16_t)actual.history.depth : 0;
+        publisher_assure_depth(cache, type, &layout);
         pub->reliable_cache = cache;
         if (layout.depth_kept < actual.history.depth) { // D10: said at creation, and reported by get_actual_qos
             unsigned long long needed = ((unsigned long long)actual.history.depth + 1U) * layout.record;

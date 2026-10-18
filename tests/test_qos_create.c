@@ -370,6 +370,66 @@ static void test_unbounded_type_keeps_the_depth(void) {
     EXPECT_TRUE(pub.reliable_cache->depth_shortfalls > 0);
 }
 
+// A KEEP_LAST cache sized for its depth keeps the depth by its ring and arena alone (publisher_assure_depth()), and
+// skips the per-sample bookkeeping that would establish it: what it retains must be exactly what the bookkeeping keeps.
+// The control is the same stream with the assurance taken away. A sample outside the assurance ends it for good. The
+// arena starts on a 64-byte boundary whatever the storage's alignment.
+static void publish_indices(uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        next_index = i + 1U;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&next_index));
+    }
+}
+
+static void test_depth_assured(void) {
+    const struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 10},
+                                      .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    uint32_t retained[2];
+    uint32_t oldest[2];
+    for (int arm = 0; arm < 2; arm++) { // 0: assured; 1: the control, the bookkeeping on every sample
+        init();
+        struct tt_Node* node = tt_Context_default_node(&sender);
+        size_t needed = tt_Publisher_storage_size(&type, &qos);
+        void* misaligned = (uint8_t*)storage + 8; // 8-aligned and not 64: the arena must still be
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(node, &pub, &type, TOPIC, &qos, NULL, misaligned, needed));
+        struct tt_ReliableCache* cache = pub.reliable_cache;
+        EXPECT_EQ_U32(0, (uint32_t)((uintptr_t)cache->arena % 64U));
+        EXPECT_TRUE(cache->arena + cache->arena_size <= (uint8_t*)misaligned + needed);
+        EXPECT_EQ_U32(1, cache->depth_assured_datagrams);
+        EXPECT_TRUE(cache->depth_assured_len >= SAMPLE_BYTES);
+        if (arm == 1) {
+            cache->depth_assured_datagrams = 0;
+        }
+        publish_indices(25);
+        EXPECT_EQ_U32(arm == 0 ? 1U : 0U, cache->depth_assured_datagrams);
+        EXPECT_EQ_U32(0, cache->depth_shortfalls);
+        retained[arm] = cache->retained_samples;
+        oldest[arm] = cache->oldest_seq_no;
+        EXPECT_EQ_U32(cache->newest_seq_no - 9U, cache->oldest_seq_no);
+    }
+    printf("test_qos_create: KEEP_LAST 10, 25 published: assured keeps %u from seq %u, control %u from seq %u\n",
+           (unsigned)retained[0], (unsigned)oldest[0], (unsigned)retained[1], (unsigned)oldest[1]);
+    EXPECT_EQ_U32(10, retained[0]);
+    EXPECT_EQ_U32(retained[1], retained[0]);
+    EXPECT_EQ_U32(oldest[1], oldest[0]);
+
+    init(); // a sample longer than the assurance covers: the bookkeeping from then on
+    struct tt_Node* node = tt_Context_default_node(&sender);
+    size_t needed = tt_Publisher_storage_size(&type, &qos);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(node, &pub, &type, TOPIC, &qos, NULL, storage, needed));
+    pub.reliable_cache->depth_assured_len = SAMPLE_BYTES - 1U;
+    publish_indices(1);
+    EXPECT_EQ_U32(0, pub.reliable_cache->depth_assured_datagrams);
+
+    init(); // KEEP_ALL is never assured: it does not evict
+    struct tt_QosProfile keep_all = qos;
+    keep_all.history.kind = tt_QOS_HISTORY_KEEP_ALL;
+    node = tt_Context_default_node(&sender);
+    needed = tt_Publisher_storage_size(&type, &keep_all);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(node, &pub, &type, TOPIC, &keep_all, NULL, storage, needed));
+    EXPECT_EQ_U32(0, pub.reliable_cache->depth_assured_datagrams);
+}
+
 // What qos_zero_dirty_pages() is for: clearing storage that arrives zeroed adds nothing to the resident set, where a
 // memset of it makes every page resident (QoS step 2b: ~6 MB of peak RSS at p4). The memset is the control - it shows
 // the instrument sees pages being made resident - and a page that holds anything is cleared.
@@ -715,6 +775,7 @@ int main(void) {
     test_history_bytes_cap_the_depth();
     test_unbounded_type_keeps_the_depth();
     test_zeroed_storage_stays_untouched();
+    test_depth_assured();
     test_subscriber_storage();
     test_best_available_reads_discovery();
     test_client_and_server();

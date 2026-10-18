@@ -381,7 +381,8 @@ ROS dependency, and rmw_tickle converts.
 | zero field | the computed default, `rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, infinite |
 | resolution | `tt_QosProfile_resolve()`: SYSTEM_DEFAULT, BEST_AVAILABLE (from the discovery table), and out-of-range values refused, not adjusted |
 | hot path | the resolved profile is written into the endpoint's existing fields; only what none held is appended |
-| storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT |
+| storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT. A Publisher's: the cache, an index ring of depth samples' datagrams, an arena of (depth + 1) records on a 64 B boundary. Creation clears only what holds anything (a reorder slot: its header) |
+| per sample | nothing the hand-built caches did not pay: a KEEP_LAST cache whose ring and arena keep the depth for samples of its type's largest shape skips the sample count (`depth_assured_*`) until a sample falls outside it |
 | depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()`. An unbounded type (`max_encoded_size` 0, or a size its binding chose: `max_encoded_size_estimated`) keeps the depth asked for; a sample that does not fit is counted at publish (`depth_shortfalls`) |
 | not QoS | `tt_PublisherOptions`, `tt_SubscriberOptions`, `tt_ClientOptions` (call retry), `tt_ServerOptions` |
 

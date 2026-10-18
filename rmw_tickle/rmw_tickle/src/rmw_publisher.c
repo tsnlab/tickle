@@ -996,6 +996,7 @@ static void publisher_adopt_actual_qos(rmw_tickle_publisher_t* pub_impl, const r
         uint32_t initial = initial_arena_bytes(cache->arena_limit, clamp_record_bytes(type_ceiling_bytes(pub_impl)));
         if (initial < cache->arena_size) {
             cache->arena_size = initial;
+            cache->depth_assured_datagrams = 0; // core assured the depth for the whole arena (tickle.h says)
         }
     }
 
