@@ -13,8 +13,11 @@
 #   ever calls the clearing that pre and fix differ in. Interleaved per rep, the arm order rotating.
 #
 # HOW TO READ IT, written before running and enforced in the reading at the end (qos_rss_read.py).
-#   SAMPLES: a process counts only if it printed RESULT with peak_rss_kb > 0; a cell with fewer than 3 such reps per
-#     arm is VOID.
+#   MEASURE: each process's peak RSS is ru_maxrss from wait4() (rusage_run.py's RUSAGE line, maxrss_kb), the same for
+#     client and server - the latency server's RESULT line has no peak_rss_kb.
+#   SAMPLES: a process counts only if it exited 0, and a throughput server only if its RESULT says lost=0 (a lossy run
+#     touches reorder slots in proportion to what it lost, which is not what is compared); fewer than 3 such reps per
+#     arm is VOID for that row.
 #   TREATMENT: pre's reliable server (the Subscriber) must sit at least 300 KB above main's at p1 and 4,000 KB at p4,
 #     the step 2b finding. If it does not, this instrument cannot see the effect fix A is for, and its "no increase"
 #     says nothing: the whole reading is VOID.
@@ -79,24 +82,35 @@ sudo -n ip netns exec "$NS" ip link add bench0 type dummy
 sudo -n ip netns exec "$NS" ip addr add 192.168.10.1/24 broadcast 192.168.10.255 dev bench0
 sudo -n ip netns exec "$NS" ip link set bench0 up
 
+RU="$REPO/examples/perf_hil/experiments/rusage_run.py"
 run_cell() { # run_cell <rep> <scenario> <size> <arm>
-    local rep=$1 sc=$2 sz=$3 arm=$4 cargs=""
+    local rep=$1 sc=$2 sz=$3 arm=$4 cargs
     local bin="$WORK/bin_${arm}_${sc}_$sz" srv_d=$((DUR + 8))
-    [ "$sc" = reliable_latency ] && cargs="-i 0.005"
+    # The rig cells' QoS (campaign_sweep.sh common_args), at a rate this shared PC carries without loss: what is
+    # compared is what creation and a lossless run make resident, where a lossy run would touch reorder slots in
+    # proportion to what it happened to lose.
+    case "$sc:$sz" in
+    reliable_throughput:p1) cargs="-Q -N 2048 -B 100 -i 0.0002" ;;
+    reliable_throughput:p4) cargs="-Q -N 187 -B 100 -i 0.0002" ;;
+    reliable_latency:*) cargs="-i 0.005" ;;
+    *) cargs="-i 0.0002" ;;
+    esac
     # shellcheck disable=SC2024 # the logs stay ours
-    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 30)) nice -n 19 "$bin/server" -d "$srv_d" \
-        >"$WORK/srv.log" 2>&1 &
+    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 30)) nice -n 19 python3 "$RU" "$bin/server" \
+        -d "$srv_d" >"$WORK/srv.log" 2>&1 &
     local srv=$!
     sleep 1
     # shellcheck disable=SC2024,SC2086 # cargs is meant to split
-    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 30)) nice -n 19 "$bin/client" -d "$DUR" \
-        $cargs >"$WORK/cli.log" 2>&1
+    sudo -n ip netns exec "$NS" env BENCH_IFACE=lo timeout $((srv_d + 30)) nice -n 19 python3 "$RU" "$bin/client" \
+        -d "$DUR" $cargs >"$WORK/cli.log" 2>&1
     wait "$srv"
     local tag="rep=$rep cell=${sc}_$sz arm=$arm"
     { grep -h '^RESULT' "$WORK/cli.log" | sed "s/^/$tag role=client /"
-        grep -h '^RESULT' "$WORK/srv.log" | sed "s/^/$tag role=server /"; } >>"$OUT"
-    grep -q '^RESULT' "$WORK/cli.log" || { say "$tag: client printed no RESULT; its last lines:"; tail -4 "$WORK/cli.log" | tee -a "$OUT"; }
-    grep -q '^RESULT' "$WORK/srv.log" || { say "$tag: server printed no RESULT; its last lines:"; tail -4 "$WORK/srv.log" | tee -a "$OUT"; }
+        grep -h '^RUSAGE' "$WORK/cli.log" | sed "s/^/$tag role=client /"
+        grep -h '^RESULT' "$WORK/srv.log" | sed "s/^/$tag role=server /"
+        grep -h '^RUSAGE' "$WORK/srv.log" | sed "s/^/$tag role=server /"; } >>"$OUT"
+    grep -q '^RUSAGE.* exit=0 ' "$WORK/cli.log" || { say "$tag: client did not exit 0; its last lines:"; tail -4 "$WORK/cli.log" | tee -a "$OUT"; }
+    grep -q '^RUSAGE.* exit=0 ' "$WORK/srv.log" || { say "$tag: server did not exit 0; its last lines:"; tail -4 "$WORK/srv.log" | tee -a "$OUT"; }
 }
 
 for rep in $(seq 1 "$REPS"); do
