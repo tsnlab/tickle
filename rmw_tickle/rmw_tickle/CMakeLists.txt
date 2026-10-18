@@ -220,6 +220,18 @@ if(BUILD_TESTING)
     )
   endforeach()
 
+  # A DEADLINE gap between P and 2P. Exits 77 - a skip, with the reason printed - while the known defect its header
+  # describes is present (every control holding, the misses exactly where the defect predicts); anything else that fails
+  # exits 1. The fix makes it pass and removes the 77 exit and SKIP_RETURN_CODE here, so a regression fails.
+  add_executable(test_deadline_gap test/test_deadline_gap.c)
+  target_link_libraries(test_deadline_gap rmw_tickle Threads::Threads)
+  target_compile_options(test_deadline_gap PRIVATE -UNDEBUG)
+  ament_add_test(test_deadline_gap
+    COMMAND "$<TARGET_FILE:test_deadline_gap>"
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    SKIP_RETURN_CODE 77
+  )
+
   # RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS needs a saturated link, which it makes with a tbf-shaped veth pair - possible only
   # in a named private netns with `sudo -n ip` (run_rmw_suite.sh's). Anywhere else it exits 77: skipped, not passed.
   add_executable(test_large_publish_block test/test_large_publish_block.c)
