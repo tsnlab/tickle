@@ -23,6 +23,8 @@ A role prints one line "RESULT: key=value ..." when it ends; the script reads on
   durable_pub   TRANSIENT_LOCAL KEEP_LAST 4, publishes 6 sensor_msgs/Image samples of 60,000 bytes, then keeps running
   durable_sub   created later with the same QoS: reports how many backlog samples arrived, which, and whether in order
   inprocess     a talker node and a listener node in ONE process and executor, then a std_srvs/Trigger call between them
+  besvc_server  a BEST_EFFORT std_srvs/Trigger service on /accept_besvc, counting the requests it served
+  besvc_client  a BEST_EFFORT client of it: ARG calls one at a time, each lost if unanswered within BESVC_WAIT_S
 """
 import sys
 import time
@@ -33,6 +35,8 @@ from rclpy.event_handler import SubscriptionEventCallbacks
 from rclpy.node import Node
 from std_msgs.msg import Int32
 from std_msgs.msg import String
+
+BESVC_WAIT_S = 0.5  # how long besvc_client waits for one answer before counting the call lost
 
 
 def spin_for(node, seconds, executor=None):
@@ -417,6 +421,46 @@ def main():
             node.destroy_publisher(p_two)
             print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s'
                   % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
+    elif role in ('besvc_server', 'besvc_client'):
+        # A BEST_EFFORT service (D6): both ends BEST_EFFORT, as DDS needs to match them. The client makes ARG calls
+        # one at a time, giving each BESVC_WAIT_S for its answer and counting it lost otherwise.
+        from rclpy.qos import QoSProfile
+        from rclpy.qos import ReliabilityPolicy
+        from std_srvs.srv import Trigger
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        if role == 'besvc_server':
+            node = Node('accept_besvc_server')
+
+            def serve(_request, response):
+                counts['n'] += 1
+                response.success = True
+                response.message = 'pong'
+                return response
+            node.create_service(Trigger, '/accept_besvc', serve, qos_profile=qos)
+            spin_for(node, seconds)
+            print('RESULT: role=besvc_server sent=%d' % counts['n'], flush=True)
+        else:
+            node = Node('accept_besvc_client')
+            client = node.create_client(Trigger, '/accept_besvc', qos_profile=qos)
+            calls = int(arg or '50')
+            answered = errors = made = 0
+            if client.wait_for_service(timeout_sec=20.0):
+                spin_for(node, 1.0)  # discovery settles: the first calls must not be the ones that find the server
+                for _ in range(calls):
+                    try:
+                        future = client.call_async(Trigger.Request())
+                    except Exception:  # noqa: BLE001 - rclpy raises the rmw error; count it as a lost call
+                        errors += 1
+                        continue
+                    made += 1
+                    end = time.monotonic() + BESVC_WAIT_S
+                    while not future.done() and time.monotonic() < end:
+                        rclpy.spin_once(node, timeout_sec=0.01)
+                    if future.done() and future.result() is not None and future.result().message == 'pong':
+                        answered += 1
+                    else:
+                        client.remove_pending_request(future)
+            print('RESULT: role=besvc_client sent=%d answered=%d errors=%d' % (made, answered, errors), flush=True)
     else:
         print('RESULT: role=%s error=unknown_role' % role, flush=True)
         return 2
