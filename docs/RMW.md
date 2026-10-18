@@ -129,7 +129,7 @@ lent as its last loan left it (clearing it would write as many bytes as the copy
 defaults included. `rmw_publish_loaned_message` then encodes it into the ring slot (encode-in-slot) or `tx_buffer`
 exactly as `rmw_publish` does: **one copy remains on the publish**.
 
-**A large sample's publish copy goes while it is sent** (2026-10-11, `ab/interleave-encode`). For a type whose wire
+**A large sample's publish copy goes while it is sent** (on main since 2026-10-11). For a type whose wire
 bytes are its message, and for `rmw_publish_serialized_message`, the publisher offers core a ranged encode (the psn,
 then a `memcpy` of the message's bytes; `test_encode_range`), so a sample above a datagram is copied a send call at a
 time, just ahead of the datagrams that carry it, instead of all of it before the first leaves (core DESIGN.md 8,
@@ -191,7 +191,8 @@ large sample to core, it waits until that sample has gone into the socket, up to
   median latency rose to 69.7 ms against 53.8 ms without the option.
 - **"Gone" means in the socket.** A send buffer that holds more than a sample keeps the sample waiting there instead:
   rmw_tickle asks for 4 MiB, and the Pis grant 425,984 bytes, this PC 8 MiB.
-- **Seen it act**: the publisher's shutdown line, `large_block_waits=<n> large_block_timeouts=<n>`.
+- **Seen it act**: the context's rmw_tickle stats line, printed when its poll thread stops,
+  `large_block_waits=<n> large_block_timeouts=<n>` (context-wide counters).
 
 **Measured on the PC only** (`experiments/large_block_pc.sh` on the build that added the option, 2026-10-16: the I4s
 cell over a veth shaped by tbf to 1 Gbit/s, 3 reps x 30 s, medians; not a rig figure; Fast DDS does not run on this
@@ -272,7 +273,7 @@ source install/setup.bash
 without it even a plain `rclcpp::Node` cannot start, because it creates `/rosout` and the parameter services.
 
 ```sh
-rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # all 23 jazzy interface packages
+rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # all 24 jazzy interface packages
 source ~/tickle_ifaces_ws/install/setup.bash
 ```
 
@@ -322,6 +323,9 @@ Cross-host round trip through `rclcpp`, with ping on one rig Raspberry Pi and po
 implementations run in one session, 3 repetitions, median shown; the same application binary is used for every rmw.
 Build `934f90de`; raw files `examples/perf_hil/results/rmw_4way_block_934f90de_2026-09-30.txt` and
 `rmw_4way_poll*_cb_r7_934f90de_2026-10-01.txt` (7 repetitions). **Bold** marks a lead beyond 2xSE.
+The round-trip figures here (rows 48-67, and the same-host RTT below) are from the send stamp, a diagnostic since
+2026-10-18. The scored latency rows are measured from creation time at `18f16b85`: cross host 48c-67c and same
+host R1c-R12 (RESULTS.md, "rmw layer" and "rmw layer, same host").
 
 | Row | Metric (Bench = 64 B, Array1k = 1 KB) | rmw_tickle | Fast DDS | CycloneDDS | rmw_zenoh |
 |---|---|---:|---:|---:|---:|
@@ -349,9 +353,9 @@ The full tables are in [RESULTS.md](RESULTS.md).
 
 ## Open items
 
-- Loaned messages: core changes that would make more of them zero-copy - `tt_Context.rx_buffer` aligned to 8 (an
-  8-aligned type landing there is copied today), a ring that skips a held slot (so ring slots could be lent safely),
-  and a claimed-slot API for the publisher.
+- Loaned messages: a ring that skips a held slot (so ring slots could be lent safely) would make more of them
+  zero-copy. The other two core changes are done: `tt_Context.rx_buffer` is 8-aligned and the publisher has a
+  claimed-slot API (`tt_Publisher_claim`, used by `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`), both since 2026-10-09.
 - Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
   `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
   `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes.
@@ -364,4 +368,5 @@ The full tables are in [RESULTS.md](RESULTS.md).
   `rmw suite (as CI)` gate). The acceptance suite (`rmw_gap_acceptance.sh`) is run by hand.
 - A cross-vendor rmw throughput benchmark that can run across two hosts.
 - SROS2 security: parked until the user starts it.
-- Line and branch coverage tracking (none today; needed for a higher quality level).
+- Line and branch coverage tracking for rmw_tickle (core has it: `make coverage` and CI's `coverage` job; CI's colcon
+  build of rmw_tickle has none; needed for a higher quality level).

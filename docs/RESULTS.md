@@ -141,7 +141,8 @@ TickLE is behind inside a lead:
   criterion against forced MTU failed at all three rates.
 - Same host at 200 pings/s (a 5 ms interval), TickLE's client sends each ping ~60 us after its due time, as the DDS
   clients do; at 20/s it sends after 11 us. The scheduler's `timerfd` deadline wait (`596e9c9c`) covers only waits
-  longer than 10 ms. A further fix (ab/sched-wake-slack) is in rig A/B. Its creation lead in S7c-S10c holds anyway.
+  longer than 10 ms. A further fix, the polling thread's 1 ns timer slack (`TT_RX_TIMER_SLACK_NS`), is on main since
+  2026-10-18 and not yet measured on the rig. Its creation lead in S7c-S10c holds anyway.
 
 ## How to read these numbers
 
@@ -344,7 +345,8 @@ the reps' range; `g` is the median delay from each ping's due time to its send.
   files). S7c: creation mean 0.0815 vs 0.1666 / 0.1287 ms, WIN against both on the mean and on the p50.
 - **When TickLE's ping leaves.** At 200/s (a 5 ms interval) TickLE's client sends each ping ~60 us after its due time,
   like the DDS clients (60-62 us); at 20/s (50 ms) it sends after 11 us. The `timerfd` deadline wait of `596e9c9c`
-  covers only waits longer than 10 ms. A further fix (ab/sched-wake-slack) is in rig A/B.
+  covers only waits longer than 10 ms. A further fix, the polling thread's 1 ns timer slack (`TT_RX_TIMER_SLACK_NS`,
+  `119d14bd`), is on main since 2026-10-18 and not yet measured on the rig.
 - **CPU, the same runs (S12, S18).** Per answered round trip, reps' ranges: S12 (P2 20/s, client) TickLE 22.3-22.6,
   FastDDS 80.0-87.4 us, CycloneDDS DELIVERY FAILED (49.7); S18 (P3 200/s, client + server) TickLE 35.4-35.5, FastDDS
   163.0-177.7, CycloneDDS 93.1-94.7 us (iox-roudi's 1.6 us included). TickLE has the lowest in both. Until 2026-10-18
@@ -1113,7 +1115,9 @@ This table's earlier corrections (publisher CPU per MB delivered, 2026-10-17; th
   Fast DDS 3.58); publisher peak RSS 25.5 MB, the smallest of the four. The default stays off, so the row above is
   the non-blocking mode.
 - **Same host is not published.** In step A a 4 MB best-effort sample delivers ~0% same-host: its ~2,900 fragments do
-  not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is to fix it.
+  not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is on main since 2026-10-15; its
+  rig session went VOID on its control (perf_test's own spin, not step B; `bcf8624d`), so no same-host figure
+  is published yet.
 
 ### Hybrid transport (large samples), rig
 

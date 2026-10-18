@@ -10,7 +10,7 @@ All commands run from the repository root.
 
 | Tier | Command | What it is | Needs |
 |---|---|---|---|
-| Unit | `make test` | `tests/test_*.c`, whitebox: each includes `src/tickle.c` and a mock HAL (`tests/test_mock.h`). No real I/O. | a C compiler |
+| Unit | `make test` | `tests/test_*.c`, whitebox: most include `src/tickle.c` and a mock HAL (`tests/test_mock.h`), with no real I/O; a few run on the real Linux HAL (`test_poll_signal`, `test_segment_bell`, `test_own_address`, `test_segment_owner`) or the public API alone (`test_thread_safety`). | a C compiler |
 | Coverage | `make coverage` | the unit tests built with `--coverage`; line and branch figures for core (`src/`, HALs excluded), reports in `platform/linux/obj/coverage/report/`. Tracked, not enforced. | gcovr |
 | Sanitizers | `make sanitize` | the unit tests under ASan + UBSan | |
 | Threads | `make tsan` | the thread-safety test under ThreadSanitizer | |
@@ -43,7 +43,8 @@ Manual netns helpers (from `platform/linux/netns.mk`): `make createns`, `make de
 | Upstream conformance | CI only (`test_rmw_implementation`, in `check-all.yml`) | |
 | Standard interfaces | `rmw_tickle/scripts/build_ros2_interfaces.sh` | needed before a default-options node runs on rmw_tickle |
 
-A ready workspace for the acceptance scripts is `~/rmw_accept_ws` (or set `RMW_TEST_WS`).
+A ready workspace for the acceptance scripts is `~/rmw_accept_ws`, passed with `-w`. The `rmw suite (as CI)` gate
+(`run_rmw_suite.sh`) tries `$RMW_TEST_WS`, then `~/rmw_accept_dev`, then `~/rmw_accept_ws`.
 
 ## 2. The local gate and CI
 
@@ -52,8 +53,10 @@ A ready workspace for the acceptance scripts is `~/rmw_accept_ws` (or set `RMW_T
 Runs every gate that can run on this machine, one row each, and exits non-zero if any row FAILs.
 
 Rows: `lint` (clang-format + clang-tidy), `lint-shell`, `check-doc-shas`, `check-rig-lock`, `check-bench-shapes`,
-`check-unsupported-list`, `check-context-reset`, `check-results-provenance`, `test (unit)`, `tsan`,
-`test-typesupport`, `lint-freertos-hal`, `lint-rmw`, `rmw suite (as CI)`, `build configs (syntax)`.
+`check-unsupported-list`, `check-context-reset`, `check-results-provenance`, `test (unit)`, `tsan (thread safety)`,
+`sanitize (ASan + UBSan, as CI)`, `test-typesupport (pytest)`, `lint-freertos-hal (as CI)`, `lint-rmw`,
+`rmw suite (as CI)`, `build configs (syntax)`, `build freertos (link, as CI)`. The rows run in parallel.
+`make check-gates DOCS_ONLY=1` runs only the rows that read documents, when every changed path is a document.
 
 Verdicts: `PASS`, `FAIL`, `SKIP` (could not run, with the reason), `ADVS` (lint findings from a clang that is not CI's 19).
 
@@ -71,7 +74,8 @@ Verdicts: `PASS`, `FAIL`, `SKIP` (could not run, with the reason), `ADVS` (lint 
 - ADVS or SKIP is not PASS. A SKIP means the check did not run.
 
 **What the gate does not cover**
-- It builds one configuration in full. `build configs (syntax)` only syntax-checks the other configurations.
+- It builds one configuration in full (plus its sanitizer build and the RISC-V FreeRTOS link). `build configs
+  (syntax)` only syntax-checks the other configurations.
 - `make test-linux`. Run it yourself for HAL or transport changes.
 - The interface set CI assembles. A capacity row naming a type that exists only on this machine passes here and fails in CI.
 - C++ standard: CI compiles the ROS `.cpp` files as C++17; this machine defaults to C++20 (`lint_rmw.sh` uses 17).
@@ -95,7 +99,7 @@ After every push, check **every** workflow, not just one job.
   SSH and orchestration use the separate 10.1.1.x management LAN.
 - **Loss and delay:** `tc netem` on the client's `eth0` egress, read back before each cell.
 - **Runner:** the self-hosted `tickle-hil` runner on the lab PC SSHes into both Pis as `ci`.
-  Setup: `.github/scripts/README.md`.
+  Setup: `git show 3c0c505b:.github/scripts/README.md` (the runner's old setup notes, not carried into `docs/`).
 - **What runs there:**
   - `performance.yml` (manual);
   - the cross-vendor campaign (`examples/perf_hil/{tickle,cyclonedds,fastdds,zenohpico}/`, one native client/server pair per framework, run through `run_scenario.sh`);

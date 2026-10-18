@@ -17,6 +17,8 @@ The user's active list (2026-10-05), in order.
    Every published figure before it is whole-run. Next: re-measure S7-S10, the cross-host latency rows and the
    campaign. Separately, in core: deliver in-order fragments from one hot buffer instead of the reorder ring (the
    ring stays for out-of-order).
+   **Done:** re-measured with the window on every framework - the same-host rows at `e521bbba` and the cross-host
+   campaigns `A` and `T` at `09a0437d` (both 2026-10-08; RESULTS sections 1 and 2); the in-order fragment path is item 1.
 0. **A fair testbed** (the user, 2026-10-05; ahead of everything below once rmw KEEP_ALL is closed): the published
    comparison must not rest on a setup tuned for TickLE. Found: the same-host cells (S1-S16, `s6_transport_cells.sh`,
    `s6_witness_check.sh`) pin each process to ONE core, which squeezes the multi-threaded DDS processes and suits
@@ -69,6 +71,9 @@ The user's active list (2026-10-05), in order.
    delivered rate. Waiting on the user: the vendors' BEST_EFFORT history depth, `BE_HISTORY=` (`-K` on all three;
    unset = KEEP_LAST 1, as today; `tickle/common/BenchHistory.h`). A PC smoke run showed CycloneDDS's shared-memory
    reader taking 4-8% of what was sent at either depth, with its bench reader taking one sample per wake.
+   **Since then:** BEST_EFFORT runs KEEP_LAST 1 on all three, explicitly (the DDS default); CPU and peak RSS rows for
+   all three frameworks are in RESULTS section 1 (S11-S13, S17-S19), and the same-host throughput rows score
+   delivered samples (goodput) since 2026-10-17.
 3. **Publisher user time** (0.637 us/sample at p3): broken down with perf on the rig (RESULTS, same-host notes):
    clock 25%, memcpy 28%, segment indices 12% (now on their own cache lines, `e0873623`). Next: let
    `tt_Publisher_publish()` called from a scheduled callback reuse the time the poll loop just read (one of the four
@@ -133,9 +138,9 @@ The user's active list (2026-10-05), in order.
    formula that produced it and how to recompute it on another platform. Start from the old constants audit
    (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
    RMW_TICKLE_* defaults.
-   Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform".
-   Done 2026-10-08 on a branch, pending its rig A/B: the last fitted values, `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
-   `tt_CALL_RETRY_GRANULARITY` (2x it), are (a): G is the context's own timer lateness, measured on the retry timers'
+   Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Options you may tune".
+   Done 2026-10-08, and on main (both constants default to 0, the measured G): the last fitted values,
+   `tt_RELIABLE_RETRY_GRANULARITY` 100 us and `tt_CALL_RETRY_GRANULARITY` (2x it), are (a): G is the context's own timer lateness, measured on the retry timers'
    own waits that run to their deadline (DESIGN.md 6; `test_timer_lateness`,
    `mutants_timer_lateness.py`). On the dev PC G is ~64 us idle and ~71 us under full load; against the fixed 100 us,
    c5 (P1, 5% loss) wire bytes a sample +0.04% (t 2.4) and throughput held, c6 held (`granularity_pc.sh`). Rig A/B:
@@ -167,7 +172,7 @@ The user's active list (2026-10-05), in order.
    the revalidate by time (needs that clock; redesign without a 64-bit atomic), and the timed receive check (c6 CPU
    +2.0% t 4.3 and wire +0.6% t 3.8 again; hypothesis: with io_uring its budget falls below a microsecond, so ACKNACKs
    are handled one at a time and repairs are duplicated).
-   Being rebuilt one change per commit, each A/B'd alone before it lands: (1) `TT_RX_IDLE_RECHECK` (64 datagrams) ->
+   Of those, on main: (1) `TT_RX_IDLE_RECHECK` (64 datagrams) ->
    `TT_RX_IDLE_RECHECK_NS` = `tt_RECEIVE_TIMEOUT` by the poll's own clock (`test_poll_signal`, `rx_idle_check`).
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
@@ -184,8 +189,8 @@ The user's active list (2026-10-05), in order.
    id within the old response's lifetime, and whose first request reaches the server before its new announce
    does - the server still knows the old entity_id then. The same holds without a discovery table attached,
    for any restart without a farewell. Nothing on the wire identifies the incarnation in a CallRequest (the
-   segment header's `incarnation` exists only between same-host peers); a per-launch tag in the CallRequest's
-   `reserved` byte would close it, as a wire change.
+   segment header's `incarnation` exists only between same-host peers); a per-launch tag in the CallRequest (its one
+   spare byte is now `client_tag`) would close it, as a wire change.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
    Done 2026-10-08 at `03585237` (`experiments/rmw_samehost.sh`, RESULTS.md rows R1-R21): WIN 50, DRAW 1, LOSE 1.
@@ -265,17 +270,17 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   today compile-time constants and `_tt_CONFIG`.
 - **Memory stays the caller's**: the reliable cache, reorder storage and service caches are passed in; a helper
   computes the bytes a profile needs (no malloc in core, FreeRTOS included).
-- **Wire, API and struct changes are allowed** (`tt_VERSION` 12 if the announce must carry more for rmw's QoS
+- **Wire, API and struct changes are allowed** (a `tt_VERSION` bump past 13 if the announce must carry more for rmw's QoS
   compatibility check, `rmw_qos_profile_check_compatible`'s rules). The wire rule still applies: no test may get worse.
 - Order: after the wired work, before Security; rmw_tickle then passes rmw's profile through nearly as is.
 
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 
 - **True zero-copy loans need three core changes**: `rx_buffer` aligned to 8 bytes, a segment ring that skips held
-  slots (`tt_SEGMENT_VERSION` 5), and a claimed-slot publish API. The first and the last are built on
-  ab/zero-copy-loans (2026-10-09: socket-path loans read in place 296 of 300 from 8; slot loans opt-in,
-  `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, DESIGN.md 10 "Claimed-slot publish"), waiting for their rig A/B
-  (`~/rig_queue_zcl.sh`). The ring that skips held slots is still open. (PLAN #3; COMPARISON 2.7a)
+  slots, and a claimed-slot publish API. The first and the last are on main (`324f6ced`, 2026-10-09: socket-path
+  loans read in place 296 of 300 from 8; slot loans opt-in, `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, off by default by the
+  user's decision of 2026-10-10; DESIGN.md 10 "Claimed-slot publish"). The ring that skips held slots is still open.
+  (PLAN #3; COMPARISON 2.7a)
 - **Large-message stage 2** (samples above 64 KB): user's staged-support decision. Designed and pre-registered
   2026-10-09 in [DESIGN.md](DESIGN.md) section 8, "Stage 2" (wire types 10/11 with a 16-bit fragment index, caller-
   acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). The user approved
@@ -283,16 +288,18 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   4 MB cross-host at 15 Hz). **Step A landed on main 2026-10-10** (the socket path; RESULTS "rmw large messages": every
   cell under loss and subscriber memory won, CPU per MB lost at 0% loss to Fast DDS as shipped and CycloneDDS, which
   send 64 KB datagrams the kernel fragments). **Step B**, the same-host large path (a 4 MB best-effort sample does
-  not fit the 512-slot ring and delivers ~0% same-host), is built and pre-registered (DESIGN.md section 8, "Step B";
-  B1 tests and mutants pass) and waits for its rig queue (`rig_queue_largemsg_B.sh`, B2); then the CPU candidates - a
-  UDP GSO/GRO probe (pending on the rig) and the ACK bitmap fast path (branch `ab/ack-bitmap-fastpath`). (PLAN #4;
-  LARGE_MESSAGE_PLAN)
+  not fit the 512-slot ring and delivers ~0% same-host), is on main since 2026-10-15 (DESIGN.md section 8, "Step B";
+  B1 tests and mutants pass). Its rig session (`rig_queue_largemsg_B.sh`, B2) went VOID on its control, which was
+  perf_test's own spin and not step B (`bcf8624d`), so the same-host large cells are not published yet. Of the CPU
+  candidates, UDP GSO/GRO is on main and on by default (DESIGN.md section 4); the ACK bitmap fast path (branch
+  `ab/ack-bitmap-fastpath`) is open. (PLAN #4; LARGE_MESSAGE_PLAN)
 - **Hybrid transport for multi-datagram samples** (the user lifted the IP fragmentation park and generalised it,
   2026-10-11): per peer, the writer packs `n` MTU fragments into one IP-fragmented datagram, choosing `n` to minimise
   the wire bytes per delivered unit from the frame loss its reader measures (45 at 0% loss, 4 at 0.1%, 1 at 1%);
   repairs stay MTU units; the reader caps `n` by a control law on the run survival it measures (collapse detection,
   a remembered ceiling, timed re-probes). `large_fragmentation` AUTO / MTU / IP, run types 14/15, `tt_VERSION` 13.
-  Designed and pre-registered in [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six steps, each A/B'd.
+  Designed and pre-registered in [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six steps, each A/B'd. On main
+  (landed from `ab/hybrid-land`); the rig figures are in RESULTS "Hybrid transport (large samples), rig".
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
@@ -306,7 +313,8 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   costs fixed; the CPU-time half is the rig's. Off: 560 B of fields left in the context, by inventory. Lending in and
   unused: no cost shown. Segment on and unused: the publisher's +5.8-6.7% instructions is down to +1.7-3.1% (the
   seam's per-datagram question and lost inlining remain), +25 KB of code, +15.4 KB of context. Details and the
-  remaining step in [DESIGN.md](DESIGN.md) section 10, "What the module costs where it is not used". g15 closed
+  remaining step in DESIGN.md section 10, "What the module costs where it is not used" (since 2026-10-17 in
+  `git show 228da18d:docs/DESIGN.md`). g15 closed
   end to end (`g15_zerocopy_e2e.sh`). (SHM_PLAN 6b; RMW_GAPS S1/S3/g15; MODULE_PLAN 3)
 
 Decided and done 2026-10-08/09:
@@ -394,7 +402,7 @@ Decided and done 2026-10-08/09:
 - **Time-varying networks**: delay and loss both change over time; today p is treated as fixed and delay and its
   variation are ignored. Add test cases with varying loss and delay (netem schedules), and tune the estimator (e.g. a
   moving average / EWMA, windowed loss and RTT, jitter) so n and the RELIABLE timers track them. (DESIGN.md section 8,
-  "Hybrid transport": its loss windows are a plain halving at 2^17 frames until then)
+  "Hybrid transport": its loss windows are a plain halving at 2^20 frames, `tt_HYBRID_WINDOW_FRAMES`, until then)
 
 ## Parked - only on the user's explicit go
 
@@ -412,7 +420,6 @@ Decided and done 2026-10-08/09:
   decision 6. (SHM_PLAN 6c)
 - **Rig interrupt coalescing** (macb rx/tx-usecs 49): part of the 168 us wire time. It is a rig setting.
   (RMW_PERF_PLAN 8)
-- **Perf access on the rig or PC**: blocks Now item 3. (COMPARISON 2.2c)
 - **Anything on 10BASE-T1S**: cross-host rmw over the real medium, and revisiting duplicate suppression where
   bandwidth binds. Waits on T1S hardware on the rig. (COMPARISON to-do 5; DATAFRAG_PLAN 16.1)
 

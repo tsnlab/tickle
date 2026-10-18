@@ -60,7 +60,8 @@ Index 0 is the default node, created on first use of a `tt_Context_create_*()` s
   whose timer carries no slack: one wake, ~10 us after the deadline (rig: 13 us late; `sched_wake_check`). The timer
   is re-armed whenever the deadline moves (about two `timerfd_settime` calls per round trip on a ping client). For the
   shorter waits the polling thread's timer slack is lowered to 1 ns at its first wait (`prctl(PR_SET_TIMERSLACK)`,
-  never raised; `TT_RX_TIMER_SLACK_NS`), so their relative timeout ends within 0.1% of the wait (5 ms: ~15 us late on
+  never raised; `-DTT_RX_TIMER_SLACK_NS`, a build constant in `src/hal_linux.c`, not an environment variable; 0
+  leaves the slack alone), so their relative timeout ends within 0.1% of the wait (5 ms: ~15 us late on
   the PC, against ~60) without a system call per wait - arming the `timerfd` for them cost one or two
   `timerfd_settime` a round trip. It applies to every timer of that thread. At a positive nice value the kernel's
   share is 0.5%, so a 5 ms wait still ends ~25 us late there (against ~50 us without it).
@@ -126,12 +127,11 @@ step expired leases and lifespans early and a backward step stalled every timer.
 - Tests: `tests/test_clock_step.c` (steps the date +-3 h; fails a single-clock build), `platform/linux/clock_check.c`,
   `tests/mutants_clock_split.py`.
 
-## 3. Wire format (`tt_VERSION` 11)
+## 3. Wire format (`tt_VERSION` 13)
 
 Every datagram is UDP: a 4-byte header and one or more small submessages, RTPS-like but with less framing - a sample
 alone in its datagram carries 20 bytes of TickLE header. The version is checked strictly, so two builds either speak
-the same protocol or ignore each other. (The title keeps the version this section was written for; the current
-`tt_VERSION` is **13**, and the versions list below says what 12 and 13 added.)
+the same protocol or ignore each other. The versions list below says what each version added.
 
 **Transport.**
 
@@ -261,6 +261,7 @@ Discovery is ordinary traffic on a built-in endpoint: endpoint_id `tt_DISCOVERY_
 | summary, every `tt_CONTEXT_UPDATE_INTERVAL` (1 s), or a sixth of the shortest own lease | HEARTBEAT | broadcast | first = last = the context's **generation** (low 32 bits of `last_modified`) |
 | request for the list | ACKNACK | unicast to the summary's sender | the generation wanted |
 | the list (announce) | DATA, or FRAG_FIRST + FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
+| a change (endpoint created/destroyed) | the list | broadcast, once the burst of changes has been quiet for `tt_CONTEXT_TX_INTERVAL` (1 ms) | the new generation |
 
 **A reply never waits for room** (large-sample builds). The two replies sent from the poll - the announce answering a
 peer's changed summary (`reply_with_own_announce`) and the list answering a request (`answer_discovery_request`) - go
@@ -268,7 +269,6 @@ out non-blocking; if the data socket's send buffer is full (a large sample is dr
 counted (`discovery_replies_skipped`). Waiting there held the state lock until half the buffer drained (~220 ms
 through a 100 Mbit link) and stalled every publish and the whole poll. Skipping is safe: the peer asks again on our
 next summary and converges (`discovery_reply_check`). Requests, summaries, data and repairs still wait for room.
-| a change (endpoint created/destroyed) | the list | broadcast, at once | the new generation |
 
 - The generation changes exactly when the endpoint list does and differs across restarts. A summary with an applied
   generation is liveliness only.
@@ -387,7 +387,7 @@ fixed slot, because core has no malloc.
   answered in any order; the callback names its call (`tt_Client.callback_seq_no`, as `tt_Client_call_id()` gave it).
   Call N + 1 is refused with `tt_RET_ILLEGAL_STATUS`, nothing sent. 1 gives the one-call behaviour exactly (the unit
   tests also run so, `tests-one-call`).
-- Slot memory: `tt_CLIENT_CACHE_LENGTH` (2 x buffer: 2,944 B at core's datagram, 11.8 KB a Client at 4) + 24 B.
+- Slot memory: `tt_CLIENT_CACHE_LENGTH` (2 x buffer: 2,944 B at core's datagram, 11.8 KB a Client at 4) + 32 B (24 B on rv32).
   rmw_tickle sets the inline area to 8 B and attaches a slot per call sized for the request type's largest encoding
   (65,512 B for an unbounded type).
 - Seq_nos come from the context's one counter, so several Clients of one service in one context, and several calls of
@@ -473,7 +473,7 @@ anything batched ahead. Retransmissions send cached fragments unpadded.
 - A node built without fragmentation skips types 8 and 9. A fragment-assembled small sample cannot be lent (section
   10): it is retained by copying.
 
-### Stage 2: samples above 64 KB (designed 2026-10-09; step A on main 2026-10-10; step B built 2026-10-11, rig pending)
+### Stage 2: samples above 64 KB (designed 2026-10-09; step A on main 2026-10-10; step B on main 2026-10-15)
 
 Stage 2 carries ROS images and point clouds of 1-8 MB (1080p rgb8 is 6.2 MB, a 64-beam lidar cloud about 3 MB)
 without any static buffer that size. Its shape comes from user decisions: TickLE still splits, never IP, and each
@@ -612,7 +612,7 @@ the segment's dead-reader rule already places in liveliness. A durable late join
 Tests (stage 2 and step B): `tests/test_large_sample.c`, `test_large_skip.c`, `test_large_shm.c`,
 `test_large_region.c`, `wire_identity_largemsg.sh`, mutants `tests/mutants_large_sample.py`, `mutants_large_region.py`.
 
-### Encoding while sending (2026-10-11, `ab/interleave-encode`)
+### Encoding while sending (on main since 2026-10-11, `ec4fa931`)
 
 Nothing needs the whole sample encoded before its first fragment goes, so a large publish encodes each part just
 before the send call that carries it. That takes one whole-sample copy (about 0.7 ms for 4 MB on a Pi 5) off the
@@ -634,7 +634,7 @@ latency path, with a byte-identical wire.
   read as gone, so nothing torn is delivered.
 - Tests: `tests/test_large_sample.c` (the wire with and without it), `tests/wire_identity_hybrid.sh`.
 
-### Hybrid transport for multi-datagram samples (designed 2026-10-11, revised the same day; the rig campaign not run)
+### Hybrid transport for multi-datagram samples (designed 2026-10-11, revised the same day; on main, rig figures in RESULTS.md)
 
 TickLE fragments survive loss but cost CPU per datagram; a 64 KB datagram the kernel IP-fragments costs far less CPU
 but is lost whole if any of its ~45 frames is (`(1 - p)^45`: 64% arrive at 1% loss). The hybrid transport sends the
@@ -678,7 +678,7 @@ fragment; `n_max = min(45, floor(peer's advertised reassembly bytes / unit))` (4
      no runs and so no window: time alone moves it on.
    - (c) The collapse point scales as `1 / (R p)` (`R` units a second reaching the reader). When `R p` has fallen by
      `tt_HYBRID_SCALE_AT` (1.9x) from its anchor for three ticks in a row, `n_fail` scales up in proportion (at most
-     4x; past `n_max`, no ceiling) and a probe may go at once; when it has doubled, `n_fail` and the cap scale down.
+     4x; past `n_max`, no ceiling) and a probe may go at once; when it has risen as much, `n_fail` and the cap scale down.
      `p` enters only once `p_mtu` rests on 10 events at both ends.
    - (d) Frame loss consistent with `(1 - p)^n` never moves the cap; only excess whole-run loss does.
    - (e) A path that drops IP fragments goes to `n = 1` at once (below, on both sides).
@@ -827,7 +827,7 @@ point, so its 1e-4 bounds still hold.
 cut datagrams and overruns. `rmw_keepall_rig.sh KCOUNTERS=1` adds each Pi's kernel counters. Test:
 `platform/linux/rx_drain_check.c`.
 
-#### Receiving runs in place (2026-10-13, `ab/rx-gap`)
+#### Receiving runs in place (on main since 2026-10-13, `056a5365`)
 
 A run's payload is one stretch of the sample's assembly, and in order the next run is predictable to the byte, so the
 HAL reads it straight into the assembly: the kernel's copy lands where the payload stays and core's own copy
@@ -850,7 +850,7 @@ HAL reads it straight into the assembly: the kernel's copy lands where the paylo
   poll's clock reading.
 - Tests: `tests/test_rx_direct.c`, `platform/linux/rx_direct_check.c`, `tests/mutants_rx_direct.py`.
 
-#### UDP checksum 0, on by default (2026-10-14, `ab/udp-csum0`; the default since 2026-10-15)
+#### UDP checksum 0, on by default (2026-10-14; the default since 2026-10-15, `f5fcda06`)
 
 No NIC checks an IP fragment, so a run's UDP checksum is computed in software at the receiver in a pass of its own.
 With checksum 0 the receiver skips it; the Ethernet CRC still covers every frame. On by default (the user's decision,
