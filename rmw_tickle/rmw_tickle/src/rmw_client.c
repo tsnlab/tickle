@@ -30,6 +30,7 @@
 // would hang a caller whose server is gone. The wait never depends on the caller's executor: a slot frees when the
 // response arrives on the poll thread, not when it is taken. (DDS with its default KEEP_LAST service QoS never refuses
 // at all - it has no bound on calls in flight; this one is the user's decision of 2026-10-16, a compile-time constant.)
+// A BEST_EFFORT client does not wait: it ends its oldest call to make room (call_ending_the_oldest()).
 
 #include <errno.h> // ETIMEDOUT
 #include <pthread.h>
@@ -234,7 +235,8 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // So a call lives as long as the server keeps it: retried every RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS
     // until tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, after which the server has dropped it too. A retry of
     // a request still pending on the server does not re-run its callback (find_pending_slot(),
-    // tickle.c); once answered, a retry gets the cached response.
+    // tickle.c); once answered, a retry gets the cached response. A BEST_EFFORT client (D6) sends the request once and
+    // keeps the call for that same span, so a deferred answer still reaches it.
     client_impl->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
     client_impl->service.call_retry_count =
         (uint32_t)(tt_SERVER_DEFERRED_RESPONSE_TIMEOUT / RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS);
@@ -431,6 +433,36 @@ static tt_ret_t call_waiting_for_room(rmw_tickle_client_t* client_impl, void* ti
     }
 }
 
+// A BEST_EFFORT client (D6: its requests are sent once) does not wait for room. A call still outstanding when every
+// slot is taken, or when core refuses because one is tt_CLIENT_CALL_WINDOW calls old, has most likely lost its request
+// or its answer, and nothing will resend it; so the oldest is ended - its response, if it ever comes, is dropped, as
+// it would be had it timed out - and the new call takes its place. A DDS BEST_EFFORT client never refuses a call for
+// one it still waits on, and a lossy link would otherwise hold every slot for the span of a call. When core has no call
+// to end (the slots are other threads' reservations), it waits as a RELIABLE client does.
+static tt_ret_t call_ending_the_oldest(rmw_tickle_client_t* client_impl, void* tickle_buf, int64_t* sequence_id) {
+    for (uint32_t attempt = 0; attempt <= tt_CLIENT_MAX_OUTSTANDING; attempt++) {
+        pthread_mutex_lock(&client_impl->response_mutex);
+        bool reserved = client_impl->calls_in_flight < tt_CLIENT_MAX_OUTSTANDING;
+        if (reserved) {
+            client_impl->calls_in_flight++;
+        }
+        pthread_mutex_unlock(&client_impl->response_mutex);
+        if (reserved) {
+            tt_ret_t ret = call_in_reserved_slot(client_impl, tickle_buf, sequence_id);
+            if (ret != tt_RET_ILLEGAL_STATUS) {
+                return ret;
+            }
+        }
+        tt_Context_lock(&client_impl->node->context_impl->tickle_context);
+        tt_ret_t ended = tt_Client_end_oldest_call(&client_impl->tickle_client); // client_callback() frees its slot
+        tt_Context_unlock(&client_impl->node->context_impl->tickle_context);
+        if (ended != tt_RET_OK) {
+            break;
+        }
+    }
+    return call_waiting_for_room(client_impl, tickle_buf, sequence_id);
+}
+
 rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, int64_t* sequence_id) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_request, RMW_RET_INVALID_ARGUMENT);
@@ -457,7 +489,9 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, 
 
     // A call slot, waiting up to RMW_TICKLE_CLIENT_SEND_BLOCK_NS for one (this file's module comment).
     int64_t seq = 0;
-    tt_ret_t ret = call_waiting_for_room(client_impl, tickle_buf, &seq);
+    tt_ret_t ret = tt_QOS_RELIABILITY_BEST_EFFORT == client_impl->tickle_client.qos.reliability.kind
+                       ? call_ending_the_oldest(client_impl, tickle_buf, &seq)
+                       : call_waiting_for_room(client_impl, tickle_buf, &seq);
     client_impl->allocator.deallocate(tickle_buf, client_impl->allocator.state);
     if (ret == tt_RET_ILLEGAL_STATUS) {
         RMW_SET_ERROR_MSG("this client's calls (tt_CLIENT_MAX_OUTSTANDING) stayed in flight for 100 ms");

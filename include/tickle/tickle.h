@@ -3698,6 +3698,12 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
 tt_ret_t tt_Client_call_id(struct tt_Client* client, struct tt_Request* request, uint16_t* seq_no);
 // How many calls the client has outstanding: 0..tt_CLIENT_MAX_OUTSTANDING.
 uint32_t tt_Client_outstanding(struct tt_Client* client);
+// Ends the client's oldest outstanding call unanswered: its timer is cancelled and the callback is told tt_CALL_TIMEOUT
+// for it before this returns; an answer that comes later is ignored. For a BEST_EFFORT client, whose calls are not
+// resent: when every slot is held, or tt_Client_call() refuses because the oldest is tt_CLIENT_CALL_WINDOW calls old,
+// that call's request or answer was most likely lost, and ending it makes room for the new one (rmw_tickle does this).
+// tt_RET_ILLEGAL_STATUS when no call is outstanding.
+tt_ret_t tt_Client_end_oldest_call(struct tt_Client* client);
 tt_ret_t tt_Client_destroy(struct tt_Client* client);
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server);

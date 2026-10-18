@@ -20,7 +20,9 @@
 //   fails with RMW_RET_ERROR; once one is answered, the next call goes at once;
 // - action-like get_result: two "goals" each have a result request waiting on the service (taken, not answered -
 //   the goal is still running) while a second client calls the same service too; the goals finish in reverse
-//   order, and every response reaches its own request.
+//   order, and every response reaches its own request;
+// - a BEST_EFFORT client (D6), the second case's control the other way: call N + 1 goes at once, ending the oldest
+//   call, and only that call's answer is dropped.
 // Runs in the rmw suite's private netns (run_rmw_suite.sh).
 
 #include <assert.h>
@@ -61,6 +63,8 @@
 #define EXTRA_FIRST 300U
 #define GOALS_FIRST 400U
 #define OTHER_FIRST 500U
+#define BEST_EFFORT_FIRST 600U
+#define WARM_RESEND_POLLS 50 // one second
 
 struct pair {
     uint32_t first;
@@ -281,6 +285,57 @@ static void action_like_get_result(rmw_client_t* result_client, rmw_client_t* ot
     printf("test_service_multi_call: %d result requests waited together with another client's call\n", goals);
 }
 
+// Answers any request waiting at the service and takes any response waiting at the client; true if either was there,
+// and *responded whether a response was.
+static bool serve_and_take(rmw_client_t* client, rmw_service_t* service, bool* responded) {
+    struct taken_request request;
+    bool request_taken = false;
+    assert(RMW_RET_OK == rmw_take_request(service, &request.info, &request.request, &request_taken));
+    if (request_taken) {
+        answer(service, &request);
+    }
+    rmw_service_info_t info;
+    struct pair response = {0, 0};
+    bool response_taken = false;
+    assert(RMW_RET_OK == rmw_take_response(client, &info, &response, &response_taken));
+    *responded = response_taken;
+    return request_taken || response_taken;
+}
+
+// The BEST_EFFORT counterpart of one_more_waits_then_fails() (D6: its requests are sent once, so a call still
+// outstanding has most likely been lost): call N + 1 goes at once, ending the oldest call, whose answer - it comes
+// after all here - is dropped; the other N are answered under their own sequence ids.
+static void best_effort_ends_the_oldest(rmw_client_t* client, rmw_service_t* service) {
+    int64_t sequences[N + 1];
+    struct pair sent[N + 1];
+    for (int k = 0; k < N; k++) {
+        sent[k] = (struct pair) {.first = BEST_EFFORT_FIRST + (uint32_t)k, .second = ADDEND};
+        assert(RMW_RET_OK == rmw_send_request(client, &sent[k], &sequences[k]));
+    }
+    struct taken_request requests[N + 1];
+    take_requests(service, requests, N); // taken, not answered: every slot stays in flight
+
+    sent[N] = (struct pair) {.first = BEST_EFFORT_FIRST + N, .second = ADDEND};
+    uint64_t before = now_ns();
+    assert(RMW_RET_OK == rmw_send_request(client, &sent[N], &sequences[N]));
+    uint64_t waited = now_ns() - before;
+    assert(waited < RMW_TICKLE_CLIENT_SEND_BLOCK_NS / 2); // no wait for a slot
+    take_requests(service, &requests[N], 1);
+    for (int k = 0; k <= N; k++) {
+        answer(service, &requests[k]); // the first call's answer too: dropped, its call was ended
+    }
+    assert(N == take_responses(client, &sequences[1], &sent[1], N));
+    struct timespec settle = {.tv_sec = 0, .tv_nsec = 200L * NS_PER_MS};
+    nanosleep(&settle, NULL);
+    rmw_service_info_t info;
+    struct pair response = {0, 0};
+    bool taken = true;
+    assert(RMW_RET_OK == rmw_take_response(client, &info, &response, &taken));
+    assert(!taken); // nothing for the ended call
+    printf("test_service_multi_call: BEST_EFFORT call %d went in %.1f ms, ending the oldest; %d answered\n", N + 1,
+           (double)waited / (double)NS_PER_MS, N);
+}
+
 int main(void) {
     request_handle.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;
     response_handle.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;
@@ -313,6 +368,32 @@ int main(void) {
     n_in_a_row(client, service);
     one_more_waits_then_fails(client, service);
     action_like_get_result(client, other_client, service);
+
+    // A BEST_EFFORT client of the same service (D6). Its warm-up call is not resent, so it is made again until one is
+    // answered: the first can go before discovery has matched the client to the service.
+    rmw_qos_profile_t best_effort_qos = rmw_qos_profile_services_default;
+    best_effort_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    rmw_client_t* best_effort = rmw_create_client(node, &service_handle, "/multi_call_add", &best_effort_qos);
+    assert(NULL != best_effort);
+    rmw_qos_profile_t actual;
+    assert(RMW_RET_OK == rmw_client_request_publisher_get_actual_qos(best_effort, &actual));
+    assert(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == actual.reliability);
+    bool warmed = false;
+    for (int attempt = 0; attempt < POLLS && !warmed; attempt++) {
+        if (attempt % WARM_RESEND_POLLS == 0) { // a call, then a second of polls for its answer
+            assert(RMW_RET_OK == rmw_send_request(best_effort, &warm, &sequence));
+        }
+        (void)serve_and_take(best_effort, service, &warmed);
+        sleep_poll();
+    }
+    assert(warmed);
+    for (int quiet = 0; quiet < WARM_RESEND_POLLS / 2;) { // a warm-up call answered late must not reach the case
+        bool responded = false;
+        quiet = serve_and_take(best_effort, service, &responded) ? 0 : quiet + 1;
+        sleep_poll();
+    }
+    best_effort_ends_the_oldest(best_effort, service);
+    assert(RMW_RET_OK == rmw_destroy_client(node, best_effort));
 
     assert(RMW_RET_OK == rmw_destroy_client(node, other_client));
     assert(RMW_RET_OK == rmw_destroy_client(node, client));
