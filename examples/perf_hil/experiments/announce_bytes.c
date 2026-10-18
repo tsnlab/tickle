@@ -152,10 +152,10 @@ int main(void) {
 #ifdef ON_NODE
     static struct tt_Node node;
     if (tt_Node_create(&context, &node, "talker", "/") != tt_RET_OK ||
-        tt_Node_create_publisher(&node, &pub, &topic, "chatter") != tt_RET_OK ||
-        tt_Node_create_subscriber(&node, &sub, &topic, "chatter", on_sample) != tt_RET_OK ||
-        tt_Node_create_client(&node, &client, &service, "add", on_answer) != tt_RET_OK ||
-        tt_Node_create_server(&node, &server, &service, "add", on_call) != tt_RET_OK) {
+        tt_Node_create_publisher_legacy(&node, &pub, &topic, "chatter") != tt_RET_OK ||
+        tt_Node_create_subscriber_legacy(&node, &sub, &topic, "chatter", on_sample) != tt_RET_OK ||
+        tt_Node_create_client_legacy(&node, &client, &service, "add", on_answer) != tt_RET_OK ||
+        tt_Node_create_server_legacy(&node, &server, &service, "add", on_call) != tt_RET_OK) {
         printf("create failed\n");
         return 1;
     }

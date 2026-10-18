@@ -3,7 +3,7 @@
 # offered reliable=0", rig 2026-10-05 11:29, 1 of 36 rmw_keepall_rig.sh runs) and drop every sample?
 #
 # HYPOTHESIS H1 (from reading the code). rmw_create_publisher() (rmw_tickle/src/rmw_publisher.c) calls
-# tt_Node_create_publisher() under the context lock and unlocks; node_create_publisher_locked() (src/tickle.c)
+# tt_Node_create_publisher_legacy() under the context lock and unlocks; node_create_publisher_locked() (src/tickle.c)
 # resets pub->reliable/keep_all/durable/deadline/lease to their defaults and arms announce_soon for
 # tt_CONTEXT_TX_INTERVAL (1 ms) later. Only AFTER the unlock does setup_reliable_cache() set
 # tickle_publisher.reliable/keep_all (and later deadline/lease) - with no lock held. If rmw_tickle's poll thread runs
@@ -13,14 +13,14 @@
 #
 # The window is normally microseconds (an allocation or two), so the natural rate is low. This harness widens it
 # WITHOUT touching production code: an LD_PRELOAD shim (built here from the C below) interposes the PLT calls
-# librmw_tickle.so makes to tt_Node_create_publisher() and tt_Context_unlock(), and sleeps DELAY_MS on the creating
+# librmw_tickle.so makes to tt_Node_create_publisher_legacy() and tt_Context_unlock(), and sleeps DELAY_MS on the creating
 # thread at one of two places:
 #   after_unlock  - right after the tt_Context_unlock() that follows creating the /rxo_probe publisher, i.e. INSIDE the
 #                   window (lock released, reliable not yet set). The poll thread is free to announce.
 #   after_create  - right after rmw_create_publisher() returns (rcl's call into librmw_implementation, interposed):
 #                   the same delay on the same thread, the poll thread just as free to announce, but every QoS field
 #                   is final by then. The control for "a delay after creation causes it".
-#   before_create - inside tt_Node_create_publisher() before the real call, with the context lock held. NOT a clean
+#   before_create - inside tt_Node_create_publisher_legacy() before the real call, with the context lock held. NOT a clean
 #                   control (found in the smoke run, 2026-10-05 11:44): the poll thread is blocked for the delay and
 #                   works off its backlog the moment the lock is released - i.e. inside the window. Reported, not scored.
 #
@@ -106,10 +106,10 @@ static void delay(const char* where) {
     nanosleep(&ts, NULL);
     fprintf(stderr, "RXO_SHIM applied %s %ld ms\n", where, ms);
 }
-int tt_Node_create_publisher(void* node, void* pub, void* topic, const char* name) {
+int tt_Node_create_publisher_legacy(void* node, void* pub, void* topic, const char* name) {
     static int (*real)(void*, void*, void*, const char*);
     if (real == NULL) {
-        real = (int (*)(void*, void*, void*, const char*))real_sym("tt_Node_create_publisher");
+        real = (int (*)(void*, void*, void*, const char*))real_sym("tt_Node_create_publisher_legacy");
         Dl_info info;
         if (real != NULL && dladdr((void*)real, &info) != 0) fprintf(stderr, "RXO_SHIM real in %s\n", info.dli_fname);
     }

@@ -878,8 +878,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // subscription with the create's reset QoS under its new generation, and the generation dedup would keep that
     // wrong record on the remote side for good - see rmw_publisher.c's rmw_create_publisher(), where it was found.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret = tt_Node_create_subscriber(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
-                                             sub_impl->rmw_subscription.topic_name, subscriber_callback);
+    tt_ret_t ret =
+        tt_Node_create_subscriber_legacy(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
+                                         sub_impl->rmw_subscription.topic_name, subscriber_callback);
     if (ret != tt_RET_OK) {
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
         RMW_SET_ERROR_MSG("tt_Context_create_subscriber() failed");

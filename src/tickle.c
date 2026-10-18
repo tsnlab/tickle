@@ -6473,8 +6473,8 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     return result;
 }
 
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name) {
+tt_ret_t tt_Node_create_publisher_legacy(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                         const char* endpoint_name) {
     if (node == NULL || node->context == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -6484,8 +6484,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     return result;
 }
 
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+tt_ret_t tt_Node_create_subscriber_legacy(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                          const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     if (node == NULL || node->context == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -6495,8 +6495,8 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     return result;
 }
 
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+tt_ret_t tt_Node_create_client_legacy(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                                      const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     if (node == NULL || node->context == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -6506,8 +6506,8 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     return result;
 }
 
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                                      const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     if (node == NULL || node->context == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
