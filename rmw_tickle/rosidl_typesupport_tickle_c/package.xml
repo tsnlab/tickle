@@ -2,7 +2,7 @@
 <?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
 <package format="3">
   <name>rosidl_typesupport_tickle_c</name>
-  <version>0.0.1</version>
+  <version>2.0.0</version>
   <description>
     Generates a TickLE-backed rosidl typesupport for .msg interfaces - registers with
     rosidl_generate_interfaces() (rmw_tickle/PLAN.md's Milestone 1) so any ROS 2 interface

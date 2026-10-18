@@ -2,7 +2,7 @@
 <?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
 <package format="3">
   <name>conv_cost</name>
-  <version>0.0.1</version>
+  <version>2.0.0</version>
   <description>
     RMW_PERF_PLAN.md 12's measurement tool: to_tickle / from_tickle of a large primitive sequence through the
     rosidl_typesupport_tickle_cpp handle, against a memcpy of the same bytes and rclcpp::Serialization. A package so

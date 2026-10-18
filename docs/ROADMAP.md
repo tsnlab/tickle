@@ -66,7 +66,7 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
   decided on the 32-Raspberry-Pi testbed once it is built (the user, 2026-10-16).
 - **rmw_tickle at REP-2004 Quality Level 2**, after Security: pull requests with DCO and required CI (the user's
-  decision), rmw_tickle coverage, `SECURITY.md`, dependency declarations, 1.0.0, Tier 1 platforms.
+  decision), rmw_tickle coverage, `SECURITY.md`, dependency declarations (the >= 1.0.0 version is met: 2.0.0), Tier 1 platforms.
 - The user's calls: O(1) `find_resendable_cache_entry()`; the 1 MiB KEEP_LAST cache default; full segment ring:
   back-pressure or drop.
 - zenoh-pico p2-p4 reliable cells stay "not measurable"; never quote the rate-limited figure.

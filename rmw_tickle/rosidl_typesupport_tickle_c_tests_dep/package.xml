@@ -2,7 +2,7 @@
 <?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
 <package format="3">
   <name>rosidl_typesupport_tickle_c_tests_dep</name>
-  <version>0.0.1</version>
+  <version>2.0.0</version>
   <description>
     A second minimal real ROS 2 interface package, separate from rosidl_typesupport_tickle_c_tests
     itself, existing purely so that package can nest one of *this* package's own messages -

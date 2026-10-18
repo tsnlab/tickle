@@ -33,10 +33,10 @@
 // Library version (semantic). tt_VERSION further down is the on-the-wire *protocol* version and
 // moves independently. TICKLE_VERSION packs major/minor/patch for a single #if comparison, e.g.
 //   #if TICKLE_VERSION >= TICKLE_VERSION_MAKE(1, 2, 0)
-#define TICKLE_VERSION_MAJOR 1
+#define TICKLE_VERSION_MAJOR 2
 #define TICKLE_VERSION_MINOR 0
 #define TICKLE_VERSION_PATCH 0
-#define TICKLE_VERSION_STRING "1.0.0"
+#define TICKLE_VERSION_STRING "2.0.0"
 #define TICKLE_VERSION_MAKE(major, minor, patch) (((major) << 16) | ((minor) << 8) | (patch))
 #define TICKLE_VERSION TICKLE_VERSION_MAKE(TICKLE_VERSION_MAJOR, TICKLE_VERSION_MINOR, TICKLE_VERSION_PATCH)
 

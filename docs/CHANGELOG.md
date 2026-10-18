@@ -11,6 +11,31 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-18
+
+The core and the rmw_tickle packages now share one version. Incompatible with 1.0.0 on the wire (`tt_VERSION` 13).
+
+### Highlights
+
+- **Beats FastDDS and CycloneDDS** on two Raspberry Pi 5s, unpinned, throughput scored as goodput and latency from
+  creation time ([RESULTS.md](RESULTS.md)): cross-host core 139 WIN / 11 DRAW / 0 LOSE, same host 18 / 18, rmw same
+  host 52 / 52, rmw cross-host 21 / 6 / 1, rmw large messages 56 / 23 / 1. The two LOSE rows are documented with
+  their causes: I4 best-effort subscriber CPU (+4.5%, the 4 MB buffer exceeds the Pi's L3) and rmw row 63c
+  (CycloneDDS's `spin_some` waits ~42 us each call).
+- **Reliable delivery** (RTPS-like HEARTBEAT/ACKNACK, KEEP_LAST and KEEP_ALL, durability, liveliness, deadline,
+  lifespan) - 1.0.0 was best-effort only.
+- **Large samples** up to 8 MiB: DATA_FRAG, hybrid IP-fragmented runs sized from the measured loss, in-place receive,
+  UDP GSO/GRO.
+- **Same-host shared memory** transport with lending and claimed-slot publish.
+- **ROS 2**: `rmw_tickle` and the `rosidl_typesupport_tickle_c/cpp` packages, all standard interfaces.
+- **Services** with several outstanding calls per Client (`tt_CLIENT_MAX_OUTSTANDING`, default 4).
+- **Linux**: io_uring receive readiness by default (with fallback), UDP checksum 0 by default, deadline-exact waits
+  (timerfd, 1 ns timer slack on the polling thread), publisher huge pages for large samples.
+- **FreeRTOS + lwIP** HAL with receive readiness from the netconn callback.
+- Every change below, in detail.
+
+### Detailed changes since 1.0.0
+
 ### Added
 
 - **A full scheduler is safe and visible** (2026-10-16). With several calls per Client, each request a Server holds

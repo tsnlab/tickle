@@ -13,4 +13,4 @@ See tools/typesupport/PLAN.md for the full design and milestone plan, and
 implement.
 """
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

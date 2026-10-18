@@ -17,8 +17,8 @@ in the [Package Requirements for Quality Level 4 in REP-2004](https://www.ros.or
 
 ### Version Stability [1.ii]
 
-`rmw_tickle` is at version `0.0.1` (`package.xml`), not yet a stable release (`>= 1.0.0`). This is
-the primary reason this package does not currently claim a higher quality level.
+`rmw_tickle` is at version `2.0.0` (`package.xml`), the same version as the TickLE core it ships with: the core and
+the rmw packages are released together under one version (tag `v2.0.0`).
 
 ### Public API Declaration [1.iii]
 
@@ -33,7 +33,7 @@ guaranteed to be stable within a ROS distribution.
 ### ABI Stability Within a Released ROS Distribution [1.v]
 
 `rmw_tickle` contains C and C++ code and therefore must be concerned with ABI stability, but at
-`0.0.1` no ABI stability guarantee is currently made.
+`2.0.0` no ABI stability guarantee within a ROS distribution is made yet.
 
 ## Change Control Process [2]
 

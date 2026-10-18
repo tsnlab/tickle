@@ -2,7 +2,7 @@
 <?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
 <package format="3">
   <name>rosidl_typesupport_tickle_cpp</name>
-  <version>0.0.1</version>
+  <version>2.0.0</version>
   <description>
     Thin C++-level companion to rosidl_typesupport_tickle_c. rclcpp's create_publisher()/
     create_subscription() never hand rmw_create_publisher() a C-level rosidl_message_type_support_t
