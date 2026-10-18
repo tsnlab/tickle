@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -148,9 +149,19 @@ int main(int argc, char** argv) {
 
     struct tt_Publisher pub;
 
-    ret = tt_Context_create_publisher(&node, &pub, &UInt64Topic, opts.name);
+    // The default QoS (a NULL profile): RELIABLE, KEEP_LAST 10, VOLATILE - rmw's default. A RELIABLE Publisher keeps
+    // its last samples for resending, in storage the caller gives it, sized by tt_Publisher_storage_size().
+    size_t storage_size = tt_Publisher_storage_size(&UInt64Topic, NULL);
+    void* storage = calloc(1, storage_size);
+    if (storage == NULL) {
+        printf("Cannot allocate %zu bytes for the publisher\n", storage_size);
+        return 1;
+    }
+    ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &UInt64Topic, opts.name, NULL, NULL, storage,
+                                   storage_size);
     if (ret != 0) {
-        printf("Cannot create server: %d\n", ret);
+        printf("Cannot create publisher: %d\n", ret);
+        free(storage);
         return ret;
     }
 
@@ -170,6 +181,7 @@ int main(int argc, char** argv) {
     printf("\nuint64 publisher: sent %s message(s)\n", tt_format_grouped(transmitted, transmitted_buf));
 
     tt_Context_destroy(&node);
+    free(storage); // after the context, which owned the Publisher that used it
     printf("Node destroyed(#%d): %d\n", node.id, ret);
 
     return 0;

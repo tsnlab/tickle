@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -149,10 +150,20 @@ int main(int argc, char** argv) {
 
     struct tt_Subscriber sub;
 
-    ret = tt_Context_create_subscriber(&node, &sub, &UInt64Topic, opts.name,
-                                       (tt_SUBSCRIBER_CALLBACK)uint64_data_callback);
+    // The default QoS (a NULL profile), as the publisher's: RELIABLE, KEEP_LAST 10, VOLATILE. A RELIABLE Subscriber
+    // holds samples that arrive ahead of a gap in a reorder buffer, in storage sized by tt_Subscriber_storage_size().
+    size_t storage_size = tt_Subscriber_storage_size(&UInt64Topic, NULL);
+    void* storage = calloc(1, storage_size);
+    if (storage == NULL) {
+        printf("Cannot allocate %zu bytes for the subscriber\n", storage_size);
+        return 1;
+    }
+    struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)uint64_data_callback};
+    ret = tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &UInt64Topic, opts.name, NULL, &sub_options,
+                                    storage, storage_size);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
+        free(storage);
         return ret;
     }
 
@@ -169,6 +180,7 @@ int main(int argc, char** argv) {
     print_result();
 
     tt_Context_destroy(&node);
+    free(storage); // after the context, which owned the Subscriber that used it
     printf("Node destroyed(#%d): %d\n", node.id, ret);
 
     return 0;
