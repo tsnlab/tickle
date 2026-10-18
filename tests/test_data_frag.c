@@ -174,7 +174,26 @@ static void match_by_broadcast(struct tt_Publisher* publisher) {
     }
 }
 
-static void init_pair(uint32_t len) {
+// How init_pair_with() creates the pair. A NULL profile is TEST_QOS_UNRELIABLE, NULL options none, a NULL callback
+// on_data; storage is only used when the profile needs it, and must hold what tt_*_storage_size() says.
+struct pair_qos {
+    const struct tt_QosProfile* pub_qos;
+    const struct tt_PublisherOptions* pub_options;
+    void* pub_storage;
+    size_t pub_storage_capacity;
+    const struct tt_QosProfile* sub_qos;
+    tt_SUBSCRIBER_CALLBACK sub_callback;
+    void* sub_storage;
+    size_t sub_storage_capacity;
+};
+
+static void init_pair_with(uint32_t len, const struct pair_qos* q) {
+    static const struct pair_qos none;
+    if (q == NULL) {
+        q = &none;
+    }
+    const struct tt_QosProfile* pub_qos = q->pub_qos != NULL ? q->pub_qos : &TEST_QOS_UNRELIABLE;
+    const struct tt_QosProfile* sub_qos = q->sub_qos != NULL ? q->sub_qos : &TEST_QOS_UNRELIABLE;
     test_mock_reset();
     sample_len = len;
     sample_seed = 3;
@@ -189,7 +208,11 @@ static void init_pair(uint32_t len) {
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    size_t pub_storage_size = tt_Publisher_storage_size(&sender_topic, pub_qos);
+    EXPECT_TRUE(pub_storage_size <= q->pub_storage_capacity);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub, &sender_topic,
+                                                      ENDPOINT_NAME, pub_qos, q->pub_options,
+                                                      pub_storage_size != 0 ? q->pub_storage : NULL, pub_storage_size));
     match_by_broadcast(&pub);
 
     init_bare_node(&receiver, RECEIVER_ID);
@@ -198,7 +221,16 @@ static void init_pair(uint32_t len) {
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
+    size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, sub_qos);
+    EXPECT_TRUE(sub_storage_size <= q->sub_storage_capacity);
+    const struct tt_SubscriberOptions sub_options = {.callback = q->sub_callback != NULL ? q->sub_callback : on_data};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME, sub_qos,
+                                 &sub_options, sub_storage_size != 0 ? q->sub_storage : NULL, sub_storage_size));
+}
+
+static void init_pair(uint32_t len) {
+    init_pair_with(len, NULL);
 }
 
 static void deliver(int d) {
@@ -231,15 +263,22 @@ static void test_topics_up_to_the_sample_limit_can_be_created(void) {
     big_topic.data_decode = checking_decode;
     big_topic.data_free = free_nothing;
     big_topic.data_size = tt_MAX_SAMPLE_LENGTH;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &big_pub, &big_topic, ENDPOINT_NAME));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &big_sub, &big_topic, ENDPOINT_NAME, on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &big_pub, &big_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &big_sub, &big_topic,
+                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
     // Control: one byte more is still refused.
     struct tt_Publisher too_big_pub;
     struct tt_Subscriber too_big_sub;
     big_topic.data_size = tt_MAX_SAMPLE_LENGTH + 1;
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_create_publisher(&sender, &too_big_pub, &big_topic, "other"));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
-                  tt_Context_create_subscriber(&receiver, &too_big_sub, &big_topic, "other", on_data));
+                  tt_Node_create_publisher(tt_Context_default_node(&sender), &too_big_pub, &big_topic, "other",
+                                           &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &too_big_sub, &big_topic, "other",
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            NULL, 0));
 }
 
 static void test_largest_data_is_not_fragmented(void) {
@@ -470,8 +509,7 @@ static void test_sample_above_the_limit_is_refused(void) {
 static void test_batch_ahead_of_a_fragmented_sample_goes_first(void) {
     // A batching publisher leaves a small DATA pending; the large sample behind it must not overtake
     // it, and must not stay in tx_buffer either.
-    init_pair(100);
-    pub.batch = true;
+    init_pair_with(100, &(struct pair_qos) {.pub_options = &(struct tt_PublisherOptions) {.batch = true}});
     start_capture();
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
     EXPECT_EQ_INT(0, datagram_count); // batched
@@ -742,9 +780,14 @@ static void test_original_and_retransmission_agree_on_fragment_count(void) {
 }
 
 static void test_durability_backlog_sends_fragmented_samples(void) {
-    init_pair(2800);
-    make_reliable();
-    pub.durable = true;
+    // A TRANSIENT_LOCAL BEST_EFFORT writer: it keeps a backlog, and only a backlog.
+    static uint64_t storage[(size_t)512U * 1024U / sizeof(uint64_t)];
+    const struct tt_QosProfile durable = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = FRAG_CACHE_DEPTH},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT},
+                                          .durability = {.kind = tt_QOS_DURABILITY_TRANSIENT_LOCAL}};
+    init_pair_with(
+        2800,
+        &(struct pair_qos) {.pub_qos = &durable, .pub_storage = storage, .pub_storage_capacity = sizeof(storage)});
     publish_captured();
     publish_captured();
 
@@ -887,7 +930,23 @@ static bool sim_step(void) {
 // KEEP_ALL, as c6 is: a publish that would outrun the acknowledgements waits, as a real writer blocks.
 // Returns the simulated time recovery took, after the last publish.
 static uint64_t sim_run(uint32_t size, uint32_t loss_per_mille, uint64_t budget) {
-    init_pair(size);
+    // RELIABLE KEEP_ALL with a 10 ms HEARTBEAT, and a RELIABLE reader with a window-wide reorder buffer. White-box: the
+    // writer's retained samples are the sim's own SIM_CACHE_DEPTH-datagram cache, swapped in below.
+    static uint64_t created_storage[(size_t)64U * 1024U / sizeof(uint64_t)];
+    const struct tt_QosProfile pub_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 1},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    struct tt_QosProfile sub_qos = TEST_QOS_RELIABLE_READER;
+    sub_qos.reliability.reorder_slots = SIM_REORDER_SLOTS;
+    init_pair_with(size, &(struct pair_qos) {
+                             .pub_qos = &pub_qos,
+                             .pub_options = &(struct tt_PublisherOptions) {.heartbeat_period_ns = 10 * tt_MILLISECOND},
+                             .pub_storage = created_storage,
+                             .pub_storage_capacity = sizeof(created_storage),
+                             .sub_qos = &sub_qos,
+                             .sub_callback = sim_on_data,
+                             .sub_storage = sim_reorder,
+                             .sub_storage_capacity = sizeof(sim_reorder),
+                         });
     sim_head = sim_tail = 0;
     sim_loss_per_mille = loss_per_mille;
     sim_rng = 1;
@@ -903,17 +962,7 @@ static uint64_t sim_run(uint32_t size, uint32_t loss_per_mille, uint64_t budget)
     sim_cache.depth = SIM_CACHE_DEPTH;
     sim_cache.arena = sim_cache_arena;
     sim_cache.arena_size = (uint32_t)sizeof(sim_cache_arena);
-    pub.reliable_cache = &sim_cache;
-    pub.reliable = true;
-    pub.keep_all = true; // c6 is KEEP_ALL, where a Publisher never stops answering for a sample
-    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 10 * tt_MILLISECOND));
-
-    sub.callback = sim_on_data;
-    sub.reliable = true;
-    memset(sim_reorder, 0, sizeof(sim_reorder));
-    sub.reorder_storage = sim_reorder;
-    sub.reorder_slots = SIM_REORDER_SLOTS;
-    sub.reorder_slot_bytes = SIM_REORDER_SLOT_BYTES;
+    pub.reliable_cache = &sim_cache; // c6 is KEEP_ALL, where a Publisher never stops answering for a sample
 
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -1011,12 +1060,16 @@ static void test_loss_costs_the_lost_datagram_not_the_sample(void) {
 #define TEST_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
 static uint64_t test_reorder[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
-static void make_receiver_reliable(bool with_buffer) {
-    sub.reliable = true;
-    memset(test_reorder, 0, sizeof(test_reorder));
-    sub.reorder_storage = with_buffer ? test_reorder : NULL;
-    sub.reorder_slots = with_buffer ? TEST_REORDER_SLOTS : 0;
-    sub.reorder_slot_bytes = with_buffer ? TEST_REORDER_SLOT_BYTES : 0;
+// init_pair() with a RELIABLE Subscriber, with TEST_REORDER_SLOTS reorder slots in test_reorder or none.
+static void init_pair_reliable_receiver(uint32_t len, bool with_buffer) {
+    struct tt_QosProfile qos = TEST_QOS_RELIABLE_READER;
+    if (with_buffer) {
+        qos.reliability.reorder_slots = TEST_REORDER_SLOTS;
+    }
+    init_pair_with(len, &(struct pair_qos) {.sub_qos = &qos,
+                                            .sub_storage = test_reorder,
+                                            .sub_storage_capacity = sizeof(test_reorder)});
+    EXPECT_TRUE(!with_buffer || sub.reorder_slot_bytes == TEST_REORDER_SLOT_BYTES);
 }
 
 static struct tt_WriterProxy* sender_proxy(void) {
@@ -1030,8 +1083,7 @@ static void test_reliable_fragments_reassemble_in_every_order(void) {
     // still unacknowledged, as the writer would.
     static const int orders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
     for (int o = 0; o < 6; o++) {
-        init_pair(4000);
-        make_receiver_reliable(true);
+        init_pair_reliable_receiver(4000, true);
         publish_captured();
         for (int k = 0; k < 3; k++) {
             deliver(orders[o][k]);
@@ -1057,8 +1109,7 @@ static void test_reliable_fragments_reassemble_in_every_order(void) {
 }
 
 static void test_reliable_missing_fragment_is_tracked_as_its_own_gap(void) {
-    init_pair(4000);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(4000, true);
     publish_captured();
     deliver(0);
     deliver(2);
@@ -1075,8 +1126,7 @@ static void test_reliable_sample_given_up_on_is_never_delivered_torn(void) {
     // Its first datagram arrives, the rest never do, and the writer declares them gone (an eviction
     // Heartbeat). The held first datagram must be dropped - delivering part of a sample would hand the
     // application garbage - and the next sample must still arrive intact.
-    init_pair(4000);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(4000, true);
     publish_captured(); // seq_no 1..3
     deliver(0);
     struct tt_WriterProxy* proxy = sender_proxy();
@@ -1095,8 +1145,7 @@ static void test_reliable_sample_given_up_on_is_never_delivered_torn(void) {
 static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
     // No reorder buffer: a fragment cannot be held until its sample is whole, so it must not be
     // acknowledged either - an acknowledged fragment is never sent again.
-    init_pair(2800);
-    make_receiver_reliable(false);
+    init_pair_reliable_receiver(2800, false);
     publish_captured();
     deliver(0);
     struct tt_WriterProxy* proxy = sender_proxy();
@@ -1104,8 +1153,7 @@ static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
     EXPECT_TRUE(sub.reorder_overflow >= 1);
     EXPECT_EQ_INT(0, delivered_count);
     // Control: the same datagrams with a buffer are recorded and delivered.
-    init_pair(2800);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(2800, true);
     publish_captured();
     deliver(0);
     deliver(1);
@@ -1115,12 +1163,12 @@ static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
 static void test_reliable_two_writers_interleaved(void) {
     // Two writers of one topic count from 1 alike, and a fragment is held even in order - the per-writer
     // slot offset is what keeps their datagrams from colliding.
-    init_pair(2800);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(2800, true);
     static struct tt_Context second;
     static struct tt_Publisher second_pub;
     init_bare_node(&second, 3);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&second), &second_pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     match_by_broadcast(&second_pub);
     publish_captured();
     uint8_t first_writer[2][tt_MAX_BUFFER_LENGTH];
@@ -1160,8 +1208,7 @@ static bool reorder_untouched(void) {
 // The writer's first sample, which goes through the buffer: it is what creates the WriterProxy, and with
 // no tracking yet there is no "next expected" for the fast path to compare with.
 static void first_contact_sample(uint32_t len) {
-    init_pair(len);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(len, true);
     publish_captured();
     for (int d = 0; d < datagram_count; d++) {
         deliver(d);
@@ -1308,12 +1355,12 @@ static void test_reliable_two_writers_interleaved_after_first_contact(void) {
     // Two writers, both tracked, their in-order fragments interleaved datagram by datagram, three samples
     // each. The scratch can hold one sample at a time; the other writer's must not corrupt it, and every
     // sample of both must arrive once and intact.
-    init_pair(4000);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(4000, true);
     static struct tt_Context second;
     static struct tt_Publisher second_pub;
     init_bare_node(&second, 3);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&second), &second_pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     match_by_broadcast(&second_pub);
     static struct captured_sample one;
     static struct captured_sample two;
@@ -1393,11 +1440,14 @@ static void add_second_subscriber(void) {
     receiver_topic.data_decode = first_checking_decode;
     memset(&sub2, 0, sizeof(sub2));
     memset(reorder2, 0, sizeof(reorder2));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub2, &second_topic, ENDPOINT_NAME, on_data));
-    sub2.reliable = true;
-    sub2.reorder_storage = reorder2;
-    sub2.reorder_slots = TEST_REORDER_SLOTS;
-    sub2.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    struct tt_QosProfile qos = TEST_QOS_RELIABLE_READER;
+    qos.reliability.reorder_slots = TEST_REORDER_SLOTS;
+    size_t storage_size = tt_Subscriber_storage_size(&second_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(reorder2));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&receiver), &sub2, &second_topic, ENDPOINT_NAME, &qos,
+                                 &(struct tt_SubscriberOptions) {.callback = on_data}, reorder2, storage_size));
+    EXPECT_EQ_U32(TEST_REORDER_SLOT_BYTES, sub2.reorder_slot_bytes);
     first_delivered = second_delivered = 0;
 }
 
@@ -1405,8 +1455,7 @@ static void test_reliable_two_subscribers_share_the_scratch(void) {
     // frag_scratch is one per node, and one datagram goes to every Subscriber tracking its writer - so two
     // Subscribers of one writer take each fragment in turn. Only one can hold its sample in the scratch;
     // the other must not overwrite it, and both must get every sample intact, once.
-    init_pair(4000);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(4000, true);
     add_second_subscriber();
     publish_captured(); // first contact for both
     for (int d = 0; d < 3; d++) {
@@ -1438,8 +1487,7 @@ static void test_reliable_buffer_delivery_does_not_overwrite_the_fast_path(void)
     // The second Subscriber misses a sample X (no room for it, so it is left unrecorded) that the first one
     // takes. The first then starts the next sample Y in the scratch, and X's retransmission completes X for
     // the second one out of its buffer - put together in the same scratch. Y must survive that.
-    init_pair(4000);
-    make_receiver_reliable(true);
+    init_pair_reliable_receiver(4000, true);
     add_second_subscriber();
     publish_captured(); // seq_no 1..3: first contact for both
     for (int d = 0; d < 3; d++) {
@@ -1641,7 +1689,9 @@ static uint32_t collide_hit_len;
 static void collision_setup(void) {
     first_contact_sample(5000); // seq_no 1..4
     init_bare_node(&collide_ctx, 3);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_publisher(tt_Context_default_node(&collide_ctx), &collide_pub, &sender_topic,
+                                           ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     match_by_broadcast(&collide_pub);
     sample_len = 100;
     struct tt_ReorderSlot* target = reorder_writer_slot(
@@ -1759,14 +1809,18 @@ static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
     other_sender_topic.name = "other_topic";
     memset(&other_sub, 0, sizeof(other_sub));
     memset(reorder2, 0, sizeof(reorder2));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &other_sub, &other_topic, ENDPOINT_NAME, on_data));
-    other_sub.reliable = true;
-    other_sub.reorder_storage = reorder2;
-    other_sub.reorder_slots = TEST_REORDER_SLOTS;
-    other_sub.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    struct tt_QosProfile qos = TEST_QOS_RELIABLE_READER;
+    qos.reliability.reorder_slots = TEST_REORDER_SLOTS;
+    size_t storage_size = tt_Subscriber_storage_size(&other_topic, &qos);
+    EXPECT_TRUE(storage_size <= sizeof(reorder2));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&receiver), &other_sub, &other_topic, ENDPOINT_NAME, &qos,
+                                 &(struct tt_SubscriberOptions) {.callback = on_data}, reorder2, storage_size));
+    EXPECT_EQ_U32(TEST_REORDER_SLOT_BYTES, other_sub.reorder_slot_bytes);
     init_bare_node(&collide_ctx, 3);
     EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Context_create_publisher(&collide_ctx, &collide_pub, &other_sender_topic, ENDPOINT_NAME));
+                  tt_Node_create_publisher(tt_Context_default_node(&collide_ctx), &collide_pub, &other_sender_topic,
+                                           ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
     match_by_broadcast(&collide_pub);
     sample_len = 100;
     static struct captured_sample data;
@@ -1830,12 +1884,15 @@ static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) 
         if (arm == 0) {
             init_bare_node(&collide_ctx, 3);
             EXPECT_EQ_INT(tt_RET_OK,
-                          tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+                          tt_Node_create_publisher(tt_Context_default_node(&collide_ctx), &collide_pub, &sender_topic,
+                                                   ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
             match_by_broadcast(&collide_pub);
             other = &collide_pub;
             other_ip = SENDER_IP + 2;
         } else if (arm == 1) {
-            EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &sibling_pub, &sender_topic, ENDPOINT_NAME));
+            EXPECT_EQ_INT(tt_RET_OK,
+                          tt_Node_create_publisher(tt_Context_default_node(&sender), &sibling_pub, &sender_topic,
+                                                   ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
             match_by_broadcast(&sibling_pub);
             EXPECT_TRUE(sibling_pub.endpoint.entity_id != entity);
             other = &sibling_pub;
