@@ -37,6 +37,12 @@
 
 #include <tickle/tickle.h>
 
+// tests/ack_bitmap_differential.sh builds this source against an older tree too, which may predate struct
+// tt_TypeSupport (the QoS creation API, DESIGN.md section 9; tt_QOS_REORDER_NONE is one of its macros).
+#ifndef tt_QOS_REORDER_NONE
+#define tt_TypeSupport tt_Topic
+#endif
+
 #define TEST_COMMON_DEFINE_STORAGE
 #include "test_common.h"
 #define TEST_MOCK_DEFINE_STORAGE
