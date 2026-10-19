@@ -27,6 +27,14 @@ Written 2026-10-19 BEFORE any run, enforced by the code below (--selftest exerci
         newest share read only over >= MIN_BURSTS (100) scheduled bursts (a resolution of 1%);
         the side channel read only with >= MIN_PONGS (100) pongs, and pongs = pings - (at most 2 in flight at the end).
       A cell x framework is read with >= MIN_REPS readable runs (rig 3, --pc 2).
+  R0b THE TICKLE READER'S STALL (added 2026-10-20 with the reshaped server, before its rig run): TickLE's server now
+      matches, stalls consumption for -p into a KEEP_LAST 8 cache, then takes, as the twins' readers; its RESULT line
+      reports stalled, depth and evicted. A TickLE run is VOID unless stalled=1 (it saw a sample and its stall ended),
+      lost = evicted (every seq it did not take was evicted by the cache, none missing otherwise) and, in h44, evicted
+      > 0 (a 3 s stall at 20 samples/s that evicts nothing did not stall; KEEP_LAST 8 predicts 61 - 8 = 53). Until then
+      TickLE's h44 "taken of 160" was when its Subscriber joined, not the depth (history_depth_pc_check.sh); it now
+      reads as the twins' do, the newest 8 of the stall plus everything after it. The taken counts are printed as
+      COUNT lines (not scored).
   R1  THE CONTROL (the side channel, framework-independent: no middleware on its path). Per cell, over every readable
       run of every framework: spread50 = max - min of side RTT p50, spread99 = the same for side p99. A difference
       between two frameworks' ages is attributed to the frameworks only when the gap between their rep ranges exceeds
@@ -76,6 +84,7 @@ FAULT_TOL_US = 250.0
 SCORED_CELLS = ("h43", "h44", "b8", "b16")
 FAULT_CELL = "dly"
 FAULT_BASE_CELL = "h43"
+STALL_CELL = "h44"
 SCORED_VENDORS = ("fastdds", "cyclonedds")
 FRAMEWORKS = ("tickle",) + SCORED_VENDORS
 # metric, direction, the control field whose spread a time gap must exceed (None: no control)
@@ -132,6 +141,18 @@ def qdisc_ok(run):
     return True, ""
 
 
+def tickle_stall_void(cell, s):
+    """R0b: why a TickLE server line is not the reshaped reader's stall, or None."""
+    if s.get("stalled") != "1":
+        return f"TickLE reader did not stall (stalled={s.get('stalled')})"
+    lost, evicted = num(s.get("lost")), num(s.get("evicted"))
+    if lost is None or evicted is None or lost != evicted:
+        return f"TickLE lost {s.get('lost')} != evicted {s.get('evicted')}"
+    if cell == STALL_CELL and evicted <= 0:
+        return f"TickLE {STALL_CELL} evicted nothing: the stall did not bite"
+    return None
+
+
 def read_run(run):
     """R0 -> the run with 'void' (reason or None) and the readable metrics."""
     c, s = run["client"], run["server"]
@@ -173,6 +194,11 @@ def read_run(run):
     if not ok:
         run["void"] = why
         return run
+    if run["fw"] == "tickle":
+        why = tickle_stall_void(run["cell"], s)
+        if why:
+            run["void"] = why
+            return run
     n_age = num(c.get("fresh_rt_in_window")) or 0
     pings, pongs = num(c.get("fresh_rt_pings")) or 0, num(c.get("fresh_rt_pongs")) or 0
     bursts = num(c.get("fresh_bursts")) or 0
@@ -197,6 +223,7 @@ def read_run(run):
         run["diag_oneway"] = m["age_p50"] - m["side_p50"] / 2
     run["diag_reader_oneway"] = num(s.get("fresh_age_p50_us"))
     run["goodput"] = (num(s.get("recv")) or 0) / max(1.0, num(c.get("sent")) or 0)
+    run["taken"], run["sent"], run["evicted"] = num(s.get("recv")), num(c.get("sent")), num(s.get("evicted"))
     run["took_nothing"] = n_age == 0
     return run
 
@@ -291,6 +318,10 @@ def summarize(text, pc=False, out=print):
             diag = [r["diag_oneway"] for r in rs if "diag_oneway" in r]
             rdr = [r["diag_reader_oneway"] for r in rs if r.get("diag_reader_oneway") is not None]
             good = [r["goodput"] for r in rs]
+            taken = ",".join(f"{r['taken']:.0f}/{r['sent']:.0f}" if r["taken"] is not None and r["sent"] is not None
+                             else "?" for r in rs)
+            ev = ",".join(f"{r['evicted']:.0f}" for r in rs if r.get("evicted") is not None)
+            out(f"  COUNT (not scored) cell={c} fw={fw} taken/sent per run={taken}" + (f" evicted={ev}" if ev else ""))
             out(f"  DIAG (not scored) cell={c} fw={fw} age_p50-side_p50/2="
                 + (f"{min(diag):.1f}-{max(diag):.1f}" if diag else "none")
                 + " reader_one_way_p50(same-clock only)=" + (f"{min(rdr):.1f}-{max(rdr):.1f}" if rdr else "none")
@@ -349,9 +380,11 @@ def _client(fw, age50, age99, side50, side99, n=160, bursts=160, newest=160, ech
             f"fresh_rt_pings={pings} fresh_rt_pongs={pongs} fresh_rt_side_p50_us={side50} fresh_rt_side_p99_us={side99}")
 
 
-def _server(fw, n=160, sent=None, fail=0, skipped=0):
+def _server(fw, n=160, sent=None, fail=0, skipped=0, stalled=1, lost=0, evicted=None):
     sent = n if sent is None else sent
-    return (f"RESULT: framework={fw} scenario=history_depth_burst_loss role=server recv={n} fresh=on fresh_taken="
+    evicted = lost if evicted is None else evicted
+    stall = f"lost={lost} depth=8 evicted={evicted} stalled={stalled} " if fw == "tickle" else ""
+    return (f"RESULT: framework={fw} scenario=history_depth_burst_loss role=server recv={n} {stall}fresh=on fresh_taken="
             f"{sent + fail + skipped} fresh_age_p50_us=100 fresh_rt=on fresh_rt_echo_sent={sent} "
             f"fresh_rt_echo_fail={fail} fresh_rt_echo_skipped={skipped}")
 
@@ -505,6 +538,34 @@ def selftest():
     rc, out = run(_session(base, mutate=share))
     check("newest share has no control: WIN on ranges", "cell=h43 metric=newest_share WIN" not in out
           and "vs_fastdds=WIN" in out)
+
+    # R0b: the reshaped TickLE reader must report its stall, and every seq it did not take must be an eviction.
+    def no_stall(rid, c, fw, rep):
+        return {"server": {"stalled": 0}} if fw == "tickle" and c == "h43" and rep == 1 else {}
+    rc, out = run(_session(base, mutate=no_stall))
+    check("TickLE without its stall is VOID", "VOID: TickLE reader did not stall (stalled=0)" in out)
+
+    def lost_not_evicted(rid, c, fw, rep):
+        return {"server": {"lost": 5, "evicted": 3}} if fw == "tickle" and c == "b16" and rep == 2 else {}
+    rc, out = run(_session(base, mutate=lost_not_evicted))
+    check("TickLE lost beyond eviction is VOID", "VOID: TickLE lost 5 != evicted 3" in out)
+
+    stall = dict(base)
+    for fw in FRAMEWORKS:
+        stall[("h44", fw)] = (300 if fw == "tickle" else 900, 600, 150, 300, 107)
+
+    def evicts(rid, c, fw, rep):
+        return {"server": {"lost": 53, "evicted": 53, "n": 107}, "bursts": 160} if c == "h44" else {}
+    rc, out = run(_session(stall, mutate=evicts))
+    check("h44 with evictions is read", "VERDICT cell=h44 metric=age_p50 WIN" in out)
+    check("COUNT line carries taken and evicted", "COUNT (not scored) cell=h44 fw=tickle taken/sent per run="
+          "107/160,107/160,107/160 evicted=53,53,53" in out)
+
+    def evicts_none(rid, c, fw, rep):
+        return {"bursts": 160} if c == "h44" else {}
+    rc, out = run(_session(stall, mutate=evicts_none))
+    check("h44 evicting nothing is VOID for TickLE", "VOID: TickLE h44 evicted nothing" in out)
+    check("... and not for a vendor", "h44 fastdds    VOID" not in out)
 
     rc, out = run(_session(base, reps=2), pc=True)
     check("--pc reads 2 reps", rc == 0 and "VERDICT cell=h43 metric=age_p50 WIN" in out)

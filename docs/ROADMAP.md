@@ -40,8 +40,8 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - rmw kernel wake (~6 us) and poll-to-executor handoff (~21 us); a C++ subscriber segfault seen once in ~370 runs.
 - A reorder buffer smaller than the window causes a re-request storm: add a size check.
 - Measurement debt (c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG under loss and M3 done 2026-10-20,
-  RESULTS `D`, `D2`): row 44's TickLE "taken of 160" does not depend on the depth (`history_depth_pc_check.sh`, the
-  same late join): reshape scenario 6 the user chose to reshape it (2026-10-20).
+  RESULTS `D`, `D2`): scenario 6's TickLE server reshaped to the twins 2026-10-20 (the user's choice; PC: depth 8
+  takes 108, depth 64 160); rows 43-44 await the rig re-measure (`rig_queue_keep_last_freshness_rt.sh`).
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
   in-place recvmmsg rows; decide what `rmw-perf.yml` becomes.
 

@@ -274,7 +274,11 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
   burst taken 1.000 by all three.
 - **Corrected 2026-10-20, row 44's TickLE count:** "147-148 of 160" is when the TickLE server's Subscriber joined, not
   the depth: its harness creates the Subscriber after the pause, and depth 8 and depth 64 both took 139 of 160 on the PC
-  (`history_depth_pc_check.sh`, 3 of 3 reps). The age figures stand; the count is not a depth result.
+  (`history_depth_pc_check.sh`, 3 of 3 reps). The age figures stand; the count is not a depth result. The server now
+  matches, stalls consumption for `-p` into a KEEP_LAST 8 cache and takes, as the DDS twins (the user, 2026-10-20):
+  on the PC depth 8 takes 108 of 160 (52 evicted) and depth 64 takes 160 (KEEP_LAST). Taking from the cache also
+  makes TickLE's burst-16 cell evict as the twins' (PC: 1,100-1,117 of 1,600 taken, vendors 1,037-1,270; newest share
+  1.000 all). Rows 43-44 and the burst cells are re-measured on the rig by `rig_queue_keep_last_freshness_rt.sh`.
 - **Corrected 2026-10-17:** rows 11-12 were send rates; now goodput (FastDDS row 11 44.7 -> 28.8 Mbps). TickLE lost 0.
 - **Corrected 2026-10-17:** 1c-6bc replace a `4fca013b` run where TickLE lost 1c, 3c and 6bc to CycloneDDS (its ping
   left 111 us late; the `timerfd` deadline wait of `596e9c9c` made it 11 us).

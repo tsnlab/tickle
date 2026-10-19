@@ -8,21 +8,26 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.md)
-// - TickLE core native subscriber role. Deliberately stalls for `pause_s` seconds (`-p`, default
-// 3.0) *before creating the Subscriber at all* - TickLE has no DDS-style "matched reader that
-// simply hasn't taken anything yet" state to stall in instead (a Subscriber's own callback fires
-// straight out of tt_Context_poll(), there's no separate waitset/take split to defer) - so this side
-// simply doesn't exist on the network yet during the stall, closest TickLE equivalent to the DDS
-// twins' own design intent (client.c keeps publishing on a fixed schedule the whole time
-// regardless, so this window alone determines how many samples pile up in the ring before this
-// side ever looks - some recoverable within depth=8's own retention, some genuinely evicted by
-// the time this side matches).
+// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (docs/RESULTS.md rows 43-44) - TickLE core
+// native subscriber role, built to the CycloneDDS/FastDDS twins' shape: match, then stall consumption for `-p` seconds
+// (default 3.0) while the writer keeps publishing, then take. The reader cache is KEEP_LAST HISTORY_DEPTH (8, as the
+// twins' readers): a sample arriving while it is full evicts the oldest, so a deeper cache keeps more of the stall.
 //
-// last_seq starts at 0, not the first-received sample's own seq (2026-09-20, real measurement bug
-// - already found and fixed once this session on the CycloneDDS twin, see its own doc comment):
-// treating the first arrival as the new baseline would silently hide exactly the leading-gap loss
-// this scenario exists to observe.
+// Until 2026-10-20 this side slept `-p` BEFORE creating its Subscriber. A VOLATILE late joiner is given nothing written
+// before it joined, whatever the depth, so the "taken of 160" it printed was the samples published after the join: 139
+// of 160 with the writer at depth 8 and 139 at depth 64 on the PC (history_depth_pc_check.sh, DEPTH_BLIND) - the
+// lifespan_expiry defect (b393bf90) in this scenario.
+//
+// Core delivers on arrival and keeps no queue, so the callback is the reader cache, as rmw_tickle's KEEP_LAST queue:
+// main() keeps polling through the stall (the reader keeps receiving, as a DDS reader cache does while nothing takes)
+// and takes from the cache only once the stall is over. The stall starts at the first arrival, the first moment this
+// side can see the match: the client publishes only once it has matched a reader (client.c), as the DDS writers do.
+// The freshness flags (--fresh, --fresh-rt, BenchFreshness.h / BenchFreshRt.h) stamp the TAKE, as the twins' do at
+// dds_take(), not the arrival.
+//
+// last_seq starts at 0, not the first-taken sample's own seq (2026-09-20, real measurement bug - already found and
+// fixed once on the CycloneDDS twin, see its own doc comment): treating the first take as the new baseline would hide
+// exactly the leading-gap loss this scenario exists to observe.
 
 #include <signal.h>
 #include <stdbool.h>
@@ -30,7 +35,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -65,30 +69,104 @@ static void handle_sigint(int sig) {
 static uint64_t received = 0;
 static uint64_t lost = 0;
 static uint32_t last_seq = 0;
-// KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when this callback has it.
+// KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when this side takes it.
 static struct bench_fresh_receiver g_fresh;
 static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
 // Freshness by round trip (BenchFreshRt.h): --fresh-rt HOST:PORT echoes every take to the sender.
 static struct bench_rt_reader g_rt;
 static char g_rt_fields[BENCH_RT_FIELDS_MAX];
 
+// The reader cache, KEEP_LAST HISTORY_DEPTH: a ring of the newest samples not yet taken, oldest at cache_head. 8, as
+// the twins' readers and the writer (client.c); history_depth_pc_check.sh builds a copy at 64.
+#define HISTORY_DEPTH 8
+static struct {
+    uint32_t seq;
+    uint8_t payload[sizeof(((struct BenchData*)0)->payload)];
+} cache[HISTORY_DEPTH];
+static size_t cache_head = 0;
+static size_t cache_count = 0;
+// Samples the cache evicted unread (a newer one arrived while it was full) and the most it ever held.
+static uint64_t evicted = 0;
+static size_t cache_peak = 0;
+static uint64_t first_arrival_ns = 0;
+
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
     (void)seq_no;
-    if (data->seq > last_seq + 1) {
-        lost += (data->seq - last_seq - 1);
+    if (first_arrival_ns == 0) {
+        first_arrival_ns = tt_get_ns();
     }
-    last_seq = data->seq;
-    received++;
-    bench_fresh_take(&g_fresh, data->seq, data->payload, sizeof data->payload, bench_fresh_wall_ns());
-    bench_rt_echo(&g_rt, data->seq, data->payload, sizeof data->payload);
+    if (cache_count == HISTORY_DEPTH) {
+        cache_head = (cache_head + 1) % HISTORY_DEPTH;
+        cache_count--;
+        evicted++;
+    }
+    size_t slot = (cache_head + cache_count) % HISTORY_DEPTH;
+    cache[slot].seq = data->seq;
+    memcpy(cache[slot].payload, data->payload, sizeof cache[slot].payload);
+    cache_count++;
+    if (cache_count > cache_peak) {
+        cache_peak = cache_count;
+    }
+}
+
+// Takes every cached sample, oldest first, as one dds_take() of the twins: gap-counted, stamped and echoed at the take.
+static void take_all(void) {
+    if (cache_count == 0) {
+        return;
+    }
+    int64_t take_wall = g_fresh.on ? bench_fresh_wall_ns() : 0;
+    while (cache_count > 0) {
+        const uint32_t seq = cache[cache_head].seq;
+        if (seq > last_seq + 1) {
+            lost += (seq - last_seq - 1);
+        }
+        last_seq = seq;
+        received++;
+        bench_fresh_take(&g_fresh, seq, cache[cache_head].payload, sizeof cache[cache_head].payload, take_wall);
+        bench_rt_echo(&g_rt, seq, cache[cache_head].payload, sizeof cache[cache_head].payload);
+        cache_head = (cache_head + 1) % HISTORY_DEPTH;
+        cache_count--;
+    }
+}
+
+// Polls until SIGINT or the safety cap: the cache fills from the first arrival for pause_s, then every poll's arrivals
+// are taken. Returns whether the stall ended (false: no sample ever arrived).
+static bool receive_stall_take(struct tt_Context* node, double pause_s, double safety_cap_s) {
+    uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
+    uint64_t pause_ns = (uint64_t)(pause_s * (double)tt_SECOND);
+    // 500ms at most (nanoseconds), so the deadline/g_interrupted check re-runs; shorter while the stall is ending.
+    const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
+    bool stalling = true;
+    tt_ret_t ret = tt_RET_OK;
+    while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        int64_t timeout_ns = poll_timeout_ns;
+        if (stalling && first_arrival_ns != 0) {
+            uint64_t now = tt_get_ns();
+            uint64_t stall_end = first_arrival_ns + pause_ns;
+            if (now >= stall_end) {
+                stalling = false;
+                printf("Subscriber: stalled %.3fs after the first arrival, now taking (%lu evicted meanwhile)\n",
+                       pause_s, (unsigned long)evicted);
+            } else if ((int64_t)(stall_end - now) < timeout_ns) {
+                timeout_ns = (int64_t)(stall_end - now);
+            }
+        }
+        if (!stalling) {
+            take_all();
+        }
+        ret = tt_Context_poll(node, timeout_ns);
+    }
+    if (!stalling) {
+        take_all();
+    }
+    return !stalling;
 }
 
 static const double default_pause_s = 3.0;
 static const double default_safety_cap_s = 30.0;
 static const double safety_cap_buffer_s = 15.0;
-static const double ns_per_s = 1e9;
 
 int main(int argc, char** argv) {
     double pause_s = default_pause_s;
@@ -115,21 +193,12 @@ int main(int argc, char** argv) {
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
-    // Before the pause: the side channel's control (PING/PONG) runs through the whole run, whatever this side does.
+    // Before the match and the stall: the side channel's control (PING/PONG) runs through the whole run.
     bench_rt_reader_start(&g_rt);
 
     struct sigaction sigint_action = {0};
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
-
-    printf("Subscriber: deliberately not joining for %.1fs, before the writer's own depth=8 ring can "
-           "evict anything published during that window\n",
-           pause_s);
-    struct timespec pause_ts = {
-        .tv_sec = (time_t)pause_s,
-        .tv_nsec = (long)((pause_s - (double)(time_t)pause_s) * ns_per_s),
-    };
-    nanosleep(&pause_ts, NULL);
 
     struct tt_Context node;
     tt_ret_t ret = tt_Context_create(&node);
@@ -167,21 +236,18 @@ int main(int argc, char** argv) {
         return ret;
     }
 
-    uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
-    // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
-    const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
-    ret = tt_RET_OK;
-    while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Context_poll(&node, poll_timeout_ns);
-    }
+    bool stalled = receive_stall_take(&node, pause_s, safety_cap_s);
 
     uint64_t total = received + lost;
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
     bench_rt_reader_finish(&g_rt);
+    // recv counts the samples taken, lost the seqs never taken (evicted included); evicted is the part the KEEP_LAST
+    // cache dropped. stalled=0 means no sample ever arrived: the run is void.
     printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f%s%s\n",
-           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct,
+           "recv=%lu lost=%lu loss_pct=%.6f depth=%d evicted=%lu cache_peak=%lu stalled=%d%s%s\n",
+           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct, HISTORY_DEPTH, (unsigned long)evicted,
+           (unsigned long)cache_peak, stalled ? 1 : 0,
            bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields),
            bench_rt_reader_fields(&g_rt, g_rt_fields, sizeof g_rt_fields));
 

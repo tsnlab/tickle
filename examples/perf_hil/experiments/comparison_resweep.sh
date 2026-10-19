@@ -134,8 +134,8 @@ specA=(
   "durability_durable|durability_late_join|3|-D"
   "history_within_depth|history_depth_burst_loss|0|-p 0"
   "history_beyond_depth|history_depth_burst_loss|0|"
-  # lifespan_expiry at 0, as history_depth_burst_loss: server.c stalls for -p before creating
-  # its Subscriber, so a 3s client start would put the Subscriber there before the first sample.
+  # lifespan_expiry at 0, as history_depth_burst_loss: until 2026-10-20 both TickLE server.c
+  # stalled for -p before creating their Subscriber; both now match, stall consumption, then take.
   "lifespan_pause_1_0|lifespan_expiry|0|-i 0.02 -T 0.1 -n 250 -p 1.0"
   "lifespan_pause_1_5|lifespan_expiry|0|-i 0.02 -T 0.1 -n 250 -p 1.5"
   "lifespan_pause_2_0|lifespan_expiry|0|-i 0.02 -T 0.1 -n 250 -p 2.0"

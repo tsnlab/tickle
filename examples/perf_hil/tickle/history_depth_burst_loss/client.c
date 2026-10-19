@@ -18,7 +18,9 @@
 // Subscriber-side expectation and the CycloneDDS/FastDDS twins' own depth. No blocking
 // "wait for all acks" API exists (reliable_throughput/client.c's own doc comment) - a fixed drain
 // period after the send loop substitutes, giving the deliberately-late server.c a chance to catch
-// up before this side tears down (mirrors dds_wait_for_acks()'s own role there).
+// up before this side tears down (mirrors dds_wait_for_acks()'s own role there). It publishes only once a reader has
+// matched, as the twins' writers (wait_for_writer_match) and lifespan_expiry/client.c do: the server's stall starts at
+// its first arrival (server.c), so a fixed margin before the match would decide what the server sees.
 
 #include <signal.h>
 #include <stdbool.h>
@@ -45,7 +47,7 @@ static void handle_sigint(int sig) {
 static const double default_interval_s = 0.05;
 static const double default_drain_s = 5.0;
 static const uint32_t default_count = 160;
-static const double discovery_margin_s = 2.0;
+static const double match_timeout_s = 10.0;
 
 static double interval_s = default_interval_s;
 static double drain_s = default_drain_s;
@@ -143,8 +145,20 @@ int main(int argc, char** argv) {
     }
     g_pub = &pub;
 
-    uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
-    tt_Context_schedule(&node, send_start, send_one, NULL);
+    // Publish only once a reader has matched (above): 10 s, as the twins. Until 2026-10-20 a fixed 2 s margin.
+    uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_timeout_s * (double)tt_SECOND);
+    // 50ms (nanoseconds) per poll while waiting, so the deadline check re-runs.
+    const int64_t match_poll_ns = 50LL * 1000 * 1000;
+    while (!g_interrupted && tt_Publisher_matched_count(&pub) == 0 && tt_get_ns() < match_deadline) {
+        (void)tt_Context_poll(&node, match_poll_ns);
+    }
+    if (tt_Publisher_matched_count(&pub) == 0) {
+        printf("timed out waiting for a matched reader\n");
+        bench_rt_sender_finish(&g_rt);
+        tt_Context_destroy(&node);
+        return 1;
+    }
+    tt_Context_schedule(&node, tt_get_ns(), send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {

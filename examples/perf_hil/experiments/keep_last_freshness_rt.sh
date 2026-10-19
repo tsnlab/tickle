@@ -14,7 +14,9 @@
 # CELLS (history_depth_burst_loss, RELIABLE KEEP_LAST 8 on every writer and reader, P1, -i 0.05: 20 slots/s; every cell
 # cross-host, rpi#1 the sender, rpi#2 the reader):
 #   h43   -p 0, 160 samples           RESULTS row 43 (within depth 8), as published
-#   h44   -p 3 (the reader stalls 3 s), 160 samples    RESULTS row 44 (beyond depth 8), as published
+#   h44   -p 3 (the reader stalls 3 s), 160 samples    RESULTS row 44 (beyond depth 8), as published. Since 2026-10-20
+#         TickLE's reader stalls after the match into a KEEP_LAST 8 cache as the twins' (it used to join after the
+#         stall, so its "taken of 160" was the join time); its server line reports stalled/evicted (summary R0b).
 #   b8    -p 0, --burst 8, 800 samples (100 bursts of exactly the depth)
 #   b16   -p 0, --burst 16, 1600 samples (100 bursts of twice the depth; the newest of each is still owed)
 #   dly   h43 with `tc netem delay 1ms` on rpi#1's eth0 (the only Pi with tc): THE FAULT ARM. The data and the PINGs
@@ -178,8 +180,9 @@ for rep in $(seq 1 "$REPS"); do
             left=$(wait_rig_quiet)
             say "FRESH run=$run cell=$c fw=$fw rep=$rep topo=cross leftover_before=$left args=$args"
             say "QDISC run=$run $(qdisc_now)"
-            # PRE_CLIENT_SLEEP 0, as comparison_resweep.sh's history cells: the TickLE server stalls before it even
-            # creates its subscriber, so a later client would hand it the first samples late.
+            # PRE_CLIENT_SLEEP 0, as comparison_resweep.sh's history cells. Since 2026-10-20 every framework's writer
+            # publishes only once matched and every reader stalls after the match (TickLE's server.c was reshaped to
+            # the twins), so the stagger no longer decides what a reader is given; 0 keeps the runs as before.
             # shellcheck disable=SC2086 # args deliberately word-split into the harness argv
             res=$(cd "$PH/$fw" && RPI_CLIENT=$RPI_CLIENT RPI_SERVER=$RPI_SERVER PRE_CLIENT_SLEEP=0 timeout 180 \
                 ./run_scenario.sh history_depth_burst_loss $args 2>/dev/null | grep '^RESULT:' || true)

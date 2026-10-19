@@ -13,6 +13,7 @@
 # CELLS (the rig's, keep_last_freshness_rt.sh, at PC scale):
 #   h43   -i 0.05 -n 160 -p 0                      RESULTS row 43 as published, round trip
 #   b16   -i 0.05 -n 1600 -p 0 --burst 16          100 bursts of twice the depth
+#   h44   -i 0.05 -n 160 -p 3                      RESULTS row 44, the reader stalled 3 s (opt-in: CELLS="... h44")
 #   dly   h43 with `tc netem delay 1ms` on the sender's eth0 - THE FAULT ARM: the round-trip age and the side channel's
 #         RTT must both move by +1 ms (freshness_rt_summary.py R2), the realized qdisc recorded beside each run
 #   idn   IDENTITY, not scored: -i 0.05 -n 160 -p 0 with NO freshness flag, run by this checkout's binaries and by
@@ -203,6 +204,7 @@ cell_args() {
     case "$1" in
     h43 | dly) echo "-i 0.05 -n 160 -p 0 --fresh $listen" ;;
     b16) echo "-i 0.05 -n 1600 -p 0 --fresh --burst 16 $listen" ;;
+    h44) echo "-i 0.05 -n 160 -p 3 --fresh $listen" ;;
     idn) echo "-i 0.05 -n 160 -p 0" ;;
     esac
 }

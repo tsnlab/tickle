@@ -274,6 +274,9 @@ run_all_scenarios() {
     run_scenario "durability_volatile" "durability_late_join" 3
     run_scenario "durability_durable" "durability_late_join" 3 "-D"
 
+    # Since 2026-10-20 server.c matches, stalls consumption for -p into a KEEP_LAST 8 cache and then takes, and client.c
+    # publishes only once matched, as the DDS twins; before, beyond-depth's count was when the Subscriber joined, the
+    # same at depth 8 and 64 (history_depth_pc_check.sh). The stagger of 0 is kept and no longer decides the count.
     run_scenario "history_within_depth" "history_depth_burst_loss" 0 "-p 0"
     run_scenario "history_beyond_depth" "history_depth_burst_loss" 0
 

@@ -5,7 +5,9 @@
 # reading is freshness_rt_summary.py's (--prereg prints it; its selftest must pass before the lock is taken).
 #
 # STEPS, under one rig lock (hil), taken inside this detached process and held once for every cell:
-#   1. keep_last_freshness_rt.sh, REPS=3, cells h43 dly h44 b8 b16, all three frameworks (45 runs).
+#   1. keep_last_freshness_rt.sh, REPS=3, cells h43 dly h44 b8 b16, all three frameworks (45 runs). Re-run from
+#      2026-10-20 to re-measure rows 43-44 with TickLE's reshaped history server (it matches, stalls consumption for -p
+#      into a KEEP_LAST 8 cache, then takes; history_depth_pc_check.sh); a HEAD_SHA without it is refused.
 #   2. freshness_rt_summary.py over it: sample counts, echo accounting, the side-channel control, the fault arm
 #      (dly: netem delay 1 ms on rpi#1's eth0, removed by the campaign's EXIT trap whatever ends it), then
 #      WIN / LOSE / TIE per cell.
@@ -41,6 +43,9 @@ if [ "${KLFRT_LOCKED:-0}" != 1 ]; then
         examples/perf_hil/tickle/common/BenchFreshRt.h; do
         [ -f "$RUNNER/$f" ] || { say "REFUSED: $HEAD_SHA has no $f"; exit 1; }
     done
+    # The old TickLE history server joined after the stall (its h44 count was the join time): measure only the reshape.
+    grep -q '^#define HISTORY_DEPTH 8$' "$RUNNER/examples/perf_hil/tickle/history_depth_burst_loss/server.c" ||
+        { say "REFUSED: $HEAD_SHA has the old TickLE history server (no KEEP_LAST reader cache)"; exit 1; }
     python3 "$X/freshness_rt_summary.py" --selftest | tail -1 | grep -q '^SELFTEST PASS' ||
         { say "REFUSED: the reader's selftest does not pass"; exit 1; }
     say "=== KEEP_LAST freshness (round trip) queue: head ${HEAD_SHA:0:8}, runner $RUNNER; ~30 min, overrun analysis at 45 min ==="
