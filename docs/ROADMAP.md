@@ -39,8 +39,8 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 
 - rmw kernel wake (~6 us) and poll-to-executor handoff (~21 us); a C++ subscriber segfault seen once in ~370 runs.
 - A reorder buffer smaller than the window causes a re-request storm: add a size check.
-- Measurement debt (c6 retransmitted and the 12-rep cross-host cells done 2026-10-20, RESULTS `D`): DATA_FRAG
-  under-loss throughput in the full campaign; discovery join time (M3); rmw_zenoh QoS rows 42-44, 47; harness
+- Measurement debt (c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG under loss and M3 done 2026-10-20,
+  RESULTS `D`, `D2`): rmw_zenoh QoS rows 42-44, 47; harness
   residuals (scenarios 6, 9, LIFESPAN); a data race in the Fast DDS liveliness server.
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
   in-place recvmmsg rows; decide what `rmw-perf.yml` becomes.

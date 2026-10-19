@@ -350,6 +350,14 @@ apex `perf_test` across the link, 5 reps of 60 s. Letters: FastDDS as shipped / 
 AUTO against TickLE's own forced MTU mode, not counted (`HY`, Array1m RELIABLE): AUTO delivered 100% at 0.01-1% loss;
 wire bytes WIN at 0.01% and 0.1%, LOSE at 1% (+0.46%); p99 LOSE at 0.01% and 0.1% (9.54 against 9.42 ms), DRAW at 1%.
 
+### Measurement debt closed 2026-10-20 (`D2`)
+
+- **DATA_FRAG at 4 fragments, 5% loss** (TickLE only; 800 B datagrams, no vendor arm at that size): 620 Mbps, 8 reps
+  (604-631), against 527-536 at `3d1ffeeb`; 4.06 datagrams per sample, so only lost datagrams are resent. Controls:
+  2 fragments lossless 943 and at 5% loss 886 Mbps (c6 of `D`: 888-898).
+- **Discovery join (M3)**, PC netns, N=8, 20 joins an arm: median 2.2 ms at E=4 and 2.0 ms at E=32, against
+  `3d3ed747`'s 2.0 and 1.8 in the same session (published 2.0 and 1.8). PASS (bound: parent + 5 ms).
+
 ### No matched reader sends nothing (rig)
 
 With no matched reader nothing goes on the wire (`NS`): writer CPU per sample -69% (p1 1 kHz), -94% (1 MiB 30 Hz).
@@ -383,6 +391,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | QB | `qos_be_ab.sh`, `qos_be_ab.py` (TickLE only, A P B B P A) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-210053.*` |
 | QB2 | the same, REPS=8 (16 an arm) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-223805.*` |
 | D | `debt_crosshost_remeasure.sh` (campaign_sweep.sh, 12 reps, rotated, unpinned; A: c1 c2 c5 c7 c9, T: c3 c4 c6) | `d58873cf` | 2026-10-20 | `debt_crosshost_d58873cf_20261020-011033.{A,T}.txt`, `.reading.txt` |
+| D2 | `debt2_remeasure.sh`, `debt2_read.py` (frag_count_scaling.sh, discovery_join.sh) | `df6fbc2c` | 2026-10-20 | `debt2_df6fbc2c_20261020-030104.*` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
