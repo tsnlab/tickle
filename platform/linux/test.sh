@@ -498,8 +498,8 @@ $check: FAIL"
 done
 
 # A scheduled entry runs at its deadline (sched_wake_check.c): within 150 us of clock_nanosleep()'s lateness at 500 ms,
-# at 1 ms and when another thread schedules an earlier entry, and at 5 ms within 25 us of an absolute timerfd's, without
-# spinning. Exit 2 is VOID - the control itself ran over 1 ms late, or a bare relative wait showed no slack to catch -
+# at 1 ms and when another thread schedules an earlier entry, and at 5 ms within 25 us of an absolute timerfd's in the
+# same round (the arms interleaved), without spinning. Exit 2 is VOID - the control itself ran over 1 ms late, or a bare relative wait showed no slack to catch -
 # and is not a pass.
 make sched_wake_check
 # shellcheck disable=SC2024

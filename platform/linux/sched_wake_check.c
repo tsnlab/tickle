@@ -39,10 +39,13 @@
 // The short case (added 2026-10-18): below 596e9c9c's 10 ms threshold a wait for an entry still took the relative
 // timeout, whose slack is never less than the thread's 50 us timer slack, so a 5 ms entry ran ~60 us late - the same as
 // clock_nanosleep(), which carries that slack too, so the control above cannot see it. Its reference is a timerfd armed
-// for the absolute deadline (no slack, ~10 us late), which is what the poll's wait now uses:
-//   PASS  median(tickle) <= median(timerfd_abs) + SHORT_MARGIN_NS at SHORT_INTERVAL_NS, CPU as above.
+// for the absolute deadline (no slack, ~10 us late). The three waits - TickLE's, the timerfd's and a bare relative
+// epoll_pwait2() at the default slack - take turns, and each is read as its difference from the timerfd wait of the
+// same round (2026-10-19, judge_short() says why):
+//   PASS  median(tickle - timerfd_abs) <= max(SHORT_MARGIN_NS, median(epoll_pwait2_rel - timerfd_abs) / 2) at
+//         SHORT_INTERVAL_NS, CPU as above.
 //   FAIL  above it. On main (18f16b85, PC, nice 0) 5 ms entries ran 58-62 us late against a timerfd's 7-24 us.
-//   VOID  a bare relative epoll_pwait2() no more than SHORT_SLACK_SHOWN_NS above the timerfd: no slack to catch.
+//   VOID  median(epoll_pwait2_rel - timerfd_abs) no more than SHORT_SLACK_SHOWN_NS: no slack to catch.
 // --sweep runs more intervals and, beside the two arms, the raw waits the poll loop and the alternatives use, with no
 // context - epoll_pwait2() and ppoll() with a relative timeout, a timerfd armed for the absolute deadline - and prints
 // their lateness, which says which component the tickle arm's lateness comes from. The sweep prints and judges nothing.
@@ -81,8 +84,8 @@
 #define CHECK_CONTEXT_ID 59                       // any valid id; this context never meets another
 #define SHORT_INTERVAL_NS (5 * MS_NS)             // the short case: below the 10 ms threshold of 596e9c9c
 #define SHORT_SAMPLES 40
-#define SHORT_MARGIN_NS (25ULL * US_NS)      // tickle's median may exceed the absolute timerfd's by this much
-#define SHORT_SLACK_SHOWN_NS (30ULL * US_NS) // the bare relative wait must exceed the timerfd's by more than this
+#define SHORT_MARGIN_NS (25ULL * US_NS)      // tickle's wait may end this much after the same round's timerfd (median)
+#define SHORT_SLACK_SHOWN_NS (30ULL * US_NS) // the bare relative wait must end more than this after it (median)
 
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_VOID = 2, CHECK_SETUP_FAILED = 3 };
 
@@ -394,22 +397,82 @@ static int sweep(struct tt_Context* node) {
     return CHECK_PASS;
 }
 
-// The short case: CHECK_PASS, CHECK_FAIL or CHECK_VOID (see the header), CHECK_SETUP_FAILED.
-static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
-    const struct interval when = {SHORT_INTERVAL_NS, SHORT_SAMPLES};
-    uint64_t tickle_med = 0;
-    uint64_t timerfd_med = 0;
-    uint64_t raw_med = 0;
-    uint64_t most = 0;
-    uint64_t tickle_cpu = 0;
-    uint64_t cpu = 0;
-    if (!measure(ARM_TICKLE, node, fds, when, &tickle_med, &most, &tickle_cpu) ||
-        !measure(ARM_TIMERFD, node, fds, when, &timerfd_med, &most, &cpu) ||
-        !measure(ARM_EPOLL, node, fds, when, &raw_med, &most, &cpu)) {
-        printf("sched_wake_check: SETUP FAILED - the short case\n");
-        return CHECK_SETUP_FAILED;
+// ---- the short case: the three arms interleaved, judged on paired differences
+
+static int compare_i64(const void* a, const void* b) {
+    int64_t left = *(const int64_t*)a;
+    int64_t right = *(const int64_t*)b;
+    return (left > right) - (left < right);
+}
+
+static int64_t median_i64(int64_t* values, int count) {
+    qsort(values, (size_t)count, sizeof values[0], compare_i64);
+    return values[count / 2];
+}
+
+// One wait of `arm` at the short interval. The two references run at the default timer slack, as measure() runs them,
+// and the thread gets the poll's slack back after each; TickLE's wait adds its thread CPU time to *tickle_cpu.
+static bool short_sample(enum arm arm, struct tt_Context* node, const struct raw_fds* fds, uint64_t* late,
+                         uint64_t* tickle_cpu) {
+    if (arm == ARM_TICKLE) {
+        const uint64_t cpu_before = thread_cpu_ns();
+        const bool ran = arm_tickle(node, SHORT_INTERVAL_NS, late);
+        *tickle_cpu += thread_cpu_ns() - cpu_before;
+        return ran;
     }
+    const int poll_slack = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0); // NOLINT(misc-include-cleaner) - <sys/prctl.h>
+    (void)prctl(PR_SET_TIMERSLACK, CONTROL_SLACK_NS, 0, 0, 0);   // NOLINT(misc-include-cleaner) - <sys/prctl.h>
+    const bool ran = run_arm(arm, node, fds, SHORT_INTERVAL_NS, late);
+    if (poll_slack > 0) {
+        (void)prctl(PR_SET_TIMERSLACK, (unsigned long)poll_slack, 0, 0, 0); // NOLINT(misc-include-cleaner)
+    }
+    return ran;
+}
+
+// The short case: CHECK_PASS, CHECK_FAIL or CHECK_VOID (see the header), CHECK_SETUP_FAILED.
+//
+// The arms take turns, one wait each per round (the first arm rotating), and the verdict reads each round's
+// differences from its timerfd wait, not three medians taken 200 ms apart. A host can wake a sleeping thread at one of
+// two speeds and stay at each for tens of milliseconds: on the PC (a VM, 2026-10-19) every arm - the timerfd too, and
+// a bare relative epoll_pwait2() at the poll's 1 ns slack - ran ~10-15 us late in one and ~40-45 us in the other, in
+// runs of consecutive waits, on any CPU. Measured one after another, each arm's median fell in whichever mode its
+// 200 ms caught: TickLE 40-43 us against a timerfd's 11 failed on the PC as on CI (58.3 against 19.5, 2026-10-18),
+// while a timerfd's own median read 36 us in other runs. TickLE's wait is that bare 1 ns-slack wait (one plain
+// relative epoll_pwait2() per entry, no deadline-timer fire). Paired, a mode both waits of a round share cancels.
+static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
+    static const enum arm order[3] = {ARM_TICKLE, ARM_TIMERFD, ARM_EPOLL};
+    uint64_t late[3][SHORT_SAMPLES];
+    int64_t tickle_less_timerfd[SHORT_SAMPLES];
+    int64_t raw_less_timerfd[SHORT_SAMPLES];
+    uint64_t tickle_cpu_total = 0;
+    for (int round = 0; round < SHORT_SAMPLES; round++) {
+        for (int turn = 0; turn < 3; turn++) {
+            const int which = (round + turn) % 3;
+            if (!short_sample(order[which], node, fds, &late[which][round], &tickle_cpu_total)) {
+                printf("sched_wake_check: SETUP FAILED - the short case, arm %s: %s\n", arm_names[order[which]],
+                       strerror(errno));
+                return CHECK_SETUP_FAILED;
+            }
+        }
+        tickle_less_timerfd[round] = (int64_t)late[0][round] - (int64_t)late[1][round];
+        raw_less_timerfd[round] = (int64_t)late[2][round] - (int64_t)late[1][round];
+    }
+    const uint64_t tickle_cpu = tickle_cpu_total / SHORT_SAMPLES;
     const double interval_ms = (double)SHORT_INTERVAL_NS / (double)MS_NS;
+    for (int which = 0; which < 3; which++) {
+        const uint64_t most = maximum(late[which], SHORT_SAMPLES);
+        const uint64_t med = median(late[which], SHORT_SAMPLES);
+        printf("sched_wake_check: arm=%s interval_ms=%.0f n=%d late_p50_us=%.1f late_max_us=%.1f (interleaved)\n",
+               arm_names[order[which]], interval_ms, SHORT_SAMPLES, (double)med / (double)US_NS,
+               (double)most / (double)US_NS);
+    }
+    const int64_t tickle_over = median_i64(tickle_less_timerfd, SHORT_SAMPLES);
+    const int64_t raw_over = median_i64(raw_less_timerfd, SHORT_SAMPLES);
+    printf("sched_wake_check: short pairs n=%d tickle_minus_timerfd_p50_us=%.1f "
+           "epoll_pwait2_rel_minus_timerfd_p50_us=%.1f "
+           "tickle_cpu_per_wait_us=%.1f\n",
+           SHORT_SAMPLES, (double)tickle_over / (double)US_NS, (double)raw_over / (double)US_NS,
+           (double)tickle_cpu / (double)US_NS);
     // Defined at nice 0. At a positive nice value Linux gives a relative timeout 0.5% of its length as slack instead
     // of 0.1%, so the HAL's 1 ns thread slack leaves a 5 ms wait ~25 us late (test-linux under the session's nice 5,
     // 2026-10-18: 62.8 us against the timerfd's 35.7) - a known limit of that design (DESIGN.md 2), not this check's
@@ -426,14 +489,12 @@ static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
     // check asks whether TickLE's entries sit nearer the absolute deadline than the slack-stretched wait. A fixed
     // 25 us alone failed on a busy CI runner (caa134d6, 2026-10-18: TickLE 64.1, timerfd 29.5, relative 105.6 us),
     // while a lost slack setting reads like the relative wait and still fails either way.
-    const uint64_t half_way = raw_med > timerfd_med ? (raw_med - timerfd_med) / 2U : 0U;
-    const uint64_t short_bound = half_way > SHORT_MARGIN_NS ? half_way : SHORT_MARGIN_NS;
-    if (tickle_med > timerfd_med + short_bound) {
-        printf(
-            "sched_wake_check: FAIL at %.0f ms (short) - entries ran %.1f us late (median), a timerfd for the absolute "
-            "deadline %.1f us; allowed %.1f us more\n",
-            interval_ms, (double)tickle_med / (double)US_NS, (double)timerfd_med / (double)US_NS,
-            (double)short_bound / (double)US_NS);
+    const int64_t half_way = raw_over > 0 ? raw_over / 2 : 0;
+    const int64_t short_bound = half_way > (int64_t)SHORT_MARGIN_NS ? half_way : (int64_t)SHORT_MARGIN_NS;
+    if (tickle_over > short_bound) {
+        printf("sched_wake_check: FAIL at %.0f ms (short) - entries ran %.1f us later than a timerfd for the absolute "
+               "deadline in the same round (median of %d rounds); allowed %.1f us\n",
+               interval_ms, (double)tickle_over / (double)US_NS, SHORT_SAMPLES, (double)short_bound / (double)US_NS);
         result = CHECK_FAIL;
     }
     if (tickle_cpu > CPU_PER_WAKE_NS) {
@@ -441,10 +502,11 @@ static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
                interval_ms, (double)tickle_cpu / (double)US_NS, (double)CPU_PER_WAKE_NS / (double)US_NS);
         result = CHECK_FAIL;
     }
-    if (result == CHECK_PASS && raw_med <= timerfd_med + SHORT_SLACK_SHOWN_NS) {
-        printf("sched_wake_check: VOID at %.0f ms (short) - a bare relative wait ran only %.1f us late against the "
-               "timerfd's %.1f us: the host shows no slack to catch\n",
-               interval_ms, (double)raw_med / (double)US_NS, (double)timerfd_med / (double)US_NS);
+    if (result == CHECK_PASS && raw_over <= (int64_t)SHORT_SLACK_SHOWN_NS) {
+        printf(
+            "sched_wake_check: VOID at %.0f ms (short) - a bare relative wait ran only %.1f us later than the timerfd "
+            "in the same round (median): the host shows no slack to catch\n",
+            interval_ms, (double)raw_over / (double)US_NS);
         result = CHECK_VOID;
     }
     return result;
@@ -522,7 +584,7 @@ static int judge(struct tt_Context* node) {
         return CHECK_VOID;
     }
     printf("sched_wake_check: PASS - every entry median within %.0f us of clock_nanosleep()'s and, at %.0f ms, within "
-           "%.0f us of an absolute timerfd's, without spinning\n",
+           "%.0f us (or half the slack shown) of an absolute timerfd's in the same round, without spinning\n",
            (double)LATE_MARGIN_NS / (double)US_NS, (double)SHORT_INTERVAL_NS / (double)MS_NS,
            (double)SHORT_MARGIN_NS / (double)US_NS);
     return CHECK_PASS;
