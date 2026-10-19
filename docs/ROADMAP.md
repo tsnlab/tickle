@@ -9,10 +9,8 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ## Now
 
-- **0. A fair testbed.** (b) done: `s6_transport_cells.sh` builds every framework once, then rotates their order per
-  rep (A B C, B C A, C A B) and prints each turn's rep, order and framework. The commit is cited here once pushed. Left:
-  the same-host rows it feeds were measured back to back and are refreshed by the re-measure bundled after the QoS
-  work: S1-S6, S17, S19 (SF), S11 (SP), S7c-S10c, S12, S18 (SC, SC0), S13 (SE).
+- **0. A fair testbed.** Done 2026-10-19: `s6_transport_cells.sh` rotates the framework order per rep (`b83e2513`),
+  and the same-host rows were re-measured that way (`60f49f6a`, RESULTS `SB`). Left: S9c, whose R4 control missed.
 - **5a. Testbed-independent constants.** The fitted values that stay are in RMW.md "Options you may tune". Open:
   - Kept off main after rig A/Bs (`ab/hotpath-split`): segment attach backoff by time, revalidate by time, timed
     receive check. Each needs a redesign; the 64-bit clock does not link on RV32 FreeRTOS.

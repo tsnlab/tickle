@@ -87,25 +87,25 @@ reps. Every scored row is a WIN.
 | # | metric | TickLE | FastDDS | CycloneDDS | src |
 |---|---|---:|---:|---:|---|
 | | **Goodput, Mbps** | | | | |
-| S1 | BEST_EFFORT KEEP_LAST 1, max rate, P2 1292 B | **20,867** | 0.31 | 934 | SF |
-| S2 | BEST_EFFORT KEEP_LAST 1, max rate, P3 1424 B | **21,982** | 0.32 | 1,029 | SF |
-| S3 | BEST_EFFORT KEEP_LAST 1, max rate, P4 2800 B | **25,066** | 0.70 | 1,854 | SF |
-| S4 | RELIABLE, P2 | **13,764** | 1,012 | ◊ (2,165) | SF |
-| S5 | RELIABLE, P3 | **14,771** | 980 | ◊ (2,414) | SF |
-| S6 | RELIABLE, P4 | **14,917** | 1,924 | ◊ (4,542) | SF |
+| S1 | BEST_EFFORT KEEP_LAST 1, max rate, P2 1292 B | **20,303** | 0.25 | 915 | SB |
+| S2 | BEST_EFFORT KEEP_LAST 1, max rate, P3 1424 B | **21,284** | 0.48 | 1,025 | SB |
+| S3 | BEST_EFFORT KEEP_LAST 1, max rate, P4 2800 B | **24,773** | 1.20 | 1,876 | SB |
+| S4 | RELIABLE, P2 | **13,949** | 977 | ◊ (2,248) | SB |
+| S5 | RELIABLE, P3 | **14,957** | 1,086 | ◊ (2,385) | SB |
+| S6 | RELIABLE, P4 | **15,247** | 1,879 | ◊ (4,552) | SB |
 | | **RTT mean from creation, ms** (one ping in flight, 200/s unless noted) | | | | |
-| S7c | P2 | **0.036** | 0.160 | 0.125 | SC |
-| S8c | P2, 20/s | **0.034** | 0.172 | 0.142 | SC |
+| S7c | P2 | **0.037** | 0.161 | 0.131 | SB |
+| S8c | P2, 20/s | **0.034** | 0.179 | 0.141 | SB |
 | S9c | P3 | **0.037** | 0.164 | 0.130 | SC |
-| S10c | P4 | **0.086** | 0.162 | 0.130 | SC0 |
+| S10c | P4 | **0.041** | 0.156 | 0.126 | SB |
 | | **CPU, us** | | | | |
-| S11 | publisher per delivered sample, BEST_EFFORT P4 max rate | **0.898** | 35,234 | 11.85 ‡ | SP |
-| S12 | client per round trip, P2 20/s | **22.4** | 83.1 | 51.6 | SC |
-| S17 | client + server per delivered sample, RELIABLE P3 | **1.53** | 31.65 | ◊ (12.04) | SF |
-| S18 | client + server per round trip, P3 200/s | **35.5** | 167.0 | 95.6 ‡ | SC |
+| S11 | publisher per delivered sample, BEST_EFFORT P4 max rate | **0.907** | 17,311 | 12.04 ‡ | SB |
+| S12 | client per round trip, P2 20/s | **22.8** | 85.1 | 52.1 | SB |
+| S17 | client + server per delivered sample, RELIABLE P3 | **1.51** | 30.38 | ◊ (11.99) | SB |
+| S18 | client + server per round trip, P3 200/s | **36.2** | 166.0 | 94.1 ‡ | SB |
 | | **Memory, MB** | | | | |
-| S13 | publisher peak RSS, BEST_EFFORT P4 | **3.2** | 15.9 | – | SE |
-| S19 | client + server peak RSS, RELIABLE P3 | **8.5** | 46.9 | ◊ (239.2 ‡) | SF |
+| S13 | publisher peak RSS, BEST_EFFORT P4 | **3.3** | 15.4 | – | SB |
+| S19 | client + server peak RSS, RELIABLE P3 | **8.5** | 46.9 | ◊ (239.2 ‡) | SB |
 | | **Mixed: one publisher, a subscriber on its host and one across the link, k samples/s** | | | | |
 | S15 | BEST_EFFORT, local / remote | **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | 49.7 / 70.6, loss 20-33% / 0.1% | MX |
 | S16 | RELIABLE, local / remote | **90.7 / 90.7** | 30.8 / 30.8 | 71.7 / 71.7 | MX |
@@ -115,8 +115,12 @@ reps. Every scored row is a WIN.
 
 - **Corrected 2026-10-18:** S7c-S9c, S12 and S18 replace the `596e9c9c` figures (S7c-S9c 0.082 ms): the polling
   thread's 1 ns timer slack (`119d14bd`) cut TickLE's ping delay from ~60 us (as the DDS clients') to 15 us.
-- **S10c is NOT READ at `2579e822`** (0.041 / 0.162 / ◊ ms): TickLE's R4 control missed by 0.1 us (`|d - g|` 1.1
-  against 1 us; all reps printed the same p50s). The row keeps its `596e9c9c` reading.
+- **Re-measured 2026-10-19 (`SB`)** after the QoS work, every framework in rotated order per rep (`b83e2513`); the
+  old rows ran one framework after another. Every scored row still a WIN. Against TickLE's own previous figures:
+  S1-S3 -2.7%, -3.2%, -1.2% (CycloneDDS -2.0%, -0.4%, +1.2% in the same session), S4-S6 +1.3% to +2.2%, S11 +1.0%,
+  S10c 0.086 -> 0.041 ms (now read; the timer-slack change of 2026-10-18). BE P4 (S3, S11, S13) ran 5 reps.
+- **S9c is NOT READ at `60f49f6a`** (0.037 / 0.161 / 0.135 ms): TickLE's R4 control missed by 0.2 us (`|d - g|` 0.5
+  against 0.3 us). The row keeps its `2579e822` reading (`SC`).
 - **◊ CycloneDDS** lost 0.02-0.07% of RELIABLE throughput in every rep, and 1 of 10,139 round trips at P4 in 1 rep.
 - **‡ CycloneDDS includes iox-roudi** (212 MB RSS, 1.6 us CPU per round trip).
 - **FastDDS delivers ~0% in S1-S3**, a rate-dependent overrun at BEST_EFFORT KEEP_LAST 1.
@@ -363,6 +367,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SC | the same, read at `a89aefe2` (R4 of `f2127ec3`) | `2579e822` | 2026-10-18 | `creation_rtt_samehost_2579e822_20261018-092008.*` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
+| SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
