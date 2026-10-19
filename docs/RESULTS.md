@@ -196,47 +196,47 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 | 4 | P2 | **0.266** | 0.348 | 0.317 | WIN | A |
 | 6 | +10 ms netem | **12.20** | 12.26 | 12.24 | WIN | A |
 | | **Goodput, Mbps** | | | | | |
-| 7 | RELIABLE, P1 | **107** | 28.1 | 52.2 | WIN | A |
-| 8 | RELIABLE, P2 | **937** | 591 | 864 | WIN | A |
-| 9 | RELIABLE, P3 | **943** | 401 | 716 | WIN | T |
-| 10 | RELIABLE, P4 | **943** | 519 | 891 | WIN | T |
+| 7 | RELIABLE, P1 | **111** | 24.0 | 50.7 | WIN | D |
+| 8 | RELIABLE, P2 | **937** | 579 | 864 | WIN | D |
+| 9 | RELIABLE, P3 | **943** | 407 | 721 | WIN | D |
+| 10 | RELIABLE, P4 | **943** | 540 | 891 | WIN | D |
 | 11 | BEST_EFFORT, P1, max rate | **115** | 28.8 | 62.1 | WIN | A |
 | 11a | BEST_EFFORT, P2 | **938** | 575 | 906 | WIN | A |
 | 11b | BEST_EFFORT, P3 | **943** ‡ | 560 | 654 | WIN | A |
 | 11c | BEST_EFFORT, P4 | **944** ‡ | 902 | 937 | WIN | A |
-| 12 | RELIABLE KEEP_LAST 64, P1 | **117** | 38.0 | 72.6 | WIN | A |
-| 13 | RELIABLE, P1, 5% loss | **93.0** | 12.1 | 2.49 | WIN | A |
-| 14 | RELIABLE, P4, 5% loss | **865** | 216 | 14.3 | WIN | T |
-| 15 | RELIABLE, P1, 5% reorder | **95.2** | 28.9 | 60.7 | WIN | A |
-| 16 | kept at 5% loss / unshaped, P1 | **86.9%** | 43.1% | 4.8% | WIN | A |
-| 17 | kept at 5% loss / unshaped, P4 | **91.6%** | 38.9% | 1.6% | WIN | T |
+| 12 | RELIABLE KEEP_LAST 64, P1 | **114** | 36.4 | 76.3 | WIN | D |
+| 13 | RELIABLE, P1, 5% loss | **94.2** | 10.7 | 2.47 | WIN | D |
+| 14 | RELIABLE, P4, 5% loss | **895** | ◊ (212) | 13.5 | WIN | D |
+| 15 | RELIABLE, P1, 5% reorder | **100** | 29.3 | 56.5 | WIN | D |
+| 16 | kept at 5% loss / unshaped, P1 | **84.9%** | 44.6% | 4.9% | WIN | D |
+| 17 | kept at 5% loss / unshaped, P4 | **94.9%** | ◊ | 1.5% | WIN | D |
 | | **CPU, cpu_s per Msample** | | | | | |
-| 18 | throughput client, P1 | **5.7** | 24.3 | 7.8 | WIN | A |
-| 19 | throughput server, P1 | **2.7** | 27.0 | 12.9 | WIN | A |
-| 20 | throughput client, P2 | **6.7** | 20.8 | 9.3 | WIN | A |
-| 21 | throughput server, P2 | **3.8** | 21.0 | 14.6 | WIN | A |
-| 22 | throughput client, P4 | **12.6** | 46.7 | 14.3 | WIN | T |
-| 23 | throughput server, P4 | **7.6** | 35.7 | 20.1 | WIN | T |
+| 18 | throughput client, P1 | **5.6** | 26.1 | 7.7 | WIN | D |
+| 19 | throughput server, P1 | **2.4** | 30.5 | 13.1 | WIN | D |
+| 20 | throughput client, P2 | **6.6** | 21.0 | 8.8 | WIN | D |
+| 21 | throughput server, P2 | **3.5** | 21.2 | 14.6 | WIN | D |
+| 22 | throughput client, P4 | **12.7** | 45.0 | 14.3 | WIN | D |
+| 23 | throughput server, P4 | **7.1** | 35.6 | 20.0 | WIN | D |
 | 24 | latency, P1 | **34.3** | 102 | 52.9 | WIN | A |
 | 25 | latency, P2 | **35.0** | 103 | 54.9 | WIN | A |
-| 26 | throughput client, P1, 5% loss | **6.6** | 28.1 | 13.2 | WIN | A |
-| 27 | throughput client, P4, 5% loss | **15.2** | 66.9 | 40.2 | WIN | T |
+| 26 | throughput client, P1, 5% loss | **6.6** | 28.7 | 13.5 | WIN | D |
+| 27 | throughput client, P4, 5% loss | **14.4** | ◊ | 42.4 | WIN | D |
 | | **Peak RSS, KB** | | | | | |
-| 28 | throughput client, P1 | **2,087** | 15,947 | 5,407 | WIN | A |
-| 29 | throughput client, P2 | **2,371** | 15,100 | 6,373 | WIN | A |
-| 30 | throughput client, P4 | **2,425** | 14,013 | 5,540 | WIN | T |
+| 28 | throughput client, P1 | **2,116** | 15,952 | 5,386 | WIN | D |
+| 29 | throughput client, P2 | **2,406** | 15,120 | 6,398 | WIN | D |
+| 30 | throughput client, P4 | **2,460** | 14,029 | 5,586 | WIN | D |
 | 31 | latency client, P1 | **1,813** | 14,379 | 4,916 | WIN | A |
-| 32 | throughput server, P1 | **2,057** | 14,756 | 6,991 | WIN | A |
-| 33 | throughput server, P4 | **1,987** | 14,264 | 4,948 | WIN | T |
-| 34 | throughput server, P4, 5% loss | **2,968** | 14,351 | 6,011 | WIN | T |
+| 32 | throughput server, P1 | **2,117** | 15,249 | 6,789 | WIN | D |
+| 33 | throughput server, P4 | **2,008** | 14,259 | 4,955 | WIN | D |
+| 34 | throughput server, P4, 5% loss | **2,562** | ◊ | 6,849 | WIN | D |
 | | **Wire bytes per sample** | | | | | |
-| 35 | P1 | **138** | 312 | 183 | WIN | A |
-| 36 | P2 | **1,355** | 1,503 | 1,397 | WIN | A |
-| 37 | P3 | **1,487** | 1,866 | 1,585 | WIN | T |
-| 38 | P4 | **2,920** | 3,461 | 2,950 | WIN | T |
-| 39 | P1, 5% loss | **143** | 292 | 193 | WIN | A |
-| 40 | P4, 5% loss | **3,057** | 4,223 | 3,213 | WIN | T |
-| 41 | framing, one datagram (row 35 - 76 B) | **62.0** | 236.0 | 107.0 | WIN | A |
+| 35 | P1 | **138** | 326 | 183 | WIN | D |
+| 36 | P2 | **1,355** | 1,503 | 1,397 | WIN | D |
+| 37 | P3 | **1,487** | 1,866 | 1,585 | WIN | D |
+| 38 | P4 | **2,920** | 3,461 | 2,950 | WIN | D |
+| 39 | P1, 5% loss | **143** | 292 | 194 | WIN | D |
+| 40 | P4, 5% loss | **3,019** | ◊ | 3,218 | WIN | D |
+| 41 | framing, one datagram (row 35 - 76 B) | **62.0** | 250.0 | 107.0 | WIN | D |
 | | **QoS mechanics** | | | | | |
 | 42 | DURABILITY late join, durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | ⚪ | S |
 | 43 | HISTORY within depth 8: age at take, round trip p50 (us) | **199-200** | 303-311 | 280-282 | WIN | X |
@@ -248,6 +248,13 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 Rows 48c-75 are in [rmw layer](#rmw-layer). Send-stamp means (rows 1, 3, 5, 6a, 6b, 48-67) are diagnostics, and
 zenoh-pico and rmw_zenoh are reference; both are in the older text.
 
+- **Re-measured 2026-10-20 (`D`):** rows 7-10, 12-23, 26-30, 32-41 at `d58873cf` (after the QoS work), 12 reps, every
+  framework's order rotated, nothing pinned; 0 VOID, every scored row still a WIN. eth0's interrupt runs on CPU 0, and
+  a sender there reads low (TickLE P1 93.8 against 114.8 Mbps elsewhere, 2 of 12 reps); the medians include both.
+  FastDDS DELIVERY FAILED in c6 (rep 12 missed 34% of samples), so rows 14, 17, 27, 34 and 40 score CycloneDDS only.
+  TickLE against its own previous figures: row 14 865 -> 895 Mbps, row 34 2,968 -> 2,562 kB (QoS storage), row 12
+  117 -> 114. c6's retransmitted / sent is 0.167-0.175 (12 reps; 0.184-0.215 at `3ae721aa`), gap_abandoned and
+  gap_evicted 0: the 46x of COMPARISON 2.8 assumed IP fragmentation, which P4 no longer uses.
 - **Re-scored 2026-10-19 (QoS plan D3):** rows 43-44 counted delivered samples (160/160 all; 147.7 vs 109 of 160).
   KEEP_LAST promises the newest, so they now read the age of a sample when the application takes it, by round trip on
   the sender's clock only: the reader echoes each take over a plain UDP socket outside the middleware, the same for all
@@ -375,6 +382,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SB9 | the same, S9c cell alone | `0117126a` | 2026-10-19 | `samehost_bundle_0117126a_20261019-222752.*` |
 | QB | `qos_be_ab.sh`, `qos_be_ab.py` (TickLE only, A P B B P A) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-210053.*` |
 | QB2 | the same, REPS=8 (16 an arm) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-223805.*` |
+| D | `debt_crosshost_remeasure.sh` (campaign_sweep.sh, 12 reps, rotated, unpinned; A: c1 c2 c5 c7 c9, T: c3 c4 c6) | `d58873cf` | 2026-10-20 | `debt_crosshost_d58873cf_20261020-011033.{A,T}.txt`, `.reading.txt` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
