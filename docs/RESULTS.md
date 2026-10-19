@@ -239,8 +239,8 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 | 41 | framing, one datagram (row 35 - 76 B) | **62.0** | 250.0 | 107.0 | WIN | D |
 | | **QoS mechanics** | | | | | |
 | 42 | DURABILITY late join, durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | ⚪ | S |
-| 43 | HISTORY within depth 8: age at take, round trip p50 (us) | **199-200** | 303-311 | 280-282 | WIN | X |
-| 44 | HISTORY beyond depth 8: age at take, round trip p50 (us); taken of 160 | **200-201; 147-148** | 303-309; 108 | 280-286; 108 | WIN | X |
+| 43 | HISTORY within depth 8: age at take, round trip p50 (us) | **200-201** | 304-317 | 281-282 | WIN | X2 |
+| 44 | HISTORY beyond depth 8: age at take, round trip p50 (us); taken of 160 | **199-200; 108** | 302-312; 108 | 278-283; 108 | WIN | X2 |
 | 45 | DEADLINE 50 ms detection | works | works | works | ⚪ | S |
 | 46 | LIVELINESS lease 2.0 s, detection | 2000.1 ms | 1999.1 ms | 2000.1 ms | ⚪ | L |
 | 47 | LIFESPAN 100 ms expiry | works | works | works | ⚪ | S, LS |
@@ -272,13 +272,13 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
   read at 160. Burst cells, same run: 8 per 50 ms slot, p50 TickLE 221-242, FastDDS 369-387, CycloneDDS 308-323 us
   (WIN both); 16 per slot, 234-317 vs 462-521 (WIN) and 318-349 (VOID: gap below the control spread); newest of each
   burst taken 1.000 by all three.
-- **Corrected 2026-10-20, row 44's TickLE count:** "147-148 of 160" is when the TickLE server's Subscriber joined, not
-  the depth: its harness creates the Subscriber after the pause, and depth 8 and depth 64 both took 139 of 160 on the PC
-  (`history_depth_pc_check.sh`, 3 of 3 reps). The age figures stand; the count is not a depth result. The server now
-  matches, stalls consumption for `-p` into a KEEP_LAST 8 cache and takes, as the DDS twins (the user, 2026-10-20):
-  on the PC depth 8 takes 108 of 160 (52 evicted) and depth 64 takes 160 (KEEP_LAST). Taking from the cache also
-  makes TickLE's burst-16 cell evict as the twins' (PC: 1,100-1,117 of 1,600 taken, vendors 1,037-1,270; newest share
-  1.000 all). Rows 43-44 and the burst cells are re-measured on the rig by `rig_queue_keep_last_freshness_rt.sh`.
+- **Corrected 2026-10-20, row 44's TickLE count:** "147-148 of 160" (`X`) was when the TickLE server's Subscriber
+  joined, not the depth (depth 8 and 64 both took 139 of 160 on the PC). The server now matches, stalls consumption
+  into a KEEP_LAST 8 cache and takes, as the DDS twins (the user, 2026-10-20; PC: depth 8 takes 108, depth 64 160).
+  Re-measured on the rig (`X2`, `6ddcb066`, 45 runs, 0 VOID, fault arm PASS for all three): every framework takes 108
+  of 160 in row 44 (the count is a TIE); age p50 WIN in rows 43-44, burst 8 and burst 16 (burst 16: TickLE 243-277,
+  FastDDS 436-485, CycloneDDS 382-409 us; TickLE now evicts at take, 1,098-1,403 of 1,600). p99 TIE against
+  CycloneDDS, WIN against FastDDS in the burst cells.
 - **Corrected 2026-10-17:** rows 11-12 were send rates; now goodput (FastDDS row 11 44.7 -> 28.8 Mbps). TickLE lost 0.
 - **Corrected 2026-10-17:** 1c-6bc replace a `4fca013b` run where TickLE lost 1c, 3c and 6bc to CycloneDDS (its ping
   left 111 us late; the `timerfd` deadline wait of `596e9c9c` made it 11 us).
@@ -390,6 +390,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | S | `comparison_resweep.sh` | `659013e9` | 2026-09-24 | |
 | L | `liveliness_l2.sh` | `0f220ba0` | 2026-09-27 | `results/liveliness_l2e_2026-09-27.txt` |
 | X | `rig_queue_keep_last_freshness_rt.sh`, `freshness_rt_summary.py` (round trip) | `92059567` | 2026-10-19 | `keep_last_freshness_rt_92059567_20261019-132519.{txt,summary.txt}` |
+| X2 | the same, reshaped TickLE server (`HISTORY_DEPTH 8` cache, stall, take) | `6ddcb066` | 2026-10-20 | `keep_last_freshness_rt_6ddcb066_20261020-082304.{txt,summary.txt}` |
 | W | rmw block wait | `934f90de` | 2026-09-30 | `results/rmw_4way_block_934f90de_2026-09-30.txt` |
 | Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `29826912` | 2026-10-18 | `creation_rtt_rmw{W,J}_29826912_20261018-111338.*` |
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
