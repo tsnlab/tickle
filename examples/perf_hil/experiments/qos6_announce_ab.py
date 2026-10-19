@@ -28,7 +28,9 @@ A is the parent (ab/qos-5-compat), B the change.
 
 3. The rmw receive path is ab_rmw_regress.sh's own verdicts (its rtt reading, ab_rmw_regress.py, and its tput reading,
    ab_rmw_tput.py, both pre-registered there). This chain only collects them: anything but their pass verdict fails
-   step 6 for that row.
+   step 6 for that row. The rtt reading's pass verdict is "NOT REAL at this power"; "REAL REGRESSION" fails, VOID voids.
+   (The first rig run, 2026-10-19, printed FAIL on "NOT REAL": the word was compared to PASS. Corrected after that run;
+   the rule itself is unchanged.)
 
 final OUTB - reads $OUTB.bytes_verdict.txt, $OUTB.join_verdict.txt and the ab_rmw_regress verdict files named in
    $OUTB.rmw_outb, and prints one VERDICT line: PASS only if all three passed; VOID if any is VOID or missing.
@@ -128,13 +130,21 @@ def first_verdict(path):
     return "MISSING", f"{path}: no verdict"
 
 
+def rtt_verdict(path):
+    """ab_rmw_regress.py's pass verdict is "NOT REAL at this power" (no regression found); "REAL REGRESSION" fails."""
+    word, line = first_verdict(path)
+    if line.startswith("VERDICT: NOT REAL"):
+        return "PASS", line
+    return word, line
+
+
 def final(outb):
     parts = [("bytes", first_verdict(outb + ".bytes_verdict.txt")), ("join", first_verdict(outb + ".join_verdict.txt"))]
     try:
         rmw = open(outb + ".rmw_outb").read().strip()
     except OSError:
         rmw = ""
-    parts.append(("rmw rtt", first_verdict(rmw + ".verdict.txt") if rmw else ("MISSING", "no rmw run")))
+    parts.append(("rmw rtt", rtt_verdict(rmw + ".verdict.txt") if rmw else ("MISSING", "no rmw run")))
     parts.append(("rmw tput", first_verdict(rmw + ".tput_verdict.txt") if rmw else ("MISSING", "no rmw run")))
     words = [w for _, (w, _) in parts]
     if any(w in ("VOID", "MISSING", "DRIFT") for w in words):
