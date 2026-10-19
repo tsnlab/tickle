@@ -40,9 +40,13 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - rmw kernel wake (~6 us) and poll-to-executor handoff (~21 us); a C++ subscriber segfault seen once in ~370 runs.
 - A reorder buffer smaller than the window causes a re-request storm: add a size check.
 - Measurement debt (c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG under loss and M3 done 2026-10-20,
-  RESULTS `D`, `D2`): rmw_zenoh QoS rows 42-44, 47; row 44's TickLE
-  "taken of 160" does not depend on the depth (`history_depth_pc_check.sh`, the same late join): reshape scenario 6
-  or footnote it, the user's choice.
+  RESULTS `D`, `D2`): row 44's TickLE "taken of 160" does not depend on the depth (`history_depth_pc_check.sh`, the
+  same late join): reshape scenario 6 or footnote it, the user's choice.
+- Reworded 2026-10-20, "rmw_zenoh QoS rows 42-44, 47" (needs an rmw-level QoS harness, all four rmws, first): those rows compare native APIs (the `perf_hil` scenario
+  binaries; 43-44 echo over a socket outside the middleware), and the table has no zenoh column. zenoh-pico, the
+  native counterpart, has none of the policies. An rmw_zenoh figure needs an rmw-level QoS harness run under all four
+  rmws as new rmw-layer rows; none exists. What the rmw can express is recorded (`rmw_qos_support_probe.sh`,
+  `7f127d56`): rmw_zenoh_cpp accepts all five policies and refuses the deadline and liveliness events.
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
   in-place recvmmsg rows; decide what `rmw-perf.yml` becomes.
 
