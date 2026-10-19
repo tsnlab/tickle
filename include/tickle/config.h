@@ -298,8 +298,11 @@
 #ifndef tt_QOS_MAX_BLOCKING_DEFAULT_NS
 #define tt_QOS_MAX_BLOCKING_DEFAULT_NS (100U * tt_MILLISECOND) // rmw_tickle's RMW_TICKLE_MAX_BLOCKING_MS
 #endif
-#ifndef tt_QOS_REORDER_SLOTS_DEFAULT
-#define tt_QOS_REORDER_SLOTS_DEFAULT 16 // a RELIABLE Subscriber's held out-of-order samples
+// tt_QOS_REORDER_SLOTS_DEFAULT (16) was a RELIABLE Subscriber's reorder slots for a zero reorder_slots. Fewer slots
+// than the window storm under loss (tt_QosProfile_resolve()), so the default is now the window itself; setting the old
+// name would do nothing, so it stops the build instead.
+#ifdef tt_QOS_REORDER_SLOTS_DEFAULT
+#error "tt_QOS_REORDER_SLOTS_DEFAULT was removed: a zero reorder_slots is now the Subscriber's ACK window"
 #endif
 // B1 (rmw_tickle/PLAN.md) - sizing helpers for struct tt_ReliableCache's own caller-provided byte
 // arena (tickle.h). tt_RELIABLE_RECORD_BYTES(payload) is what one cached sample actually costs on

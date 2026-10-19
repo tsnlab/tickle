@@ -21,6 +21,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `tt_Node_create_*_legacy()` and QoS written into endpoint fields are deprecated (`9caef96e`, `6624e9bc`).
 - **Wire `tt_VERSION` 14**: each announce record carries the endpoint's lifespan and history depth (+12 B). Nodes on 13
   and 14 refuse each other (`d9d1c55c`).
+- **A RELIABLE Subscriber's reorder buffer must cover its window** (the user, 2026-10-20). Fewer `reorder_slots` than
+  the window less one, other than `tt_QOS_REORDER_NONE`, are refused: they storm with re-requests under loss. A zero
+  `reorder_slots` is the window, not 16; `tt_QOS_REORDER_SLOTS_DEFAULT` is removed. rmw_tickle holds none where its
+  budget pays for fewer, which an unbounded or large type's 8192-sample window always is.
 
 ### Added
 

@@ -1056,7 +1056,7 @@ static void test_loss_costs_the_lost_datagram_not_the_sample(void) {
 
 // --- RELIABLE receiver: every datagram its own seq_no (DATAFRAG_PLAN.md section 13) ---------------
 
-#define TEST_REORDER_SLOTS 64
+#define TEST_REORDER_SLOTS tt_RELIABLE_BITMAP_BITS // the window: fewer are refused (test_reorder_window.c)
 #define TEST_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
 static uint64_t test_reorder[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
 

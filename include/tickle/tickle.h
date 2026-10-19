@@ -1715,7 +1715,7 @@ enum tt_QosLivelinessKind {
 // DEADLINE period and LIVELINESS lease only: decided at creation from the matched endpoints, as rmw's
 // RMW_QOS_DEADLINE_BEST_AVAILABLE - a Subscriber takes the loosest Publisher's, a Publisher the tightest Subscriber's.
 #define tt_QOS_DURATION_BEST_AVAILABLE (UINT64_MAX - 1U)
-// reliability.reorder_slots: no reorder buffer (0 is the computed default, tt_QOS_REORDER_SLOTS_DEFAULT).
+// reliability.reorder_slots: no reorder buffer (0 is the computed default, one slot per sample of the ACK window).
 #define tt_QOS_REORDER_NONE UINT16_MAX
 
 struct tt_QosHistory {
@@ -1730,7 +1730,8 @@ struct tt_QosHistory {
 struct tt_QosReliability {
     enum tt_QosReliabilityKind kind;
     uint16_t tracking_words;  // TickLE, Subscriber: ACK window per writer in 64-bit words; 0 = tt_RELIABLE_BITMAP_WORDS
-    uint16_t reorder_slots;   // TickLE, Subscriber: held out-of-order samples; 0 = default, tt_QOS_REORDER_NONE = none
+    uint16_t reorder_slots;   // TickLE, RELIABLE Subscriber: held out-of-order samples, at least the window - 1;
+                              // 0 = the window (tracking_words x 64), tt_QOS_REORDER_NONE = none
     uint64_t max_blocking_ns; // TickLE, KEEP_ALL Publisher: longest a full writer waits; 0 = default (100 ms)
 };
 
@@ -1789,8 +1790,10 @@ struct tt_QosMatched {
 // but a Publisher). Resolving an actual profile again gives it back. It does not size storage: the depth the history
 // bytes really hold is reported by tt_Publisher_get_actual_qos(). `requested` NULL is the zeroed profile; `actual` may
 // alias it. tt_RET_INVALID_ARGUMENT, `actual` untouched, for: an unknown kind or enum value; a depth above UINT16_MAX;
-// tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; a lease, BEST_AVAILABLE ones included, below the floor; and on a
-// Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
+// tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; on a RELIABLE Subscriber, reorder_slots other than
+// tt_QOS_REORDER_NONE below its window less one (fewer slots storm with re-requests under loss); a lease,
+// BEST_AVAILABLE ones included, below the floor; and on a Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or
+// MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
 tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
                                struct tt_QosProfile* actual);
 // Field by field (the struct has padding, so memcmp() is not a comparison). NULL equals only NULL.

@@ -926,7 +926,7 @@ typedef struct rmw_tickle_publisher_t {
 // So the bound is the window, measured at both ends of the range rather than argued. An overflow is
 // still safe if some future change makes one possible: the sample is re-requested rather than held,
 // counted in reorder_overflow, and logged. RMW_TICKLE_REORDER_SLOTS trades memory back for
-// retransmissions.
+// retransmissions only down to the window less one: fewer storm, and give no buffer at all.
 #define RMW_TICKLE_REORDER_SLOTS ((uint16_t)(RMW_TICKLE_TRACKING_WORDS * 64))
 
 typedef struct rmw_tickle_queued_message_t {

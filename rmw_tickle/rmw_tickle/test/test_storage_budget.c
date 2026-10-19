@@ -50,6 +50,7 @@
 #define REORDER_BUDGET \
     ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 #define BOUNDED_PAYLOAD 76
+#define BOUNDED_DATAGRAM_PAYLOAD 1400 // a bounded type near one datagram, for the slot payload knob
 
 // What one message costs a publisher's cache: its CDR behind rmw_tickle's psn header, as core caches it -
 // one record, or one per fragment once it outgrows a datagram (clamp_record_bytes(), rmw_publisher.c).
@@ -471,29 +472,44 @@ int main(void) {
     assert(has_storage);
     // a message is its CDR and psn; core strides the slots at 8 bytes since it lays them out (QoS redesign step 3)
     assert(slot_bytes == tt_REORDER_SLOT_SIZE(BOUNDED_PAYLOAD + RMW_TICKLE_PSN_BYTES));
-    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
+    assert(slots == RMW_TICKLE_REORDER_SLOTS); // the whole window, as before the check
+    const uint16_t bounded_slot_bytes = slot_bytes;
 
-    // Unbounded: a slot holds one datagram's payload at most - a larger message is held a fragment a
-    // slot - and the budget decides how many: at N=1472 the whole window, as before there was a budget.
+    // Fewer slots than the window less one storm with re-requests under loss, and core refuses them
+    // (tests/test_reorder_window.c): a budget that pays for fewer gives no buffer at all.
+    char budget[32];
+    snprintf(budget, sizeof(budget), "%llu", (unsigned long long)(RMW_TICKLE_REORDER_SLOTS - 1U) * bounded_slot_bytes);
+    setenv("RMW_TICKLE_REORDER_BYTES", budget, 1); // the window less one: still a buffer
+    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
+    assert(has_storage && slots == RMW_TICKLE_REORDER_SLOTS - 1U);
+    snprintf(budget, sizeof(budget), "%llu", (unsigned long long)(RMW_TICKLE_REORDER_SLOTS - 2U) * bounded_slot_bytes);
+    setenv("RMW_TICKLE_REORDER_BYTES", budget, 1); // one fewer: none
+    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
+    assert(!has_storage && 0 == slots);
+    setenv("RMW_TICKLE_REORDER_BYTES", "1", 1); // smaller than one slot: none
+    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
+    assert(!has_storage && 0 == slots);
+    unsetenv("RMW_TICKLE_REORDER_BYTES");
+    setenv("RMW_TICKLE_REORDER_SLOTS", "64", 1); // fewer slots asked for directly: none either
+    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
+    assert(!has_storage && 0 == slots);
+    unsetenv("RMW_TICKLE_REORDER_SLOTS");
+
+    // RMW_TICKLE_REORDER_SLOT_PAYLOAD lowers a slot below the type's size; the window still fits the budget.
+    callbacks.tickle_max_encoded_size = BOUNDED_DATAGRAM_PAYLOAD;
+    setenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD", "512", 1);
+    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
+    assert(slot_bytes == tt_REORDER_SLOT_SIZE(512));
+    assert(has_storage && slots == RMW_TICKLE_REORDER_SLOTS);
+    unsetenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD");
+
+    // Unbounded: its window is the widest (tt_RELIABLE_BITMAP_MAX_BITS, which bounds a large sample),
+    // far more than the budget's RMW_TICKLE_REORDER_SLOTS slots, so it holds nothing out of order -
+    // until 2026-10-20 it held 1,024 against that window, the shape that stormed. A large sample is
+    // held in its own buffer either way.
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == tt_REORDER_SLOT_SIZE(min_ull(tt_CONTROL_MAX_LENGTH, 2048)));
-    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
-    assert((unsigned long long)slots * slot_bytes <= REORDER_BUDGET);
-    if (tt_MAX_BUFFER_LENGTH <= tt_ETHERNET_UDP_PAYLOAD) {
-        assert(slots == RMW_TICKLE_REORDER_SLOTS); // today's configuration: unchanged
-    }
-
-    setenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD", "512", 1);
-    setenv("RMW_TICKLE_REORDER_BYTES", "65536", 1);
-    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == tt_REORDER_SLOT_SIZE(min_ull(tt_CONTROL_MAX_LENGTH, 512)));
-    assert(slots == 65536 / slot_bytes);
-    setenv("RMW_TICKLE_REORDER_BYTES", "1", 1); // smaller than one slot: still one slot, never zero
-    reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(1 == slots && has_storage);
-    unsetenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD");
-    unsetenv("RMW_TICKLE_REORDER_BYTES");
+    assert(!has_storage && 0 == slots);
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));

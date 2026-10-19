@@ -482,7 +482,7 @@ static void test_subscriber_storage(void) {
     struct tt_Node* node = tt_Context_default_node(&receiver);
     struct tt_SubscriberOptions options = {.callback = on_data};
     size_t needed = tt_Subscriber_storage_size(&type, NULL);
-    EXPECT_EQ_U32((uint32_t)(tt_QOS_REORDER_SLOTS_DEFAULT * tt_REORDER_SLOT_SIZE(SAMPLE_BYTES)), (uint32_t)needed);
+    EXPECT_EQ_U32((uint32_t)(tt_RELIABLE_BITMAP_BITS * tt_REORDER_SLOT_SIZE(SAMPLE_BYTES)), (uint32_t)needed);
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
                   tt_Node_create_subscriber(node, &sub, &type, TOPIC, NULL, &options, NULL, 0));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
@@ -491,7 +491,7 @@ static void test_subscriber_storage(void) {
     EXPECT_TRUE(sub.reliable && !sub.durable && sub.callback == on_data && sub.accept_callback == NULL);
     EXPECT_TRUE(sub.tracking_bitmaps == NULL); // the builtin window
     EXPECT_TRUE(inside_storage(sub.reorder_storage, needed));
-    EXPECT_EQ_U32(tt_QOS_REORDER_SLOTS_DEFAULT, sub.reorder_slots);
+    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_BITS, sub.reorder_slots);
     EXPECT_EQ_U32((uint32_t)tt_REORDER_SLOT_SIZE(SAMPLE_BYTES), sub.reorder_slot_bytes);
     EXPECT_EQ_U32(10, sub.keep_last_depth);
     EXPECT_EQ_U32(0, sub.reorder_held);
@@ -507,7 +507,7 @@ static void test_subscriber_storage(void) {
     struct tt_QosProfile actual;
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_get_actual_qos(&sub, &actual));
     EXPECT_EQ_U32(tt_RELIABLE_BITMAP_WORDS, actual.reliability.tracking_words);
-    EXPECT_EQ_U32(tt_QOS_REORDER_SLOTS_DEFAULT, actual.reliability.reorder_slots);
+    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_BITS, actual.reliability.reorder_slots);
     expect_resolves_to_itself(&actual, tt_KIND_TOPIC_SUBSCRIBER);
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub));
 

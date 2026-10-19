@@ -6051,6 +6051,23 @@ static tt_ret_t qos_resolve_history(const struct tt_QosHistory* requested, struc
     return tt_RET_OK;
 }
 
+// A RELIABLE Subscriber's ACK window in samples, for its resolved tracking_words.
+static uint32_t qos_window_bits(uint16_t tracking_words) {
+    return (uint32_t)tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
+}
+
+// Whether `slots` reorder slots are too few for a window of tracking_words: fewer than the window less one, and not
+// tt_QOS_REORDER_NONE. A writer's held samples lie 1 to window - 1 past its watermark (the watermark itself is the gap,
+// never held), each in its own slot only while there are that many slots. With fewer, a sample can be neither held
+// nor delivered: it is un-received (hold_for_reorder()), the next arrival reports the cleared position as a new gap and
+// NACKs it at once (update_reliable_ack()), the retransmission is un-received again - a re-request storm. Measured in
+// tests/test_reorder_window.c: 16 slots against the default 256-sample window at 20% loss, 65 of 2,000 samples
+// delivered after 21 M DATA sent; 255 or 256 slots, all 2,000 at 1.25 DATA a sample. No buffer at all (NONE) stores
+// nothing, so it sets no bit past the gap and never storms (2.45 DATA a sample there).
+static bool qos_reorder_too_narrow(uint32_t slots, uint16_t tracking_words) {
+    return slots != tt_QOS_REORDER_NONE && slots + 1U < qos_window_bits(tracking_words);
+}
+
 static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requested, uint8_t kind,
                                         const struct tt_QosMatched* matched, struct tt_QosReliability* out) {
     bool service = (kind & tt_KIND_SERVICE) != 0;
@@ -6088,7 +6105,11 @@ static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requeste
         out->tracking_words = (uint16_t)qos_or_default(requested->tracking_words, tt_RELIABLE_BITMAP_WORDS);
     }
     if (subscriber && reliable) {
-        out->reorder_slots = (uint16_t)qos_or_default(requested->reorder_slots, tt_QOS_REORDER_SLOTS_DEFAULT);
+        uint32_t slots = qos_or_default(requested->reorder_slots, qos_window_bits(out->tracking_words));
+        if (qos_reorder_too_narrow(slots, out->tracking_words)) {
+            return tt_RET_INVALID_ARGUMENT;
+        }
+        out->reorder_slots = (uint16_t)slots;
     }
     if (kind == tt_KIND_TOPIC_PUBLISHER) {
         out->max_blocking_ns = qos_or_default64(requested->max_blocking_ns, tt_QOS_MAX_BLOCKING_DEFAULT_NS);
@@ -12319,6 +12340,27 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     return result;
 }
 
+// Says so when a refused Subscriber profile was refused for its reorder buffer alone (qos_reorder_too_narrow()): the
+// one refusal whose fix - more slots, or none - is not obvious from the field that was wrong.
+static void qos_log_reorder_refusal(const struct tt_QosProfile* qos, const struct tt_QosMatched* matched,
+                                    const char* topic_name) {
+    if (qos == NULL) {
+        return;
+    }
+    struct tt_QosProfile without = *qos;
+    without.reliability.reorder_slots = tt_QOS_REORDER_NONE;
+    struct tt_QosProfile actual;
+    if (tt_QosProfile_resolve(&without, tt_KIND_TOPIC_SUBSCRIBER, matched, &actual) != tt_RET_OK) {
+        return;
+    }
+    TT_LOG_ERROR(
+        "Subscriber on %s refused: %u reorder slots for a %u-sample ACK window. A RELIABLE Subscriber needs at "
+        "least the window less one (0 asks for the window), or tt_QOS_REORDER_NONE for none: fewer slots turn "
+        "loss into a re-request storm",
+        topic_name, (unsigned)qos->reliability.reorder_slots,
+        (unsigned)qos_window_bits(actual.reliability.tracking_words));
+}
+
 static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct tt_Subscriber* sub,
                                                   const struct tt_TypeSupport* type, const char* topic_name,
                                                   const struct tt_QosProfile* qos,
@@ -12333,6 +12375,7 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
     struct tt_QosProfile actual;
     tt_ret_t result = tt_QosProfile_resolve(qos, tt_KIND_TOPIC_SUBSCRIBER, &matched, &actual);
     if (result != tt_RET_OK) {
+        qos_log_reorder_refusal(qos, &matched, topic_name);
         return result;
     }
     struct subscriber_layout layout;

@@ -586,8 +586,9 @@ void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* s
 #define RMW_TICKLE_REORDER_SLOT_PAYLOAD_DEFAULT 2048ULL
 // Total bytes of reorder buffer one RELIABLE subscription may reserve (RMW_TICKLE_REORDER_BYTES):
 // slots are the window or budget / stride, whichever is fewer - Plan's review of the design, since
-// a stride cap alone still leaves window x 2 KiB per subscription. Fewer slots than the window just
-// means an earlier overflow, which is the same safe path.
+// a stride cap alone still leaves window x 2 KiB per subscription. Fewer slots than the window are
+// not an earlier overflow but a re-request storm under loss, so they become none
+// (resolve_reorder_slots()).
 //
 // The default is exactly what an unbounded type reserved before any budget existed: a full window
 // of slots sized for the standard 1472-byte datagram (~1.5 MiB). So at today's
@@ -642,14 +643,25 @@ static uint32_t resolve_reorder_slot_payload(const rmw_tickle_subscriber_t* sub_
 // back for retransmissions; 0 or unparseable falls back rather than failing subscription
 // creation, the same reasoning the publisher's own knobs use - a malformed tuning value should not
 // stop a node starting, and this one can only cost throughput.
-static uint16_t resolve_reorder_slots(uint16_t slot_bytes) {
+//
+// Core refuses fewer slots than the subscription's window less one (tt_QosProfile_resolve(): fewer
+// storm with re-requests under loss, tests/test_reorder_window.c), so a buffer the knobs or the
+// budget leave narrower than that is no buffer at all: tt_QOS_REORDER_NONE, which re-requests a
+// sample that arrives ahead of a gap instead of holding it, and does not storm. That is what an
+// unbounded or large type gets by default - its window is tt_RELIABLE_BITMAP_MAX_BITS, eight times
+// the RMW_TICKLE_REORDER_SLOTS the budget pays for - and a large sample never used the slots anyway.
+static uint16_t resolve_reorder_slots(uint16_t slot_bytes, uint16_t tracking_words) {
     unsigned long long slots =
         resolve_env_bytes("RMW_TICKLE_REORDER_SLOTS", RMW_TICKLE_REORDER_SLOTS, RMW_TICKLE_REORDER_SLOTS);
     unsigned long long budget =
         resolve_env_bytes("RMW_TICKLE_REORDER_BYTES", RMW_TICKLE_REORDER_BYTES_DEFAULT, UINT32_MAX);
     unsigned long long affordable = budget / slot_bytes;
     if (affordable < slots) {
-        slots = affordable > 0 ? affordable : 1;
+        slots = affordable;
+    }
+    unsigned long long window = (unsigned long long)tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
+    if (slots + 1ULL < window) {
+        return (uint16_t)tt_QOS_REORDER_NONE;
     }
     return (uint16_t)slots;
 }
@@ -673,7 +685,7 @@ static void subscription_profile(rmw_tickle_subscriber_t* sub_impl, const rmw_qo
         ext.history_bytes = budget > UINT32_MAX ? UINT32_MAX : (uint32_t)budget; // reported; the queue is the bound
     }
     ext.tracking_words = rmw_tickle_tracking_words_for(sub_impl->callbacks);
-    ext.reorder_slots = resolve_reorder_slots(slot_bytes); // core keeps none for a BEST_EFFORT subscription
+    ext.reorder_slots = resolve_reorder_slots(slot_bytes, ext.tracking_words); // none for BEST_EFFORT (core)
     rmw_qos_profile_t sized = *qos;
     sized.depth = sub_impl->queue_limit;
     rmw_tickle_qos_to_tt(&sized, RMW_TICKLE_ENTITY_SUBSCRIPTION, &ext, profile);

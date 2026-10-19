@@ -292,7 +292,7 @@ static struct tt_ReliableCache cache;
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
 // A durable backlog's reader holds each fragment of a small sample that fragments in a slot until its sample is in
 // order (tickle.h, reorder_storage): PAIR_REORDER gives the reader MIXED_REORDER_SLOTS of them.
-#define MIXED_REORDER_SLOTS 256
+#define MIXED_REORDER_SLOTS tt_RELIABLE_BITMAP_MAX_BITS // the wide window: fewer are refused (test_reorder_window.c)
 #define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
 // The RELIABLE reader's storage: its wide window, then its reorder buffer when it has one
 // (tt_Subscriber_storage_size()).

@@ -407,6 +407,7 @@ KEEP_LAST 5), `_SERVICES_DEFAULT`. `tt_*_get_actual_qos()` returns the resolved 
 |---|---|
 | zero field | the computed default, `rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, infinite |
 | resolution | `tt_QosProfile_resolve()`: SYSTEM_DEFAULT, BEST_AVAILABLE (from the discovery table), and out-of-range values refused, not adjusted |
+| reorder buffer | a RELIABLE Subscriber's `reorder_slots`: 0 = its window, else at least the window less one or `tt_QOS_REORDER_NONE`; fewer are refused, since they storm with re-requests under loss (16 of 256 at 20%: 65 of 2,000 samples after 21 M DATA, `tests/test_reorder_window.c`) |
 | hot path | the resolved profile is written into the endpoint's existing fields; only what none held is appended |
 | storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT. A Publisher's: the cache, an index ring of depth samples' datagrams, an arena of (depth + 1) records on a 64 B boundary. Creation clears only what holds anything (a reorder slot: its header) |
 | per sample | nothing the hand-built caches did not pay: a KEEP_LAST cache whose ring and arena keep the depth for samples of its type's largest shape skips the sample count (`depth_assured_*`) until a sample falls outside it |
@@ -590,7 +591,7 @@ Compile-time `-D` overrides unless noted; blank rmw column = core default.
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | example cache depth |
 | `tt_QOS_DEPTH_DEFAULT` / `tt_QOS_KEEP_ALL_DEPTH_DEFAULT` | 10 / 256 | | a zero `history.depth`: rmw's / one ACK window |
 | `tt_QOS_HISTORY_BYTES_DEFAULT` / `tt_QOS_KEEP_ALL_BYTES_DEFAULT` | 1 MiB / 512 KiB | | a zero `history.bytes`, as rmw_tickle's |
-| `tt_QOS_MAX_BLOCKING_DEFAULT_NS` / `tt_QOS_REORDER_SLOTS_DEFAULT` | 100 ms / 16 | | zero `max_blocking_ns` / `reorder_slots` |
+| `tt_QOS_MAX_BLOCKING_DEFAULT_NS` | 100 ms | | zero `max_blocking_ns`; a zero `reorder_slots` is the window |
 | `tt_CLIENT_MAX_OUTSTANDING` | 4 | | calls per Client |
 | `tt_CLIENT_CALL_WINDOW` | 8 | | answers kept per Client (2 x outstanding) |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | seed until a first answer |

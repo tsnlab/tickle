@@ -158,7 +158,7 @@ static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
-#define REORDER_SLOTS 64
+#define REORDER_SLOTS tt_RELIABLE_BITMAP_MAX_BITS // the wide window: fewer are refused (test_reorder_window.c)
 #define REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
 // A RELIABLE Subscriber's storage: its wide window, then its reorder buffer (tt_Subscriber_storage_size()).
 static uint64_t

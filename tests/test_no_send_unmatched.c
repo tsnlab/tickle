@@ -51,7 +51,7 @@
 #define PORT 8282
 #define QUEUE 512
 #define DEPTH 64
-#define REORDER_SLOTS 64
+#define REORDER_SLOTS tt_RELIABLE_BITMAP_BITS // the window: fewer are refused (test_reorder_window.c)
 #define MAX_DELIVERED 256
 
 #define SMALL 16U

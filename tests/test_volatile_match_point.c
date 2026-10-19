@@ -41,7 +41,7 @@
 #define READER_ID 2
 #define QUEUE 128
 #define DEPTH 64
-#define REORDER_SLOTS 64
+#define REORDER_SLOTS tt_RELIABLE_BITMAP_BITS // the window: fewer are refused (test_reorder_window.c)
 #define REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + 64)
 #define MAX_DELIVERED 64
 

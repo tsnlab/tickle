@@ -64,7 +64,7 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache | 1 MiB |
 | `RMW_TICKLE_KEEP_ALL_BYTES` / `_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget / space reserved per sample | 512 KiB / 1472 B |
 | `RMW_TICKLE_READER_KEEP_ALL_BYTES` | untaken bytes one KEEP_ALL subscription holds; then it declines | 512 KiB |
-| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples held | tracking window (1024) |
+| `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples held; fewer than the window less one, by this or the budget, hold none (core refuses them: they storm). An unbounded or large type (window 8192) holds none | tracking window (1024) |
 | `RMW_TICKLE_REORDER_BYTES` | reorder budget per RELIABLE subscription | 1024 x (24 + 1472) B |
 | `RMW_TICKLE_REORDER_SLOT_PAYLOAD` | largest sample a reorder slot holds | 2 KiB |
 | `RMW_TICKLE_MAX_SAMPLE_BYTES` | largest message (max ~11.3 MiB) | 8 MiB |

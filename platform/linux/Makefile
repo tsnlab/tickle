@@ -285,8 +285,9 @@ test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS) $(ONE_CALL_TEST_BINS)
 # defined must pass, so a header that fails for another reason cannot pass this check for the wrong one.
 CONFIG_RENAMED = tt_NODE_CYCLE tt_NODE_UPDATE_INTERVAL tt_NODE_TX_INTERVAL tt_NODE_MAX_LEASE_NS tt_NODE_ID_INVALID \
                  tt_NODE_ID_BROADCAST _tt_NODE_ADDRESS _tt_NODE_PORT _tt_NODE_BROADCAST
-# Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept.
-CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH
+# Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept;
+# tt_QOS_REORDER_SLOTS_DEFAULT's 16 slots stormed under loss, and the default is now the window.
+CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH tt_QOS_REORDER_SLOTS_DEFAULT
 config-renames:
 	@printf '#include <tickle/config.h>\nint main(void){return 0;}\n' > /tmp/tt_cfg_$$$$.c; \
 	 fail=0; \

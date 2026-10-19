@@ -27,9 +27,9 @@
 static struct tt_Context node;
 static struct tt_Subscriber sub;
 // The endpoint's storage for the default QoS (RELIABLE, KEEP_LAST 10): static, so that `size` of the ELF counts it.
-// tt_Subscriber_storage_size() asks for less than this for UInt64 (512 bytes on x86-64, fewer on RV32); the create
-// checks rather than trusting it.
-#define SUB_STORAGE_BYTES 1024U
+// tt_Subscriber_storage_size() asks for this for UInt64: a reorder slot per sample of the 256-sample window, 32 bytes
+// each (fewer slots storm under loss, so they are refused); the create checks rather than trusting it.
+#define SUB_STORAGE_BYTES 8192U
 static uint64_t sub_storage[SUB_STORAGE_BYTES / sizeof(uint64_t)]; // 8-aligned, as the create requires
 
 static void subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
