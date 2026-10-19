@@ -231,8 +231,8 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 | 41 | framing, one datagram (row 35 - 76 B) | **62.0** | 236.0 | 107.0 | WIN | A |
 | | **QoS mechanics** | | | | | |
 | 42 | DURABILITY late join, durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | ⚪ | S |
-| 43 | HISTORY within depth 8, burst | 160/160 | 160/160 | 160/160 | ⚪ | S |
-| 44 | HISTORY beyond depth 8, burst | **147.7/160** | 109/160 | 109/160 | WIN | S |
+| 43 | HISTORY within depth 8: age at take, round trip p50 (us) | **199-200** | 303-311 | 280-282 | WIN | X |
+| 44 | HISTORY beyond depth 8: age at take, round trip p50 (us); taken of 160 | **200-201; 147-148** | 303-309; 108 | 280-286; 108 | WIN | X |
 | 45 | DEADLINE 50 ms detection | works | works | works | ⚪ | S |
 | 46 | LIVELINESS lease 2.0 s, detection | 2000.1 ms | 1999.1 ms | 2000.1 ms | ⚪ | L |
 | 47 | LIFESPAN 100 ms expiry | works | works | works | ⚪ | S |
@@ -240,9 +240,16 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 Rows 48c-75 are in [rmw layer](#rmw-layer). Send-stamp means (rows 1, 3, 5, 6a, 6b, 48-67) are diagnostics, and
 zenoh-pico and rmw_zenoh are reference; both are in the older text.
 
-- **To be re-measured (QoS plan D3, 2026-10-19):** rows 43-44 count delivered samples; KEEP_LAST promises the newest,
-  so they will be scored by freshness (sample age at take, newest-sample arrival) from round trips. Cross-host one-way
-  timing is not used. Until then they stand as measured.
+- **Re-scored 2026-10-19 (QoS plan D3):** rows 43-44 counted delivered samples (160/160 all; 147.7 vs 109 of 160).
+  KEEP_LAST promises the newest, so they now read the age of a sample when the application takes it, by round trip on
+  the sender's clock only: the reader echoes each take over a plain UDP socket outside the middleware, the same for all
+  three; cross-host one-way timing is not used. `92059567`, `rig_queue_keep_last_freshness_rt.sh`, cross-host, 3 reps
+  per cell, rep ranges; reading pre-registered in `freshness_rt_summary.py`. Control: that socket's own RTT, 195-199 us
+  p50 for all three (spread 2-4 us); a 1 ms netem arm moved age and control by 1002-1007 us for every framework. 0
+  echoes lost in 45 runs. Age includes the echo's return (~half the control). p99 needs 300 takes a run and is not
+  read at 160. Burst cells, same run: 8 per 50 ms slot, p50 TickLE 221-242, FastDDS 369-387, CycloneDDS 308-323 us
+  (WIN both); 16 per slot, 234-317 vs 462-521 (WIN) and 318-349 (VOID: gap below the control spread); newest of each
+  burst taken 1.000 by all three.
 - **Corrected 2026-10-17:** rows 11-12 were send rates; now goodput (FastDDS row 11 44.7 -> 28.8 Mbps). TickLE lost 0.
 - **Corrected 2026-10-17:** 1c-6bc replace a `4fca013b` run where TickLE lost 1c, 3c and 6bc to CycloneDDS (its ping
   left 111 us late; the `timerfd` deadline wait of `596e9c9c` made it 11 us).
@@ -338,6 +345,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | C | `campaign_sweep.sh`, `creation_latency_summary.py --rtt` | `596e9c9c` | 2026-10-17 | `creation_latency_core_20261017-204550.txt` |
 | S | `comparison_resweep.sh` | `659013e9` | 2026-09-24 | |
 | L | `liveliness_l2.sh` | `0f220ba0` | 2026-09-27 | `results/liveliness_l2e_2026-09-27.txt` |
+| X | `rig_queue_keep_last_freshness_rt.sh`, `freshness_rt_summary.py` (round trip) | `92059567` | 2026-10-19 | `keep_last_freshness_rt_92059567_20261019-132519.{txt,summary.txt}` |
 | W | rmw block wait | `934f90de` | 2026-09-30 | `results/rmw_4way_block_934f90de_2026-09-30.txt` |
 | Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `29826912` | 2026-10-18 | `creation_rtt_rmw{W,J}_29826912_20261018-111338.*` |
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
