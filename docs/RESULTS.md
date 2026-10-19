@@ -243,7 +243,7 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 | 44 | HISTORY beyond depth 8: age at take, round trip p50 (us); taken of 160 | **200-201; 147-148** | 303-309; 108 | 280-286; 108 | WIN | X |
 | 45 | DEADLINE 50 ms detection | works | works | works | ⚪ | S |
 | 46 | LIVELINESS lease 2.0 s, detection | 2000.1 ms | 1999.1 ms | 2000.1 ms | ⚪ | L |
-| 47 | LIFESPAN 100 ms expiry | not measured | works | works | ⚪ | S |
+| 47 | LIFESPAN 100 ms expiry | works | works | works | ⚪ | S, LS |
 
 Rows 48c-75 are in [rmw layer](#rmw-layer). Send-stamp means (rows 1, 3, 5, 6a, 6b, 48-67) are diagnostics, and
 zenoh-pico and rmw_zenoh are reference; both are in the older text.
@@ -260,7 +260,8 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
   `-T 1000` (`lifespan_pc_check.sh`, PC, two netns). The scenario-9 and LIFESPAN "harness residuals" (pauses differing
   per arm, the bimodal count at pause 1.5) were that join time. The server now matches, stalls consumption for `-p`
   and drops at take what has outlived `-T`, as the DDS twins: 45 / 95 at pause 1.0 / 2.0 (all expired; CycloneDDS 45
-  / 95 on the rig), 0 at `-T 1000` and within the lifespan. Rig re-measure: `rig_lifespan_reshaped.sh`.
+  / 95 on the rig), 0 at `-T 1000` and within the lifespan. On the rig (`LS`), 5 reps: 45 / 70 / 95
+  lost at pause 1.0 / 1.5 / 2.0, every one expired, equal to CycloneDDS in every rep; 0 at `-T 1000` and at pause 0.05.
 - **Re-scored 2026-10-19 (QoS plan D3):** rows 43-44 counted delivered samples (160/160 all; 147.7 vs 109 of 160).
   KEEP_LAST promises the newest, so they now read the age of a sample when the application takes it, by round trip on
   the sender's clock only: the reader echoes each take over a plain UDP socket outside the middleware, the same for all
@@ -401,6 +402,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | QB2 | the same, REPS=8 (16 an arm) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-223805.*` |
 | D | `debt_crosshost_remeasure.sh` (campaign_sweep.sh, 12 reps, rotated, unpinned; A: c1 c2 c5 c7 c9, T: c3 c4 c6) | `d58873cf` | 2026-10-20 | `debt_crosshost_d58873cf_20261020-011033.{A,T}.txt`, `.reading.txt` |
 | D2 | `debt2_remeasure.sh`, `debt2_read.py` (frag_count_scaling.sh, discovery_join.sh) | `df6fbc2c` | 2026-10-20 | `debt2_df6fbc2c_20261020-030104.*` |
+| LS | `rig_lifespan_reshaped.sh` (row 47, reshaped TickLE harness) | `3ae5f34f` | 2026-10-20 | `lifespan_reshaped_3ae5f34f_20261020-035439.txt` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
