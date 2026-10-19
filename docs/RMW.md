@@ -180,4 +180,7 @@ DDS ideas, own protocol: **no interoperation with DDS**. "DDS" means Fast DDS an
 | Source timestamp | 32-bit us, clocks within ±35 min | 64-bit | Sync clocks if you use them |
 | Same host | Automatic shared-memory ring, no daemon | SHM / iceoryx (opt-in) | Nothing to configure |
 | Services | 4 in flight per client; max 64 KB; dropped after 5 s | Unbounded, no timeout | Keep requests small on lossy links |
+| Service QoS | RELIABLE: resent by the client from the measured RTT. BEST_EFFORT: sent once; with every slot busy the oldest call ends | Carried by the request and reply topics' QoS | A BEST_EFFORT call can be lost, as on DDS, and never blocks the next |
+| QoS compatibility | Judged when an announce is applied, once per endpoint pair; fails open past `tt_MAX_DISCOVERED_ENTITIES` | Judged at endpoint match | One INCOMPATIBLE event per pair |
+| Liveliness lease | At least 6 ms; services AUTOMATIC only | Any | A shorter lease is refused at creation |
 | QoS | No ownership, partitions, filters, keys, `wstring`, security | All | `RMW_RET_UNSUPPORTED` |

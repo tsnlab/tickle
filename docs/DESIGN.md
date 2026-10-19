@@ -391,13 +391,17 @@ No NIC checks an IP fragment, so a run's checksum costs the receiver a pass. On 
 refuses both). The Ethernet CRC still covers frames. `TT_UDP_CSUM0=0` keeps checksums: use it through a router or a
 link without frame CRC. Not on FreeRTOS.
 
-## 9. QoS: liveliness, deadline, lifespan, durability
+## 9. QoS
+
+**TL;DR.** rmw's QoS in core: a profile at creation, zero = rmw's default (RELIABLE, KEEP_LAST 10), depth in
+samples under a byte cap, compatibility judged on announce, a reader's lifespan the shorter of its writer's and its own.
 
 **API** (2026-10-18). QoS is given at creation and only then: `tt_Node_create_publisher(node, pub, type, topic, qos,
 options, storage, size)`, and `_subscriber`, `_client`, `_server` alike. `struct tt_QosProfile` holds one struct per
 policy (history, reliability, durability, deadline, lifespan, liveliness): the rmw fields, then TickLE's extensions
 (`history.bytes`; `reliability.tracking_words`, `reorder_slots`, `max_blocking_ns`). Not ROS's struct: core has no
-ROS dependency, and rmw_tickle converts.
+ROS dependency, and rmw_tickle converts. Named profiles: `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA` (BEST_EFFORT,
+KEEP_LAST 5), `_SERVICES_DEFAULT`. `tt_*_get_actual_qos()` returns the resolved profile.
 
 | rule | detail |
 |---|---|
@@ -416,7 +420,8 @@ and QoS written into endpoint fields.
 **RxO matching.** `tt_UpdateEntity` carries `qos` bits (reliable, durable, manual liveliness), deadline and lease;
 DATA from an incompatible writer is dropped (`rxo_drops`). Compatibility is judged when an announce is applied and when
 an endpoint is created, by the same rule: each incompatible pair counts once per endpoint (`tt_QosIncompatibleStatus`,
-first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2, 2026-10-19).
+first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2, 2026-10-19). rmw_tickle's
+`rmw_qos_profile_check_compatible()` answers OK, WARNING or ERROR by rmw's rules.
 
 **Liveliness** (v9): a lease runs from the last sign of life.
 
@@ -428,8 +433,8 @@ first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2
 | summaries | every interval or lease / `tt_LIVELINESS_LEASE_DIVISOR`; extra ones skipped when every peer heard us |
 | descheduled host | the check defers up to `tt_LIVELINESS_MAX_DEFERRALS` x `tt_LIVELINESS_DEFER_NS` while datagrams wait |
 
-**Deadline:** announced for RxO; rmw_tickle enforces it: one miss per period P with no activity, checked at the last
-activity + P (a timestamp store per sample, no scheduler call). **Lifespan:** a writer's older cached sample is neither
+**Deadline:** announced for RxO; rmw_tickle enforces it (D4): one miss per period P with no activity, the timer re-armed
+at the last activity + P (a timestamp store per sample, no scheduler call). **Lifespan:** a writer's older cached sample is neither
 resent nor replayed. A reader is held to the **shorter of the writer's lifespan and its own** (D1, v14): the writer's
 travels in its announce, and `tt_Subscriber_delivering_lifespan()` answers inside the delivery callback. Core delivers
 on arrival and keeps no queue, so it drops nothing itself; rmw_tickle drops a queued sample when its age reaches it.

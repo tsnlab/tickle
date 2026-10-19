@@ -240,6 +240,9 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 Rows 48c-75 are in [rmw layer](#rmw-layer). Send-stamp means (rows 1, 3, 5, 6a, 6b, 48-67) are diagnostics, and
 zenoh-pico and rmw_zenoh are reference; both are in the older text.
 
+- **To be re-measured (QoS plan D3, 2026-10-19):** rows 43-44 count delivered samples; KEEP_LAST promises the newest,
+  so they will be scored by freshness (sample age at take, newest-sample arrival) from round trips. Cross-host one-way
+  timing is not used. Until then they stand as measured.
 - **Corrected 2026-10-17:** rows 11-12 were send rates; now goodput (FastDDS row 11 44.7 -> 28.8 Mbps). TickLE lost 0.
 - **Corrected 2026-10-17:** 1c-6bc replace a `4fca013b` run where TickLE lost 1c, 3c and 6bc to CycloneDDS (its ping
   left 111 us late; the `timerfd` deadline wait of `596e9c9c` made it 11 us).

@@ -11,6 +11,33 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **QoS at creation, rmw-shaped** (QoS plan, 2026-10-18; [DESIGN.md](DESIGN.md) section 9). Endpoints are created with
+  `tt_Node_create_publisher/_subscriber/_client/_server(node, ep, type, name, qos, options, storage, size)`:
+  `struct tt_QosProfile` (one struct per policy, TickLE's extensions inside), `tt_*Options` for what is not QoS, and the
+  caller's storage of `tt_*_storage_size()` bytes. `struct tt_Topic` is `struct tt_TypeSupport`. A zeroed profile is
+  rmw's default (RELIABLE, KEEP_LAST 10), not BEST_EFFORT, and fails without storage. `tt_Context_create_*()`,
+  `tt_Node_create_*_legacy()` and QoS written into endpoint fields are deprecated (`9caef96e`, `6624e9bc`).
+- **Wire `tt_VERSION` 14**: each announce record carries the endpoint's lifespan and history depth (+12 B). Nodes on 13
+  and 14 refuse each other (`d9d1c55c`).
+
+### Added
+
+- `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
+- History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
+- Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
+  `tt_Context_set_qos_incompatible_callback()`); rmw_tickle's events follow it and its periodic rescan is gone;
+  `rmw_qos_profile_check_compatible()` returns WARNING too (D2, `0876adf0`, `3bc51bde`).
+- A reader is held to the shorter of its writer's lifespan and its own (D1, `c138def7`); the rmw graph reports a remote
+  endpoint's history, depth and lifespan (D8, `cfeef643`).
+- A BEST_EFFORT service Client sends each request once; `tt_Client_end_oldest_call()` frees a slot (D6, `d33bcb52`).
+
+### Fixed
+
+- rmw_tickle DEADLINE re-arms at the last activity + P and counts every missed period; a gap between P and 2P was
+  missed before (D4, `d2818e79`).
+
 ## [2.0.0] - 2026-10-18
 
 The core and the rmw_tickle packages now share one version. Incompatible with 1.0.0 on the wire (`tt_VERSION` 13).

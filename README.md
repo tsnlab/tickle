@@ -61,8 +61,8 @@ All tests and the rig: [docs/TESTING.md](docs/TESTING.md). Live status: <https:/
 | | |
 |---|---|
 | **Network** | Pass `-b` (or `TICKLE_BROADCAST_ADDR`) with your link's directed broadcast, e.g. `192.168.10.255`. The default `255.255.255.255` follows the default route, often the wrong network. |
-| **Memory** | The library never allocates. What you pass must outlive the endpoint; you size the publisher cache, reorder buffer and service storage. |
-| **Delivery** | BEST_EFFORT may miss samples, never reorders or duplicates. RELIABLE delivers in order per writer; KEEP_ALL refuses a write rather than drop an unacknowledged sample. Any thread may call a context while one thread polls it (`tt_THREAD_SAFE`). |
+| **Memory** | The library never allocates. An endpoint is created with a QoS profile and storage of `tt_*_storage_size()` bytes, which must outlive it. |
+| **Delivery** | A zeroed QoS profile is rmw's default: RELIABLE, KEEP_LAST 10. BEST_EFFORT may miss samples, never reorders or duplicates. RELIABLE delivers in order per writer; KEEP_ALL refuses a write rather than drop an unacknowledged sample. Any thread may call a context while one thread polls it (`tt_THREAD_SAFE`). |
 | **Security** | None: any node can claim any identity. Use a dedicated VLAN or link ([docs/ROADMAP.md](docs/ROADMAP.md)). |
 | **Linux** | Shared memory on one host is automatic. io_uring is used when allowed; containers refuse it by default and TickLE then runs a little slower ([recipe](docs/DESIGN.md#containers-allowing-io_uring)). Large samples go with UDP checksum 0; `TT_UDP_CSUM0=0` keeps checksums. |
 
