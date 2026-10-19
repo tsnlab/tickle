@@ -9,17 +9,17 @@ Not swept: frag_fast_spill()'s "slot already occupied" branch. It is unreachable
 Subscriber held nothing when its sample started, and every store into its buffer moves the sample out
 first - and the two collision tests below are what show that construction holds.
 
-Run from the repository root. Restores every file it touches, whatever happens.
+Run from the repository root: python3 tests/mutants_frag_fast_path.py. Refuses to start if any anchor is not in
+tickle.c exactly once, or if tickle.c is already modified. Every child is bounded (tests/mutant_guard.py: 2 GB of
+address space, a deadline, at most 256 KB of its output kept); tickle.c is restored after each mutant, on an exception
+and on SIGINT/SIGTERM/SIGHUP, with a fresh mtime. MUTANTS=<substring> runs only the mutants whose name contains it.
 """
 import os
 import pathlib
-import shutil
-import signal
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_data_frag"
@@ -198,25 +198,21 @@ MUTANTS = [
 
 
 def build_and_run(control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True, cwd=ROOT / "platform/linux",
-    )
+    build = run_capped(["make", "-s", "-j4", str(BIN.relative_to(ROOT / "platform/linux"))], timeout=900,
+                       cwd=ROOT / "platform/linux")
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
-    try:
-        run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired as hung:
-        # The whole binary takes about two seconds. A mutant that loops forever is killed, but say so - and
-        # without this bound the first one hung the sweep until an outer timeout killed it with the mutant
-        # still applied to src/tickle.c.
-        return "HANG", str(hung.stdout or "")[-1000:]
+    # The whole binary takes about two seconds. A mutant that loops forever is killed at the deadline and says so; one
+    # that prints forever has its output dropped past mutant_guard.CAP_BYTES rather than held (2026-10-11).
+    run = run_capped([str(BIN)], timeout=120)
+    if run.timed_out:
+        return "HANG", run.output[-1000:]
     # A crash is a kill too (a mutant writing past frag_scratch may well crash), but say which it was.
-    if run.returncode < 0:
-        return "CRASH", run.stdout[-1000:] + run.stderr[-1000:]
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    if run.returncode is None or run.returncode < 0:
+        return "CRASH", run.output[-2000:]
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def failing_lines(output):
@@ -224,22 +220,14 @@ def failing_lines(output):
 
 
 def main():
-    backup = tempfile.mkdtemp(prefix="frag_fast_mutants_")
-    saved = pathlib.Path(backup) / "tickle.c"
-    shutil.copy2(ROOT / SRC, saved)
-
-    def restore():
-        # copy(), then touch: copy2 would keep the original mtime, older than the mutant's objects, and make
-        # would then reuse a binary built from mutated source (tests/mutants_shm_stage1.py, 2026-10-02).
-        shutil.copy(saved, ROOT / SRC)
-        (ROOT / SRC).touch()
-
-    # SIGTERM (an outer timeout, a closed session) must restore the source too, not only an exception.
-    signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
+    be_nice()
+    check_anchors(ROOT, [(name, SRC, old, new) for name, old, new, _test in MUTANTS])
     failures = 0
-    try:
+    # Restores tickle.c after each mutant, in a finally and on SIGINT/SIGTERM/SIGHUP, with a fresh mtime: copy2() kept
+    # the old one and make reused a binary built from the mutant (tests/mutants_shm_stage1.py, 2026-09-29).
+    with SourceGuard(ROOT, [SRC]) as guard:
         verdict, output = build_and_run()
-        print(f"[control]  parent, unmutated                           -> {verdict}")
+        print(f"[control]  parent, unmutated                           -> {verdict}", flush=True)
         if verdict != "PASS":
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
@@ -247,30 +235,26 @@ def main():
         control = code_digest(BIN)
 
         only = os.environ.get("MUTANTS", "")
+        original = guard.original(SRC)
         for name, old, new, test in MUTANTS:
             if only and only not in name:
                 continue
-            path = ROOT / SRC
-            text = path.read_text()
-            count = text.count(old)
-            if count != 1:
-                print(f"[ERROR]    {name:45s} -> anchor matched {count} times, not 1")
-                failures += 1
-                continue
-            path.write_text(text.replace(old, new))
-            verdict, output = build_and_run(control)
-            restore()
+            (ROOT / SRC).write_text(original.replace(old, new, 1))
+            try:
+                verdict, output = build_and_run(control)
+            finally:
+                guard.restore()
             ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
             print(f"[{label(verdict, ok):8s}] {name:45s} -> {verdict} (guard: {test})", flush=True)
+            if ok:
+                print(f"           killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}")
             for line in failing_lines(output) if ok else []:
                 print(f"           {line}")
             if not ok:
                 print(output[-1500:])
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
 
+    print(usage_line())
     print("mutant sweep:", "all mutants died" if failures == 0 else f"{failures} problem(s)")
     return 1 if failures else 0
 

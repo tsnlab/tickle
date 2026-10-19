@@ -23,18 +23,21 @@ Not mutated, and why - each decides no outcome a test can observe:
     datagram); test-linux's two-node runs read through it - run by hand on 2026-10-15, a recvmmsg that says nothing
     came failed test-linux's perf tier (52.3% of the stream lost, limit 2%).
 
-Run from the repository root. Needs passwordless `sudo ip` (the namespace). Restores every file it touches, whatever
-happens. MUTANTS=<substring> runs only the mutants whose name contains it (the controls always run).
+Run from the repository root. Needs passwordless `sudo ip` (the namespace). MUTANTS=<substring> runs only the mutants
+whose name contains it (the controls always run). Refuses to start (exit 2) if any anchor is not in its file exactly
+once - "batch: no drain after the run" matched nothing from 9d716d60, when the arrival stamp became
+note_large_arrival(), and the sweep ran on reporting it as one failure among the rest - or if a file it edits is
+already modified. Every child is bounded (tests/mutant_guard.py: 2 GB of address space, a deadline, at most 256 KB of
+its output kept; the namespace runs keep their own ulimit -v and timeout inside); every file is restored after each
+mutant, on an exception and on SIGINT/SIGTERM/SIGHUP, with a fresh mtime so make rebuilds.
 """
 import os
 import pathlib
-import shutil
-import signal
 import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
@@ -232,8 +235,8 @@ MUTANTS = [
     (
         "batch: no drain after the run",
         "src/tickle.c",
-        "        proxy->large_arrival_ns = rx_now(node);\n        drain_reorder(node, sub, proxy);\n    }\n    return true;",
-        "        proxy->large_arrival_ns = rx_now(node);\n    }\n    return true;",
+        "        note_large_arrival(node, proxy, rx_now(node));\n        drain_reorder(node, sub, proxy);\n    }\n    return true;",
+        "        note_large_arrival(node, proxy, rx_now(node));\n    }\n    return true;",
         CORE,
     ),
     (
@@ -514,10 +517,11 @@ def run_hal(binary, env=""):
     try:
         subprocess.run(["sudo", "-n", "ip", "-n", namespace, "link", "set", "lo", "up"], check=True)
         subprocess.run(["sudo", "-n", "ip", "-n", namespace, "route", "add", "default", "dev", "lo"], check=True)
-        return subprocess.run(
+        # The inner `timeout 120` is the deadline that works: the outer one's kill cannot reach root-owned sudo.
+        return run_capped(
             ["sudo", "-n", "ip", "netns", "exec", namespace, "runuser", "-u", os.environ.get("USER", "semih"), "--",
              "bash", "-c", f"ulimit -v 2097152; cd {ROOT / 'platform/linux'}; exec env {env} timeout 120 ./{binary}"],
-            capture_output=True, text=True, timeout=180,
+            timeout=180,
         )
     finally:
         subprocess.run(["sudo", "-n", "ip", "netns", "del", namespace], check=False)
@@ -538,51 +542,38 @@ def built(binary):
 
 def build_and_run(binary, control=None):
     targets = targets_of(binary)
-    build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), *targets], capture_output=True, text=True)
+    build = run_capped(["make", "-s", "-j4", *targets], timeout=900, cwd=ROOT / "platform/linux")
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, *built(binary)):
         return NOT_COMPILED, ""
-    try:
-        if binary == DRAIN:
-            run = run_hal(binary)
-            if run.returncode == 0:
-                run = run_hal(binary, "TT_REFUSE_PBUF_RING=all TT_EXPECT_DRAIN_RING=classic "
-                                      "LD_PRELOAD=./refuse_pbuf_ring.so")
-        elif binary in (HAL, HAL_RAW):
-            run = run_hal(binary)
-        else:
-            run = subprocess.run(["bash", "-c", f"ulimit -v 2097152; exec {TESTS / binary}"], capture_output=True,
-                                 text=True, timeout=300)
-    except subprocess.TimeoutExpired as hung:
-        return "HANG", str(hung.stdout or "")[-1000:]
-    if run.returncode < 0 or run.returncode in (124, 134, 139):
-        return "CRASH", run.stdout[-1000:] + run.stderr[-1000:]
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    if binary == DRAIN:
+        run = run_hal(binary)
+        if run.returncode == 0:
+            run = run_hal(binary, "TT_REFUSE_PBUF_RING=all TT_EXPECT_DRAIN_RING=classic "
+                                  "LD_PRELOAD=./refuse_pbuf_ring.so")
+    elif binary in (HAL, HAL_RAW):
+        run = run_hal(binary)
+    else:
+        run = run_capped([str(TESTS / binary)], timeout=300)
+    if run.timed_out or run.returncode == 124:  # 124: the namespace run's own `timeout 120`
+        return "HANG", run.output[-1000:]
+    if run.returncode is None or run.returncode < 0 or run.returncode in (134, 139):
+        return "CRASH", run.output[-2000:]
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def main():
+    be_nice()
+    check_anchors(ROOT, [(name, path, old, new) for name, path, old, new, _binary in MUTANTS])
     files = sorted({m[1] for m in MUTANTS})
-    backup = pathlib.Path(tempfile.mkdtemp(prefix="rx_direct_mutants_"))
-    for name in files:
-        (backup / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / name, backup / name)
-
-    def restore():
-        # copy(), then touch: copy2 would keep the original mtime, older than the mutant's objects, and make would then
-        # reuse a binary built from mutated source (tests/mutants_shm_stage1.py, 2026-10-02).
-        for name in files:
-            shutil.copy(backup / name, ROOT / name)
-            (ROOT / name).touch()
-
-    signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     only = os.environ.get("MUTANTS", "")
     failures = 0
     digests = {}
-    try:
+    with SourceGuard(ROOT, files) as guard:
         for binary in sorted({m[4] for m in MUTANTS}):
             verdict, output = build_and_run(binary)
-            print(f"[control]  {binary:<20} unmutated -> {verdict}")
+            print(f"[control]  {binary:<20} unmutated -> {verdict}", flush=True)
             if verdict != "PASS":
                 print(output[-2000:])
                 print("control did not pass; the sweep cannot decide anything")
@@ -591,22 +582,19 @@ def main():
         for name, path, old, new, binary in MUTANTS:
             if only and only not in name:
                 continue
-            text = (backup / path).read_text()
-            if text.count(old) != 1:
-                print(f"[ANCHOR]   {name}: matched {text.count(old)} times, not once")
-                failures += 1
-                continue
-            (ROOT / path).write_text(text.replace(old, new))
+            (ROOT / path).write_text(guard.original(path).replace(old, new, 1))
             try:
-                verdict, _ = build_and_run(binary, digests[binary])
+                verdict, output = build_and_run(binary, digests[binary])
             finally:
-                restore()
+                guard.restore()
             caught = verdict in ("FAIL", "CRASH", "HANG")  # BUILD_FAILED: the mutant itself is wrong
-            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<84} {binary} -> {verdict}")
+            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<84} {binary} -> {verdict}", flush=True)
+            if caught:
+                print(f"           killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}")
+            else:
+                print(output[-1500:])
             failures += 0 if caught else 1
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
+    print(usage_line())
     print(f"{len(MUTANTS)} mutants, {failures} not caught" if failures else f"all {len(MUTANTS)} mutants caught")
     return 1 if failures else 0
 

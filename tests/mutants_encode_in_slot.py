@@ -5,17 +5,19 @@ Each entry removes or bends exactly one condition or step of the one-copy publis
 go red for it. A mutant that survives is a condition no test decides - either the test is missing or the condition
 is not doing anything, and both are findings.
 
-Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it (the control always runs).
+Run from the repository root. MUTANTS=<substring> runs only the mutants whose name contains it (the control always
+runs). Refuses to start (exit 2) if any anchor is not in its file exactly once - "the watermark solicitation after a
+one-copy publish" matched nothing from the day idle_heartbeat_note_publish() was put before the solicitation, and the
+sweep ran on reporting it as one failure among the rest - or if a file it edits is already modified. Every child is
+bounded (tests/mutant_guard.py: 2 GB of address space, a deadline, at most 256 KB of its output kept); every file is
+restored after each mutant, on an exception and on SIGINT/SIGTERM/SIGHUP, with a fresh mtime so make rebuilds.
 """
 import os
 import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_encode_in_slot"
@@ -184,8 +186,8 @@ MUTANTS = [
     (
         "the watermark solicitation after a one-copy publish",
         "src/tickle.c",
-        "    pub->seq_no += 1;\n    maybe_solicit_ack_at_watermark(pub);\n    *result = tt_RET_OK;",
-        "    pub->seq_no += 1;\n    *result = tt_RET_OK;",
+        "    idle_heartbeat_note_publish(pub, now_ns);\n    maybe_solicit_ack_at_watermark(pub);\n    *result = tt_RET_OK;",
+        "    idle_heartbeat_note_publish(pub, now_ns);\n    *result = tt_RET_OK;",
         "test_reliable_records_and_cache_match",
     ),
     (
@@ -199,34 +201,32 @@ MUTANTS = [
 
 
 def build_and_run(control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True, cwd=ROOT / "platform/linux",
-    )
+    build = run_capped(["make", "-s", "-j4", str(BIN.relative_to(ROOT / "platform/linux"))], timeout=900,
+                       cwd=ROOT / "platform/linux")
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
-    run = subprocess.run([str(BIN)], capture_output=True, text=True)
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    run = run_capped([str(BIN)], timeout=300)
+    if run.timed_out:
+        return "HANG", run.output[-1000:]
+    if run.returncode is None or run.returncode < 0:
+        return "CRASH", run.output[-2000:]
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
+
+
+def failing_lines(output):
+    return [line for line in output.splitlines() if "test_encode_in_slot.c:" in line][:3]
 
 
 def main():
-    backup = tempfile.mkdtemp(prefix="slot_mutants_")
-    touched = {m[1] for m in MUTANTS}
-    for rel in touched:
-        shutil.copy2(ROOT / rel, pathlib.Path(backup) / rel.replace("/", "_"))
-
-    def restore():
-        for rel in touched:
-            # copy() and touch, not copy2(): a restored file must look newer than objects built from the mutant.
-            shutil.copy(pathlib.Path(backup) / rel.replace("/", "_"), ROOT / rel)
-            (ROOT / rel).touch()
-
+    be_nice()
+    check_anchors(ROOT, [(name, rel, old, new) for name, rel, old, new, _test in MUTANTS])
+    touched = sorted({m[1] for m in MUTANTS})
     failures = 0
-    try:
+    with SourceGuard(ROOT, touched) as guard:
         verdict, output = build_and_run()
-        print(f"[control]  parent, unmutated                      -> {verdict}")
+        print(f"[control]  parent, unmutated                      -> {verdict}", flush=True)
         if verdict != "PASS":
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
@@ -237,26 +237,22 @@ def main():
         for name, rel, old, new, test in MUTANTS:
             if only and only not in name:
                 continue
-            path = ROOT / rel
-            text = path.read_text()
-            count = text.count(old)
-            if count != 1:
-                print(f"[ERROR]    {name:40s} -> anchor matched {count} times, not 1")
-                failures += 1
-                continue
-            path.write_text(text.replace(old, new))
-            assert path.read_text().count(old) == 0, "substitution did not apply"
-            verdict, output = build_and_run(control)
-            restore()
-            ok = verdict == "FAIL"
+            (ROOT / rel).write_text(guard.original(rel).replace(old, new, 1))
+            try:
+                verdict, output = build_and_run(control)
+            finally:
+                guard.restore()
+            ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
-            print(f"[{label(verdict, ok):8s}] {name:40s} -> {verdict} (wanted FAIL, guard: {test})")
+            print(f"[{label(verdict, ok):8s}] {name:40s} -> {verdict} (wanted FAIL, guard: {test})", flush=True)
+            if ok:
+                print(f"           killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}")
+            for line in failing_lines(output) if ok else []:
+                print(f"           {line}")
             if not ok:
                 print(output[-1500:])
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
 
+    print(usage_line())
     print("mutant sweep:", "all mutants died" if failures == 0 else f"{failures} problem(s)")
     return 1 if failures else 0
 
