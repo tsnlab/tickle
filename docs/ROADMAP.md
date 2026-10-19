@@ -10,7 +10,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 ## Now
 
 - **0. A fair testbed.** Done 2026-10-19: `s6_transport_cells.sh` rotates the framework order per rep (`b83e2513`),
-  and the same-host rows were re-measured that way (`60f49f6a`, RESULTS `SB`). Left: S9c, whose R4 control missed.
+  and the same-host rows were re-measured that way (`60f49f6a`, RESULTS `SB`). S9c re-run the same night (`SB9`).
 - **5a. Testbed-independent constants.** The fitted values that stay are in RMW.md "Options you may tune". Open:
   - Kept off main after rig A/Bs (`ab/hotpath-split`): segment attach backoff by time, revalidate by time, timed
     receive check. Each needs a redesign; the 64-bit clock does not link on RV32 FreeRTOS.
