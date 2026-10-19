@@ -19,6 +19,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the listener,
  * the detection wait, the QoS and the RESULT line are unchanged.
  */
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,17 +58,21 @@ namespace {
     constexpr long detect_poll_ns = 50L * 1000L * 1000L; // 50ms
     constexpr long settle_ns = 300L * 1000L * 1000L;     // 300ms
 
-    uint64_t g_last_recv_ns = 0;
-    uint64_t g_loss_detect_ns = 0;
-    bool g_loss_detected = false;
+    // Written by the listener on a Fast DDS thread and read by main(), so atomics: main() then has a happens-before
+    // edge to what the listener stored (a data race ThreadSanitizer reported on 2026-10-20; COMPARISON to-do 16).
+    // Sequentially consistent, and the listener stores the detection time before the flag, so a main() that sees the
+    // flag reads the time with it. Nothing measurable at this scenario's 10 samples/s.
+    std::atomic<uint64_t> g_last_recv_ns {0};
+    std::atomic<uint64_t> g_loss_detect_ns {0};
+    std::atomic<bool> g_loss_detected {false};
 
     class LivelinessListener : public DataReaderListener {
       public:
         void on_liveliness_changed(DataReader* reader, const LivelinessChangedStatus& status) override {
             (void)reader;
-            if (status.not_alive_count > 0 && !g_loss_detected) {
-                g_loss_detected = true;
-                g_loss_detect_ns = harness::now_ns();
+            if (status.not_alive_count > 0 && !g_loss_detected.load()) {
+                g_loss_detect_ns.store(harness::now_ns());
+                g_loss_detected.store(true);
             }
         }
         void on_data_available(DataReader* reader) override {
@@ -75,17 +80,17 @@ namespace {
             SampleInfo info;
             while (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK) {
                 if (info.valid_data) {
-                    received_count++;
-                    g_last_recv_ns = harness::now_ns();
+                    received_count.fetch_add(1);
+                    g_last_recv_ns.store(harness::now_ns());
                 }
             }
         }
         [[nodiscard]] auto received() const -> uint64_t {
-            return received_count;
+            return received_count.load();
         }
 
       private:
-        uint64_t received_count = 0;
+        std::atomic<uint64_t> received_count {0};
     };
 
     struct server_options {
@@ -154,7 +159,7 @@ auto main(int argc, char** argv) -> int {
     }
 
     const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.safety_cap_s);
-    while (!harness::interrupted() && harness::now_ns() < deadline && !g_loss_detected) {
+    while (!harness::interrupted() && harness::now_ns() < deadline && !g_loss_detected.load()) {
         const struct timespec poll_interval = {0, detect_poll_ns};
         nanosleep(&poll_interval, nullptr);
     }
@@ -164,13 +169,17 @@ auto main(int argc, char** argv) -> int {
     const struct timespec settle = {0, settle_ns};
     nanosleep(&settle, nullptr);
 
-    const double detect_latency_ms = (g_loss_detected && g_last_recv_ns > 0)
-                                         ? static_cast<double>(g_loss_detect_ns - g_last_recv_ns) / harness::ns_per_ms
+    // Each read once, the flag first: it is the listener's last store.
+    const bool loss_detected = g_loss_detected.load();
+    const uint64_t loss_detect_ns = g_loss_detect_ns.load();
+    const uint64_t last_recv_ns = g_last_recv_ns.load();
+    const double detect_latency_ms = (loss_detected && last_recv_ns > 0)
+                                         ? static_cast<double>(loss_detect_ns - last_recv_ns) / harness::ns_per_ms
                                          : -1.0;
 
     printf("RESULT: framework=fastdds scenario=liveliness_loss_detection role=server recv=%lu "
            "loss_detected=%d detect_latency_ms=%.3f lease_s=%.3f transport_profile=%s\n",
-           static_cast<unsigned long>(listener.received()), static_cast<int>(g_loss_detected), detect_latency_ms,
+           static_cast<unsigned long>(listener.received()), static_cast<int>(loss_detected), detect_latency_ms,
            opts.lease_s, harness::transport_profile());
 
     participant->delete_contained_entities();

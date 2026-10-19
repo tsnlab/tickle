@@ -271,6 +271,9 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
   read at 160. Burst cells, same run: 8 per 50 ms slot, p50 TickLE 221-242, FastDDS 369-387, CycloneDDS 308-323 us
   (WIN both); 16 per slot, 234-317 vs 462-521 (WIN) and 318-349 (VOID: gap below the control spread); newest of each
   burst taken 1.000 by all three.
+- **Corrected 2026-10-20, row 44's TickLE count:** "147-148 of 160" is when the TickLE server's Subscriber joined, not
+  the depth: its harness creates the Subscriber after the pause, and depth 8 and depth 64 both took 139 of 160 on the PC
+  (`history_depth_pc_check.sh`, 3 of 3 reps). The age figures stand; the count is not a depth result.
 - **Corrected 2026-10-17:** rows 11-12 were send rates; now goodput (FastDDS row 11 44.7 -> 28.8 Mbps). TickLE lost 0.
 - **Corrected 2026-10-17:** 1c-6bc replace a `4fca013b` run where TickLE lost 1c, 3c and 6bc to CycloneDDS (its ping
   left 111 us late; the `timerfd` deadline wait of `596e9c9c` made it 11 us).

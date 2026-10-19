@@ -43,7 +43,7 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   RESULTS `D`, `D2`): rmw_zenoh QoS rows 42-44, 47; row 47's TickLE cell on the rig (the scenario 9 / LIFESPAN
   residuals were a harness that could not fail, reshaped 2026-10-20: `rig_lifespan_reshaped.sh`); row 44's TickLE
   "taken of 160" does not depend on the depth (`history_depth_pc_check.sh`, the same late join): reshape scenario 6
-  or footnote it, the user's choice; a data race in the Fast DDS liveliness server.
+  or footnote it, the user's choice.
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
   in-place recvmmsg rows; decide what `rmw-perf.yml` becomes.
 
