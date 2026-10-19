@@ -122,8 +122,9 @@ reps. Every scored row is a WIN.
 - **S9c** was NOT READ in `SB` (R4 control missed by 0.2 us: `|d - g|` 0.5 against 0.3 us); re-run alone the same night
   (`SB9`), control PASS. CycloneDDS missed 1 of 10,140 round trips in 1 rep (◊).
 - **Did the QoS work lower S1-S3?** No sign of it. A/B on one Pi, 93ec2b3b (before `e4fc0683`) against `d6a007dd`,
-  with a placement arm, 8 reps an arm (`QB`): goodput B-A +0.06% (P2), +0.15% (P3), -0.83% [-1.84, +0.18] (P4); the
-  2.7% and 3.2% drops are excluded at P2 and P3, P4's 1.2% is not. SB's lower S1-S2 came from the session.
+  with a placement arm, 8 reps an arm (`QB`): goodput B-A +0.06% (P2), +0.15% (P3), -0.83% [-1.84, +0.18] (P4); P4's
+  1.2% was not excluded, so it ran again at 16 reps an arm (`QB2`): -0.21%, +0.24%, -0.19% [-0.84, +0.46], every
+  asked drop excluded, CPU per sample not raised. SB's lower S1-S2 came from the session.
 - **◊ CycloneDDS** lost 0.02-0.07% of RELIABLE throughput in every rep, and 1 of 10,139 round trips at P4 in 1 rep.
 - **‡ CycloneDDS includes iox-roudi** (212 MB RSS, 1.6 us CPU per round trip).
 - **FastDDS delivers ~0% in S1-S3**, a rate-dependent overrun at BEST_EFFORT KEEP_LAST 1.
@@ -373,6 +374,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
 | SB9 | the same, S9c cell alone | `0117126a` | 2026-10-19 | `samehost_bundle_0117126a_20261019-222752.*` |
 | QB | `qos_be_ab.sh`, `qos_be_ab.py` (TickLE only, A P B B P A) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-210053.*` |
+| QB2 | the same, REPS=8 (16 an arm) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-223805.*` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
