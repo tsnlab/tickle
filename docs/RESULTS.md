@@ -3,7 +3,7 @@
 **TL;DR.** TickLE against FastDDS and CycloneDDS on two Raspberry Pi 5s; zenoh is reference only and never scored.
 - Core, cross-host: WIN 139, DRAW 11, LOSE 0 of 150. Core, same host: WIN 18 of 18.
 - ROS 2 (rmw), cross-host: WIN 21, DRAW 6, LOSE 1 of 28 (row 63c). Same host: WIN 52 of 52.
-- Large messages (L4): WIN 56, DRAW 23, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
+- Large messages (L4): WIN 58, DRAW 21, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
 - Latency is measured from creation time, throughput is goodput, and nothing is pinned.
 
 Older text: `git show a89aefe2:docs/RESULTS.md` (full provenance prose, superseded readings, pinned figures, history).
@@ -39,7 +39,7 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 |---|---:|---:|---:|---|
 | RTT mean from creation, block wait, Bench 64 B, us | **45.1** | 194.3 | 167.8 | R1c |
 
-**rmw, large messages** ([L4](#rmw-large-messages-l4-cross-host)): WIN 56, DRAW 23, LOSE 1 of 80 (one letter per vendor).
+**rmw, large messages** ([L4](#rmw-large-messages-l4-cross-host)): WIN 58, DRAW 21, LOSE 1 of 80 (one letter per vendor).
 
 | headline | rmw_tickle | FastDDS / FastDDS 1472 | CycloneDDS | cell |
 |---|---:|---:|---:|---|
@@ -63,8 +63,8 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 - **Loss TIEs** (10 in `A`, 2 in `T`): TickLE lost nothing, and each vendor lost nothing or had a range touching zero.
 - **rmw rows 59c, 61c, 65c-67c against CycloneDDS:** at 50-200 us poll sleeps the poll cycle dominates (see 63c).
 - **rmw row 74, Array4k KEEP_ALL at 0% loss:** all three sit at the link ceiling.
-- **L4, 23 letters:** delivered % where everyone delivered 100% (13); against FastDDS as shipped, latency at I1 and I1
-  best effort (2) and CPU per MB at I1, I1 best effort, I4 RELIABLE and I4s (8).
+- **L4, 21 letters:** delivered % where everyone delivered 100% (13); against FastDDS as shipped, CPU per MB at I1,
+  I1 best effort, I4 RELIABLE and I4s (8).
 
 **Behind inside a lead (not scored):** rmw_tickle's kernel wake is ~6 us slower than the vendors' blocking `recvmsg`.
 zenoh-pico (reference) has the better figure in rows 5-7, 18-19, 24 and 35. Hybrid AUTO's p99 is above forced MTU at
@@ -258,7 +258,7 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
 
 R4 control: where nothing waits at the sender, creation and stamp differ only by the sender's timer wake `g`. It
 passed in every cell. `C`: 100 round trips per rep; TickLE's `g` 11-12 us, the DDS clients' 58-61 us. rmw ping-pong
-control (`Ctl`, not scored): RTT median 0.32 / 0.42 / 0.35 ms. Not yet from creation time: tails 2, 4, 6, Array1m L4.
+control (`Ctl`, not scored): RTT median 0.32 / 0.42 / 0.35 ms. Not yet from creation time: tails 2, 4, 6. L4 is a round trip (below).
 
 ### rmw layer
 
@@ -301,17 +301,24 @@ every cell is a WIN against FastDDS):
 
 apex `perf_test` across the link, 5 reps of 60 s. Letters: FastDDS as shipped / FastDDS 1472 / CycloneDDS (– not scored).
 
-| cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS | src |
+| cell | QoS, rate | delivered % | RTT med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS | src |
 |---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|---|
-| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.41 / 9.48 ¹ | 2.29 / 3.94 | 18,684 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W | L16 |
-| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 10.04 / 15.75 ¹ | 4.17 / 3.65 | 18,792 | –D– | –W– | –W– | –W– | –W– | L16 |
-| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 ¹ | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W | L15 |
-| I4s Array4m | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | **55.83** / UNBOUND | 1.40 / 3.60 | 30,952 | W–W–W | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC |
-| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | **36.68** / 36.77 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC |
-| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | **36.60** / 36.66 | 2.20 / 3.55 ² | 30,580 | D–D–D | W–W–W | L–W–W | W–W–W | W–W–W | L15, LC, HP |
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | **9.50** / 9.65 | 2.29 / 3.94 | 18,684 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W | L16, LR |
+| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | **9.66** / 12.23 | 4.17 / 3.65 | 18,792 | –D– | –W– | –W– | –W– | –W– | L16, LR |
+| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | **9.48** / 9.65 | 2.20 / 3.89 | 17,724 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W | L15, LR |
+| I4s Array4m | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | **55.30** / UNBOUND | 1.40 / 3.60 | 30,952 | W–W–W | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC, LR |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | **36.79** / 36.91 | 2.21 / 3.69 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W | L15, LC, LR |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | **36.78** / 36.94 | 2.20 / 3.55 ² | 30,580 | D–D–D | W–W–W | L–W–W | W–W–W | W–W–W | L15, LC, HP, LR |
 
-¹ Send stamp; not yet measured from creation time. ² `HP`, perf task-clock at `e00c1ddd` (FastDDS 2.11 / 3.65).
+² `HP`, perf task-clock at `e00c1ddd` (FastDDS 2.11 / 3.65).
 
+- **RTT, 2026-10-19 (`LR`):** latency is now a round trip on the sender's clock: 1 or 4 MB out, an 8-byte reply
+  back through the same rmw (RELIABLE KL10); cross-host one-way timing is not used. Before: one-way from perf_test
+  (send stamp; I1 and I1 best effort DRAW against FastDDS as shipped, now WIN). 5 reps x 900 samples, n = 900 in every
+  rep (I4s 860, 95.6% of offered), 0 VOID in 160 runs. Control: a small ping on the same rmw and link, rep spread
+  0.014 ms p50, 0.119 ms p99; TickLE 0.30, FastDDS 0.39, CycloneDDS 0.33 ms. Every scored letter WIN. I1L: FastDDS as
+  shipped answered nothing and CycloneDDS 2.7-4.1% of samples (DELIVERY FAILED, not scored); FastDDS 1472 9.66
+  against 59.5 ms. I4s p50: FastDDS 1,007, CycloneDDS 1,204 ms (their publishers fall behind; TickLE drops at the sender).
 - **I4s note.** I4s offers more than the link carries. A DDS `publish()` of 4 MB blocks, so its publisher falls
   behind every tick; the send stamp hides that wait (I4s LOSE on the stamp, 54.91 against 37.55 ms) and creation time
   counts it. rmw_tickle does not block and drops at the sender (~84 a run). Delivered % is per offered tick; the p99
@@ -360,6 +367,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
 | L15, L16 | `rmw_keepall_rig.sh`, `largemsg_rig_summary.py` | f5fcda06, dde87857 | 2026-10-15, -16 | `l4main2_*_20261015-094605.txt`, `l4main3_i1rel_20261016-065517.*` |
+| LR | `l4_rtt_rig.sh`, `l4_rtt_read.py` (RTT column) | `3583f0d1` | 2026-10-19 | `l4_rtt_3583f0d1_20261019-161849.{txt,verdicts.txt}` |
 | LC | the same, `CREATION_TRACE=1` | `4fca013b` | 2026-10-17 | `creation_latency_{i4s,i4be,i4rel}_20261017-094944.*` |
 | HP | `pub_hugepage_ab.sh`: pre `26c70597`, head, aa, FastDDS; 5 reps | `e00c1ddd` | 2026-10-18 | `pub_hugepage_rig_20261018-150541.read.txt` |
 | HY | hybrid arms | d8980f9b | 2026-10-12 | `hybridLand_s2_loss_20261012-021743.*` |
