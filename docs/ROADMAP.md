@@ -21,7 +21,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ### QoS reshaped like rmw: done
 
-Landed 2026-10-18/19 (`a1e8e887` to `47eb05e8`): per-policy `struct tt_QosProfile`, rmw defaults, creation
+Landed 2026-10-18/19 (`e4fc0683` to `47eb05e8`): per-policy `struct tt_QosProfile`, rmw defaults, creation
 API, wire `tt_VERSION` 14. Rows 43-44 re-scored by freshness (`014343f9`), L4 latency by round trip (`01addd79`).
 Cross-host latency is a round trip on one clock (the user, 2026-10-18).
 
