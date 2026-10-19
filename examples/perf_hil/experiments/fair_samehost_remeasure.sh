@@ -61,7 +61,9 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
 fi
 OUTB=${OUTB:-$HOME/rig_results_safe/fair_samehost_${SHA}_$(date +%Y%m%d-%H%M%S)}
 LOG="$OUTB.driver.log"
-: >"$LOG"
+# FSR_LOG_APPEND=1 (2026-10-19, samehost_bundle_rig.sh): a caller running one cell per call into one OUTB appends to the
+# one driver log instead of truncating it per cell.
+[ "${FSR_LOG_APPEND:-0}" = 1 ] || : >"$LOG"
 say() { echo "$*" | tee -a "$LOG"; }
 say "=== fair same-host re-measure, $(date -Is), sha $SHA, frameworks $FRAMEWORKS, $REPS reps, arms: $ARMS, cells: $CELLS ==="
 say "    BEST_EFFORT history: ${BE_HISTORY:+-K $BE_HISTORY on every framework}${BE_HISTORY:-not passed, so each product runs its default (KEEP_LAST 1 on both DDS vendors)}"
