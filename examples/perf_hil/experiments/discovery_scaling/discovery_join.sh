@@ -16,7 +16,13 @@
 #   CONTROL: in every mode each node's RESULT must show expected = (N-1) x E and a finite reached_ms before
 #   anything else is read - a node that never reached it (-1) makes its row VOID, and is reported as such.
 #
-# Usage: SHA=<commit> discovery_join.sh join|loss <N> <E> <count>   Output: $OUT (default /tmp/discovery_join.txt)
+# TOOL_SHA=<commit> (2026-10-20) compiles discovery_node.c as it was at that commit instead of this checkout's copy. The
+# tool follows the core API (c828e19f moved it to tt_Node_create_publisher, which a core before the QoS redesign does
+# not have), so an arm at an older core needs the tool of its own era: TOOL_SHA=c828e19f^ is the tool the 2026-09-27
+# M3 rows were measured with (DISCOVERY_PLAN 10), differing from today's only in that create call.
+#
+# Usage: SHA=<commit> [TOOL_SHA=<commit>] discovery_join.sh join|loss <N> <E> <count>
+#   Output: $OUT (default /tmp/discovery_join.txt)
 set -u
 MODE=${1:?usage: discovery_join.sh join|loss <N> <E> <count>}
 N=${2:?}
@@ -46,7 +52,15 @@ SHA=${SHA:-$(git -C "$REPO" rev-parse origin/main)}
 SHA=$(git -C "$REPO" rev-parse "$SHA") || exit 1
 SRC=/tmp/discovery_src_$SHA
 PREFIX=/tmp/discovery_core_${SHA}_d512
-BIN=/tmp/discovery_join_node_${SHA:0:8}
+TOOL_C="$HERE/discovery_node.c"
+TOOL_TAG=checkout
+if [ -n "${TOOL_SHA:-}" ]; then
+    TOOL_SHA=$(git -C "$REPO" rev-parse "$TOOL_SHA") || exit 1
+    TOOL_TAG=${TOOL_SHA:0:8}
+    TOOL_C=/tmp/discovery_node_tool_$TOOL_SHA.c
+    git -C "$REPO" show "$TOOL_SHA:examples/perf_hil/experiments/discovery_scaling/discovery_node.c" > "$TOOL_C" || exit 1
+fi
+BIN=/tmp/discovery_join_node_${SHA:0:8}_tool_$TOOL_TAG
 if [ ! -f "$PREFIX/lib/libtickle.a" ]; then
     rm -rf "$SRC" && mkdir -p "$SRC" && git -C "$REPO" archive "$SHA" | tar -x -C "$SRC" || exit 1
     make -C "$SRC" clean > /dev/null 2>&1
@@ -55,7 +69,7 @@ if [ ! -f "$PREFIX/lib/libtickle.a" ]; then
 fi
 SHAPE="$SRC/examples/perf_hil/tickle/common/p1"
 # shellcheck disable=SC2046 # pkg-config output is a list of flags
-gcc -O2 $DEFINE -o "$BIN" "$HERE/discovery_node.c" "$SHAPE/Bench.c" -I"$SHAPE" \
+gcc -O2 $DEFINE -o "$BIN" "$TOOL_C" "$SHAPE/Bench.c" -I"$SHAPE" \
     $(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --cflags --libs tickle) -lm -lpthread || exit 1
 
 topology() { # $1 node count
@@ -93,7 +107,7 @@ row() { # $1 label, $2 log
 
 : > "$OUT"
 LOSSTAG=""; [ "$MODE" = loss ] && LOSSTAG=" loss=$LOSS%"
-say "=== discovery $MODE, $(date -Is), core ${SHA:0:8}, N=$N E=$E count=$COUNT$LOSSTAG ==="
+say "=== discovery $MODE, $(date -Is), core ${SHA:0:8}, tool $TOOL_TAG, N=$N E=$E count=$COUNT$LOSSTAG ==="
 topology "$N"
 if [ "$MODE" = join ]; then
     steady=$((5 + COUNT * 9 + 5))
