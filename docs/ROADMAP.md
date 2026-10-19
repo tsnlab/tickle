@@ -1,7 +1,7 @@
 # TickLE roadmap
 
 **TL;DR**
-- **Next:** QoS reshaped like rmw. The plan goes to the user for agreement before any code.
+- **Done 2026-10-19:** QoS reshaped like rmw (DESIGN 9, RMW.md); KEEP_LAST rows and L4 latency re-scored by round trip.
 - **Now:** what is left of items 0 and 5a of the user's list of 2026-10-05.
 - **Parked until the user says go:** Security (SROS2 + MACsec), then wireless. Wire changes wait for the wireless stage.
 
@@ -21,19 +21,11 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ## Next
 
-### QoS reshaped like rmw
+### QoS reshaped like rmw: done
 
-Agreed with the user 2026-10-08. **Agree the concrete plan (types, profile, API, wire, rmw migration) with the user
-first.** Decided:
-
-- rmw's model: QoS per endpoint as `rmw_qos_profile_t`, context settings in `tt_InitOptions` as `rmw_init_options_t`.
-  No topic or group QoS. rmw's defaults (`tt_QOS_PROFILE_DEFAULT` = RELIABLE, KEEP_LAST 10, VOLATILE).
-- `tt_Topic` becomes `tt_TypeSupport` (type name and codec only); the topic name is a create argument. Retry settings
-  move from `tt_Service` to client and server. QoS is given at creation.
-- One flat `tt_QosProfile`: rmw fields first, in rmw's order, then TickLE extensions as plain fields; 0 means
-  "computed default". Non-QoS settings go in options structs. Memory stays the caller's (no malloc in core).
-- Includes the writer's LIFESPAN applied at the reader (the user, 2026-10-16).
-- Wire and API changes allowed; the wire rule (no test worse) still applies. Comes before Security.
+Landed 2026-10-18/19 (`a1e8e887` to `47eb05e8`): per-policy `struct tt_QosProfile`, rmw defaults, creation
+API, wire `tt_VERSION` 14. Rows 43-44 re-scored by freshness (`014343f9`), L4 latency by round trip (`01addd79`).
+Cross-host latency is a round trip on one clock (the user, 2026-10-18).
 
 ### Wired work
 
