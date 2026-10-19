@@ -27,7 +27,9 @@
 //   6. merged  - (run before 5, while the buffers are a fragment's) receive offload on (UDP_GRO, the state core's
 //                reads put it in for MTU-mode fragments), a run of same-size datagrams sent as one UDP_SEGMENT send,
 //                which loopback hands to the socket merged: the drain takes it with UDP_GRO's size, its buffers
-//                set up again for a merged read though core asked for a fragment's, and hands the
+//                set up again for a merged read though core asked for a fragment's (asserted before any merged
+//                send: a new start, buffers that hold a merged read, and a datagram longer than a fragment's buffer
+//                read whole - a kept drain would cut it), and hands the
 //                datagrams out one at a time, whole and in order - none cut, none dropped (drain_merged counts the
 //                merged reads: 0 means loopback did not merge, and the check says so rather than pass on nothing).
 //   7. rearm   - an overrun does not end the drain for the rest of its time: every buffer filled and one datagram more
@@ -85,6 +87,7 @@
 #define BIG_BURST 24            // more than the smallest socket buffer holds of them
 #define HOLDOFF_PAST_US ((useconds_t)(tt_RX_DRAIN_HOLDOFF_NS / 1000U) + 10000U)
 #define MERGED_SEGMENTS 30   // datagrams in the one UDP_SEGMENT send of check 6
+#define LONG_INDEX 7         // check 6's long datagram, told apart from check 4's
 #define CHECK_GRO_ON 1U      // hal_linux.c's TT_GRO_ON: the state its reads leave once a large fragment came
 #define MERGED_SEND_EXTRA 64 // room for the send's own UDP_SEGMENT cmsg
 #define REARM_READ 24        // datagrams read after the overrun, each handing a buffer back: more than REARM_MORE
@@ -296,8 +299,28 @@ static enum check_exit check_merged(struct tt_Context* node, int sender) {
     uint32_t drops = tt_hal_rx_socket_drops(node);
     uint64_t cut = node->hal.drain_truncated;
     uint64_t merged = node->hal.drain_merged;
+    uint64_t starts = node->hal.drain_starts;
     if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH)) {
         printf("rx_drain_check: FAIL - merged: no drain with receive offload on\n");
+        return CHECK_FAIL;
+    }
+    // The kept drain's buffers are now too short for a merged read: it must have been set up again, not kept - a new
+    // start, buffers that hold a whole merged read, and a datagram longer than a fragment's buffer read whole (the
+    // kept drain would cut it). Asserted before anything depends on loopback merging a send.
+    uint32_t index = 0;
+    if (!send_numbered(sender, node->hal.data_sock, LONG_INDEX, 1, CUT_BYTES)) {
+        printf("rx_drain_check: SETUP FAILED - merged: could not send the long datagram\n");
+        return CHECK_SETUP_FAILED;
+    }
+    bool long_whole = read_numbered(node, CUT_BYTES, &index) && index == LONG_INDEX;
+    if (node->hal.drain_starts == starts || node->hal.drain_size < (uint32_t)tt_MAX_BUFFER_LENGTH || !long_whole ||
+        node->hal.drain_truncated != cut) {
+        printf("rx_drain_check: FAIL - merged: the kept drain of %u-byte buffers was %s, buffers of %u bytes (must "
+               "hold %d), a %d-byte datagram %s, drain_truncated %lu -> %lu (must not move)\n",
+               (unsigned)small, node->hal.drain_starts == starts ? "kept" : "set up again",
+               (unsigned)node->hal.drain_size, (int)tt_MAX_BUFFER_LENGTH, CUT_BYTES,
+               long_whole ? "was read whole" : "was not read whole", (unsigned long)cut,
+               (unsigned long)node->hal.drain_truncated);
         return CHECK_FAIL;
     }
     if (!send_segmented(sender, node->hal.data_sock, 0) ||
