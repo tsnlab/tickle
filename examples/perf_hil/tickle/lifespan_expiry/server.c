@@ -8,12 +8,22 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.md) -
-// TickLE core native subscriber role. Same "deliberately doesn't join for `-p` seconds, before
-// creating the Subscriber at all" design as history_depth_burst_loss/server.c's own doc comment
-// explains (TickLE has no DDS-style "matched but hasn't taken yet" state to stall in instead).
-// client.c's own generous depth=64 keeps this scenario's own loss attributable purely to
-// LIFESPAN's age-based expiry, not queue-depth eviction (its own doc comment).
+// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (docs/RESULTS.md row 47) - TickLE core native
+// subscriber role, built to the CycloneDDS/FastDDS twins' shape: match, then stall consumption for `-p` seconds, then
+// take, and a sample older than its LIFESPAN when it is taken is never delivered.
+//
+// Until 2026-10-20 this side slept `-p` BEFORE creating its Subscriber. A VOLATILE late joiner is given nothing written
+// before it joined, whatever the lifespan, so the "lost" it printed was the samples published before the join: the
+// same count at -T 0.1 and at -T 1000, a scenario that could not fail (lifespan_pc_check.sh shows both). The
+// "bimodal LIFESPAN pause" and "pauses differ per arm" residuals of COMPARISON to-do 6 and 8 were that join time.
+//
+// Core delivers on arrival and keeps no queue; LIFESPAN at the reader is the caller's to apply, from the delivering
+// writer's lifespan (tt_Subscriber_delivering_lifespan()) and the sample's source stamp, as rmw_tickle does. So the
+// callback is the reader cache: it queues each sample with the date it expires, judging its age once on arrival as
+// rmw_tickle's lifespan_expiry() does; main() keeps polling (the reader keeps receiving, as a DDS reader cache does
+// while nothing takes) and takes from the queue only once the stall is over, dropping what has expired. The stall
+// starts at the first arrival, the first moment this side can see the match: the client publishes only once it has
+// matched a reader (client.c), as the DDS writers do. The client's generous depth keeps the loss LIFESPAN's alone.
 
 #include <signal.h>
 #include <stdbool.h>
@@ -21,7 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -53,30 +62,76 @@ static void handle_sigint(int sig) {
 
 static uint64_t received = 0;
 static uint64_t lost = 0;
+static uint64_t expired = 0;
 static uint32_t last_seq = 0;
 
+// The reader cache: a sample's seq and the tt_get_ns() from which it is expired (0: never). Larger than any count
+// this scenario sends (-n 250); a run that overflows it says so on its RESULT line and is void.
+#define LIFESPAN_QUEUE_SLOTS 4096
+static struct {
+    uint32_t seq;
+    uint64_t expires_ns;
+} queue[LIFESPAN_QUEUE_SLOTS];
+static size_t queue_count = 0;
+static uint64_t queue_overflow = 0;
+static uint64_t first_arrival_ns = 0;
+
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
-    (void)sub;
-    (void)timestamp;
     (void)seq_no;
-    if (data->seq > last_seq + 1) {
-        lost += (data->seq - last_seq - 1);
+    uint64_t now = tt_get_ns();
+    if (first_arrival_ns == 0) {
+        first_arrival_ns = now;
     }
-    last_seq = data->seq;
-    received++;
+    if (queue_count == LIFESPAN_QUEUE_SLOTS) {
+        queue_overflow++;
+        return;
+    }
+    // The age is judged once, on arrival, against the writer's stamp (the realtime clock, as the wire's), and from
+    // there runs on the monotonic clock; a stamp ahead of this host's date is age 0.
+    uint64_t lifespan = tt_Subscriber_delivering_lifespan(sub);
+    uint64_t expires_ns = 0;
+    if (lifespan != 0) {
+        uint64_t wall = tt_get_wall_ns();
+        uint64_t age = wall > timestamp ? wall - timestamp : 0;
+        expires_ns = now + (age < lifespan ? lifespan - age : 0);
+    }
+    queue[queue_count].seq = data->seq;
+    queue[queue_count].expires_ns = expires_ns;
+    queue_count++;
+}
+
+// Takes every queued sample, oldest first: one past its expiry is dropped as if it had never been sent, the rest are
+// delivered and gap-counted. last_seq starts at 0, so a sample never delivered counts as lost wherever it falls.
+static void take_all(void) {
+    uint64_t now = tt_get_ns();
+    for (size_t i = 0; i < queue_count; i++) {
+        if (queue[i].expires_ns != 0 && now >= queue[i].expires_ns) {
+            expired++;
+            continue;
+        }
+        if (queue[i].seq > last_seq + 1) {
+            lost += (queue[i].seq - last_seq - 1);
+        }
+        last_seq = queue[i].seq;
+        received++;
+    }
+    queue_count = 0;
 }
 
 static const double default_pause_s = 0.3;
+static const double default_lifespan_s = 0.1;
 static const double default_safety_cap_s = 30.0;
 static const double safety_cap_buffer_s = 15.0;
-static const double ns_per_s = 1e9;
 
 int main(int argc, char** argv) {
     double pause_s = default_pause_s;
+    double lifespan_s = default_lifespan_s;
     double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             pause_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            lifespan_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
         }
@@ -94,13 +149,6 @@ int main(int argc, char** argv) {
     struct sigaction sigint_action = {0};
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
-
-    printf("Subscriber: deliberately not joining for %.2fs\n", pause_s);
-    struct timespec pause_ts = {
-        .tv_sec = (time_t)pause_s,
-        .tv_nsec = (long)((pause_s - (double)(time_t)pause_s) * ns_per_s),
-    };
-    nanosleep(&pause_ts, NULL);
 
     struct tt_Context node;
     tt_ret_t ret = tt_Context_create(&node);
@@ -129,7 +177,10 @@ int main(int argc, char** argv) {
         .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = BENCH_REORDER_SLOTS},
         .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
         .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
-        .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
+        // The reader's own LIFESPAN, -T as the writer's, as the CycloneDDS/FastDDS readers set theirs: a writer's
+        // announced lifespan reaches a Subscriber only through a discovery table (tt_Subscriber_delivering_lifespan()),
+        // and this bench context keeps none, so without it nothing would expire here (the first PC run lost 0).
+        .lifespan = {.duration_ns = (uint64_t)(lifespan_s * (double)tt_SECOND)},
         .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
     };
     ret = BenchCreate_subscriber(&node, &sub, "stream", &sub_qos, (tt_SUBSCRIBER_CALLBACK)stream_callback);
@@ -139,19 +190,41 @@ int main(int argc, char** argv) {
     }
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
-    // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
+    uint64_t pause_ns = (uint64_t)(pause_s * (double)tt_SECOND);
+    // 500ms at most (nanoseconds), so the deadline/g_interrupted check re-runs; shorter while the stall is ending.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
+    bool stalling = true;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Context_poll(&node, poll_timeout_ns);
+        int64_t timeout_ns = poll_timeout_ns;
+        if (stalling && first_arrival_ns != 0) {
+            uint64_t now = tt_get_ns();
+            uint64_t stall_end = first_arrival_ns + pause_ns;
+            if (now >= stall_end) {
+                stalling = false;
+                printf("Subscriber: stalled %.3fs after the first arrival, now taking\n", pause_s);
+            } else if ((int64_t)(stall_end - now) < timeout_ns) {
+                timeout_ns = (int64_t)(stall_end - now);
+            }
+        }
+        if (!stalling) {
+            take_all();
+        }
+        ret = tt_Context_poll(&node, timeout_ns);
+    }
+    if (!stalling) {
+        take_all();
     }
 
     uint64_t total = received + lost;
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
+    // lost counts every sample never delivered, expired included; expired is the part LIFESPAN dropped at take.
+    // stalled=0 means no sample ever arrived, queue_overflow>0 that the cache was too small: either run is void.
     printf("RESULT: framework=tickle scenario=lifespan_expiry role=server pause_s=%.2f recv=%lu lost=%lu "
-           "loss_pct=%.6f\n",
-           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
+           "loss_pct=%.6f expired=%lu stalled=%d queue_overflow=%lu\n",
+           pause_s, (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)expired, stalling ? 0 : 1,
+           (unsigned long)queue_overflow);
 
     tt_Context_destroy(&node);
     return 0;

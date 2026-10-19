@@ -46,7 +46,7 @@ static const double default_interval_s = 0.02;
 static const double default_lifespan_s = 0.1;
 static const double default_drain_s = 3.0;
 static const uint32_t default_count = 100;
-static const double near_zero_discovery_margin_s = 0.05;
+static const double match_timeout_s = 10.0;
 
 static double interval_s = default_interval_s;
 static double lifespan_s = default_lifespan_s;
@@ -128,13 +128,21 @@ int main(int argc, char** argv) {
     }
     g_pub = &pub;
 
-    // A near-zero (not zero) discovery margin - see run_scenario.sh's own PRE_CLIENT_SLEEP=0 note
-    // for this scenario: this side needs to start well before the server's own `-p` stall
-    // completes for lifespan expiry to have anything to bite on, but `lifespan_s` itself (100ms
-    // default) is small enough that even this scenario's own established 2.0s margin (used
-    // everywhere else) would swamp it.
-    tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(near_zero_discovery_margin_s * (double)tt_SECOND), send_one,
-                        NULL);
+    // Publish only once a reader has matched, as the CycloneDDS/FastDDS writers do (wait_for_writer_match): the
+    // server's stall starts at its first arrival, so a sample published before the match would be neither under the
+    // stall nor expired - it would never be sent (a Publisher with no matched reader sends nothing). 10 s, as theirs.
+    uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_timeout_s * (double)tt_SECOND);
+    // 50ms (nanoseconds) per poll while waiting, so the deadline check re-runs.
+    const int64_t match_poll_ns = 50LL * 1000 * 1000;
+    while (!g_interrupted && tt_Publisher_matched_count(&pub) == 0 && tt_get_ns() < match_deadline) {
+        (void)tt_Context_poll(&node, match_poll_ns);
+    }
+    if (tt_Publisher_matched_count(&pub) == 0) {
+        printf("timed out waiting for a matched reader\n");
+        tt_Context_destroy(&node);
+        return 1;
+    }
+    tt_Context_schedule(&node, tt_get_ns(), send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {

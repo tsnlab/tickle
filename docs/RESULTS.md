@@ -243,7 +243,7 @@ PC, rmw level (`LN`): copy, loan and in-ring loan arms read **NO DIFFERENCE** in
 | 44 | HISTORY beyond depth 8: age at take, round trip p50 (us); taken of 160 | **200-201; 147-148** | 303-309; 108 | 280-286; 108 | WIN | X |
 | 45 | DEADLINE 50 ms detection | works | works | works | ⚪ | S |
 | 46 | LIVELINESS lease 2.0 s, detection | 2000.1 ms | 1999.1 ms | 2000.1 ms | ⚪ | L |
-| 47 | LIFESPAN 100 ms expiry | works | works | works | ⚪ | S |
+| 47 | LIFESPAN 100 ms expiry | not measured | works | works | ⚪ | S |
 
 Rows 48c-75 are in [rmw layer](#rmw-layer). Send-stamp means (rows 1, 3, 5, 6a, 6b, 48-67) are diagnostics, and
 zenoh-pico and rmw_zenoh are reference; both are in the older text.
@@ -255,6 +255,12 @@ zenoh-pico and rmw_zenoh are reference; both are in the older text.
   TickLE against its own previous figures: row 14 865 -> 895 Mbps, row 34 2,968 -> 2,562 kB (QoS storage), row 12
   117 -> 114. c6's retransmitted / sent is 0.167-0.175 (12 reps; 0.184-0.215 at `3ae721aa`), gap_abandoned and
   gap_evicted 0: the 46x of COMPARISON 2.8 assumed IP fragmentation, which P4 no longer uses.
+- **Corrected 2026-10-20:** row 47's TickLE "works" came from a harness that could not fail. Its server slept `-p`
+  before creating a VOLATILE Subscriber, so "lost" was what was published before it joined: 48 at `-T 0.1` and 48 at
+  `-T 1000` (`lifespan_pc_check.sh`, PC, two netns). The scenario-9 and LIFESPAN "harness residuals" (pauses differing
+  per arm, the bimodal count at pause 1.5) were that join time. The server now matches, stalls consumption for `-p`
+  and drops at take what has outlived `-T`, as the DDS twins: 45 / 95 at pause 1.0 / 2.0 (all expired; CycloneDDS 45
+  / 95 on the rig), 0 at `-T 1000` and within the lifespan. Rig re-measure: `rig_lifespan_reshaped.sh`.
 - **Re-scored 2026-10-19 (QoS plan D3):** rows 43-44 counted delivered samples (160/160 all; 147.7 vs 109 of 160).
   KEEP_LAST promises the newest, so they now read the age of a sample when the application takes it, by round trip on
   the sender's clock only: the reader echoes each take over a plain UDP socket outside the middleware, the same for all

@@ -304,6 +304,9 @@ run_all_scenarios() {
         # LIFESPAN either: the same stagger-3 run at one commit disagreed between rig and loopback,
         # most likely uninitialised Subscriber fields (set at create only since 718eaacf).
         # ae615997, which added the scenario, already said it needs 0.
+        # Since 2026-10-20 the stagger no longer matters: server.c matches, stalls consumption for -p and drops at
+        # take what has outlived -T, and client.c publishes only once matched, as the DDS twins. Before, the count was
+        # what was published before the join, whatever -T was (lifespan_pc_check.sh shows both).
         run_scenario "$label" "lifespan_expiry" 0 "-i 0.02 -T 0.1 -n 250 -p $pause"
     done
 }
