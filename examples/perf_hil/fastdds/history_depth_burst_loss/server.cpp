@@ -39,6 +39,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchFreshRt.h"
 #include "../../tickle/common/BenchFreshness.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
@@ -62,12 +63,16 @@ namespace {
     // returned it.
     struct bench_fresh_receiver g_fresh;
     std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+    // Freshness by round trip (BenchFreshRt.h): --fresh-rt HOST:PORT echoes every take to the sender.
+    struct bench_rt_reader g_rt;
+    std::array<char, BENCH_RT_FIELDS_MAX> g_rt_fields {};
 
     auto parse_options(int argc, char** argv) -> server_options {
         server_options opts;
         bench_fresh_receiver_init(&g_fresh);
         for (int i = 1; i < argc; i++) {
-            if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+            if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i]) ||
+                bench_rt_reader_parse_arg(&g_rt, &g_fresh, argc, argv, &i)) {
                 continue;
             }
             if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
@@ -93,6 +98,7 @@ namespace {
                     harness::count_seq(gaps, sample.seq());
                     bench_fresh_take(&g_fresh, sample.seq(), sample.payload().data(), sample.payload().size(),
                                      g_fresh.on ? bench_fresh_wall_ns() : 0);
+                    bench_rt_echo(&g_rt, sample.seq(), sample.payload().data(), sample.payload().size());
                 }
             }
         }
@@ -102,6 +108,7 @@ namespace {
 
 auto main(int argc, char** argv) -> int {
     const server_options opts = parse_options(argc, argv);
+    bench_rt_reader_start(&g_rt); // before the match and the pause: the control runs through the whole run
 
     harness::install_sigint_handler();
 
@@ -149,11 +156,13 @@ auto main(int argc, char** argv) -> int {
     harness::seq_gaps gaps;
     receive_until(reader, harness::now_ns() + harness::seconds_to_ns(opts.safety_cap_s), gaps);
 
+    bench_rt_reader_finish(&g_rt);
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f transport_profile=%s%s\n",
+           "recv=%lu lost=%lu loss_pct=%.6f transport_profile=%s%s%s\n",
            opts.pause_s, static_cast<unsigned long>(gaps.received), static_cast<unsigned long>(gaps.lost),
            harness::seq_gaps_loss_pct(gaps), harness::transport_profile(),
-           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()),
+           bench_rt_reader_fields(&g_rt, g_rt_fields.data(), g_rt_fields.size()));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

@@ -33,6 +33,7 @@
 
 #include "Bench.h"
 #include "BenchCreate.h"
+#include "BenchFreshRt.h"
 #include "BenchFreshness.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -57,6 +58,9 @@ static bool g_sending_done = false;
 // samples back to back per scheduled slot (default 1: the schedule as it always was).
 static struct bench_fresh_sender g_fresh;
 static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
+// Freshness by round trip (BenchFreshRt.h): --fresh-rt-listen PORT receives the reader's echoes on this side's clock.
+static struct bench_rt_sender g_rt;
+static char g_rt_fields[BENCH_RT_FIELDS_MAX];
 
 static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
@@ -88,7 +92,8 @@ int main(int argc, char** argv) {
     bench_fresh_sender_init(&g_fresh);
     g_fresh.due_schedule = true;
     for (int i = 1; i < argc; i++) {
-        if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+        if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i) ||
+            bench_rt_sender_parse_arg(&g_rt, &g_fresh, argc, argv, &i)) {
             continue;
         }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -101,6 +106,8 @@ int main(int argc, char** argv) {
     // real HIL link's own broadcast address - see best_effort_latency/client.c's own doc comment
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
+
+    bench_rt_sender_start(&g_rt);
 
     struct sigaction sigint_action = {0};
     sigint_action.sa_handler = handle_sigint;
@@ -152,8 +159,10 @@ int main(int argc, char** argv) {
         ret = tt_Context_poll(&node, -1);
     }
 
-    printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=client sent=%lu%s\n", (unsigned long)sent,
-           bench_fresh_sender_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
+    bench_rt_sender_finish(&g_rt);
+    printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=client sent=%lu%s%s\n", (unsigned long)sent,
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields),
+           bench_rt_sender_fields(&g_rt, g_rt_fields, sizeof g_rt_fields));
 
     tt_Context_destroy(&node);
     return 0;

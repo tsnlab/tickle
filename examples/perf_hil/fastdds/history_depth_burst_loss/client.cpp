@@ -38,6 +38,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchFreshRt.h"
 #include "../../tickle/common/BenchFreshness.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
@@ -65,13 +66,17 @@ namespace {
     // samples back to back per slot (default 1: the schedule as it always was).
     struct bench_fresh_sender g_fresh;
     std::array<char, BENCH_FRESH_FIELDS_MAX> g_fresh_fields {};
+    // Freshness by round trip (BenchFreshRt.h): --fresh-rt-listen PORT receives the reader's echoes on this clock.
+    struct bench_rt_sender g_rt;
+    std::array<char, BENCH_RT_FIELDS_MAX> g_rt_fields {};
 
     auto parse_options(int argc, char** argv) -> client_options {
         client_options opts;
         bench_fresh_sender_init(&g_fresh);
         g_fresh.due_schedule = true;
         for (int i = 1; i < argc; i++) {
-            if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i)) {
+            if (bench_fresh_sender_parse_arg(&g_fresh, argc, argv, &i) ||
+                bench_rt_sender_parse_arg(&g_rt, &g_fresh, argc, argv, &i)) {
                 continue;
             }
             if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -118,6 +123,7 @@ namespace {
 
 auto main(int argc, char** argv) -> int {
     const client_options opts = parse_options(argc, argv);
+    bench_rt_sender_start(&g_rt);
 
     harness::install_sigint_handler();
 
@@ -163,11 +169,13 @@ auto main(int argc, char** argv) -> int {
     // real bug this avoids.
     writer->wait_for_acknowledgments(eprosima::fastrtps::Duration_t(ack_wait_s, 0));
 
+    bench_rt_sender_finish(&g_rt);
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=client sent=%lu "
-           "write_dropped=%lu transport_profile=%s%s\n",
+           "write_dropped=%lu transport_profile=%s%s%s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped),
            harness::transport_profile(),
-           bench_fresh_sender_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()));
+           bench_fresh_sender_fields(&g_fresh, g_fresh_fields.data(), g_fresh_fields.size()),
+           bench_rt_sender_fields(&g_rt, g_rt_fields.data(), g_rt_fields.size()));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

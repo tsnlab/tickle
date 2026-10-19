@@ -29,6 +29,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchFreshRt.h"
 #include "../../tickle/common/BenchFreshness.h"
 #include "../common.h"
 #include "Bench.h"
@@ -57,10 +58,14 @@ int main(int argc, char** argv) {
     // samples back to back per slot (default 1: the schedule as it always was).
     static struct bench_fresh_sender fresh;
     static char fresh_fields[BENCH_FRESH_FIELDS_MAX];
+    // Freshness by round trip (BenchFreshRt.h): --fresh-rt-listen PORT receives the reader's echoes on this clock.
+    static struct bench_rt_sender fresh_rt;
+    static char fresh_rt_fields[BENCH_RT_FIELDS_MAX];
     bench_fresh_sender_init(&fresh);
     fresh.due_schedule = true;
     for (int i = 1; i < argc; i++) {
-        if (bench_fresh_sender_parse_arg(&fresh, argc, argv, &i)) {
+        if (bench_fresh_sender_parse_arg(&fresh, argc, argv, &i) ||
+            bench_rt_sender_parse_arg(&fresh_rt, &fresh, argc, argv, &i)) {
             continue;
         }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -69,6 +74,8 @@ int main(int argc, char** argv) {
             count = (uint32_t)atoi(argv[++i]);
         }
     }
+
+    bench_rt_sender_start(&fresh_rt);
 
     struct sigaction sa = {0};
     sa.sa_handler = handle_sigint;
@@ -134,10 +141,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "dds_wait_for_acks: %s\n", dds_strretcode(-wait_rc));
     }
 
+    bench_rt_sender_finish(&fresh_rt);
     printf("RESULT: framework=cyclonedds scenario=history_depth_burst_loss role=client sent=%lu "
-           "write_dropped=%lu%s\n",
+           "write_dropped=%lu%s%s\n",
            (unsigned long)sent, (unsigned long)dropped,
-           bench_fresh_sender_fields(&fresh, fresh_fields, sizeof fresh_fields));
+           bench_fresh_sender_fields(&fresh, fresh_fields, sizeof fresh_fields),
+           bench_rt_sender_fields(&fresh_rt, fresh_rt_fields, sizeof fresh_rt_fields));
 
     dds_delete(participant);
     return 0;

@@ -47,9 +47,12 @@
 // teardown transient (docs/TESTING.md section 5, rule 9). A sender with no window (history_depth_burst_loss) flags
 // every sample.
 //
-// THE STAMP: the first 16 bytes of the sample's payload (every shape P1-P4 has at least 64), native byte order (every
-// pair in this comparison is one architecture): magic, burst size, flags, created_wall_ns. A sample without the magic
-// is counted in fresh_no_stamp= and never read as age 0; any no_stamp voids the run.
+// THE STAMP: the first 24 bytes of the sample's payload (every shape P1-P4 has at least 64), native byte order (every
+// pair in this comparison is one architecture): magic, burst size, flags, created_wall_ns, created_mono_ns. A sample
+// without the magic is counted in fresh_no_stamp= and never read as age 0; any no_stamp voids the run.
+// created_mono_ns is the same creation instant on the SENDER's CLOCK_MONOTONIC: no reader ever reads it as a time. The
+// round-trip harness (BenchFreshRt.h) hands it back to the sender, which subtracts it from its own clock - the
+// cross-host form of the age, since the user ruled out one-way timing across hosts (2026-10-19).
 //
 // --fresh-skew-us S (sender only): adds S us to every creation time it stamps. A fault arm for the summary's clock
 // control, which must then fail - a deliberate wrong clock is how the control is shown to be able to fail.
@@ -65,7 +68,7 @@
 #include <time.h>
 
 #define BENCH_FRESH_MAGIC 0x46524553U // "SERF" little-endian; anything else is not a stamp
-#define BENCH_FRESH_STAMP_BYTES 16U
+#define BENCH_FRESH_STAMP_BYTES 24U
 #define BENCH_FRESH_FLAG_IN_WINDOW 1U
 #define BENCH_FRESH_FLAG_NEWEST 2U
 // Ages kept for the quantiles. Past this the store halves itself and keeps every 2nd, 4th, ... take, so the kept
@@ -80,6 +83,7 @@ struct bench_fresh_stamp {
     uint16_t burst;
     uint16_t flags;
     int64_t created_wall_ns;
+    int64_t created_mono_ns; // the sender's CLOCK_MONOTONIC: handed back by BenchFreshRt.h, never read by a reader
 };
 
 static inline int64_t bench_fresh_ts_ns(const struct timespec* ts) {
@@ -153,7 +157,8 @@ static inline void bench_fresh_sender_window(struct bench_fresh_sender* sender, 
 }
 
 // Stamps one write into payload. created_wall_ns is the burst's due time on CLOCK_REALTIME (or the write's stamp),
-// sched_mono_ns the same instant on CLOCK_MONOTONIC, which the window is judged by. Call once per write attempt, in
+// sched_mono_ns the same instant on CLOCK_MONOTONIC, which the window is judged by and the round-trip age is read
+// from. Call once per write attempt, in
 // seq order, whether or not the write then succeeds.
 static inline void bench_fresh_stamp(struct bench_fresh_sender* sender, uint8_t* payload, size_t len,
                                      int64_t created_wall_ns, uint64_t sched_mono_ns) {
@@ -165,6 +170,7 @@ static inline void bench_fresh_stamp(struct bench_fresh_sender* sender, uint8_t*
     stamp.burst = (uint16_t)sender->burst;
     stamp.flags = 0;
     stamp.created_wall_ns = created_wall_ns + sender->skew_ns;
+    stamp.created_mono_ns = (int64_t)sched_mono_ns + sender->skew_ns;
     bool in_window = sched_mono_ns >= sender->win_lo_ns && sched_mono_ns <= sender->win_hi_ns;
     if (in_window) {
         stamp.flags |= BENCH_FRESH_FLAG_IN_WINDOW;

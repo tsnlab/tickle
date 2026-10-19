@@ -38,6 +38,7 @@
 
 #include "Bench.h"
 #include "BenchCreate.h"
+#include "BenchFreshRt.h"
 #include "BenchFreshness.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
@@ -67,6 +68,9 @@ static uint32_t last_seq = 0;
 // KEEP_LAST freshness (BenchFreshness.h), with --fresh: the age of each sample when this callback has it.
 static struct bench_fresh_receiver g_fresh;
 static char g_fresh_fields[BENCH_FRESH_FIELDS_MAX];
+// Freshness by round trip (BenchFreshRt.h): --fresh-rt HOST:PORT echoes every take to the sender.
+static struct bench_rt_reader g_rt;
+static char g_rt_fields[BENCH_RT_FIELDS_MAX];
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
@@ -78,6 +82,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     last_seq = data->seq;
     received++;
     bench_fresh_take(&g_fresh, data->seq, data->payload, sizeof data->payload, bench_fresh_wall_ns());
+    bench_rt_echo(&g_rt, data->seq, data->payload, sizeof data->payload);
 }
 
 static const double default_pause_s = 3.0;
@@ -90,7 +95,8 @@ int main(int argc, char** argv) {
     double safety_cap_s = default_safety_cap_s;
     bench_fresh_receiver_init(&g_fresh);
     for (int i = 1; i < argc; i++) {
-        if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i])) {
+        if (bench_fresh_receiver_parse_arg(&g_fresh, argv[i]) ||
+            bench_rt_reader_parse_arg(&g_rt, &g_fresh, argc, argv, &i)) {
             continue;
         }
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
@@ -109,6 +115,8 @@ int main(int argc, char** argv) {
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
+    // Before the pause: the side channel's control (PING/PONG) runs through the whole run, whatever this side does.
+    bench_rt_reader_start(&g_rt);
 
     struct sigaction sigint_action = {0};
     sigint_action.sa_handler = handle_sigint;
@@ -170,10 +178,12 @@ int main(int argc, char** argv) {
     uint64_t total = received + lost;
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
+    bench_rt_reader_finish(&g_rt);
     printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.6f%s\n",
+           "recv=%lu lost=%lu loss_pct=%.6f%s%s\n",
            pause_s, (unsigned long)received, (unsigned long)lost, loss_pct,
-           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields));
+           bench_fresh_receiver_fields(&g_fresh, g_fresh_fields, sizeof g_fresh_fields),
+           bench_rt_reader_fields(&g_rt, g_rt_fields, sizeof g_rt_fields));
 
     tt_Context_destroy(&node);
     return 0;
