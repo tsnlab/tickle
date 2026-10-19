@@ -49,6 +49,9 @@ first block, so an edit afterwards is visible.
               "stime_per_sleep_us=1e6*(client.stime_s+proc.stime_s)/(client.sleeps+server.sleeps)"
   COMPARE     "B-A,C-A" (default: every other arm against A). Each is one comparison.
   REPS, DUR   per block and cell, and the measured window in seconds (recorded, used by the driver).
+  BE_HISTORY  optional depth: -K <depth> on the client AND server of every best_effort_throughput cell (s6's
+              BE_HISTORY, as fair_samehost_remeasure.sh passes it; a cell's extra args reach the client only, and s6
+              records a repetition only if both lines say history_arg=<depth>). Recorded only when set.
 
 A metric is role.field[@OFF][/hi|/lo]. Roles are the lines s6_transport_cells.sh records per repetition:
   client          the client's RESULT line          server          the server's RESULT line (role=server)
@@ -116,7 +119,7 @@ Usage:
   ab_samehost.py prereg OUT.json      validate the environment, print and write the pre-registration
   ab_samehost.py cells PREREG.json    the driver's cell list: scen|size|extra|slug (extra args may not contain |),
                                       then BLOCKS|A B ..., SENTINEL|scen|size|extra|slug|sha per sentinel cell,
-                                      ARM|letter|sha|file token|flags per arm and GATE|v1 or v2
+                                      ARM|letter|sha|file token|flags per arm, GATE|v1 or v2 and BEHIST|<depth>
   ab_samehost.py summary PREREG.json PREFIX     read PREFIX.b<n>_<sha8>_<slug>.txt (v2: b<n>_<arm>_<sha8>_...)
                                       and print the verdicts
   ab_samehost.py selftest             the reading shown to decide on ab_samehost_fixture.txt
@@ -484,6 +487,16 @@ def build_prereg(env):
         if not sentinel:
             raise Refused("CONTROL_SE_FLOOR=reps reads the sentinel's block means: it needs a SENTINEL")
         pre["control_se_floor"] = floor
+    be_history = env.get("BE_HISTORY", "").strip()
+    if be_history:
+        # -K <depth> on the client AND the server of every best_effort_throughput cell (s6_transport_cells.sh
+        # BE_HISTORY; the cell's extra args reach the client only). Absent unless set, so a pre-registration written
+        # without it is byte-identical to before (2026-10-19).
+        if not re.fullmatch(r"[1-9]\d*", be_history):
+            raise Refused(f"BE_HISTORY={be_history!r} is not a positive integer")
+        if not any(c["scen"] == "best_effort_throughput" for c in cells):
+            raise Refused("BE_HISTORY is set but no cell is best_effort_throughput")
+        pre["be_history"] = int(be_history)
     cflags = " ".join(env.get("TICKLE_EXTRA_CFLAGS", "").split())
     if cflags and gate == "v1":
         # The build treatment of every arm and the sentinel (ab_samehost.sh checks each cell's build showed it).
@@ -530,7 +543,9 @@ def describe(pre):
         out.append(f"  build: TICKLE_EXTRA_CFLAGS='{pre.get('extra_cflags', '')}' on the TickLE core and bench of every"
                    " arm and the sentinel (empty: the plain build)")
     out.append("  cells:")
-    out += [f"    {c['key']}" for c in pre["cells"]]
+    out += [f"    {c['key']}" + (f"  (BE_HISTORY: -K {pre['be_history']} on client and server)"
+                                 if pre.get("be_history") and c["scen"] == "best_effort_throughput" else "")
+            for c in pre["cells"]]
     for name, expr in pre["derived"].items():
         out.append(f"  derived.{name} = {expr}")
     out.append(f"  comparisons: {', '.join(x + '-' + y for x, y in pre['compare'])}")
@@ -1374,6 +1389,8 @@ def main(argv):
             for a in dict.fromkeys(blocks(pre)):
                 print(f"ARM|{a}|{pre['arms'][a]}|{token(pre, a)}|{arm_flags(pre, a)}")
             print(f"GATE|{pre.get('gate', 'v1')}")
+            # BEHIST|<depth or empty>: s6's BE_HISTORY for the best_effort_throughput cells (and only those).
+            print(f"BEHIST|{pre.get('be_history', '')}")
             if pre.get("sentinel"):
                 for c in pre["cells"]:
                     if c["key"] in pre["sentinel_cells"]:

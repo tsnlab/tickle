@@ -43,6 +43,9 @@
 #   the controls are read from those runs only (ab_samehost.py's header: a control the change cannot compile into,
 #   judged on block means).
 #   PREREG_ONLY=1 ...           resolve, refuse or print the pre-registration and the estimate, then stop
+#   PREFLIGHT_ONLY=1 ...        the same, then the PC preflight of every arm (its own flags as this PC's compiler
+#                               takes them), then stop: no lock
+#   BE_HISTORY=<depth>          -K <depth> on client and server of every best_effort_throughput cell (recorded)
 #   ab_samehost.sh --selftest    the reading shown to decide on ab_samehost_fixture.txt (no host, no lock)
 # Launch detached (setsid nohup ... < /dev/null &); the deliverables are
 #   ~/rig_results_safe/ab_samehost_<TAG>_<stamp>.{prereg.json,prereg.txt,driver.log,summary.txt,b<n>_<sha8>_<cell>.txt}
@@ -57,7 +60,8 @@ TAG=${TAG:?TAG=<name> (letters, digits, . _ -)}
 case "$TAG" in *[!A-Za-z0-9._-]*) echo "TAG='$TAG': letters, digits, . _ - only" >&2; exit 2 ;; esac
 export TAG REPS="${REPS:-5}" DUR="${DUR:-10}" CELLS="${CELLS:-}" PRIMARY="${PRIMARY:-}" CONTROL="${CONTROL:-}" \
     SECONDARY="${SECONDARY:-}" TREATMENT="${TREATMENT:-}" DERIVED="${DERIVED:-}" COMPARE="${COMPARE:-}" \
-    SENTINEL="${SENTINEL:-}" CONTROL_SE_FLOOR="${CONTROL_SE_FLOOR:-}" WITNESS="${WITNESS:-}" GATE="${GATE:-v2}"
+    SENTINEL="${SENTINEL:-}" CONTROL_SE_FLOOR="${CONTROL_SE_FLOOR:-}" WITNESS="${WITNESS:-}" GATE="${GATE:-v2}" \
+    BE_HISTORY="${BE_HISTORY:-}"
 export RIG_LOCK_SCOPE=hil
 case "$GATE" in v1 | v2) ;; *) echo "GATE='$GATE': v2 (default) or v1" >&2; exit 2 ;; esac
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -72,6 +76,19 @@ layout_cflags_default
 # and OFF arm, the line "arm <ARM> TICKLE_EXTRA_CFLAGS='<flags>' reached core and bench" - an arm must report its
 # treatment, and empty is checked too (the plain prefix). Recorded in the pre-registration when not empty.
 # norm_flags <value>: whitespace-normalised, and refused unless it is plain compiler-flag text.
+# pc_flags <flags>: the flags as this PC's compiler can take them - the rig's aarch64-only TICKLE_A53FIX_OFF_CFLAGS
+# dropped unless this host is aarch64 (the PC preflight only; the rig builds every arm with its own flags).
+pc_flags() {
+    local f kept=()
+    for f in $1; do
+        case "$(uname -m)" in
+        aarch64 | arm64) ;;
+        *) [ "$f" = "$TICKLE_A53FIX_OFF_CFLAGS" ] && continue ;;
+        esac
+        kept+=("$f")
+    done
+    printf '%s' "${kept[*]}"
+}
 norm_flags() {
     local w
     read -ra w <<<"$1"
@@ -135,13 +152,16 @@ while IFS='|' read -r letter asha atok aflags; do
     ARM_SHA[$letter]=$asha ARM_TOK[$letter]=$atok ARM_FLAGS[$letter]=$aflags
 done < <(printf '%s\n' "${CELL_LINES[@]}" | sed -n 's/^ARM|//p')
 PRE_GATE=$(printf '%s\n' "${CELL_LINES[@]}" | sed -n 's/^GATE|//p')
-mapfile -t CELL_LINES < <(printf '%s\n' "${CELL_LINES[@]}" | grep -vE '^(SENTINEL|ARM|GATE)\|')
+# BEHIST|<depth>: BE_HISTORY for the best_effort_throughput cells, from the pre-registration (empty: not passed).
+PRE_BEHIST=$(printf '%s\n' "${CELL_LINES[@]}" | sed -n 's/^BEHIST|//p')
+# be_history <scen>: what s6 gets as BE_HISTORY for that scenario (it refuses BE_HISTORY on any other).
+be_history() { if [ "$1" = best_effort_throughput ]; then printf '%s' "$PRE_BEHIST"; fi; }
+mapfile -t CELL_LINES < <(printf '%s\n' "${CELL_LINES[@]}" | grep -vE '^(SENTINEL|ARM|GATE|BEHIST)\|')
 [ -n "$BLOCKS" ] || { echo "REFUSED: no cell list from $OUTB.prereg.json" >&2; exit 2; }
 [ "$PRE_GATE" = "$GATE" ] || { echo "REFUSED: $OUTB.prereg.json is gate '$PRE_GATE', this invocation GATE=$GATE" >&2; exit 2; }
 for L in $BLOCKS; do
     [ -n "${ARM_SHA[$L]:-}" ] || { echo "REFUSED: block arm $L has no ARM line in $OUTB.prereg.json" >&2; exit 2; }
 done
-SHAS=$(for v in A B C; do [ -n "${!v:-}" ] && echo "${!v}"; done)
 
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
     ncell=$((${#CELL_LINES[@]} - 1))
@@ -162,17 +182,46 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
         for l in "${CELL_LINES[@]}"; do
             [[ $l == BLOCKS* ]] && continue
             IFS='|' read -r scen size extra _ <<<"$l"
-            specs+=("$scen:$size:N0:$extra:-Q")
+            k=$(be_history "$scen")
+            specs+=("$scen:$size:N0:$extra${k:+ -K $k}:-Q")
         done
-        for sha in $(for s in $SHAS ${SENTINEL:-}; do echo "$s"; done | sort -u); do
-            echo "--- preflight ${sha:0:8} on this PC ($(date +%T))"
-            if ! SHA=$sha PREFLIGHT_TOPO=samens FWS=tickle "$X/rig_preflight.sh" "${specs[@]}" \
-                >"$OUTB.preflight_${sha:0:8}.log" 2>&1; then
-                tail -25 "$OUTB.preflight_${sha:0:8}.log"
-                echo "REFUSING TO TAKE THE RIG: preflight failed at $sha, see $OUTB.preflight_${sha:0:8}.log" >&2
+        # Every arm's (commit, flags) once, and the sentinel's (A's flags), each built as THIS PC's compiler takes them
+        # (2026-10-19): the rig's aarch64-only option (gate_v2_lib.sh A1'', -mno-fix-cortex-a53-843419) is dropped on
+        # another architecture, where x86 gcc rejects it, and nothing else is changed. Before this the preflight
+        # inherited the aarch64 flags and could not build on this PC at all.
+        pairs=()
+        for L in $(tr ' ' '\n' <<<"$BLOCKS" | awk 'NF && !seen[$0]++'); do pairs+=("$L|${ARM_SHA[$L]}|${ARM_FLAGS[$L]}"); done
+        [ -n "${SENTINEL:-}" ] && pairs+=("S|$SENTINEL|$TICKLE_EXTRA_CFLAGS")
+        declare -A pf_seen=()
+        for p in "${pairs[@]}"; do
+            IFS='|' read -r who sha fl <<<"$p"
+            pcf=$(pc_flags "$fl")
+            [ -n "${pf_seen[$sha|$pcf]:-}" ] && continue
+            pf_seen[$sha|$pcf]=1
+            pfo=$OUTB.preflight_${who}_${sha:0:8}
+            echo "--- preflight $who ${sha:0:8} on this PC, TICKLE_EXTRA_CFLAGS='$pcf' ($(date +%T))"
+            if ! SHA=$sha PREFLIGHT_TOPO=samens FWS=tickle TICKLE_EXTRA_CFLAGS="$pcf" PREFLIGHT_OUT="$pfo" \
+                nice -n 10 "$X/rig_preflight.sh" "${specs[@]}" >"$pfo.log" 2>&1; then
+                tail -25 "$pfo.log"
+                echo "REFUSING TO TAKE THE RIG: preflight failed at $who $sha, see $pfo.log" >&2
                 exit 1
             fi
+            grep -E '^(ok|SKIP|FAIL) ' "$pfo.log" | sed 's/^/    /'
+            # An arm must report its treatment: every core compile line of the tickle builds carries the flags.
+            if [ -n "$pcf" ]; then
+                n_tb=$(cat "$pfo"/build_tickle_*.log 2>/dev/null | grep -cE '^cc .* -c -o obj/')
+                n_tf=$(cat "$pfo"/build_tickle_*.log 2>/dev/null | grep -E '^cc .* -c -o obj/' | grep -cF -e " $pcf ")
+                if [ "$n_tb" = 0 ] || [ "$n_tf" != "$n_tb" ]; then
+                    echo "REFUSING TO TAKE THE RIG: $n_tf of $n_tb tickle core compile lines carry '$pcf' ($pfo)" >&2
+                    exit 1
+                fi
+                echo "    $who ${sha:0:8}: $n_tf/$n_tb tickle core compile lines carry '$pcf'"
+            fi
         done
+    fi
+    if [ "${PREFLIGHT_ONLY:-0}" = 1 ]; then
+        echo "PREFLIGHT_ONLY=1: preflight done, nothing run on the rig, no lock taken ($OUTB.prereg.json)"
+        exit 0
     fi
     exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"
 fi
@@ -200,6 +249,7 @@ else
     say "    GATE=v1: INSN_COUNT=$INSN_COUNT"
 fi
 say "    TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench, every arm and the sentinel; empty: the plain build)"
+say "    BE_HISTORY='$PRE_BEHIST' (best_effort_throughput cells only, client and server; empty: not passed)"
 # flags_reached <cell file> <cnt> <flags>: stop the run (exit 4, VOID) when a cell that measured anything does not show,
 # for both of its arms, that its build was given <flags> - that arm's own (s6_witness_check.sh's verified line) - or when
 # its build was refused for not showing them. A cell that failed for another reason is left to the summary (NO VERDICT).
@@ -248,7 +298,8 @@ for L in $BLOCKS; do
         # WINDOW_ARGS after CLI_ARGS, so a -W/-C given here is overridden (ab_frag_fastpath.sh, 2026-10-06). Set
         # WINDOW_ARGS in the environment for a whole run instead.
         FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$sha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
-            TICKLE_EXTRA_CFLAGS="$fl" INSN_COUNT="$INSN_COUNT" "$X/s6_transport_cells.sh" >"$out.log" 2>&1
+            BE_HISTORY="$(be_history "$scen")" TICKLE_EXTRA_CFLAGS="$fl" INSN_COUNT="$INSN_COUNT" \
+            "$X/s6_transport_cells.sh" >"$out.log" 2>&1
         rc=$?
         cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
         say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
@@ -264,7 +315,8 @@ for L in $BLOCKS; do
         # The sentinel is one instrument in every block: A's flags, and counted like the arms around it (its controls
         # are not read from the counts, but every process of a block carries the same instrument).
         FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$ssha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
-            TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" INSN_COUNT="$INSN_COUNT" "$X/s6_transport_cells.sh" >"$out.log" 2>&1
+            BE_HISTORY="$(be_history "$scen")" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" INSN_COUNT="$INSN_COUNT" \
+            "$X/s6_transport_cells.sh" >"$out.log" 2>&1
         rc=$?
         cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
         say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
