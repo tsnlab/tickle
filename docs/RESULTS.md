@@ -359,6 +359,24 @@ apex `perf_test` across the link, 5 reps of 60 s. Letters: FastDDS as shipped / 
   `IRQ_TIME_ACCOUNTING`; pinned off CPU 0 it was 0.004 ms per sample); huge pages removed the rest. No harm in I1 or
   I4s (I4s publisher -0.133 ms/MB, letters not rescored).
 
+### Large samples step B, same host (rig, `SB2`)
+
+Step B (one copy into the publisher's large region, a descriptor to each reader) against step A (fragments through
+the ring), one build, `RMW_TICKLE_LARGE_REGION=0` for A; round trip on the sender's clock, CPU in-process over the
+schedule, 5 reps paired. Control: the 8-byte Ack cells, where step B's code does not run: all six held (2 x SE
+1.3-2.6%). Every B2 rule PASS:
+
+| cell | CPU per sample, A -> B | RTT p50, A -> B |
+|---|---:|---:|
+| 1 MiB RELIABLE | 2,406 -> **752** us | 1.390 -> **0.615** ms |
+| 1 MiB BEST_EFFORT | | 1.415 -> **0.569** ms |
+| 4 MiB RELIABLE | 9,702 -> **2,779** us | 5.815 -> **2.558** ms |
+| 4 MiB BEST_EFFORT | | 5.751 -> **2.395** ms |
+
+Against FastDDS and CycloneDDS (shipped same-host defaults): RTT, CPU and RSS WIN in the RELIABLE cells; both vendors
+DELIVERY FAILED in the BEST_EFFORT cells (97.4-99.4% delivered). The earlier VOID was perf_test's AnalyzeRunner
+spinning (`bcf8624d`); this harness has no spinning thread.
+
 ### Hybrid transport (large samples), rig
 
 AUTO against TickLE's own forced MTU mode, not counted (`HY`, Array1m RELIABLE): AUTO delivered 100% at 0.01-1% loss;
@@ -407,6 +425,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | QB2 | the same, REPS=8 (16 an arm) | `93ec2b3b`, `d6a007dd` | 2026-10-19 | `ab_samehost_qosbe_20261019-223805.*` |
 | D | `debt_crosshost_remeasure.sh` (campaign_sweep.sh, 12 reps, rotated, unpinned; A: c1 c2 c5 c7 c9, T: c3 c4 c6) | `d58873cf` | 2026-10-20 | `debt_crosshost_d58873cf_20261020-011033.{A,T}.txt`, `.reading.txt` |
 | D2 | `debt2_remeasure.sh`, `debt2_read.py` (frag_count_scaling.sh, discovery_join.sh) | `df6fbc2c` | 2026-10-20 | `debt2_df6fbc2c_20261020-030104.*` |
+| SB2 | `stepb_rtt_rig.sh`, `stepb_rtt_read.py` | `28fd075e` | 2026-10-20 | `stepb_rtt_28fd075e_20261020-181744.{txt,verdicts.txt}` |
 | LS | `rig_lifespan_reshaped.sh` (row 47, reshaped TickLE harness) | `3ae5f34f` | 2026-10-20 | `lifespan_reshaped_3ae5f34f_20261020-035439.txt` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |

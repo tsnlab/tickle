@@ -30,9 +30,7 @@ Cross-host latency is a round trip on one clock (the user, 2026-10-18).
 The user's order (2026-09-29): wired, then Security, then wireless.
 
 - **Zero-copy slot loans**: a segment ring that skips held slots; off by default (the user, 2026-10-10).
-- **Large samples step B on the rig**: the last session went VOID on perf_test's own spin (`bcf8624d`). The re-run is
-  `stepb_rtt_rig.sh`: round trip and in-process CPU windows, step B on and off in one build, the Ack cells as the A/A
-  control, a second step A arm for the instrument's floor; PC-checked, waiting for the rig.
+- **Large samples step B on the rig**: done 2026-10-20, every B2 rule PASS with a control that held (RESULTS `SB2`).
 - **Stage 1 / S1 CPU-time half on the rig** (PC half done, `d131d82e`).
 - **FreeRTOS segment** (HAL-provided memory; discovery stays UDP).
 - **rmw shared-memory kill test** (two ROS processes, subscriber killed mid-stream).
