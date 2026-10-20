@@ -55,6 +55,13 @@ if [ -z "${PF_A_PERF_WS:-}" ]; then # rmw_samehost.sh's default before it built 
     [ -x /tmp/keepall_evict/perf/install/performance_test/lib/performance_test/perf_test ] &&
         PF_A_PERF_WS=/tmp/keepall_evict/perf/install
 fi
+# A's overlays name the interface packages too, as B's do. perf_test's tickle typesupport library (one per package,
+# so Array1k's too) links std_msgs' and sensor_msgs', which no rmw install or perf workspace holds; without
+# ~/rmw_loans_ws/ifaces on the path its dlopen fails and every tput run aborts with "no rmw_tickle typesupport for the
+# type of subscription '/Array1k'" (2026-10-20, ldd: libstd_msgs__rosidl_typesupport_tickle_c.so => not found). The
+# interfaces go first, so A's own install and perf workspace, sourced after them, win.
+PF_A_OVERLAYS=${PF_A_OVERLAYS:-"$HOME/rmw_loans_ws/ifaces/install/local_setup.bash \
+$PF_A_TICKLE_INSTALL/local_setup.bash $PF_A_PERF_WS/local_setup.bash"}
 PF_B_HOME=${PF_B_HOME:-$HOME/rmw_loans_ab}
 PF_B_TICKLE_INSTALL=${PF_B_TICKLE_INSTALL:-$PF_B_HOME/rmw/install}
 PF_B_OVERLAYS=${PF_B_OVERLAYS:-"$HOME/rmw_loans_ws/rmw/install/local_setup.bash \
@@ -118,7 +125,8 @@ if [ "$ROLE" = outer ]; then
         # An A-like build is older than this checkout on purpose, so rmw_samehost.sh's stale-build refusal is waived,
         # and it is named here: rmw_samehost.sh's own default is a build of HEAD, which has loans since 7a321d26.
         ARMS="$RMW_ARMS" PREFLIGHT_ONLY=1 PF_ALLOW_STALE=1 PREFLIGHT_OUT="$OUTB.pf_A" PF_CELLS="$PF_CELLS" \
-            PF_TICKLE_INSTALL="$PF_A_TICKLE_INSTALL" PF_PERF_WS="$PF_A_PERF_WS" "$X/rmw_samehost.sh" \
+            PF_TICKLE_INSTALL="$PF_A_TICKLE_INSTALL" PF_PERF_WS="$PF_A_PERF_WS" PF_OVERLAYS="$PF_A_OVERLAYS" \
+            "$X/rmw_samehost.sh" \
             >"$OUTB.pf_A.log" 2>&1 || {
             tail -20 "$OUTB.pf_A.log"
             echo "REFUSING TO TAKE THE RIG: the PC preflight (A-like build) failed ($OUTB.pf_A.log)" | tee -a "$LOG"
