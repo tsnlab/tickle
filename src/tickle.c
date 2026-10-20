@@ -826,7 +826,9 @@ static void segment_hold(struct tt_SegmentHeader* header, uint32_t index) {
                          __ATOMIC_RELEASE);
     }
 }
+#endif
 
+#if tt_SEGMENT_ENABLED
 // A held slot given back (segment_unhold()): its mark p + 2 becomes p + slots, free for the next index at its position;
 // a slot never marked (published, index + 1, as in a ring under SEGMENT_HELD_MIN_SLOTS) becomes index + slots, as
 // before. Release ordering: every read the holder made happens before a writer that sees the slot free reuses it.
@@ -966,8 +968,8 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
     // check's own failing branch, so a datagram's record pays nothing for it.
     uint16_t span = slot_header->seq_span;
     if (span - 1U >= tt_FRAG_MAX_COUNT) {
-        if (span == tt_SEGMENT_SPAN_FENCE) {
-            return false;
+        if (span == tt_SEGMENT_SPAN_FENCE || span == tt_SEGMENT_SPAN_REF) {
+            return false; // left at the head: note_head_stall() takes it
         }
         span = 1;
     }
@@ -1014,8 +1016,8 @@ static bool segment_take(struct tt_SegmentHeader* header, uint8_t** record, uint
     }
     uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1, a fence stays
     if (span - 1U >= tt_FRAG_MAX_COUNT) {
-        if (span == tt_SEGMENT_SPAN_FENCE) {
-            return false;
+        if (span == tt_SEGMENT_SPAN_FENCE || span == tt_SEGMENT_SPAN_REF) {
+            return false; // left at the head: note_head_stall() takes it
         }
         span = 1;
     }
@@ -1391,9 +1393,9 @@ static void create_own_segment(struct tt_Context* node) {
     // the first thing checked.
     header->version = tt_SEGMENT_VERSION;
 #if tt_LARGE_SHM
-    header->features = tt_SEGMENT_FEATURE_LARGE_REF; // descriptors are taken (large-message step B)
+    header->features = tt_SEGMENT_FEATURE_LARGE_REF | tt_SEGMENT_FEATURE_HELD_REF; // descriptors are taken (step B)
 #else
-    header->features = 0;
+    header->features = tt_SEGMENT_FEATURE_HELD_REF; // held slots passed, references read (tt_Publisher_claim())
 #endif
     header->owner_ip = own_ip;
     header->owner_port = own_port;
@@ -5787,6 +5789,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_claims_copied = 0;
     node->segment_claims_abandoned = 0;
     node->segment_held_passed = 0;
+    node->segment_refs_read = 0;
+    node->segment_refs_refused = 0;
     node->rx_drain_ring_turns = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
@@ -6721,7 +6725,8 @@ static tt_ret_t publisher_reset(struct tt_Context* node, struct tt_Publisher* pu
     pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
     pub->heartbeat_period_ns = 0;       // no periodic Heartbeat by default - see its own doc comment
     pub->heartbeat_piggyback_every = 0; // no piggybacked Heartbeat by default - see its own doc comment
-    pub->claim_slot = NULL;             // no claimed slot (tt_Publisher_claim())
+    memset(pub->claims, 0, sizeof(pub->claims)); // no claimed slot (tt_Publisher_claim())
+    pub->claims_out = 0;
     pub->heartbeat_piggyback_count = 0;
     pub->retransmitted = 0;
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
@@ -10707,16 +10712,12 @@ static void large_before_small_publish(struct tt_Context* node, struct tt_Publis
 }
 #endif
 
-// What refuses a publish before anything is looked at: a malformed call, or a claim out.
+// What refuses a publish before anything is looked at: a malformed call. A claim out does not (tt_Publisher_claim():
+// it is read where its reference lands, after what was published before it).
 static tt_ret_t publish_refused_outright(const struct tt_Publisher* pub, const struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
-    }
-    if (pub->claim_slot != NULL) {
-        // tt_Publisher_claim()'s rule: the claim takes its seq_no when it is published, so a sample sent now would land
-        // behind it in the ring with an earlier one.
-        return tt_RET_ILLEGAL_STATUS;
     }
     return tt_RET_OK;
 }
@@ -10976,12 +10977,37 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 // the application's fill is the encode. The same destination rule (encode_in_slot_destination()) decides both, asked
 // again at the publish because discovery may have moved the peer, added a local subscriber or armed a match Heartbeat
 // in between. When it no longer holds, the sample is copied out of the slot and published the ordinary way, and the
-// slot goes back empty - the reader takes the empty record, then the copy, in that order.
+// slot is given back.
+//
+// HELD, NOT IN ORDER (2026-10-20). A claimed slot is held from the moment it is claimed (segment_pass_held()): the
+// reader moves past its index and the writers pass it over, so the claim stops no ring however long it is out, and a
+// Publisher may hold several. Its publish writes a REFERENCE record (tt_SEGMENT_SPAN_REF) in the ring's next free
+// index, naming the held slot; the reader reads the datagram there in the reference's place, so what this Publisher
+// published is read in the order it was published, whichever claim was made first. Until 2026-10-20 a claim was
+// published in place: one per Publisher, its ordinary publishes refused while it was out, and its ring stopped there.
 #if tt_SEGMENT_ENABLED && tt_SEGMENT_ENCODE_IN_SLOT
 #define CLAIM_FRAMING ((uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)))
 
+static uint8_t* claim_payload(const struct tt_PublisherClaim* claim) {
+    return segment_slot_payload(claim->slot) + CLAIM_FRAMING;
+}
+
+// The claim tt_Publisher_claim() returned `payload` for, or NULL.
+static struct tt_PublisherClaim* claim_of(struct tt_Publisher* pub, const uint8_t* payload) {
+    for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS; k++) {
+        if (pub->claims[k].slot != NULL && claim_payload(&pub->claims[k]) == payload) {
+            return &pub->claims[k];
+        }
+    }
+    return NULL;
+}
+
 static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload) {
-    if (pub->claim_slot != NULL) {
+    struct tt_PublisherClaim* claim = NULL;
+    for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS && claim == NULL; k++) {
+        claim = pub->claims[k].slot == NULL ? &pub->claims[k] : NULL;
+    }
+    if (claim == NULL) {
         return tt_RET_ILLEGAL_STATUS;
     }
     struct tt_Context* node = pub->node;
@@ -11010,37 +11036,39 @@ static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capaci
         return tt_RET_UNSUPPORTED; // the ordinary publish refuses it and records what was refused
     }
     struct tt_SegmentHeader* segment = peer_segment(node, dest.context_id, dest.ip, dest.port);
-    if (segment == NULL || record_len > segment->slot_bytes) {
-        return tt_RET_UNSUPPORTED;
+    if (segment == NULL || record_len > segment->slot_bytes || (segment->features & tt_SEGMENT_FEATURE_HELD_REF) == 0 ||
+        segment->slots < SEGMENT_HELD_MIN_SLOTS) {
+        return tt_RET_UNSUPPORTED; // a reader that cannot pass a held slot or read a reference
     }
     uint32_t claimed = 0;
     struct tt_SegmentSlot* slot = segment_claim(segment, &claimed);
     if (slot == NULL) {
         return tt_RET_OUT_OF_BUFFER;
     }
+    // Held from here: the reader moves past this index and writers pass the slot over until it is given back
+    // (segment_unhold()) - by the reader once it has read it through the reference, or by claim_release().
+    __atomic_store_n(&slot->sequence, claimed + 2U, __ATOMIC_RELEASE);
     segment_claims_note(node, dest.context_id, 1);
-    pub->claim_slot = slot;
-    pub->claim_segment = segment;
-    pub->claim_index = claimed;
-    pub->claim_length = capacity;
-    pub->claim_context_id = dest.context_id;
-    *payload = segment_slot_payload(slot) + CLAIM_FRAMING;
+    claim->slot = slot;
+    claim->segment = segment;
+    claim->index = claimed;
+    claim->length = capacity;
+    claim->context_id = dest.context_id;
+    pub->claims_out++;
+    *payload = claim_payload(claim);
     return tt_RET_OK;
 }
 
-// This Publisher's claim resolved: its slot published as the harmless empty record unless `published` (the caller
-// published it), and its mapping free to be revalidated again once no claim is left on it.
-static void claim_release(struct tt_Publisher* pub, bool published) {
-    struct tt_Context* node = pub->node;
-    if (!published) {
-        uint32_t own_ip = 0;
-        uint16_t own_port = 0;
-        tt_own_address(node, &own_ip, &own_port);
-        segment_publish(pub->claim_slot, pub->claim_index, 0, own_ip, own_port, 1);
+// A claim resolved: its slot given back unless `referenced` (a reference record hands it to the reader, who gives it
+// back), and its mapping free to be revalidated again once no claim is left on it.
+static void claim_release(struct tt_Publisher* pub, struct tt_PublisherClaim* claim, bool referenced) {
+    if (!referenced) {
+        segment_unhold(claim->segment, claim->index);
     }
-    segment_claims_note(node, pub->claim_context_id, -1);
-    pub->claim_slot = NULL;
-    pub->claim_segment = NULL;
+    segment_claims_note(pub->node, claim->context_id, -1);
+    claim->slot = NULL;
+    claim->segment = NULL;
+    pub->claims_out--;
 }
 
 // A claim's CDR as publisher_publish_locked() takes a sample: through the topic's two encode hooks.
@@ -11060,14 +11088,12 @@ static int32_t claimed_bytes_encode(struct tt_Data* data, uint8_t* payload, cons
     return (int32_t)claimed->length;
 }
 
-// The destination changed since the claim: the sample goes the ordinary way, from a copy of the slot, and the slot back
-// empty after it - so a copy that goes into the same ring sits behind the empty record, in order. The mapping stays
-// pinned by its claim count throughout, so the bytes being copied cannot be unmapped by the publish's own lookups.
-static tt_ret_t publish_claim_by_copy(struct tt_Publisher* pub, uint32_t length) {
+// The destination changed since the claim: the sample goes the ordinary way, from a copy of the slot, and the slot is
+// given back after it. The mapping stays pinned by its claim count throughout, so the bytes being copied cannot be
+// unmapped by the publish's own lookups.
+static tt_ret_t publish_claim_by_copy(struct tt_Publisher* pub, struct tt_PublisherClaim* claim, uint32_t length) {
     struct tt_Context* node = pub->node;
-    struct tt_SegmentSlot* slot = pub->claim_slot;
-    struct claimed_bytes claimed = {segment_slot_payload(slot) + CLAIM_FRAMING, length};
-    pub->claim_slot = NULL; // or publisher_publish_locked() refuses it as a publish behind a claim
+    struct claimed_bytes claimed = {claim_payload(claim), length};
     const struct tt_TypeSupport* topic = pub->topic;
     struct tt_TypeSupport copy_topic = *topic;
     copy_topic.data_encode_size = claimed_bytes_size;
@@ -11075,31 +11101,40 @@ static tt_ret_t publish_claim_by_copy(struct tt_Publisher* pub, uint32_t length)
     pub->topic = &copy_topic;
     tt_ret_t result = publisher_publish_locked(pub, (struct tt_Data*)&claimed);
     pub->topic = topic;
-    pub->claim_slot = slot;
-    claim_release(pub, false);
+    claim_release(pub, claim, false);
     node->segment_claims_copied++;
     return result;
 }
 
-static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint32_t length) {
-    if (pub->claim_slot == NULL) {
+static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint8_t* payload, uint32_t length) {
+    struct tt_PublisherClaim* claim = claim_of(pub, payload);
+    if (claim == NULL) {
         return tt_RET_ILLEGAL_STATUS;
     }
     struct tt_Context* node = pub->node;
-    if (length > pub->claim_length) {
+    if (length > claim->length) {
         // Spent, as every publish of a claim is: what was written past the capacity is not ours to send.
-        claim_release(pub, false);
+        claim_release(pub, claim, false);
         node->segment_claims_abandoned++;
         return tt_RET_INVALID_ARGUMENT;
+    }
+    if (!keep_all_writable(pub)) {
+        // Ordinary publishes since the claim took the room it was made with: kept, as a refused publish keeps its
+        // sample with its caller.
+        pub->writable_pending = true;
+        RSTAT_INC(publish_refused);
+        solicit_ack_throttled(pub);
+        arm_keep_all_resolicit(pub);
+        return tt_RET_WOULD_BLOCK;
     }
     if (!pub->batch) {
         flush_pending_before_unicast(node, pub->peers);
     }
     struct tx_destination dest;
     // peer_segment() leaves a mapping with claims on it in place, so this compares against the very region claimed.
-    if (!encode_in_slot_destination(pub, node->tx_tail, &dest) || dest.context_id != pub->claim_context_id ||
-        peer_segment(node, dest.context_id, dest.ip, dest.port) != pub->claim_segment) {
-        return publish_claim_by_copy(pub, length);
+    if (!encode_in_slot_destination(pub, node->tx_tail, &dest) || dest.context_id != claim->context_id ||
+        peer_segment(node, dest.context_id, dest.ip, dest.port) != claim->segment) {
+        return publish_claim_by_copy(pub, claim, length);
     }
 #if tt_LARGE_SAMPLES
     // A large sample published before this one may still wait behind a send in progress, without seq_nos yet: it takes
@@ -11114,7 +11149,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
-    uint8_t* record = segment_slot_payload(pub->claim_slot);
+    uint8_t* record = segment_slot_payload(claim->slot);
     struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)record;
     *submessage_header = (struct tt_SubmessageHeader) {tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0};
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
@@ -11126,7 +11161,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     data_header->entity_id = pub->endpoint.entity_id;
     memset(record + raw_len, 0, record_len - raw_len);
     if (!check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
-        claim_release(pub, false);
+        claim_release(pub, claim, false);
         node->segment_claims_abandoned++;
         return tt_RET_PROTOCOL_ERROR;
     }
@@ -11136,9 +11171,23 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
                         true); // counted as try_publish_into_slot() counts it; the destination rule ruled out a firing
     struct tt_SingleHeader single = {native_single_marker(), tt_VERSION, node->id, tt_SUBMESSAGE_TYPE_DATA};
     _tt_memcpy(record, &single, sizeof(single));
-    segment_publish(pub->claim_slot, pub->claim_index, record_len, own_ip, own_port, 1);
-    struct tt_SegmentHeader* segment = pub->claim_segment;
-    claim_release(pub, true);
+    // The reference, in the ring's next free index: the held slot's bytes are complete before its release store.
+    struct tt_SegmentHeader* segment = claim->segment;
+    uint32_t ref_index = 0;
+    struct tt_SegmentSlot* ref = segment_claim(segment, &ref_index);
+    if (ref == NULL) {
+        // No room for the reference: dropped, as a full ring drops any datagram (segment_deliver_ringing()). The
+        // sample is spent - its seq_no taken and, RELIABLE, cached for a repair - exactly as a dropped one is.
+        node->segment_full_dropped++;
+        claim_release(pub, claim, false);
+    } else {
+        const struct tt_SegmentRef desc = {claim->index, record_len};
+        _tt_memcpy(segment_slot_payload(ref), &desc, sizeof(desc));
+        segment_publish_as(ref, ref_index, (uint32_t)sizeof(desc), own_ip, own_port, (uint16_t)tt_SEGMENT_SPAN_REF);
+        claim_release(pub, claim, true);
+        node->segment_claims_published++;
+        segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
+    }
 #ifdef tt_RELIABLE_STATS
     g_rstats.datagrams++; // flush_tx()'s accounting for the one DATA this datagram carries
     g_rstats.datagrams_with_data++;
@@ -11147,21 +11196,29 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
         g_rstats.max_data_per_datagram = 1;
     }
 #endif
-    node->segment_claims_published++;
-    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
     pub->seq_no += 1;
     idle_heartbeat_note_publish(pub, now_ns);
     maybe_solicit_ack_at_watermark(pub);
     return tt_RET_OK;
 }
 
-static tt_ret_t publisher_abandon_claim_locked(struct tt_Publisher* pub) {
-    if (pub->claim_slot == NULL) {
+static tt_ret_t publisher_abandon_claim_locked(struct tt_Publisher* pub, uint8_t* payload) {
+    struct tt_PublisherClaim* claim = claim_of(pub, payload);
+    if (claim == NULL) {
         return tt_RET_ILLEGAL_STATUS;
     }
-    claim_release(pub, false);
+    claim_release(pub, claim, false);
     pub->node->segment_claims_abandoned++;
     return tt_RET_OK;
+}
+
+// Every claim of `pub` given back (its destroy, its context's): a claim's slot would otherwise stay held for good.
+static void publisher_abandon_all_claims_locked(struct tt_Publisher* pub) {
+    for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS && pub->claims_out != 0; k++) {
+        if (pub->claims[k].slot != NULL) {
+            (void)publisher_abandon_claim_locked(pub, claim_payload(&pub->claims[k]));
+        }
+    }
 }
 #undef CLAIM_FRAMING
 #else
@@ -11171,14 +11228,19 @@ static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capaci
     UNUSED(payload);
     return tt_RET_UNSUPPORTED;
 }
-static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint32_t length) {
+static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint8_t* payload, uint32_t length) {
     UNUSED(pub);
+    UNUSED(payload);
     UNUSED(length);
     return tt_RET_ILLEGAL_STATUS; // nothing can have been claimed
 }
-static tt_ret_t publisher_abandon_claim_locked(struct tt_Publisher* pub) {
+static tt_ret_t publisher_abandon_claim_locked(struct tt_Publisher* pub, uint8_t* payload) {
     UNUSED(pub);
+    UNUSED(payload);
     return tt_RET_ILLEGAL_STATUS;
+}
+static void publisher_abandon_all_claims_locked(struct tt_Publisher* pub) {
+    UNUSED(pub);
 }
 #endif
 
@@ -11199,21 +11261,21 @@ tt_ret_t tt_Publisher_claim(struct tt_Publisher* pub, uint32_t capacity, uint8_t
     return result;
 }
 
-tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint32_t length) {
-    if (pub == NULL || pub->node == NULL) {
+tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint8_t* payload, uint32_t length) {
+    if (pub == NULL || pub->node == NULL || payload == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Context* node = pub->node;
     state_lock(node);
 #if tt_CONTEXT_ID_CLAIM
-    if (node->id_muted && pub->claim_slot != NULL) {
-        (void)publisher_abandon_claim_locked(pub); // as tt_Publisher_publish(): sends nothing, and says so
+    if (node->id_muted && publisher_abandon_claim_locked(pub, payload) == tt_RET_OK) {
+        // As tt_Publisher_publish(): sends nothing, and says so.
         node->id_muted_drops++;
         state_unlock(node);
         return tt_RET_IO_ERROR;
     }
 #endif
-    tt_ret_t result = publisher_publish_claimed_locked(pub, length);
+    tt_ret_t result = publisher_publish_claimed_locked(pub, payload, length);
     if (result == tt_RET_OK && pub->liveliness_lease_duration_ns != 0) {
         pub->liveliness_asserted_ns = publish_clock_or_now(node); // as tt_Publisher_publish(): the DATA asserts it
     }
@@ -11222,12 +11284,12 @@ tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint32_t length)
     return result;
 }
 
-tt_ret_t tt_Publisher_abandon_claim(struct tt_Publisher* pub) {
-    if (pub == NULL || pub->node == NULL) {
+tt_ret_t tt_Publisher_abandon_claim(struct tt_Publisher* pub, uint8_t* payload) {
+    if (pub == NULL || pub->node == NULL || payload == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     state_lock(pub->node);
-    tt_ret_t result = publisher_abandon_claim_locked(pub);
+    tt_ret_t result = publisher_abandon_claim_locked(pub, payload);
     state_unlock(pub->node);
     return result;
 }
@@ -11936,10 +11998,8 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
         tt_Context_unschedule(node, idle_heartbeat_fire, pub);
         pub->idle_heartbeat_armed = false;
     }
-    // A claim left outstanding would stop its ring for good (tt_Publisher_claim()).
-    if (pub->claim_slot != NULL) {
-        (void)publisher_abandon_claim_locked(pub);
-    }
+    // A claim left outstanding would stay held for good (tt_Publisher_claim()).
+    publisher_abandon_all_claims_locked(pub);
 #if tt_LARGE_SAMPLES
     large_release_publisher(node, pub); // its send in progress stops, and every large buffer goes back
 #endif
@@ -21841,6 +21901,9 @@ static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decid
 }
 
 static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
+static bool segment_ref_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
+// Half the range of the free-running ring indices: b - a below it means b is at or after a (serial comparison).
+#define SEGMENT_INDEX_HALF 0x80000000U
 
 // The drain found nothing it could read at the head: an empty ring, a head claimed and not yet published, or a fence
 // (tt_SEGMENT_SPAN_FENCE), which segment_read() and segment_take() leave where it is. True when the head was a fence
@@ -21859,6 +21922,10 @@ static bool note_head_stall(struct tt_Context* node) {
     if (sequence == read_index + 1U && head->seq_span == tt_SEGMENT_SPAN_FENCE) {
         node->segment_head_stall_passes = 0; // published: not a stall, whatever it waits for
         return segment_fence_at_head(node, header, read_index);
+    }
+    if (sequence == read_index + 1U && head->seq_span == tt_SEGMENT_SPAN_REF) {
+        node->segment_head_stall_passes = 0;
+        return segment_ref_at_head(node, header, read_index);
     }
     if (segment_pass_head(header, read_index, sequence)) {
         node->segment_held_passed++;
@@ -21970,6 +22037,55 @@ static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHead
     node->segment_fence_deadline_ns = 0;
     segment_release(header, index);
     return true;
+}
+
+// The reference at the head of the ring, at `index` (tt_SEGMENT_SPAN_REF, tt_Publisher_claim()): the datagram is read
+// in the held slot it names, here, in the reference's place, and that slot given back after - unless a sample in it
+// was retained, which gives it back at its release (lend_release_slot()). The reference itself is released first. A
+// reference this ring cannot have been sent - malformed, naming a slot that is not held, or one a sample of ours holds
+// - is counted and passed, so no writer can wedge the ring or take a slot back from under a retained sample with one.
+// True when the drain reads on; false when the record was the last same-host peer's farewell and the ring is gone.
+__attribute__((cold, noinline)) static bool segment_ref_at_head(struct tt_Context* node,
+                                                                struct tt_SegmentHeader* header, uint32_t index) {
+    const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(header, index);
+    struct tt_SegmentRef desc = {0, 0};
+    const bool framed = slot->length == sizeof(desc);
+    if (framed) {
+        memcpy(&desc, (const uint8_t*)slot + sizeof(*slot), sizeof(desc));
+    }
+    const uint32_t sender_ip = slot->sender_ip;
+    const uint16_t sender_port = slot->sender_port;
+    segment_release(header, index);
+    struct tt_SegmentSlot* target = (struct tt_SegmentSlot*)segment_slot(header, desc.index);
+    const uint32_t sequence = __atomic_load_n(&target->sequence, __ATOMIC_ACQUIRE);
+    // Held (its mark at its position), marked at or after the claim, the claim before the reference, and room enough.
+    bool valid = framed && header->slots >= SEGMENT_HELD_MIN_SLOTS &&
+                 ((sequence - desc.index) & (header->slots - 1U)) == 2U && sequence - desc.index < SEGMENT_INDEX_HALF &&
+                 index - desc.index - 1U < SEGMENT_INDEX_HALF && desc.length != 0 && desc.length <= header->slot_bytes;
+#if tt_SAMPLE_LENDING
+    valid = valid && !(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index));
+#else
+    valid = valid && desc.length <= sizeof(node->rx_buffer);
+#endif
+    if (!valid) {
+        node->segment_refs_refused++;
+        return true;
+    }
+    node->segment_refs_read++;
+    uint8_t* record = segment_slot_payload(target);
+#if tt_SAMPLE_LENDING
+    (void)process_datagram_at(node, record, (int32_t)desc.length, sender_ip, sender_port, tt_TRANSPORT_SHM, 1,
+                              tt_LEND_SLOT, desc.index);
+    if (!(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index))) {
+        segment_unhold(header, desc.index);
+    }
+    return !(node->lend.segment_release_deferred && lend_finish_release(node));
+#else
+    memcpy(node->rx_buffer, record, desc.length);
+    segment_unhold(header, desc.index);
+    (void)process_datagram_locked(node, (int32_t)desc.length, sender_ip, sender_port, tt_TRANSPORT_SHM, 1);
+    return true;
+#endif
 }
 
 // SKIP TO NEWEST. Under overload a KEEP_LAST Subscriber's backlog in the ring is mostly samples its history will
@@ -22122,6 +22238,9 @@ static void segment_peek_record(const struct tt_Context* node, struct tt_Segment
     rec->sender_ip = slot_header->sender_ip;
     rec->sender_port = slot_header->sender_port;
     uint16_t span = slot_header->seq_span;
+    if (span >= tt_SEGMENT_SPAN_FENCE) {
+        return; // a fence or a reference: its payload is not a datagram, and it is read where it is
+    }
     rec->span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
     // A sample header must lie wholly in the copy and leave a payload after it.
     uint32_t body = framing.body_end - framing.head;
@@ -23744,7 +23863,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Attaches refused because no live context owned the file: a dead one's segment, left in /dev/shm.
         "shm_attach_orphaned=%lu "
         // Claimed-slot publishes (tt_Publisher_claim()): built in place, copied out at publish, abandoned.
-        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu shm_held_passed=%lu "
+        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu shm_held_passed=%lu shm_refs_read=%lu "
+        "shm_refs_refused=%lu "
         // The switch from UDP to a segment (tt_SEGMENT_SPAN_FENCE): fences this writer sent, and fences met at the head
         // of this context's own ring - passed on their datagram, or given up at the deadline.
         "shm_fences_sent=%lu shm_fences_passed=%lu shm_fences_expired=%lu "
@@ -23784,6 +23904,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)LEND_COUNT(node, full_retained), (unsigned long)node->segment_attach[tt_SEGMENT_ORPHANED],
         (unsigned long)node->segment_claims_published, (unsigned long)node->segment_claims_copied,
         (unsigned long)node->segment_claims_abandoned, (unsigned long)node->segment_held_passed,
+        (unsigned long)node->segment_refs_read, (unsigned long)node->segment_refs_refused,
         (unsigned long)node->segment_fences_sent, (unsigned long)node->segment_fences_passed,
         (unsigned long)node->segment_fences_expired, (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads,
         (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8,
@@ -23824,12 +23945,13 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         }
 #endif
 
-        // A claim still out (tt_Publisher_claim()) is given back here, while its slot is still mapped:
-        // release_segments() below unmaps it, after which the claimed index would stop the peer's ring for good and
-        // a later abandon or tt_Publisher_destroy() would write into a page that is gone.
-        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER && ((struct tt_Publisher*)endpoint)->claim_slot != NULL) {
-            TT_LOG_WARNING("Context %u destroyed with a claimed slot outstanding: abandoned", node->id);
-            (void)publisher_abandon_claim_locked((struct tt_Publisher*)endpoint);
+        // Claims still out (tt_Publisher_claim()) are given back here, while their slots are still mapped:
+        // release_segments() below unmaps them, after which a claimed slot would stay held in the peer's ring for good
+        // and a later abandon or tt_Publisher_destroy() would write into a page that is gone.
+        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER && ((struct tt_Publisher*)endpoint)->claims_out != 0) {
+            TT_LOG_WARNING("Context %u destroyed with %u claimed slot(s) outstanding: abandoned", node->id,
+                           (unsigned)((struct tt_Publisher*)endpoint)->claims_out);
+            publisher_abandon_all_claims_locked((struct tt_Publisher*)endpoint);
         }
 
         // Both the client call cache and server response caches are fixed buffers now (no

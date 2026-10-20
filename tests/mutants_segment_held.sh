@@ -6,7 +6,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$ROOT/src/tickle.c"
-TESTS="test_segment_held test_sample_lending"
+TESTS="test_segment_held test_sample_lending test_large_shm"
 BACKUP=$(mktemp)
 cp -p "$SRC" "$BACKUP"
 trap 'cp "$BACKUP" "$SRC"; touch "$SRC"; rm -f "$BACKUP"' EXIT
@@ -72,3 +72,26 @@ mutate "no-min-slots(PASS ok)" "    if (slots < SEGMENT_HELD_MIN_SLOTS) {
         return false;
     }
     if (sequence == claimed - slots + 2U) {" "    if (sequence == claimed - slots + 2U) {"
+# References (tt_SEGMENT_SPAN_REF), read by segment_ref_at_head().
+mutate "ref-not-left-at-head" "        if (span == tt_SEGMENT_SPAN_FENCE || span == tt_SEGMENT_SPAN_REF) {
+            return false; // left at the head: note_head_stall() takes it
+        }
+        span = 1;
+    }
+    *record" "        if (span == tt_SEGMENT_SPAN_FENCE) {
+            return false; // left at the head: note_head_stall() takes it
+        }
+        span = 1;
+    }
+    *record"
+mutate "ref-no-held-check" "                 ((sequence - desc.index) & (header->slots - 1U)) == 2U && sequence - desc.index < SEGMENT_INDEX_HALF &&" \
+    "                 sequence - desc.index < SEGMENT_INDEX_HALF &&"
+mutate "ref-no-length-check" "desc.length != 0 && desc.length <= header->slot_bytes;" "desc.length <= header->slot_bytes;"
+mutate "ref-takes-our-held-slot" \
+    "    valid = valid && !(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index));" "    (void)0;"
+mutate "ref-slot-not-given-back" "    if (!(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index))) {
+        segment_unhold(header, desc.index);
+    }" "    (void)0;"
+mutate "ref-kept-slot-given-back" "    if (!(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index))) {
+        segment_unhold(header, desc.index);
+    }" "    segment_unhold(header, desc.index);"

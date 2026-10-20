@@ -300,13 +300,19 @@ static void drain(void) {
 }
 
 // The seq_no of the one single-form DATA record in the ring (the claimed sample), or 0.
+// The claimed sample's seq_no, read where its reference (tt_SEGMENT_SPAN_REF) says it lies.
 static uint32_t claimed_record_seq_no(void) {
     for (uint32_t i = 0; i < ring()->write_index; i++) {
         const struct tt_SegmentSlot* slot =
             (const struct tt_SegmentSlot*)segment_slot(ring(), i); // NOLINT(readability-redundant-casting)
-        const uint8_t* record = (const uint8_t*)(slot + 1);
+        if (slot->seq_span != tt_SEGMENT_SPAN_REF || slot->length != sizeof(struct tt_SegmentRef)) {
+            continue;
+        }
+        struct tt_SegmentRef desc;
+        memcpy(&desc, slot + 1, sizeof(desc));
+        const uint8_t* record = segment_slot(ring(), desc.index) + sizeof(struct tt_SegmentSlot);
         const struct tt_SingleHeader* single = (const struct tt_SingleHeader*)record;
-        if (slot->length == sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + SMALL_BYTES &&
+        if (desc.length == ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + SMALL_BYTES) &&
             single->type == tt_SUBMESSAGE_TYPE_DATA) {
             return ((const struct tt_DataHeader*)(record + sizeof(struct tt_SingleHeader)))->seq_no;
         }
@@ -316,32 +322,31 @@ static uint32_t claimed_record_seq_no(void) {
 
 // ---- the claimed slot ----
 
-// A claim out stops every other publish of its Publisher, a large one included: refused before a buffer is acquired,
-// so nothing is held and nothing reaches the ring. Once the claim is published the large one goes, behind it, and the
-// reader gets both whole and in order.
-static void test_a_large_publish_behind_a_claim_is_refused_before_it_acquires(void) {
+// A claim out does not stop its Publisher (tt_Publisher_claim(): the claimed slot is held, out of ring order): a
+// large publish goes ahead of it, and the claimed sample, published after, takes the next seq_no and is read after the
+// large one through its reference - publish order, both whole.
+static void test_a_large_publish_goes_ahead_of_a_claim_out(void) {
     rig_up();
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)publish(2, LARGE_BYTES));
-    EXPECT_EQ_U32(0, sender_alloc.acquires);
-    EXPECT_EQ_U64(0, sender.large.published);
-    EXPECT_EQ_U32(1, ring()->write_index); // the claim, nothing behind it
-    EXPECT_EQ_U32(0, pub.seq_no);
-
-    fill(payload, 1, SMALL_BYTES);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, SMALL_BYTES));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(2, LARGE_BYTES));
     uint32_t count = large_count_for(ROUNDUP(LARGE_BYTES));
-    EXPECT_EQ_U32(1 + count, ring()->write_index);
+    EXPECT_EQ_U32(count, pub.seq_no);
+    EXPECT_EQ_U32(1 + count, ring()->write_index); // the held claim, then the large sample
+
+    fill(payload, 1, SMALL_BYTES);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, payload, SMALL_BYTES));
+    EXPECT_EQ_U32(2 + count, ring()->write_index); // and the reference
     EXPECT_EQ_U32(1 + count, pub.seq_no);
     drain();
     EXPECT_EQ_U32(2, cb.seen);
-    EXPECT_EQ_U32(SMALL_BYTES, cb.lengths[0]);
+    EXPECT_EQ_U32(LARGE_BYTES, cb.lengths[0]);
     EXPECT_EQ_U32(1, cb.seq_nos[0]);
-    EXPECT_EQ_U32(LARGE_BYTES, cb.lengths[1]);
-    EXPECT_EQ_U32(2, cb.seq_nos[1]);
+    EXPECT_EQ_U32(SMALL_BYTES, cb.lengths[1]);
+    EXPECT_EQ_U32(1 + count, cb.seq_nos[1]);
     EXPECT_EQ_U64(1, owner.large.reassembled);
+    EXPECT_EQ_U64(1, owner.segment_refs_read);
+    EXPECT_EQ_U64(1, owner.segment_held_passed); // the claim's own index
     rig_down();
 }
 
@@ -354,7 +359,7 @@ static void test_a_claim_of_a_large_sample_is_unsupported(void) {
                   (int)tt_Publisher_claim(&pub, (uint32_t)tt_MAX_SAMPLE_LENGTH + 1U, &payload));
     EXPECT_EQ_INT((int)tt_RET_UNSUPPORTED, (int)tt_Publisher_claim(&pub, 4U + 1048576U + 16U, &payload));
     EXPECT_TRUE(payload == NULL);
-    EXPECT_TRUE(pub.claim_slot == NULL);
+    EXPECT_EQ_U32(0, pub.claims_out);
     EXPECT_EQ_U32(0, sender.segment_peers[OWNER_ID].claims);
     EXPECT_EQ_U32(0, ring()->write_index);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, LARGE_BYTES)); // and the ordinary publish takes it
@@ -385,7 +390,7 @@ static void test_a_claimed_publish_follows_a_waiting_large_sample(void) {
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
     fill(payload, 3, SMALL_BYTES);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, SMALL_BYTES));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, payload, SMALL_BYTES));
     EXPECT_TRUE(pub.large_pending.buffer == NULL);
     EXPECT_EQ_U32(2, pub.large_count);
     EXPECT_EQ_U32(count + 1, large_record_at(&pub, 1)->seq_no); // the second large sample, in publish order
@@ -491,9 +496,8 @@ static struct transfer_witness large_same_host_transfer(bool dirty) {
     uint8_t* payload = NULL; // a claim and its pin on the same entry
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
     EXPECT_EQ_U32(1, sender.segment_peers[OWNER_ID].claims);
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)publish(2, LARGE_BYTES));
     fill(payload, 3, SMALL_BYTES);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, SMALL_BYTES));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, payload, SMALL_BYTES));
     EXPECT_EQ_U32(0, sender.segment_peers[OWNER_ID].claims);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(4, LARGE_BYTES));
     drain();
@@ -523,7 +527,7 @@ static void test_a_large_same_host_transfer_from_unzeroed_contexts(void) {
 }
 
 int main(void) {
-    test_a_large_publish_behind_a_claim_is_refused_before_it_acquires();
+    test_a_large_publish_goes_ahead_of_a_claim_out();
     test_a_claim_of_a_large_sample_is_unsupported();
     test_a_claimed_publish_follows_a_waiting_large_sample();
     test_a_large_sample_from_the_ring_is_lent_from_its_own_buffer();

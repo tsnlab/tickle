@@ -42,20 +42,27 @@ MUTANTS = [
         "test_a_claimed_mapping_stays_mapped",
     ),
     (
-        "refusing a publish behind a claim",
+        "the claim held at once",
         "src/tickle.c",
-        "    if (pub->claim_slot != NULL) {\n        // tt_Publisher_claim()'s rule",
-        "    if (false) {\n        // tt_Publisher_claim()'s rule",
-        "test_the_rules_while_a_claim_is_out",
+        "    __atomic_store_n(&slot->sequence, claimed + 2U, __ATOMIC_RELEASE);\n    segment_claims_note(",
+        "    segment_claims_note(",
+        "test_several_claims_and_publishes_meanwhile",
     ),
     (
-        "refusing a second claim",
+        "the claim limit",
         "src/tickle.c",
-        "static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload) {\n"
-        "    if (pub->claim_slot != NULL) {",
-        "static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload) {\n"
-        "    if (false) {",
-        "test_the_rules_while_a_claim_is_out",
+        "    if (claim == NULL) {\n        return tt_RET_ILLEGAL_STATUS;\n    }\n    struct tt_Context* node = pub->node;\n"
+        "    if (!keep_all_writable(pub)) {\n        // As publisher_publish_locked() refuses",
+        "    if (claim == NULL) {\n        claim = &pub->claims[0];\n    }\n    struct tt_Context* node = pub->node;\n"
+        "    if (!keep_all_writable(pub)) {\n        // As publisher_publish_locked() refuses",
+        "test_several_claims_and_publishes_meanwhile",
+    ),
+    (
+        "a payload matched to its claim",
+        "src/tickle.c",
+        "        if (pub->claims[k].slot != NULL && claim_payload(&pub->claims[k]) == payload) {",
+        "        if (pub->claims[k].slot != NULL) {",
+        "test_several_claims_and_publishes_meanwhile",
     ),
     (
         "KEEP_ALL's refusal at the claim",
@@ -63,6 +70,20 @@ MUTANTS = [
         "    if (!keep_all_writable(pub)) {\n        // As publisher_publish_locked() refuses",
         "    if (false) {\n        // As publisher_publish_locked() refuses",
         "test_full_ring_and_keep_all",
+    ),
+    (
+        "KEEP_ALL's refusal at the publish",
+        "src/tickle.c",
+        "    if (!keep_all_writable(pub)) {\n        // Ordinary publishes since the claim",
+        "    if (false) {\n        // Ordinary publishes since the claim",
+        "test_full_ring_and_keep_all",
+    ),
+    (
+        "the reader's feature asked",
+        "src/tickle.c",
+        "(segment->features & tt_SEGMENT_FEATURE_HELD_REF) == 0 ||",
+        "false ||",
+        "test_what_cannot_be_claimed",
     ),
     (
         "the destination rule at the claim",
@@ -83,22 +104,22 @@ MUTANTS = [
     (
         "the destination asked again at the publish",
         "src/tickle.c",
-        "    if (!encode_in_slot_destination(pub, node->tx_tail, &dest) || dest.context_id != pub->claim_context_id ||",
+        "    if (!encode_in_slot_destination(pub, node->tx_tail, &dest) || dest.context_id != claim->context_id ||",
         "    dest = (struct tx_destination){pub->peers[0].ip, pub->peers[0].port, pub->peers[0].context_id};\n"
-        "    if (dest.context_id != pub->claim_context_id ||",
+        "    if (dest.context_id != claim->context_id ||",
         "test_a_changed_destination_is_published_by_copy",
     ),
     (
         "the copy's slot given back",
         "src/tickle.c",
-        "    pub->claim_slot = slot;\n    claim_release(pub, false);\n    node->segment_claims_copied++;",
-        "    pub->claim_slot = NULL;\n    node->segment_claims_copied++;",
+        "    pub->topic = topic;\n    claim_release(pub, claim, false);\n    node->segment_claims_copied++;",
+        "    pub->topic = topic;\n    claim_release(pub, claim, true);\n    node->segment_claims_copied++;",
         "test_a_changed_destination_is_published_by_copy",
     ),
     (
         "the length bounded by the capacity",
         "src/tickle.c",
-        "    if (length > pub->claim_length) {\n        // Spent, as every publish",
+        "    if (length > claim->length) {\n        // Spent, as every publish",
         "    if (false) {\n        // Spent, as every publish",
         "test_a_claim_publishes_its_length_not_its_capacity",
     ),
@@ -106,61 +127,82 @@ MUTANTS = [
         "the padding zeroed",
         "src/tickle.c",
         "    memset(record + raw_len, 0, record_len - raw_len);\n    if (!check_and_cache_sample(node, pub, "
-        "submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {\n        claim_release(pub, false);",
+        "submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {\n        claim_release(pub, claim, false);",
         "    if (!check_and_cache_sample(node, pub, "
-        "submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {\n        claim_release(pub, false);",
+        "submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {\n        claim_release(pub, claim, false);",
         "test_a_claimed_publish_writes_what_the_encoder_writes",
     ),
     (
         "the reliable cache's copy",
         "src/tickle.c",
         "    if (!check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {\n"
-        "        claim_release(pub, false);",
-        "    if (false) {\n        claim_release(pub, false);",
+        "        claim_release(pub, claim, false);",
+        "    if (false) {\n        claim_release(pub, claim, false);",
         "test_reliable_claims_cache_what_the_encoder_caches",
     ),
     (
         "the single header written",
         "src/tickle.c",
-        "    _tt_memcpy(record, &single, sizeof(single));\n    segment_publish(pub->claim_slot,",
-        "    segment_publish(pub->claim_slot,",
+        "    _tt_memcpy(record, &single, sizeof(single));\n    // The reference,",
+        "    // The reference,",
         "test_a_claimed_publish_writes_what_the_encoder_writes",
+    ),
+    (
+        "the reference's length",
+        "src/tickle.c",
+        "        const struct tt_SegmentRef desc = {claim->index, record_len};",
+        "        const struct tt_SegmentRef desc = {claim->index, claim->length};",
+        "test_a_claim_publishes_its_length_not_its_capacity",
+    ),
+    (
+        "the reference's slot",
+        "src/tickle.c",
+        "        const struct tt_SegmentRef desc = {claim->index, record_len};",
+        "        const struct tt_SegmentRef desc = {ref_index, record_len};",
+        "test_a_claimed_publish_writes_what_the_encoder_writes",
+    ),
+    (
+        "no room for the reference: slot given back",
+        "src/tickle.c",
+        "        node->segment_full_dropped++;\n        claim_release(pub, claim, false);",
+        "        node->segment_full_dropped++;\n        claim_release(pub, claim, true);",
+        "test_no_room_for_the_reference_drops_as_a_full_ring",
     ),
     (
         "seq_no advanced",
         "src/tickle.c",
-        "    node->segment_claims_published++;\n    segment_note_written(node, dest.context_id, segment, dest.ip, "
-        "dest.port, true);\n    pub->seq_no += 1;",
-        "    node->segment_claims_published++;\n    segment_note_written(node, dest.context_id, segment, dest.ip, "
-        "dest.port, true);",
-        "test_the_rules_while_a_claim_is_out",
+        "#endif\n    pub->seq_no += 1;\n    idle_heartbeat_note_publish(pub, now_ns);\n    maybe_solicit_ack_at_watermark(pub);\n"
+        "    return tt_RET_OK;\n}\n\nstatic tt_ret_t publisher_abandon_claim_locked(",
+        "#endif\n    idle_heartbeat_note_publish(pub, now_ns);\n    maybe_solicit_ack_at_watermark(pub);\n"
+        "    return tt_RET_OK;\n}\n\nstatic tt_ret_t publisher_abandon_claim_locked(",
+        "test_several_claims_and_publishes_meanwhile",
     ),
     (
         "the doorbell after the publish",
         "src/tickle.c",
-        "    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);\n    pub->seq_no += 1;",
-        "    pub->seq_no += 1;",
+        "        segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);\n    }",
+        "    }",
         "test_a_claimed_publish_writes_what_the_encoder_writes",
     ),
     (
-        "an abandoned slot published empty",
+        "an abandoned slot given back",
         "src/tickle.c",
-        "        segment_publish(pub->claim_slot, pub->claim_index, 0, own_ip, own_port, 1);\n    }\n"
-        "    segment_claims_note(node, pub->claim_context_id, -1);",
-        "    }\n    segment_claims_note(node, pub->claim_context_id, -1);",
-        "test_abandon_and_destroy_give_the_slot_back",
-    ),
-    (
-        "destroy abandoning the claim",
-        "src/tickle.c",
-        "    if (pub->claim_slot != NULL) {\n        (void)publisher_abandon_claim_locked(pub);\n    }\n",
+        "    if (!referenced) {\n        segment_unhold(claim->segment, claim->index);\n    }",
         "",
         "test_abandon_and_destroy_give_the_slot_back",
     ),
     (
-        "context teardown abandoning a claim",
+        "destroy abandoning the claims",
         "src/tickle.c",
-        "            (void)publisher_abandon_claim_locked((struct tt_Publisher*)endpoint);\n",
+        "    // A claim left outstanding would stay held for good (tt_Publisher_claim()).\n"
+        "    publisher_abandon_all_claims_locked(pub);\n",
+        "",
+        "test_abandon_and_destroy_give_the_slot_back",
+    ),
+    (
+        "context teardown abandoning the claims",
+        "src/tickle.c",
+        "            publisher_abandon_all_claims_locked((struct tt_Publisher*)endpoint);\n",
         "",
         "test_context_destroy_resolves_an_outstanding_claim",
     ),

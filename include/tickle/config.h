@@ -674,6 +674,11 @@
 #ifndef tt_SEGMENT_ENCODE_IN_SLOT
 #define tt_SEGMENT_ENCODE_IN_SLOT 1
 #endif
+// Ring slots one Publisher may hold claimed at once (tt_Publisher_claim()): each is held out of ring order and handed
+// over by reference at its publish, so several can be out without stopping any ring. Each costs 32 B of tt_Publisher.
+#ifndef tt_PUBLISHER_CLAIMS
+#define tt_PUBLISHER_CLAIMS 4
+#endif
 // The switch from UDP to a peer's segment (tt_SEGMENT_SPAN_FENCE, tickle.h). How long an owner keeps a fence at the
 // head of its ring waiting for the fence's datagram, reading its socket meanwhile. The datagram is sent before the
 // record is written, and on one host a datagram is queued at the receiving socket within the sender's own sendto()
