@@ -125,6 +125,9 @@ static uint32_t value_of(const uint8_t* payload) {
     return value;
 }
 
+// A slot's held mark after index `index` (segment_pass_held()): held at `index`, or passed over there.
+#define HELD(index) ((index) + 2U)
+
 static uint32_t slot_sequence(const struct tt_Context* owner, uint32_t index) {
     return ((const struct tt_SegmentSlot*)segment_slot(owner->own_segment, index))->sequence;
 }
@@ -289,9 +292,10 @@ static void drain(struct tt_Context* owner) {
 
 // ---- The segment path.
 
-// A retained sample stays in its slot while the ring goes on, a lap and more: the slot is not released, so no writer
-// reuses it, and from one lap on the ring is full - counted, and counted as a hold. The release frees it and the
-// stream continues. Without the hold the ninth record overwrites the first.
+// A retained sample stays in its slot while the ring goes on, a lap and more: the slot carries a held mark, which the
+// writers pass over at each lap (DESIGN.md section 10, "Held slots"), so no writer reuses it and none is refused. The
+// release frees it for the first index at its position no writer has passed, and the stream continues. Without the
+// hold the ninth record overwrites the first; without the pass the ring is full from the ninth on.
 static void test_a_retained_slot_survives_a_lap(void) {
     rig_up(true, 0);
     cb.mode = KEEP_FIRST;
@@ -299,7 +303,7 @@ static void test_a_retained_slot_survives_a_lap(void) {
     drain(&rig.owner);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)cb.last_retain);
     EXPECT_EQ_U32(1, cb.kept_count);
-    EXPECT_EQ_U32(1, slot_sequence(&rig.owner, 0)); // published, unread by the writers' reckoning: held
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0)); // held at index 0
     EXPECT_EQ_U32(1, rig.owner.own_segment->read_index);
     EXPECT_EQ_U32(1, rig.owner.lend.held_slots);
 
@@ -308,18 +312,25 @@ static void test_a_retained_slot_survives_a_lap(void) {
         drain(&rig.owner);
     }
     EXPECT_TRUE(kept_intact(&cb.kept[0]));
-    EXPECT_EQ_U32(SLOTS, cb.seen); // the first sample and the seven that fit before the held slot came round
-    EXPECT_EQ_U64(SLOTS + 1, rig.sender.segment_full_dropped);
-    EXPECT_EQ_U64(SLOTS + 1, rig.sender.lend.full_retained);
+    EXPECT_EQ_U32((2 * SLOTS) + 1, cb.seen); // every sample: indices SLOTS and 2 x SLOTS were passed over
+    for (uint32_t i = 0; i <= 2 * SLOTS; i++) {
+        EXPECT_EQ_U32(100 + i, cb.values[i]); // in order
+    }
+    EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(0, rig.sender.lend.full_retained);
+    EXPECT_EQ_U64(2, rig.owner.segment_held_passed);
+    EXPECT_EQ_U32((2 * SLOTS) + 3, rig.owner.own_segment->write_index); // 2 x SLOTS + 1 records and two passes
+    EXPECT_EQ_U32((2 * SLOTS) + 3, rig.owner.own_segment->read_index);
+    EXPECT_EQ_U32(HELD(2 * SLOTS), slot_sequence(&rig.owner, 0)); // passed at SLOTS, then at 2 x SLOTS
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
-    EXPECT_EQ_U32(SLOTS, slot_sequence(&rig.owner, 0)); // free for the writer one lap ahead
+    EXPECT_EQ_U32(3 * SLOTS, slot_sequence(&rig.owner, 0)); // free for the next index at its position
     EXPECT_TRUE(cb.kept[0].sample.payload == NULL && cb.kept[0].sample.handle == 0);
     EXPECT_EQ_U32(0, rig.owner.lend.held_slots);
     publish(500);
     drain(&rig.owner);
-    EXPECT_EQ_U32(SLOTS + 1, cb.seen);
-    EXPECT_EQ_U32(500, cb.values[SLOTS]);
+    EXPECT_EQ_U32((2 * SLOTS) + 2, cb.seen);
+    EXPECT_EQ_U32(500, cb.values[(2 * SLOTS) + 1]);
     EXPECT_EQ_U64(1, rig.owner.lend.retains);
     EXPECT_EQ_U64(1, rig.owner.lend.releases);
     rig_down();
@@ -339,8 +350,9 @@ static void test_unretained_records_are_released_as_read(void) {
     rig_down();
 }
 
-// A held slot blocks only its own ring: a second receiving context fed by the same writer keeps receiving.
-static void test_a_held_slot_blocks_only_its_own_ring(void) {
+// A held slot blocks no ring: its own ring passes it over, and a second receiving context fed by the same writer keeps
+// receiving.
+static void test_a_held_slot_blocks_no_ring(void) {
     rig_up(true, 0);
     init_owner(&rig.owner2, OWNER2_ID, OWNER2_IP, true);
     init_sub(&rig.sub2, &rig.owner2, TOPIC_A_ID, 0);
@@ -357,8 +369,9 @@ static void test_a_held_slot_blocks_only_its_own_ring(void) {
         drain(&rig.owner);
         drain(&rig.owner2);
     }
-    // owner: the first lap, then full. owner2: every record (seen counts both Subscribers' deliveries).
-    EXPECT_EQ_U32(SLOTS + (2 * SLOTS + 1), cb.seen);
+    // Both: every record (seen counts both Subscribers' deliveries).
+    EXPECT_EQ_U32(2 * ((2 * SLOTS) + 1), cb.seen);
+    EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
     EXPECT_EQ_U32((2 * SLOTS) + 1, rig.owner2.own_segment->read_index);
     EXPECT_EQ_U32(0, rig.owner2.lend.held_slots);
     EXPECT_TRUE(kept_intact(&cb.kept[0]));
@@ -381,16 +394,18 @@ static void test_skip_to_newest_never_frees_a_retained_slot(void) {
     EXPECT_EQ_U32(2, cb.seen); // the newest of the backlog
     EXPECT_EQ_U32(400 + SLOTS - 1, cb.values[1]);
     EXPECT_EQ_U64(SLOTS - 2, rig.owner.rx_shm_skipped_superseded);
-    EXPECT_EQ_U32(1, slot_sequence(&rig.owner, 0));
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0));
     for (uint32_t i = 0; i < 3; i++) {
-        publish(500 + i); // the held slot has come round: refused
+        publish(500 + i); // the held slot has come round: passed over
     }
     drain(&rig.owner);
-    EXPECT_EQ_U32(1, slot_sequence(&rig.owner, 0));
+    EXPECT_EQ_U32(HELD(SLOTS), slot_sequence(&rig.owner, 0));
     EXPECT_TRUE(kept_intact(&cb.kept[0]));
-    EXPECT_EQ_U64(3, rig.sender.lend.full_retained);
+    EXPECT_EQ_U64(0, rig.sender.lend.full_retained);
+    EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U32(502, cb.values[cb.seen - 1]); // the newest
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
-    EXPECT_EQ_U32(SLOTS, slot_sequence(&rig.owner, 0));
+    EXPECT_EQ_U32(2 * SLOTS, slot_sequence(&rig.owner, 0));
     rig_down();
 }
 
@@ -406,7 +421,7 @@ static void test_a_batch_record_is_released_with_its_last_sample(void) {
     drain(&rig.owner);
     EXPECT_EQ_U32(2, cb.kept_count);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
-    EXPECT_EQ_U32(1, slot_sequence(&rig.owner, 0)); // still held by the second
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0)); // still held by the second
     EXPECT_TRUE(kept_intact(&cb.kept[1]));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[1].sample));
     EXPECT_EQ_U32(SLOTS, slot_sequence(&rig.owner, 0));
@@ -450,7 +465,7 @@ static void test_bad_releases_are_refused_and_touch_nothing(void) {
     EXPECT_EQ_U32(stale.handle & 0xFFU, cb.kept[1].sample.handle & 0xFFU);
     EXPECT_TRUE(stale.handle != cb.kept[1].sample.handle);
     EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Sample_release(&rig.owner, &stale)); // released already
-    EXPECT_EQ_U32(2, slot_sequence(&rig.owner, 1)); // the new sample's slot: still held
+    EXPECT_EQ_U32(HELD(1), slot_sequence(&rig.owner, 1)); // the new sample's slot: still held
     EXPECT_EQ_U32(1, rig.owner.lend.held);
     struct tt_Sample unknown = {NULL, 0, 0xABCDEF00U | tt_SAMPLE_RETAIN_MAX, false};
     EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Sample_release(&rig.owner, &unknown)); // an entry not in use
@@ -568,7 +583,7 @@ static void test_destroy_forgets_held_samples(void) {
     drain(&rig.owner);
     lend_forget_all(&rig.owner);
     EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
-    EXPECT_EQ_U32(1, slot_sequence(&rig.owner, 0)); // untouched (the real teardown unmaps it next)
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0)); // untouched (the real teardown unmaps it next)
     rig_down();
 }
 
@@ -721,7 +736,7 @@ int main(void) {
     test_a_socket_sample_is_aligned_for_a_64_bit_type();
     test_a_retained_slot_survives_a_lap();
     test_unretained_records_are_released_as_read();
-    test_a_held_slot_blocks_only_its_own_ring();
+    test_a_held_slot_blocks_no_ring();
     test_skip_to_newest_never_frees_a_retained_slot();
     test_a_batch_record_is_released_with_its_last_sample();
     test_retain_and_release_in_one_callback();

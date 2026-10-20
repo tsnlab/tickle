@@ -356,6 +356,11 @@ $(OBJ)/tests/test_sample_lending: $(TEST_DIR)/test_sample_lending.c $(SRC)/encod
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# test_segment_held.c runs writers, a reader and a releaser on threads of their own against one ring.
+$(OBJ)/tests/test_segment_held: $(TEST_DIR)/test_segment_held.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
 # test_large_sample.c releases a retained large sample from a second thread too.
 $(OBJ)/tests/test_large_sample: $(TEST_DIR)/test_large_sample.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
