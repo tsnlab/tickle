@@ -37,6 +37,10 @@
 //   claimed  the ring again, the talker with RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 and the listener with ring slots lent:
 //          the talker's loans are built in the listener's ring slots (core's tt_Publisher_claim()) and the listener's
 //          are read in those same slots - no copy on either side; the ring case is its control (no slot loans there);
+//   claimed-many  claimed, with several loans out at once: each round borrows CLAIM_BATCH messages - more than core's
+//          tt_PUBLISHER_CLAIMS slots, so the rest are kept buffers (the copy fallback) - publishes them last-borrowed
+//          first, and then one message the ordinary way; ids follow the publish order, and every sample must arrive
+//          whole and in that order, some built and read in slots, some from kept buffers;
 //   held-small   held again, with the listener's KEEP_ALL queue cut to a few samples
 //   (RMW_TICKLE_READER_KEEP_ALL_BYTES),
 //          so the flood is declined over and over: every sample must still arrive, and the declines must have
@@ -409,8 +413,10 @@ static void check_take(rmw_node_t* node) {
 // ---------------------------------------------------------------------------------------------------------------
 // Two processes
 
-enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL, CLAIMED };
-static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned", "held-small", "claimed"};
+enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL, CLAIMED, CLAIMED_MANY };
+static const char* const scenario_names[] = {"ring",        "udp",        "pinned",  "held",
+                                             "held-pinned", "held-small", "claimed", "claimed-many"};
+#define CLAIM_BATCH (tt_PUBLISHER_CLAIMS + 2U) // loans out at once in claimed-many: two past core's claims
 #define SMALL_QUEUE_BYTES "8000" // the held-small listener's KEEP_ALL budget: a handful of Array1k samples
 // The paced cases (not held): the talker keeps at most this many samples untaken, well inside the loans the listener
 // keeps in place, so a listener the scheduler is late to still finds room for every sample.
@@ -435,8 +441,9 @@ struct talker_report {
     uint64_t segment_full_dropped;
     uint64_t published;
     uint64_t failed;
-    uint64_t loans_in_slot; // the data publisher's loans published from a claimed ring slot
-    uint64_t claims_copied; // claims whose destination changed before their publish (core's segment_claims_copied)
+    uint64_t loans_in_slot;   // the data publisher's loans published from a claimed ring slot
+    uint64_t claims_copied;   // claims whose destination changed before their publish (core's segment_claims_copied)
+    uint64_t loans_published; // the data publisher's loans published, from a slot or a kept buffer
 };
 
 static bool wait_matched_subscriptions(rmw_publisher_t* pub, size_t want) {
@@ -540,15 +547,45 @@ static int talk_held(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* d
     return 0;
 }
 
+// claimed-many's talking: rounds of CLAIM_BATCH loans out at once, published last-borrowed first, then one ordinary
+// publish; ids in publish order, RING_SAMPLES in all. Paced by the listener's takes as the ring case is: a round starts
+// only once every earlier sample was taken, so its CLAIM_BATCH + 1 samples fit in the loans the listener keeps in place
+// (RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION) whatever the scheduler does. 0, or the talker's exit code.
+static int talk_claimed_many(rmw_publisher_t* data, int from_listener, struct talker_report* report) {
+    _Static_assert(CLAIM_BATCH + 1U <= RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION, "a round must fit the retained loans");
+    uint64_t id = 1;
+    uint64_t taken = 0;
+    while (id <= RING_SAMPLES) {
+        if (WINDOW_OPEN != wait_for_window(from_listener, id, 1U, &taken)) {
+            return 3;
+        }
+        void* loans[CLAIM_BATCH];
+        for (size_t k = 0; k < CLAIM_BATCH; k++) {
+            loans[k] = NULL;
+            assert(RMW_RET_OK == rmw_borrow_loaned_message(data, &array1k_handle, &loans[k]));
+        }
+        for (size_t k = CLAIM_BATCH; k-- > 0;) {
+            fill_array1k(loans[k], id++);
+            assert(RMW_RET_OK == rmw_publish_loaned_message(data, loans[k], NULL));
+        }
+        struct array1k plain;
+        fill_array1k(&plain, id++);
+        assert(RMW_RET_OK == rmw_publish(data, &plain, NULL));
+        sleep_poll();
+    }
+    report->published = id - 1;
+    return 0;
+}
+
 // The talker: publishes with loans, and reports its own ring refusals. Exits nonzero on any failure.
 static int talker(enum scenario which, int to_listener, int from_listener) {
     struct endpoint_set set;
     open_set(&set, "loan_talker");
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)set.node->data)->context_impl;
-    struct talker_report report = {0, 0, 0, 0, 0};
+    struct talker_report report = {0, 0, 0, 0, 0, 0};
     // A KEEP_ALL publish blocked on a stopped ring gives up after this long (the control case is the one that blocks).
     assert(0 == setenv("RMW_TICKLE_MAX_BLOCKING_MS", "300", 1));
-    if (CLAIMED == which) {
+    if (CLAIMED == which || CLAIMED_MANY == which) {
         assert(0 == setenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS", "1", 1)); // read at publisher creation
     }
     rmw_publisher_t* data = make_publisher(set.node, &array1k_handle, TOPIC_DATA, qos_of(true, true, 0));
@@ -565,6 +602,11 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     }
     if (NULL != held) {
         int code = talk_held(context_impl, data, held, from_listener, HELD_SMALL != which, &report);
+        if (0 != code) {
+            return code;
+        }
+    } else if (CLAIMED_MANY == which) {
+        int code = talk_claimed_many(data, from_listener, &report);
         if (0 != code) {
             return code;
         }
@@ -588,6 +630,7 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     report.claims_copied = context_impl->tickle_context.segment_claims_copied;
     tt_Context_unlock(&context_impl->tickle_context);
     report.loans_in_slot = ((rmw_tickle_publisher_t*)data->data)->loans_in_slot;
+    report.loans_published = ((rmw_tickle_publisher_t*)data->data)->loans_published;
     if (sizeof(report) != (size_t)write(to_listener, &report, sizeof(report))) {
         return 4;
     }
@@ -690,7 +733,7 @@ static void take_held_loans(rmw_subscription_t* data, rmw_subscription_t* held,
 static struct talker_report receive_until_reported(rmw_subscription_t* data,
                                                    const rmw_tickle_context_impl_t* context_impl, int from_talker,
                                                    struct tally* tally) {
-    struct talker_report report = {0, 0, 0, 0, 0};
+    struct talker_report report = {0, 0, 0, 0, 0, 0};
     bool reported = false;
     int after_report = 0;
     for (int i = 0; i < WAIT_POLLS * 3 && after_report < WAIT_POLLS / 5; i++) {
@@ -725,6 +768,14 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
         assert(want == tally->received && want == report->published && 0 == report->failed);
         assert(report->loans_in_slot > want / 2U);
         assert(tally->where[IN_RING] > want / 2U);
+        break;
+    case CLAIMED_MANY:
+        // Every sample in publish order (take_checked() requires it), some through slots and some not: core's claims
+        // ran out each round, and the rest went from kept buffers - the copy fallback - without a failure.
+        assert(want == tally->received && want == report->published && 0 == report->failed);
+        assert(report->loans_in_slot > want / 3U);
+        assert(report->loans_published > report->loans_in_slot);
+        assert(tally->where[IN_RING] > want / 3U);
         break;
     case UDP:
         assert(want == tally->received && want == report->published);
@@ -764,7 +815,7 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
 }
 
 static void run_two_process(enum scenario which) {
-    bool pinned = PINNED == which || HELD_PINNED == which || CLAIMED == which;
+    bool pinned = PINNED == which || HELD_PINNED == which || CLAIMED == which || CLAIMED_MANY == which;
     if (pinned) {
         assert(0 == setenv("RMW_TICKLE_LOAN_RING_SLOTS", "1", 1));
     } else {
@@ -805,7 +856,8 @@ static void run_two_process(enum scenario which) {
                           .next_id = 1,
                           .where = {0, 0, 0},
                           .ack_fd = HELD_SMALL == which ? -1 : to_talker[1]};
-    uint64_t want = RING_SAMPLES; // the held cases: the talker's report says how many it sent before the flood
+    uint64_t want = RING_SAMPLES; // claimed-many: its rounds may end past it; the held cases: the talker's report says
+                                  // how many it sent before the flood
     uint64_t held_where[3] = {0, 0, 0};
     void* held_loans[HELD_LOANS];
     if (held_case) {
@@ -814,8 +866,8 @@ static void run_two_process(enum scenario which) {
         assert(1 == write(to_talker[1], &signal, 1));
     }
     struct talker_report report = receive_until_reported(data, context_impl, to_listener[0], &tally);
-    if (held_case) {
-        want = report.published; // the warm-up's length is the talker's to decide
+    if (held_case || CLAIMED_MANY == which) {
+        want = report.published; // the warm-up's length, or the last round's end, is the talker's to decide
     }
     char done = 1;
     assert(1 == write(to_talker[1], &done, 1));
@@ -878,6 +930,7 @@ int main(void) {
     run_two_process(HELD_PINNED);
     run_two_process(HELD_SMALL);
     run_two_process(CLAIMED);
+    run_two_process(CLAIMED_MANY);
     printf("test_loaned_messages: PASS\n");
     return 0;
 }
