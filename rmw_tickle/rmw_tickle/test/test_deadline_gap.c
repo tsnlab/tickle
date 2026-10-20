@@ -26,12 +26,32 @@
 //   control: no gap (the cadence just continues) at phi = 0.25 P: 0 on both sides.
 // Publishes are every P/4 before and after the gap, far inside the deadline.
 //
+// The counts are judged against the gaps that actually happened, not the ones planned (2026-10-20). Each sample's
+// activity time - the rmw's own tt_get_ns() inside rmw_publish(), and the subscription's on arrival - is bracketed by
+// two clocks read here: before rmw_publish() and after the take that returned it. An interval between two samples of
+// G in [lo, hi] can count anything from ceil((lo - S)/P) - 1 to floor(hi/P) misses; summed over every interval from
+// the last sample before the gap to the end of the case (plus the silence before the counts are read, which can only
+// add), that is the realized range. S (CHECK_SLACK_NS, P/4) is how late a deadline check may run: a miss due at L + kP
+// is counted only if its check runs before the sample that ends the gap arrives, so one due less than S before that
+// sample may be lost to the poll thread's scheduling. The 3P cases lose theirs that way on an idle PC, which is why
+// they always allowed 2..3; a check later than S still reads as a wrong count, not a VOID. Until then a case was VOID
+// whenever any of its ~20 publishes went out more than 5 ms late, which under a loaded PC (make check-gates, a shared
+// CI runner) is most cases: one stayed VOID 3 times at 15-36 ms of lateness while every count it produced was right.
+// Lateness alone is not a reason to discard a case; lateness that changes what the case tests is. P is 200 ms so that a
+// scheduler late by tens of milliseconds - the publisher's sleep or the deadline check's - stays a small fraction of
+// the half period every 1.5P case has on each side of its count.
+//
 // Reading rules, enforced below, not only stated here:
-//   - VOID (not a result) if a planned publish happened more than JITTER_MS late, or the subscription did not take the
+//   - VOID (not a result) if the realized range is not inside the planned one (a gap or a cadence interval that came
+//     out long enough to change the count the case was meant to test, or counts read only after a check may have
+//     run), if an interval before the gap was long enough to count a miss, or if the subscription did not take the
 //     last sample before the gap or the first one after it - then the requested-side count would not be about the gap.
-//     A VOID case is retried up to MAX_TRIES times; still VOID is a failure (exit 1), never a pass.
-//   - PASS (exit 0): every case's count, on both sides, is inside its range above.
+//     A VOID case is retried up to MAX_TRIES times while the run is inside RETRY_BUDGET_NS; still VOID is a failure
+//     (exit 1), never a pass.
+//   - PASS (exit 0): every case's count, on both sides, is inside its realized range, which is inside the planned one.
 //   - FAIL (exit 1): anything else.
+// The realized phase (L - C, in percent of P) is printed beside each verdict: it is what decides whether the
+// pre-D4 defect could show in that case, and a loaded scheduler moves it.
 
 #include <assert.h>
 #include <stdbool.h>
@@ -117,14 +137,15 @@ static rosidl_message_type_support_t fake_handle = {.data = &fake_callbacks,
 #define NS_PER_S 1000000000ULL
 #define PERCENT 100U // phases are given in percent of P
 #define TOPIC_CHARS 64
-#define PERIOD_MS 100ULL
+#define PERIOD_MS 200ULL
 #define PERIOD_NS (PERIOD_MS * NS_PER_MS)
 #define CADENCE_NS (PERIOD_NS / 4) // publishes before and after the gap: far inside the deadline
-#define WARMUP_PERIODS 3ULL        // whole periods of cadence before the period the gap starts in
-#define AFTER_NS (2 * PERIOD_NS)   // cadence after the gap, before the counts are read
-#define JITTER_MS 5ULL             // a publish later than this is a VOID case: the phase was not the one planned
-#define MAX_TRIES 3
-#define LONG_GAP_PERIODS 5ULL // the 5.5P case: whole periods missed
+#define WARMUP_PERIODS 1ULL        // whole periods of cadence before the period the gap starts in
+#define AFTER_NS (PERIOD_NS)       // cadence after the gap, before the counts are read
+#define MAX_TRIES 5
+#define RETRY_BUDGET_NS (40ULL * NS_PER_S) // no retry starts after this much of the run: ctest's timeout is 60 s
+#define LONG_GAP_PERIODS 5ULL              // the 5.5P case: whole periods missed
+#define CHECK_SLACK_NS (PERIOD_NS / 4)     // how late a deadline check may run (header): half every 1.5P case's margin
 
 enum gap_kind { GAP_NONE, GAP_0_5P, GAP_1_5P, GAP_3P, GAP_5_5P };
 
@@ -138,8 +159,28 @@ struct outcome {
     const char* void_reason;
     uint64_t offered;   // total_count rise over the gap
     uint64_t requested; // total_count rise over the gap
-    uint64_t late_ns;   // worst publish lateness seen
+    uint64_t low;       // the realized range: the counts the gaps that actually happened allow
+    uint64_t high;
+    uint64_t late_ns;  // worst publish lateness seen, reported only
+    uint64_t phase_ns; // realized phi: L - C
 };
+
+// When a sample's activity happened, bracketed: before rmw_publish(), and after the take that returned it.
+struct stamp {
+    uint64_t lo;
+    uint64_t hi;
+};
+
+// The deadline counts an interval between two activities can produce: misses are counted at L + kP while no new
+// activity has come, so G strictly inside (kP, (k+1)P) gives k, and G == kP either k - 1 or k. A check may run up to
+// CHECK_SLACK_NS after it is due, and one that runs after the next activity counts nothing, so only the misses due at
+// least that long before the interval's end are certain.
+static void interval_range(struct stamp from, struct stamp until, uint64_t* low, uint64_t* high) {
+    uint64_t g_lo = until.lo > from.hi + CHECK_SLACK_NS ? until.lo - from.hi - CHECK_SLACK_NS : 0;
+    uint64_t g_hi = until.hi - from.lo;
+    *low = g_lo == 0 ? 0 : ((g_lo + PERIOD_NS - 1) / PERIOD_NS) - 1;
+    *high = g_hi / PERIOD_NS;
+}
 
 static void sleep_until(uint64_t target) {
     for (;;) {
@@ -168,12 +209,13 @@ static uint64_t requested_total(const rmw_event_t* event) {
     return (uint64_t)status.total_count;
 }
 
-// Publishes `value` at `planned` (absolute tt_get_ns()), records how late it went out, and drains the subscription.
-// Returns whether the subscription took exactly this value last.
+// Publishes `value` at `planned` (absolute tt_get_ns()), records how late it went out and when it was active (*active),
+// and drains the subscription. Returns whether the subscription took exactly this value last.
 static bool publish_at(rmw_publisher_t* pub, rmw_subscription_t* sub, uint64_t planned, uint32_t value,
-                       uint64_t* late_ns) {
+                       uint64_t* late_ns, struct stamp* active) {
     sleep_until(planned);
     uint64_t sent = tt_get_ns();
+    active->lo = sent;
     struct fake_msg message = {.value = value};
     assert(RMW_RET_OK == rmw_publish(pub, &message, NULL));
     if (sent - planned > *late_ns) {
@@ -188,6 +230,7 @@ static bool publish_at(rmw_publisher_t* pub, rmw_subscription_t* sub, uint64_t p
             got = incoming.value == value;
         }
     }
+    active->hi = tt_get_ns();
     return got;
 }
 
@@ -208,8 +251,31 @@ static uint64_t gap_length(enum gap_kind kind) {
     return CADENCE_NS;
 }
 
+// The counts a case is planned to show on each side, inclusive (see this file's header).
+static void expected_range(enum gap_kind kind, uint64_t* low, uint64_t* high) {
+    switch (kind) {
+    case GAP_1_5P:
+        *low = 1;
+        *high = 1;
+        return;
+    case GAP_3P:
+        *low = 2;
+        *high = 3;
+        return;
+    case GAP_5_5P:
+        *low = 5;
+        *high = 5;
+        return;
+    case GAP_0_5P:
+    case GAP_NONE:
+        break;
+    }
+    *low = 0;
+    *high = 0;
+}
+
 static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct gap_case gap_case, int index) {
-    struct outcome out = {.void_run = false, .void_reason = NULL, .offered = 0, .requested = 0, .late_ns = 0};
+    struct outcome out = {0};
     char topic[TOPIC_CHARS];
     (void)snprintf(topic, sizeof(topic), "/deadline_gap_%d", index);
 
@@ -233,27 +299,61 @@ static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct 
     // Cadence from C up to and including L = C + WARMUP_PERIODS * P + phi, the last sample before the gap.
     uint64_t last = created + (WARMUP_PERIODS * PERIOD_NS) + ((PERIOD_NS * gap_case.phase_pct) / PERCENT);
     uint32_t value = 1;
+    bool warmup_clean = true; // no interval before the gap long enough to count a miss
+    struct stamp prev = {.lo = created, .hi = created};
+    struct stamp now = prev;
     for (uint64_t at = created; at < last; at += CADENCE_NS) {
-        (void)publish_at(pub, sub, at, value++, &out.late_ns);
+        (void)publish_at(pub, sub, at, value++, &out.late_ns, &now);
+        uint64_t low = 0;
+        uint64_t high = 0;
+        interval_range(prev, now, &low, &high);
+        warmup_clean = warmup_clean && high == 0;
+        prev = now;
     }
-    bool before_ok = publish_at(pub, sub, last, value++, &out.late_ns);
+    bool before_ok = publish_at(pub, sub, last, value++, &out.late_ns, &now);
+    uint64_t low = 0;
+    uint64_t high = 0;
+    interval_range(prev, now, &low, &high);
+    warmup_clean = warmup_clean && high == 0;
+    struct stamp before_gap = now;
+    out.phase_ns = before_gap.lo - created;
     uint64_t offered_before = offered_total(&offered);
     uint64_t requested_before = requested_total(&requested);
+    // A miss counted before these reads is not in the case's count: as many as could have come due by now come off
+    // the gap's lower bound.
+    uint64_t read_before = tt_get_ns();
+    uint64_t counted_early = (read_before - before_gap.lo) / PERIOD_NS;
 
     uint64_t resume = last + gap_length(gap_case.kind);
-    bool after_ok = publish_at(pub, sub, resume, value++, &out.late_ns);
+    bool after_ok = publish_at(pub, sub, resume, value++, &out.late_ns, &now);
+    bool after_cadence_ok = true; // each sample's own drain took it, so its stamp brackets its arrival
+    interval_range(before_gap, now, &out.low, &out.high);
+    out.low = out.low > counted_early ? out.low - counted_early : 0;
+    prev = now;
     for (uint64_t at = resume + CADENCE_NS; at <= resume + AFTER_NS; at += CADENCE_NS) {
-        (void)publish_at(pub, sub, at, value++, &out.late_ns);
+        after_cadence_ok = publish_at(pub, sub, at, value++, &out.late_ns, &now) && after_cadence_ok;
+        interval_range(prev, now, &low, &high);
+        out.low += low;
+        out.high += high;
+        prev = now;
     }
     out.offered = offered_total(&offered) - offered_before;
     out.requested = requested_total(&requested) - requested_before;
+    // The silence from the last sample to these reads: a check may or may not have run in it.
+    out.high += (tt_get_ns() - prev.lo) / PERIOD_NS;
 
-    if (out.late_ns > JITTER_MS * NS_PER_MS) {
+    uint64_t planned_low = 0;
+    uint64_t planned_high = 0;
+    expected_range(gap_case.kind, &planned_low, &planned_high);
+    if (out.low < planned_low || out.high > planned_high) {
         out.void_run = true;
-        out.void_reason = "a publish went out late, so the phase was not the one planned";
-    } else if (!before_ok || !after_ok) {
+        out.void_reason = "the realized gaps allow a count outside the planned one";
+    } else if (!warmup_clean) {
         out.void_run = true;
-        out.void_reason = "the subscription did not take the samples around the gap";
+        out.void_reason = "an interval before the gap was long enough to count a miss";
+    } else if (!before_ok || !after_ok || !after_cadence_ok) {
+        out.void_run = true;
+        out.void_reason = "the subscription did not take a sample from the gap on as it was published";
     }
 
     assert(RMW_RET_OK == rmw_event_fini(&offered));
@@ -279,43 +379,23 @@ static const char* kind_name(enum gap_kind kind) {
     return "none";
 }
 
-// A case run until it is not VOID, at most MAX_TRIES times.
+// A case run until it is not VOID, at most MAX_TRIES times, and no retry once the run is RETRY_BUDGET_NS old.
 static struct outcome run_with_retries(rmw_node_t* talker, rmw_node_t* listener, struct gap_case gap_case, int index,
-                                       int* tries) {
+                                       uint64_t started, int* tries) {
     struct outcome out;
     *tries = 0;
     do {
         out = run_case(talker, listener, gap_case, (index * MAX_TRIES) + *tries);
         (*tries)++;
         if (out.void_run) {
-            printf("  gap %s phi %2u%%: VOID (%s; worst lateness %.2f ms)\n", kind_name(gap_case.kind),
-                   gap_case.phase_pct, out.void_reason, (double)out.late_ns / (double)NS_PER_MS);
+            printf("  gap %s phi %2u%%: VOID (%s; realized %llu..%llu, offered +%llu requested +%llu, worst lateness "
+                   "%.2f ms)\n",
+                   kind_name(gap_case.kind), gap_case.phase_pct, out.void_reason, (unsigned long long)out.low,
+                   (unsigned long long)out.high, (unsigned long long)out.offered, (unsigned long long)out.requested,
+                   (double)out.late_ns / (double)NS_PER_MS);
         }
-    } while (out.void_run && *tries < MAX_TRIES);
+    } while (out.void_run && *tries < MAX_TRIES && tt_get_ns() - started < RETRY_BUDGET_NS);
     return out;
-}
-
-// The counts a case must show on each side, inclusive (see this file's header).
-static void expected_range(enum gap_kind kind, uint64_t* low, uint64_t* high) {
-    switch (kind) {
-    case GAP_1_5P:
-        *low = 1;
-        *high = 1;
-        return;
-    case GAP_3P:
-        *low = 2;
-        *high = 3;
-        return;
-    case GAP_5_5P:
-        *low = 5;
-        *high = 5;
-        return;
-    case GAP_0_5P:
-    case GAP_NONE:
-        break;
-    }
-    *low = 0;
-    *high = 0;
 }
 
 struct tally {
@@ -329,15 +409,16 @@ static void judge(struct gap_case gap_case, struct outcome out, int tries, struc
         tally->any_void = true;
         return;
     }
-    uint64_t low = 0;
-    uint64_t high = 0;
-    expected_range(gap_case.kind, &low, &high);
+    // run_case() VOIDs a realized range that is not inside the planned one, so this is the planned count or tighter.
+    uint64_t low = out.low;
+    uint64_t high = out.high;
     bool holds = out.offered >= low && out.offered <= high && out.requested >= low && out.requested <= high;
     tally->all_hold = tally->all_hold && holds;
-    printf("  gap %s phi %2u%%: offered +%llu requested +%llu  expected %llu..%llu  %s (worst lateness %.2f ms, "
-           "tries %d)\n",
+    printf("  gap %s phi %2u%%: offered +%llu requested +%llu  expected %llu..%llu  %s (realized phi %llu%%, worst "
+           "lateness %.2f ms, tries %d)\n",
            kind_name(gap_case.kind), gap_case.phase_pct, (unsigned long long)out.offered,
            (unsigned long long)out.requested, (unsigned long long)low, (unsigned long long)high, holds ? "ok" : "WRONG",
+           (unsigned long long)(((out.phase_ns * PERCENT) / PERIOD_NS) % PERCENT),
            (double)out.late_ns / (double)NS_PER_MS, tries);
 }
 
@@ -363,9 +444,10 @@ int main(void) {
     struct tally tally = {.all_hold = true, .any_void = false};
     printf("deadline gap: P = %llu ms, cadence %llu ms, gap 1.5P = %llu ms\n", PERIOD_MS, CADENCE_NS / NS_PER_MS,
            (3 * PERIOD_MS) / 2);
+    uint64_t started = tt_get_ns();
     for (int i = 0; i < count; i++) {
         int tries = 0;
-        struct outcome out = run_with_retries(talker, listener, cases[i], i, &tries);
+        struct outcome out = run_with_retries(talker, listener, cases[i], i, started, &tries);
         judge(cases[i], out, tries, &tally);
     }
 
@@ -376,7 +458,10 @@ int main(void) {
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
 
     if (tally.any_void) {
-        printf("deadline gap: FAIL - a case stayed VOID after %d tries; nothing was decided\n", MAX_TRIES);
+        printf(
+            "deadline gap: FAIL - a case stayed VOID after its tries (at most %d, none started after %llu s); nothing "
+            "was decided\n",
+            MAX_TRIES, RETRY_BUDGET_NS / NS_PER_S);
         return 1;
     }
     if (!tally.all_hold) {
