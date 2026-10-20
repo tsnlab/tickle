@@ -56,7 +56,7 @@ static void subscriber_task(void* param) {
 
     // The default QoS (a NULL profile): RELIABLE, KEEP_LAST 10, VOLATILE - rmw's default, as the publisher's.
     size_t storage_size = tt_Subscriber_storage_size(&UInt64Topic, NULL);
-    printf("subscriber: storage %u of %u bytes\n", (unsigned)storage_size, (unsigned)sizeof(sub_storage));
+    printf("subscriber: storage %lu of %lu bytes\n", (unsigned long)storage_size, (unsigned long)sizeof(sub_storage));
     struct tt_SubscriberOptions sub_options = {.callback = (tt_SUBSCRIBER_CALLBACK)subscriber_callback};
     ret = tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &UInt64Topic, "uint64_topic", NULL,
                                     &sub_options, sub_storage, sizeof(sub_storage));
