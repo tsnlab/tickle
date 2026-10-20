@@ -235,6 +235,44 @@ $(printf '%-10s FAIL (%s)' "$label" "$verdict")"
     return 1
 }
 
+# Two contexts in ONE image over the shared-memory segment the HAL provides (main_segment.c, ROLE=segment), one image
+# per arm: shm (the HAL's default memory), static (the application's own region), refused (no memory: the UDP
+# fallback) and off (-Dtt_SEGMENT_ENABLED=0, the build every FreeRTOS image was before - the control that the
+# counters see lwIP when it carries the samples). main_segment.c holds the pre-registered reading and decides; its PASS
+# line and the finisher's status must agree, as for the selftest. Netconn build only: the socket build has no doorbell,
+# so its writers ring over UDP and the shm arm's "no unicast over UDP" would not hold by design.
+SEGMENT_MCAST_GROUP=230.0.0.1:5011
+run_segment() {
+    arm=$1
+    name=$2
+    flags="-DSEGMENT_TEST_ARM=$arm${3:+ $3}"
+    log="segment-$name.log"
+    label="segment/$name"
+    if ! make ROLE=segment NODE_ID=1 TT_FLAGS="$flags" VARIANT="-$name" all; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (did not build)' "$label")"
+        return 1
+    fi
+    timeout 60 qemu-system-riscv32 -machine virt -nographic -bios none -kernel "RTOSDemo-segment-1-$name.elf" \
+        -global virtio-mmio.force-legacy=off \
+        -netdev socket,id=net0,mcast=$SEGMENT_MCAST_GROUP -device virtio-net-device,netdev=net0 \
+        </dev/null >"$log" 2>&1
+    segment_status=$?
+    sed -i 's/\r$//' "$log" # CR LF from the serial console; the whole-line matches below need LF
+
+    echo "=== $log (segment lines) ==="
+    grep '^segment: ' "$log"
+    deltas=$(grep -E '^segment: (A|B) tx_udp=' "$log" | sed 's/^segment: //' | tr '\n' ';')
+    if [ "$segment_status" -eq 0 ] && grep -qx 'segment: PASS' "$log"; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s PASS (%s)' "$label" "$deltas")"
+        return 0
+    fi
+    SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (status %s; %s failed checks)' "$label" "$segment_status" "$(grep -c '^segment: FAIL ' "$log")")"
+    return 1
+}
+
 status=0
 run_selftest netconn || status=1
 # The arrival callback never counts: the hint stays "no" with a datagram queued - the missed readiness hal.h forbids.
@@ -250,6 +288,10 @@ run_rx_hint_mutant always_maybe "netconn: tt_rx_maybe_ready() is false with noth
     '    if ((__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' \
     '    if (false && (__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' || status=1
 run_selftest socket || status=1
+run_segment 1 shm || status=1
+run_segment 2 static || status=1
+run_segment 3 refused || status=1
+run_segment 4 off -Dtt_SEGMENT_ENABLED=0 || status=1
 run_round_trip uint64 publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip set_bool client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
 run_round_trip ping_pong ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' "$PING_DURATION_S" || status=1

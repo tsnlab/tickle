@@ -30,6 +30,8 @@ OBJCOPY = $(CROSS)objcopy
 #                             examples/uint64/UInt64.{c,h}
 #   client / server         - examples/freertos/set_bool/main_{client,server}.c, the set_bool RPC
 #                             round trip, reusing examples/set_bool/SetBool.{c,h}
+#   segment                - main_segment.c: two contexts in ONE image, over the shared-memory segment the HAL
+#                             provides (SEGMENT_TEST_ARM in TT_FLAGS picks the arm - see the file and test.sh)
 #   perf_client / perf_server - examples/freertos/perf/main_perf_{client,server}.c, a (small,
 #                             fixed-rate - see main_perf_client.c) round trip over the same
 #                             protocol examples/linux/perf/ uses for real throughput
@@ -88,12 +90,16 @@ else ifeq ($(ROLE),perf_client)
 MAIN_SRC = $(ROOT)/examples/freertos/perf/main_perf_client.c
 ROLE_SRCS = $(ROOT)/examples/perf/Bulk.c
 ROLE_INCLUDES = -I$(ROOT)/examples/perf
+else ifeq ($(ROLE),segment)
+MAIN_SRC = main_segment.c
+ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else ifeq ($(ROLE),perf_server)
 MAIN_SRC = $(ROOT)/examples/freertos/perf/main_perf_server.c
 ROLE_SRCS = $(ROOT)/examples/perf/Bulk.c
 ROLE_INCLUDES = -I$(ROOT)/examples/perf
 else
-$(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', 'pong', 'publisher', 'subscriber', 'client', 'server', 'perf_client', or 'perf_server')
+$(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', 'pong', 'publisher', 'subscriber', 'client', 'server', 'segment', 'perf_client', or 'perf_server')
 endif
 
 ROOT = ../..
@@ -122,6 +128,10 @@ ASFLAGS = $(ARCH_FLAGS) -I$(CHIP_EXT) -I.
 # newlib - it supplies the isystem include path and -lc. -nostartfiles overrides its default
 # crt0/linker script so our own start.S/link.ld stay in control of boot and memory layout.
 CFLAGS += --specs=picolibc.specs
+# TT_FLAGS: extra -D settings for TickLE itself (e.g. -Dtt_SEGMENT_ENABLED=0, test.sh's no-segment arm). Name the build
+# apart with VARIANT, since objects compiled with different TT_FLAGS are not interchangeable.
+TT_FLAGS ?=
+CFLAGS += $(TT_FLAGS)
 
 ELF = RTOSDemo-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)$(VARIANT).elf
 LDFLAGS = $(ARCH_FLAGS) -nostartfiles --specs=picolibc.specs -T board/link.ld \
