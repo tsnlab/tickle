@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <sys/resource.h>
+
 #include "rclcpp/publisher.hpp"
 #include "rmw_perf_pingpong/msg/array1k.hpp"
 #include "rmw_perf_pingpong/msg/bench.hpp"
@@ -62,6 +64,24 @@ namespace pingpong {
         const auto real_ns = (static_cast<int64_t>(real.tv_sec) * static_cast<int64_t>(stamp_ns_per_s)) + real.tv_nsec;
         const auto mono_ns = (static_cast<int64_t>(mono.tv_sec) * static_cast<int64_t>(stamp_ns_per_s)) + mono.tv_nsec;
         return real_ns - mono_ns;
+    }
+
+    // This process's CPU time, every thread, user and system, in ns (CLOCK_PROCESS_CPUTIME_ID). large_rtt_tx and
+    // large_rtt_rx read it at the edges of their measured window (stepb_rtt_rig.sh), so a framework's CPU is counted
+    // over the scheduled samples alone: no discovery, warm-up or shutdown, and no benchmark thread that busy-waits
+    // (perf_test's AnalyzeRunner does, and swamped step B's control on the rig: docs/DESIGN.md section 8).
+    inline auto process_cpu_ns() -> uint64_t {
+        struct timespec ts;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts); // NOLINT(misc-include-cleaner)
+        return (static_cast<uint64_t>(ts.tv_sec) * stamp_ns_per_s) + static_cast<uint64_t>(ts.tv_nsec);
+    }
+
+    // This process's peak resident set so far, in kB (getrusage's ru_maxrss).
+    inline auto peak_rss_kb() -> long {
+        // struct rusage comes through a private glibc header that <sys/resource.h> includes (as clock_gettime above).
+        struct rusage usage {}; // NOLINT(misc-include-cleaner)
+        getrusage(RUSAGE_SELF, &usage);
+        return usage.ru_maxrss;
     }
 
     // --stamps <file> (2026-09-26, RMW_PERF_PLAN §8): one line per sample, CLOCK_MONOTONIC ns, collected in

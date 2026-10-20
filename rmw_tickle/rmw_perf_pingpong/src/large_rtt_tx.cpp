@@ -16,7 +16,9 @@
 // schedule; the executor runs on another and stamps each reply as its callback starts.
 //
 // Output: a RESULT line (identity, counts, percentiles - for a person; the reader recomputes everything from the
-// samples) and, with --samples <file>, one line per scheduled sample:
+// samples; and this process's CPU over the schedule: cpu_window_ms from just before the first sample's due time to the
+// last publish's return, cpu_window_samples the samples published in it, maxrss_kb the peak RSS) and, with
+// --samples <file>, one line per scheduled sample:
 //     seq due_ns pub_start_ns pub_return_ns reply_ns        (reply_ns 0: no reply came)
 // Exit 0 on a complete run, 2 when no match, 3 when no warm-up round trip, 1 on any other failure.
 #include <algorithm>
@@ -46,6 +48,7 @@
 namespace {
 
     using pingpong::now_ns;
+    using pingpong::process_cpu_ns;
 
     constexpr uint64_t ns_per_s = 1000000000ULL;
     constexpr double ns_per_s_d = 1e9;
@@ -108,6 +111,9 @@ namespace {
         std::vector<uint64_t> due_ns;
         std::vector<uint64_t> pub_start_ns;
         std::vector<uint64_t> pub_return_ns;
+        uint64_t cpu_start_ns = 0; // process CPU time just before the first due time
+        uint64_t cpu_end_ns = 0;   // and at the last publish's return
+        uint64_t published = 0;    // scheduled samples published between the two
     };
 
     auto set_fields(rmw_perf_pingpong::msg::Ack& msg, uint64_t id, uint64_t /*due*/) -> void {
@@ -236,10 +242,13 @@ namespace {
         std::printf(" gap_p50_us=%.1f gap_p99_us=%.1f gap_max_us=%.1f pub_p50_us=%.1f pub_p99_us=%.1f pub_max_us=%.1f",
                     to_us(percentile(gap, p50)), to_us(percentile(gap, p99)), to_us(percentile(gap, 1.0)),
                     to_us(percentile(pub, p50)), to_us(percentile(pub, p99)), to_us(percentile(pub, 1.0)));
-        std::printf(" warmup_sent=%llu warmup_ms=%.1f warmup_late=%llu drain_ms=%.1f\n",
+        std::printf(" warmup_sent=%llu warmup_ms=%.1f warmup_late=%llu drain_ms=%.1f",
                     static_cast<unsigned long long>(info.warmup_sent), to_ms(static_cast<int64_t>(info.warmup_ns)),
                     static_cast<unsigned long long>(rep.warmup_late.load()),
                     to_ms(static_cast<int64_t>(info.drain_ns)));
+        std::printf(" cpu_window_ms=%.3f cpu_window_samples=%llu maxrss_kb=%ld\n",
+                    to_ms(static_cast<int64_t>(sched.cpu_end_ns - sched.cpu_start_ns)),
+                    static_cast<unsigned long long>(sched.published), pingpong::peak_rss_kb());
         std::fflush(stdout);
     }
 
@@ -249,6 +258,8 @@ namespace {
     auto run_schedule(const typename rclcpp::Publisher<T>::SharedPtr& pub, T& msg, schedule& sched, uint64_t count,
                       uint64_t period_ns) -> void {
         const uint64_t start = now_ns() + period_ns;
+        sched.cpu_start_ns = process_cpu_ns();
+        sched.cpu_end_ns = sched.cpu_start_ns;
         for (uint64_t seq = 1; seq <= count && rclcpp::ok(); seq++) {
             const uint64_t due = start + ((seq - 1) * period_ns);
             sleep_until(due);
@@ -257,6 +268,8 @@ namespace {
             sched.pub_start_ns[seq] = now_ns();
             pub->publish(msg);
             sched.pub_return_ns[seq] = now_ns();
+            sched.cpu_end_ns = process_cpu_ns();
+            sched.published = seq;
         }
     }
 
