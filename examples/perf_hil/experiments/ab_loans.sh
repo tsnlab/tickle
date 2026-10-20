@@ -21,8 +21,8 @@
 #
 # Before the lock (on this PC; PREFLIGHT=0 skips): rmw_samehost.sh's PC preflight in a private netns, the loans cells,
 # both rmw arms, (1) on ~/tickle/install (an A-like build: the treatment must read none) and (2) on a PC build of B
-# (PF_B_TICKLE_INSTALL, PF_B_OVERLAYS, PF_B_PERF_TEST - ~/rmw_loans_ab by default, provisioned by its build.sh): the
-# treatment must read loans taken in tickle_loans and none elsewhere. Any failure refuses the rig. Under the lock, after
+# (PF_B_TICKLE_INSTALL, PF_B_PERF_WS, PF_B_OVERLAYS, PF_B_PERF_TEST - ~/rmw_loans_ab by default, provisioned by its
+# build.sh; A's overlays are PF_A_OVERLAYS, the interface packages first, as B's): the treatment must read loans taken in tickle_loans and none elsewhere. Any failure refuses the rig. Under the lock, after
 # the first phase of each build the same witness is read on the rig's runs, and a failure stops the job there.
 # PC_ONLY=1 stops before the lock (no lock, unpushed commits allowed).
 #
@@ -64,10 +64,11 @@ PF_A_OVERLAYS=${PF_A_OVERLAYS:-"$HOME/rmw_loans_ws/ifaces/install/local_setup.ba
 $PF_A_TICKLE_INSTALL/local_setup.bash $PF_A_PERF_WS/local_setup.bash"}
 PF_B_HOME=${PF_B_HOME:-$HOME/rmw_loans_ab}
 PF_B_TICKLE_INSTALL=${PF_B_TICKLE_INSTALL:-$PF_B_HOME/rmw/install}
+PF_B_PERF_WS=${PF_B_PERF_WS:-$PF_B_HOME/perf/install}
 PF_B_OVERLAYS=${PF_B_OVERLAYS:-"$HOME/rmw_loans_ws/rmw/install/local_setup.bash \
 $HOME/rmw_loans_ws/ifaces/install/local_setup.bash $PF_B_TICKLE_INSTALL/local_setup.bash \
-$PF_B_HOME/perf/install/local_setup.bash"}
-PF_B_PERF_TEST=${PF_B_PERF_TEST:-$PF_B_HOME/perf/install/performance_test/lib/performance_test/perf_test}
+$PF_B_PERF_WS/local_setup.bash"}
+PF_B_PERF_TEST=${PF_B_PERF_TEST:-$PF_B_PERF_WS/performance_test/lib/performance_test/perf_test}
 
 ROLE=outer
 [ "${AB_LOANS_INNER:-0}" = 1 ] && ROLE=inner
@@ -142,7 +143,8 @@ if [ "$ROLE" = outer ]; then
         echo "--- PC preflight $(date +%T): B's PC build $(md5sum <"$PF_B_TICKLE_INSTALL/rmw_tickle/lib/librmw_tickle.so" | cut -c1-12)" \
             "(loans must show in tickle_loans only)" | tee -a "$LOG"
         ARMS="$RMW_ARMS" PREFLIGHT_ONLY=1 PREFLIGHT_OUT="$OUTB.pf_B" PF_CELLS="$PF_CELLS" \
-            PF_TICKLE_INSTALL="$PF_B_TICKLE_INSTALL" PF_OVERLAYS="$PF_B_OVERLAYS" PF_PERF_TEST="$PF_B_PERF_TEST" \
+            PF_TICKLE_INSTALL="$PF_B_TICKLE_INSTALL" PF_PERF_WS="$PF_B_PERF_WS" PF_OVERLAYS="$PF_B_OVERLAYS" \
+            PF_PERF_TEST="$PF_B_PERF_TEST" \
             "$X/rmw_samehost.sh" >"$OUTB.pf_B.log" 2>&1 || {
             tail -20 "$OUTB.pf_B.log"
             echo "REFUSING TO TAKE THE RIG: the PC preflight (B's build) failed ($OUTB.pf_B.log)" | tee -a "$LOG"
