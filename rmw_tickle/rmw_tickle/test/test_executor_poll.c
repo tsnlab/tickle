@@ -32,6 +32,18 @@
 //   - the tight bound is asserted on the best of ATTEMPTS attempts. A defect is late in every attempt; a scheduling
 //     delay from load is late in some. Five attempts that each miss by a transient delay are the only false failure,
 //     and each attempt prints its figure so a failure shows which kind it was.
+//
+// The hold-over parts are judged against how long this thread was really away (2026-10-21). A hold-over is ended by
+// the watchdog once it is RMW_TICKLE_EXECUTOR_POLL_LEASE_NS old, which is the point of part 5 - and in parts 5-8 the
+// lease also runs between rmw_wait() storing holdover_since_ns and this thread's next step, which the test meant to be
+// "straight back". Under make check-gates (load 21-36) that step came 10+ ms later: part 6 then found the hold-over
+// ended by the watchdog and the next wait handing over, and failed with "executor_handovers == handovers" although
+// the product did what the lease says (2026-10-20). So an attempt reads the realized away time - from
+// holdover_since_ns to a clock read after the step - and:
+//   - a hold-over gone before the lease was over is a FAIL (only the lease ends one here);
+//   - one the watchdog may have ended because the step came a lease or more late is VOID, not a result: the attempt
+//     did not test what it was for, and is retried, up to VOID_TRIES; still VOID is a failure, never a pass;
+//   - otherwise every assertion holds as before.
 
 #include <assert.h>
 #include <pthread.h>
@@ -73,6 +85,8 @@
 // lease + slice (10 + 50 ms) after it began, and the timer was due AWAY_TIMER_DUE_MS in; plus ON_TIME_MS.
 #define HOLDOVER_LATE_MS (10U + 50U - AWAY_TIMER_DUE_MS + ON_TIME_MS)
 #define HOLDOVER_TRIGGER_MS 50U // part 8: when this thread triggers the other thread's wait
+#define VOID_TRIES 20           // parts 6 and 7: attempts until one was not VOID
+#define NOT_DECIDED UINT64_MAX  // a timed attempt that was VOID: best_of() counts it as a miss and tries again
 
 static _Atomic uint64_t fired_at_ns;
 static _Atomic uintptr_t fired_on_thread;
@@ -211,19 +225,40 @@ static uint64_t both_woken(const struct fixture* fix) {
     return took;
 }
 
+// After an rmw_wait() that found its guard condition triggered: whether that wait still holds the role over. The
+// holder is read before the clock, so a hold-over found gone was gone by `now`: only the watchdog may have ended it,
+// and only a lease or more after it began - asserted, as anything else is a defect. Then the attempt is VOID (this
+// thread came back too late to test what it meant to), and this prints why.
+static bool still_held_over(const struct fixture* fix, uint64_t ended_before, const char* part) {
+    bool held = atomic_load(&fix->impl->holdover_thread) == fix->main_thread;
+    uint64_t now = tt_get_ns();
+    if (held) {
+        return true;
+    }
+    uint64_t away = now - atomic_load(&fix->impl->holdover_since_ns);
+    assert(atomic_load(&fix->impl->holdovers_ended) > ended_before);
+    assert(away >= RMW_TICKLE_EXECUTOR_POLL_LEASE_NS);
+    printf("%s: VOID (this thread looked %.3f ms after the hold-over began, past the %.0f ms lease, and the watchdog "
+           "had ended it)\n",
+           part, (double)away / (double)MS, (double)RMW_TICKLE_EXECUTOR_POLL_LEASE_NS / (double)MS);
+    (void)fflush(stdout);
+    return false;
+}
+
 // Part 5, one attempt: a wait that finds the guard condition triggered keeps the role, and its caller stays away;
-// returns how late a timer due meanwhile fired, in ns.
+// returns how late a timer due meanwhile fired, in ns, or NOT_DECIDED if the hold-over was over before the timer was
+// scheduled.
 static uint64_t timer_after_holdover(const struct fixture* fix) {
     uint64_t kept = atomic_load(&fix->impl->holdovers);
     uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
     assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
     assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS)); // ready at once
     assert(atomic_load(&fix->impl->holdovers) == kept + 1);
-    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
     atomic_store(&fired_at_ns, 0);
     atomic_store(&fired_on_thread, 0);
     uint64_t due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS);
     assert(tt_Context_schedule(&fix->impl->tickle_context, due, record_firing, NULL));
+    bool held = still_held_over(fix, ended, "5. timer after a hold-over"); // the timer went in during the hold-over
     sleep_ms(HOLDOVER_AWAY_MS);
     for (unsigned waited = HOLDOVER_AWAY_MS; atomic_load(&fired_at_ns) == 0 && waited < WAITED_FOR_GOOD_MS; waited++) {
         sleep_ms(1);
@@ -233,45 +268,81 @@ static uint64_t timer_after_holdover(const struct fixture* fix) {
     assert(atomic_load(&fired_on_thread) != fix->main_thread);
     assert(atomic_load(&fix->impl->holdover_thread) == 0);
     assert(atomic_load(&fix->impl->holdovers_ended) == ended + 1); // the watchdog's doing, not a caller's
-    return fired - due;
+    return held ? fired - due : NOT_DECIDED;
 }
 
-// Part 6: a caller that comes straight back resumes its hold-over - no hand-over, nothing ended - and a wait that
-// then times out releases the role as before.
-static void holdover_resumed(const struct fixture* fix) {
+// Part 6, one attempt: a caller that comes straight back resumes its hold-over - no hand-over, nothing ended - and a
+// wait that then times out releases the role as before. False if VOID: the caller came back a lease or more after
+// the hold-over began, and the watchdog had ended it (the lease, which part 5 checks, not a resume).
+static bool holdover_resumed(const struct fixture* fix) {
+    const char* part = "6. hold-over resumed";
     // First a wait that times out: it takes the role from the poll thread (part 5 left it polling) and leaves it
     // parked for the lease, so what follows starts from a parked poll thread.
     assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 1 * MS));
+    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
     assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
     assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
-    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    if (!still_held_over(fix, ended, part)) {
+        return false;
+    }
     uint64_t handovers = atomic_load(&fix->impl->executor_handovers);
-    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
-    assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 5 * MS)); // resumed, then released
+    uint64_t since = atomic_load(&fix->impl->holdover_since_ns);
+    rmw_ret_t resumed = wait_untriggered(fix, 1 * MS); // resumed, then released
+    uint64_t back = tt_get_ns() - since;               // the resume, if any, was before this
+    assert(RMW_RET_TIMEOUT == resumed);
+    if (atomic_load(&fix->impl->holdovers_ended) != ended && back >= RMW_TICKLE_EXECUTOR_POLL_LEASE_NS) {
+        printf("%s: VOID (this thread was back within %.3f ms of the hold-over, past the lease, and the watchdog had "
+               "ended it)\n",
+               part, (double)back / (double)MS);
+        (void)fflush(stdout);
+        return false;
+    }
     assert(atomic_load(&fix->impl->holdover_thread) == 0);
     assert(!atomic_load(&fix->impl->executor_polling));
     assert(atomic_load(&fix->impl->executor_handovers) == handovers);
     assert(atomic_load(&fix->impl->holdovers_ended) == ended);
+    printf("%s: back within %.3f ms, no hand-over, nothing ended\n", part, (double)back / (double)MS);
+    return true;
 }
 
-// Part 7: a zero-timeout wait that finds nothing ends a hold-over at once.
-static void holdover_ended_by_zero_wait(const struct fixture* fix) {
+// Part 7, one attempt: a zero-timeout wait that finds nothing ends a hold-over at once. False if VOID: the zero wait
+// came a lease or more after the hold-over began, so the watchdog may have been the one that ended it.
+static bool holdover_ended_by_zero_wait(const struct fixture* fix) {
+    const char* part = "7. hold-over ended by a zero wait";
     uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
     assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
     assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
-    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    if (!still_held_over(fix, ended, part)) {
+        return false;
+    }
+    uint64_t since = atomic_load(&fix->impl->holdover_since_ns);
     assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 0));
+    uint64_t back = tt_get_ns() - since;
     assert(atomic_load(&fix->impl->holdover_thread) == 0);
     assert(!atomic_load(&fix->impl->executor_polling));
-    assert(atomic_load(&fix->impl->holdovers_ended) == ended + 1);
+    assert(atomic_load(&fix->impl->holdovers_ended) == ended + 1); // one end, by whichever ended it
+    if (back >= RMW_TICKLE_EXECUTOR_POLL_LEASE_NS) {
+        printf("%s: VOID (the zero wait was done %.3f ms after the hold-over began, past the lease: the watchdog may "
+               "have ended it)\n",
+               part, (double)back / (double)MS);
+        (void)fflush(stdout);
+        return false;
+    }
+    printf("%s: ended within %.3f ms\n", part, (double)back / (double)MS);
+    return true;
 }
 
 // Part 8, one attempt: this thread holds the role over, another thread's wait takes it over and polls - a timer due
-// during that wait fires on the other thread; returns how late, in ns.
+// during that wait fires on the other thread; returns how late, in ns, or NOT_DECIDED if the watchdog ended the
+// hold-over before the other thread took it (a take-over clears it without counting an end).
 static uint64_t holdover_taken_over(const struct fixture* fix) {
+    const char* part = "8. hold-over taken over";
+    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
     assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
     assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
-    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    if (!still_held_over(fix, ended, part)) {
+        return NOT_DECIDED;
+    }
     rmw_guard_condition_t* other_guard = rmw_create_guard_condition(fix->context);
     rmw_wait_set_t* other_wait_set = rmw_create_wait_set(fix->context, 0);
     struct waiter other = {other_wait_set, other_guard, RMW_RET_ERROR, 0};
@@ -287,22 +358,45 @@ static uint64_t holdover_taken_over(const struct fixture* fix) {
     assert(RMW_RET_OK == other.result);
     uint64_t fired = atomic_load(&fired_at_ns);
     assert(fired != 0 && fired >= due);
-    assert(atomic_load(&fired_on_thread) == atomic_load(&other.thread)); // the taker polled
+    bool taken_over = atomic_load(&fix->impl->holdovers_ended) == ended;
+    if (taken_over) {
+        assert(atomic_load(&fired_on_thread) == atomic_load(&other.thread)); // the taker polled
+    } else {
+        // The other thread started a lease or more after the hold-over began (the 50 ms sleep is past it anyway):
+        // it found the role ended, not held over.
+        assert(tt_get_ns() - atomic_load(&fix->impl->holdover_since_ns) >= RMW_TICKLE_EXECUTOR_POLL_LEASE_NS);
+        printf("%s: VOID (the watchdog ended the hold-over before the other thread's wait took it)\n", part);
+        (void)fflush(stdout);
+    }
     assert(RMW_RET_OK == rmw_destroy_wait_set(other_wait_set));
     assert(RMW_RET_OK == rmw_destroy_guard_condition(other_guard));
-    return fired - due;
+    return taken_over ? fired - due : NOT_DECIDED;
 }
 
 // Runs one part's attempts until one is within bound_ns, at most ATTEMPTS of them, printing each figure; true if
-// one was.
+// one was. A VOID attempt (NOT_DECIDED) is a miss.
 static bool best_of(const char* part, uint64_t (*attempt)(const struct fixture*), const struct fixture* fix,
                     uint64_t bound_ns) {
     for (int i = 1; i <= ATTEMPTS; i++) {
         uint64_t late = attempt(fix);
-        printf("%s: attempt %d: %.3f ms (bound %.3f ms)\n", part, i, (double)late / (double)MS,
-               (double)bound_ns / (double)MS);
+        if (NOT_DECIDED == late) {
+            printf("%s: attempt %d: VOID\n", part, i);
+        } else {
+            printf("%s: attempt %d: %.3f ms (bound %.3f ms)\n", part, i, (double)late / (double)MS,
+                   (double)bound_ns / (double)MS);
+        }
         (void)fflush(stdout); // an assert() that follows aborts, and would take the figures with it
         if (late <= bound_ns) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Runs an untimed part until one attempt is not VOID, at most VOID_TRIES; false if every one was.
+static bool until_decided(bool (*attempt)(const struct fixture*), const struct fixture* fix) {
+    for (int i = 1; i <= VOID_TRIES; i++) {
+        if (attempt(fix)) {
             return true;
         }
     }
@@ -344,8 +438,8 @@ int main(void) {
     // 5-8. The hold-over.
     assert(impl->executor_holdover_enabled);
     assert(best_of("5. timer after a hold-over", timer_after_holdover, &fix, HOLDOVER_LATE_MS * MS));
-    holdover_resumed(&fix);
-    holdover_ended_by_zero_wait(&fix);
+    assert(until_decided(holdover_resumed, &fix));
+    assert(until_decided(holdover_ended_by_zero_wait, &fix));
     assert(best_of("8. hold-over taken over", holdover_taken_over, &fix, ON_TIME_MS * MS));
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));
