@@ -34,12 +34,17 @@
 // add), that is the realized range. S (CHECK_SLACK_NS, P/4) is how late a deadline check may run: a miss due at L + kP
 // is counted only if its check runs before the sample that ends the gap arrives, so one due less than S before that
 // sample may be lost to the poll thread's scheduling. The 3P cases lose theirs that way on an idle PC, which is why
-// they always allowed 2..3; a check later than S still reads as a wrong count, not a VOID. Until then a case was VOID
-// whenever any of its ~20 publishes went out more than 5 ms late, which under a loaded PC (make check-gates, a shared
-// CI runner) is most cases: one stayed VOID 3 times at 15-36 ms of lateness while every count it produced was right.
-// Lateness alone is not a reason to discard a case; lateness that changes what the case tests is. P is 200 ms so that a
-// scheduler late by tens of milliseconds - the publisher's sleep or the deadline check's - stays a small fraction of
-// the half period every 1.5P case has on each side of its count.
+// they always allowed 2..3. For the gap itself S is not assumed but measured (2026-10-21): under make check-gates at
+// load ~25 a check ran later than S, after the sample that ended a 1.5P gap, and a correct 0 read as WRONG against an
+// expected 1. So probes on the checks' own scheduler, due at L_hi + kP, stamp when the poll thread really got there
+// (record_probe()), and the gap's lower bound is the number that ran before the sample ending it was published; a
+// poll thread too late for the planned count makes the case VOID, not WRONG. The pre-D4 defect counts 0 where a probe
+// proves 1, so it still FAILs whenever the poll thread was on time - every run on an idle PC. Until then a case was
+// VOID whenever any of its ~20 publishes went out more than 5 ms late, which under a loaded PC (make check-gates, a
+// shared CI runner) is most cases: one stayed VOID 3 times at 15-36 ms of lateness while every count it produced was
+// right. Lateness alone is not a reason to discard a case; lateness that changes what the case tests is. P is 200 ms so
+// that a scheduler late by tens of milliseconds - the publisher's sleep or the deadline check's - stays a small
+// fraction of the half period every 1.5P case has on each side of its count.
 //
 // Reading rules, enforced below, not only stated here:
 //   - VOID (not a result) if the realized range is not inside the planned one (a gap or a cadence interval that came
@@ -54,6 +59,7 @@
 // pre-D4 defect could show in that case, and a loaded scheduler moves it.
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -76,6 +82,7 @@
 #include "rmw/subscription_options.h"
 #include "rmw/time.h"
 #include "rmw/types.h"
+#include "rmw_tickle_c/rmw_tickle.h" // rmw_tickle_context_impl_t: the context the probes are scheduled on
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
@@ -147,7 +154,23 @@ static rosidl_message_type_support_t fake_handle = {.data = &fake_callbacks,
 #define LONG_GAP_PERIODS 5ULL              // the 5.5P case: whole periods missed
 #define CHECK_SLACK_NS (PERIOD_NS / 4)     // how late a deadline check may run (header): half every 1.5P case's margin
 
+#define PROBES (LONG_GAP_PERIODS + 1) // one per period the longest gap can miss, and one past it
+
 enum gap_kind { GAP_NONE, GAP_0_5P, GAP_1_5P, GAP_3P, GAP_5_5P };
+
+// The probes (2026-10-21): an entry on the deadline checks' own scheduler, due at the latest time the check for the
+// k-th missed period of the gap can be due, stamps when the poll thread really ran it. The scheduler runs the
+// earliest entry first, so by then that check had run - or an earlier check, running late, had already counted the
+// k-th period (it counts every period up to when it runs). So a probe that ran before the sample ending the gap was
+// even published proves the k-th miss counted, however late the poll thread was; one that ran after proves nothing.
+static struct tt_Context* poll_context;
+static _Atomic uint64_t probe_ran[PROBES];
+
+static void record_probe(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    atomic_store((_Atomic uint64_t*)param, tt_get_ns());
+}
 
 struct gap_case {
     enum gap_kind kind;
@@ -317,6 +340,10 @@ static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct 
     warmup_clean = warmup_clean && high == 0;
     struct stamp before_gap = now;
     out.phase_ns = before_gap.lo - created;
+    for (uint64_t k = 1; k <= PROBES; k++) {
+        atomic_store(&probe_ran[k - 1], 0);
+        assert(tt_Context_schedule(poll_context, before_gap.hi + (k * PERIOD_NS), record_probe, &probe_ran[k - 1]));
+    }
     uint64_t offered_before = offered_total(&offered);
     uint64_t requested_before = requested_total(&requested);
     // A miss counted before these reads is not in the case's count: as many as could have come due by now come off
@@ -328,6 +355,14 @@ static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct 
     bool after_ok = publish_at(pub, sub, resume, value++, &out.late_ns, &now);
     bool after_cadence_ok = true; // each sample's own drain took it, so its stamp brackets its arrival
     interval_range(before_gap, now, &out.low, &out.high);
+    // The gap's certain misses are the probes that ran before its end was published, not the ones due CHECK_SLACK_NS
+    // before it: under make check-gates (load ~25) a check ran more than that late, after the sample, and a 1.5P case
+    // counted a correct 0 against an expected 1 (2026-10-21).
+    out.low = 0;
+    for (uint64_t k = 1; k <= PROBES; k++) {
+        uint64_t ran = atomic_load(&probe_ran[k - 1]);
+        out.low += ran != 0 && ran < now.lo ? 1U : 0U;
+    }
     out.low = out.low > counted_early ? out.low - counted_early : 0;
     prev = now;
     for (uint64_t at = resume + CADENCE_NS; at <= resume + AFTER_NS; at += CADENCE_NS) {
@@ -356,6 +391,9 @@ static struct outcome run_case(rmw_node_t* talker, rmw_node_t* listener, struct 
         out.void_reason = "the subscription did not take a sample from the gap on as it was published";
     }
 
+    for (uint64_t k = 1; k <= PROBES; k++) {
+        (void)tt_Context_unschedule(poll_context, record_probe, &probe_ran[k - 1]); // none may run into the next case
+    }
     assert(RMW_RET_OK == rmw_event_fini(&offered));
     assert(RMW_RET_OK == rmw_event_fini(&requested));
     assert(RMW_RET_OK == rmw_destroy_publisher(talker, pub));
@@ -431,6 +469,7 @@ int main(void) {
     assert(NULL != options.enclave);
     rmw_context_t context = rmw_get_zero_initialized_context();
     assert(RMW_RET_OK == rmw_init(&options, &context));
+    poll_context = &((rmw_tickle_context_impl_t*)context.impl)->tickle_context;
     rmw_node_t* talker = rmw_create_node(&context, "deadline_gap_talker", "/");
     rmw_node_t* listener = rmw_create_node(&context, "deadline_gap_listener", "/");
     assert(NULL != talker && NULL != listener);
