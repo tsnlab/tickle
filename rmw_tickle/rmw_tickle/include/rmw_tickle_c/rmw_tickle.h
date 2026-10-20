@@ -347,6 +347,20 @@ struct rmw_tickle_context_impl_t {
     // Each is counted once per event, not per sample.
     _Atomic uint64_t executor_handovers;
     _Atomic uint64_t park_wakes;
+    // The hold-over (2026-10-20, ROADMAP "rmw kernel wake / hand-off"; on unless RMW_TICKLE_EXECUTOR_HOLDOVER=0). An
+    // rmw_wait() that polled and returns something ready keeps the role instead of releasing it: its caller is about
+    // to take what was found and come back. So its release - a timerfd_settime() between the datagram and the
+    // callback, 0.6 us on the PC - and the next claim's disarm are both skipped: the next rmw_wait() on any thread
+    // resumes the role as it stands (rmw_wait_set.c, claim_poll_role()). If none comes, the watchdog thread, which
+    // wakes every RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS anyway, ends a hold-over older than the lease and wakes the
+    // parked poll thread (rmw_tickle_end_holdover()), so the node goes unpolled for the lease plus up to one watchdog
+    // slice (10-60 ms), where a released lease ends after exactly 10 ms. holdover_thread is the holding executor's
+    // tt_thread_self(), 0 when none; executor_polling stays true throughout a hold-over.
+    bool executor_holdover_enabled;
+    _Atomic uintptr_t holdover_thread;
+    _Atomic uint64_t holdover_since_ns;
+    _Atomic uint64_t holdovers;       // rmw_wait() returns that kept the role; printed at shutdown
+    _Atomic uint64_t holdovers_ended; // ... that the watchdog or a parked-thread wake ended instead of a caller
     // Nodes destroyed while an entity still lived on them, whose core node was therefore kept (rmw_destroy_node()):
     // expected at an rclpy exit, where handles are finalised in any order; a long-running process whose count grows
     // is leaking. Printed on the shutdown diagnostics line.
@@ -1126,9 +1140,15 @@ void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
 
 // Executor-driven receive: a thread is about to sleep until the node has made progress it cannot make itself (a
 // large send's room, RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS). Ends a released executor's lease at once, so the parked poll
-// thread polls now rather than at the lease's end (up to RMW_TICKLE_EXECUTOR_POLL_LEASE_NS later). A no-op while an
-// rmw_wait() holds the poll role - it is polling - or without executor-driven receive (rmw_node.c).
+// thread polls now rather than at the lease's end (up to RMW_TICKLE_EXECUTOR_POLL_LEASE_NS later), and ends a
+// hold-over the same way. A no-op while an rmw_wait() holds the poll role - it is polling - or without
+// executor-driven receive (rmw_node.c).
 void rmw_tickle_wake_parked_poll_thread(rmw_tickle_context_impl_t* context_impl);
+
+// The hold-over (rmw_tickle_context_impl_t.holdover_thread): ends one at least older_than_ns old (0: any), on behalf
+// of its executor - the role is released with its lease already over, and the parked poll thread is woken to poll.
+// Returns whether it ended one. The watchdog thread's check, and rmw_tickle_wake_parked_poll_thread()'s (rmw_node.c).
+bool rmw_tickle_end_holdover(rmw_tickle_context_impl_t* context_impl, uint64_t older_than_ns);
 
 // Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
 // Node lock held (rmw_subscription.c).

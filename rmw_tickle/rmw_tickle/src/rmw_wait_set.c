@@ -39,11 +39,12 @@
 #include <string.h>
 #include <time.h>
 
-#include <sys/timerfd.h>   // timerfd_settime() - executor-driven receive
-#include <tickle/config.h> // tt_SECOND, tt_MILLISECOND
-#include <tickle/hal.h>    // tt_get_ns()
-#include <tickle/tickle.h> // tt_Context_poll(), tt_Context_interrupt()
-#include <tickle/trace.h>  // TT_TRACE
+#include <sys/timerfd.h>      // timerfd_settime() - executor-driven receive
+#include <tickle/config.h>    // tt_SECOND, tt_MILLISECOND
+#include <tickle/hal.h>       // tt_get_ns()
+#include <tickle/hal_linux.h> // tt_thread_self() - the hold-over
+#include <tickle/tickle.h>    // tt_Context_poll(), tt_Context_interrupt()
+#include <tickle/trace.h>     // TT_TRACE
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
@@ -298,6 +299,25 @@ static void wait_for_poll_thread_to_park(rmw_tickle_context_impl_t* context_impl
     pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
+// Executor-driven receive: takes the poll role for one rmw_wait(). A hold-over (rmw_tickle_context_impl_t.
+// holdover_thread) is the role kept across its caller's turn, so resuming one - this thread's, or another's, which a
+// second executor thread may take over rather than wait behind it - costs no system call: executor_polling stayed true
+// and no lease timer was armed. Otherwise the role must be free, and taking it disarms the lease timer. Returns false
+// if another rmw_wait() holds it. A hold-over the watchdog ends between this thread's two tries is a lost race only:
+// this rmw_wait() then waits on wait_cond while the woken poll thread polls.
+static bool claim_poll_role(rmw_tickle_context_impl_t* context_impl) {
+    uintptr_t holder = atomic_load(&context_impl->holdover_thread);
+    if (0 != holder && atomic_compare_exchange_strong(&context_impl->holdover_thread, &holder, 0)) {
+        return true;
+    }
+    bool idle = false;
+    if (!atomic_compare_exchange_strong(&context_impl->executor_polling, &idle, true)) {
+        return false;
+    }
+    set_park_timer(context_impl, 0); // taken back within the lease: the poll thread stays parked
+    return true;
+}
+
 // Executor-driven receive: waits by polling the node on this thread, so a message is received, delivered
 // and found ready here, with no poll thread -> executor wake in between. Returns false without waiting if
 // another rmw_wait() holds the role; the caller then waits on wait_cond as before. deadline_ns is
@@ -305,15 +325,14 @@ static void wait_for_poll_thread_to_park(rmw_tickle_context_impl_t* context_impl
 static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscriptions_t* subscriptions,
                             rmw_guard_conditions_t* guard_conditions, rmw_services_t* services, rmw_clients_t* clients,
                             rmw_events_t* events, uint64_t deadline_ns, rmw_ret_t* result) {
-    bool idle = false;
-    if (!atomic_compare_exchange_strong(&context_impl->executor_polling, &idle, true)) {
+    if (!claim_poll_role(context_impl)) {
         return false;
     }
     atomic_fetch_add(&context_impl->executor_poll_waits, 1);
-    set_park_timer(context_impl, 0); // taken back within the lease: the poll thread stays parked
     bool interrupted = false;
+    uint64_t now = 0;
     while (true) {
-        uint64_t now = tt_get_ns();
+        now = tt_get_ns();
         *result =
             check_once(context_impl, subscriptions, guard_conditions, services, clients, events, now >= deadline_ns);
         if (RMW_RET_ERROR != *result) {
@@ -334,6 +353,18 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
             // The node is being polled: what the watchdog wants to know (LIVELINESS_LOST, rmw_node.c).
             atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
         }
+    }
+    if (RMW_RET_OK == *result && context_impl->executor_holdover_enabled) {
+        // Kept, not released: the caller takes what was found and calls rmw_wait() again, which resumes the role
+        // (claim_poll_role()); if it does not, the watchdog ends the hold-over (rmw_tickle_end_holdover()). No system
+        // call between the datagram and its callback. The two stamps are the ones the trace split expects.
+        TT_TRACE(tt_TRACE_RELEASE);
+        atomic_store(&context_impl->holdover_since_ns, now);
+        atomic_store(&context_impl->holdover_thread, tt_thread_self());
+        atomic_fetch_add(&context_impl->holdovers, 1);
+        TT_TRACE(tt_TRACE_TIMER_SET);
+        TT_TRACE(tt_TRACE_EXEC_WAKE);
+        return true;
     }
     // Released: the lease starts now. Nobody is woken; the parked poll thread's timer is set for the end of
     // the lease, and taking the role again disarms it (rmw_node.c's park_for_polling_executor()).
@@ -400,6 +431,11 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         if (poll_only) {
             finalize_all(subscriptions, guard_conditions, services, clients, events);
             pthread_mutex_unlock(&context_impl->wait_mutex);
+            // A zero-timeout wait polls nothing itself: if a blocking one before it kept the role (the hold-over),
+            // nobody is polling now, so the poll thread gets it at once rather than at the watchdog's next look.
+            if (0 != atomic_load(&context_impl->holdover_thread)) {
+                (void)rmw_tickle_end_holdover(context_impl, 0);
+            }
             return RMW_RET_TIMEOUT;
         }
 

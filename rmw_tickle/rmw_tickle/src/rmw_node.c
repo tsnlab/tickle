@@ -321,6 +321,11 @@ static void* watchdog_thread_main(void* arg) {
     uint64_t next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
     enum { WAKE_TICK, WAKE_SILENCE, WAKE_LEASE } next_wake = WAKE_TICK; // what next_check_ns was set for
     while (context_impl->watchdog_thread_running) {
+        // An executor that kept the poll role (the hold-over, rmw_wait_set.c) and has not come back within the lease
+        // gives it to the poll thread here, at this thread's own slice: no wake of its own (rmw_tickle.h).
+        if (context_impl->executor_holdover_enabled) {
+            (void)rmw_tickle_end_holdover(context_impl, RMW_TICKLE_EXECUTOR_POLL_LEASE_NS);
+        }
         uint64_t now = tt_get_ns();
         if (now < next_check_ns) {
             uint64_t sleep_ns = next_check_ns - now;
@@ -393,7 +398,34 @@ void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl) {
     }
 }
 
+bool rmw_tickle_end_holdover(rmw_tickle_context_impl_t* context_impl, uint64_t older_than_ns) {
+    uintptr_t holder = atomic_load(&context_impl->holdover_thread);
+    if (0 == holder) {
+        return false;
+    }
+    if (0 != older_than_ns && tt_get_ns() - atomic_load(&context_impl->holdover_since_ns) < older_than_ns) {
+        return false;
+    }
+    // The executor may resume the role (claim_poll_role(), rmw_wait_set.c) between the two reads above and this
+    // exchange, and hold it over again: then this ends a fresh hold-over, which only hands the role to the poll
+    // thread early - the same as a lease that ran out.
+    if (!atomic_compare_exchange_strong(&context_impl->holdover_thread, &holder, 0)) {
+        return false;
+    }
+    atomic_store(&context_impl->executor_left_ns, 0); // no lease left: park_for_polling_executor() leaves
+    atomic_store(&context_impl->executor_polling, false);
+    atomic_fetch_add(&context_impl->holdovers_ended, 1);
+    if (context_impl->park_wake_fd >= 0) {
+        uint64_t one = 1;
+        (void)!write(context_impl->park_wake_fd, &one, sizeof(one)); // saturated: a wake is already pending
+    }
+    return true;
+}
+
 void rmw_tickle_wake_parked_poll_thread(rmw_tickle_context_impl_t* context_impl) {
+    if (context_impl->executor_poll_enabled && rmw_tickle_end_holdover(context_impl, 0)) {
+        return; // the role was held over, not polled: it is the poll thread's now, and the thread is woken
+    }
     if (!context_impl->executor_poll_enabled || atomic_load(&context_impl->executor_polling)) {
         return;
     }
@@ -533,9 +565,14 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
     // not fatal to node creation itself (every other rmw_tickle feature still works without it),
     // same "degrade, don't fail the whole node" reasoning DEADLINE's own tt_Context_schedule() failure
     // path already uses elsewhere (rmw_publisher.c/rmw_subscription.c).
+    // Set before the watchdog starts, which reads it: the hold-over needs the watchdog to end it.
+    context_impl->executor_holdover_enabled =
+        context_impl->executor_holdover_enabled && context_impl->executor_poll_enabled;
     context_impl->watchdog_thread_running = true;
     if (pthread_create(&context_impl->watchdog_thread, NULL, watchdog_thread_main, context_impl) != 0) {
         context_impl->watchdog_thread_running = false;
+        context_impl->executor_holdover_enabled = false; // nothing would end a hold-over its executor never resumes
+        (void)rmw_tickle_end_holdover(context_impl, 0);  // one an rmw_wait() before this node kept
     }
 
     return RMW_RET_OK;
@@ -571,6 +608,7 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     // unchecked for the entities it dropped, which core warned about once when it happened.
     (void)fprintf(stderr,
                   "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
+                  "holdover=%d holdovers=%llu holdovers_ended=%llu "
                   "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu cache_depth_shortfalls=%llu "
                   "rx_malformed_drops=%llu version_mismatch_drops=%llu large_block_waits=%llu "
                   "large_block_timeouts=%llu\n",
@@ -578,6 +616,9 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
                   (unsigned long long)atomic_load(&context_impl->park_wakes),
+                  context_impl->executor_holdover_enabled ? 1 : 0,
+                  (unsigned long long)atomic_load(&context_impl->holdovers),
+                  (unsigned long long)atomic_load(&context_impl->holdovers_ended),
                   (unsigned)context_impl->discovery.entities_dropped,
                   (unsigned long long)atomic_load(&context_impl->nodes_kept_at_destroy),
                   (unsigned long long)context_impl->tickle_context.id_muted_drops,        // (g8)
