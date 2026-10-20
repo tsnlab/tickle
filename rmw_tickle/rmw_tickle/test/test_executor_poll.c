@@ -15,6 +15,12 @@
 //   2. once the executor has been away longer than the lease (a long callback), the poll thread serves them;
 //   3. a guard condition triggered from another thread wakes an rmw_wait() that is polling;
 //   4. two rmw_wait() calls at once - one polls, the other waits on the condition variable - both return.
+// The hold-over (2026-10-20, rmw_tickle.h): an rmw_wait() that polled and found something keeps the role.
+//   5. if its caller then stays away, the watchdog gives the role to the poll thread: a timer due meanwhile fires
+//      there, within the lease plus one watchdog slice;
+//   6. if its caller comes straight back, the next rmw_wait() resumes the role: no hand-over, nothing ended;
+//   7. a zero-timeout rmw_wait() that finds nothing ends a hold-over at once (nothing polls in such a wait);
+//   8. another thread's rmw_wait() takes a hold-over over and polls, rather than waiting behind it.
 //
 // How "on time" is checked (2026-10-06). Each part used to assert a wall-clock bound - fired within 2 ms of its
 // due time - once. Under PC load (check-gates runs its rows in parallel) a thread can wait longer than that to be
@@ -62,6 +68,11 @@
 #define ON_TIME_MS 2U            // parts 1 and 2: how late a timer may fire, on the best attempt
 #define ATTEMPTS 5               // attempts per part; the tight bound must hold on at least one
 #define WAITED_FOR_GOOD_MS 1000U // parts 2-4: past this, nothing was going to happen (asserted on every attempt)
+#define HOLDOVER_AWAY_MS 100U    // part 5: the absence after a hold-over
+// Part 5: how late the timer may fire - the hold-over ends at the first watchdog slice past the lease, at most
+// lease + slice (10 + 50 ms) after it began, and the timer was due AWAY_TIMER_DUE_MS in; plus ON_TIME_MS.
+#define HOLDOVER_LATE_MS (10U + 50U - AWAY_TIMER_DUE_MS + ON_TIME_MS)
+#define HOLDOVER_TRIGGER_MS 50U // part 8: when this thread triggers the other thread's wait
 
 static _Atomic uint64_t fired_at_ns;
 static _Atomic uintptr_t fired_on_thread;
@@ -95,10 +106,12 @@ struct waiter {
     rmw_wait_set_t* wait_set;
     rmw_guard_condition_t* guard;
     rmw_ret_t result;
+    _Atomic uintptr_t thread; // the waiting thread's tt_thread_self()
 };
 
 static void* wait_on_guard(void* arg) {
     struct waiter* waiter = arg;
+    atomic_store(&waiter->thread, tt_thread_self());
     void* storage[1] = {waiter->guard};
     rmw_guard_conditions_t guards = {.guard_condition_count = 1, .guard_conditions = storage};
     rmw_time_t timeout = {2, 0};
@@ -198,6 +211,88 @@ static uint64_t both_woken(const struct fixture* fix) {
     return took;
 }
 
+// Part 5, one attempt: a wait that finds the guard condition triggered keeps the role, and its caller stays away;
+// returns how late a timer due meanwhile fired, in ns.
+static uint64_t timer_after_holdover(const struct fixture* fix) {
+    uint64_t kept = atomic_load(&fix->impl->holdovers);
+    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
+    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS)); // ready at once
+    assert(atomic_load(&fix->impl->holdovers) == kept + 1);
+    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    atomic_store(&fired_at_ns, 0);
+    atomic_store(&fired_on_thread, 0);
+    uint64_t due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS);
+    assert(tt_Context_schedule(&fix->impl->tickle_context, due, record_firing, NULL));
+    sleep_ms(HOLDOVER_AWAY_MS);
+    for (unsigned waited = HOLDOVER_AWAY_MS; atomic_load(&fired_at_ns) == 0 && waited < WAITED_FOR_GOOD_MS; waited++) {
+        sleep_ms(1);
+    }
+    uint64_t fired = atomic_load(&fired_at_ns);
+    assert(fired != 0 && fired >= due);
+    assert(atomic_load(&fired_on_thread) != fix->main_thread);
+    assert(atomic_load(&fix->impl->holdover_thread) == 0);
+    assert(atomic_load(&fix->impl->holdovers_ended) == ended + 1); // the watchdog's doing, not a caller's
+    return fired - due;
+}
+
+// Part 6: a caller that comes straight back resumes its hold-over - no hand-over, nothing ended - and a wait that
+// then times out releases the role as before.
+static void holdover_resumed(const struct fixture* fix) {
+    // First a wait that times out: it takes the role from the poll thread (part 5 left it polling) and leaves it
+    // parked for the lease, so what follows starts from a parked poll thread.
+    assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 1 * MS));
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
+    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
+    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    uint64_t handovers = atomic_load(&fix->impl->executor_handovers);
+    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
+    assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 5 * MS)); // resumed, then released
+    assert(atomic_load(&fix->impl->holdover_thread) == 0);
+    assert(!atomic_load(&fix->impl->executor_polling));
+    assert(atomic_load(&fix->impl->executor_handovers) == handovers);
+    assert(atomic_load(&fix->impl->holdovers_ended) == ended);
+}
+
+// Part 7: a zero-timeout wait that finds nothing ends a hold-over at once.
+static void holdover_ended_by_zero_wait(const struct fixture* fix) {
+    uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
+    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
+    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 0));
+    assert(atomic_load(&fix->impl->holdover_thread) == 0);
+    assert(!atomic_load(&fix->impl->executor_polling));
+    assert(atomic_load(&fix->impl->holdovers_ended) == ended + 1);
+}
+
+// Part 8, one attempt: this thread holds the role over, another thread's wait takes it over and polls - a timer due
+// during that wait fires on the other thread; returns how late, in ns.
+static uint64_t holdover_taken_over(const struct fixture* fix) {
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
+    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
+    assert(atomic_load(&fix->impl->holdover_thread) == fix->main_thread);
+    rmw_guard_condition_t* other_guard = rmw_create_guard_condition(fix->context);
+    rmw_wait_set_t* other_wait_set = rmw_create_wait_set(fix->context, 0);
+    struct waiter other = {other_wait_set, other_guard, RMW_RET_ERROR, 0};
+    atomic_store(&fired_at_ns, 0);
+    atomic_store(&fired_on_thread, 0);
+    uint64_t due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS);
+    assert(tt_Context_schedule(&fix->impl->tickle_context, due, record_firing, NULL));
+    pthread_t thread; // NOLINT(misc-include-cleaner) - as above
+    assert(0 == pthread_create(&thread, NULL, wait_on_guard, &other));
+    sleep_ms(HOLDOVER_TRIGGER_MS);
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(other_guard));
+    assert(0 == pthread_join(thread, NULL));
+    assert(RMW_RET_OK == other.result);
+    uint64_t fired = atomic_load(&fired_at_ns);
+    assert(fired != 0 && fired >= due);
+    assert(atomic_load(&fired_on_thread) == atomic_load(&other.thread)); // the taker polled
+    assert(RMW_RET_OK == rmw_destroy_wait_set(other_wait_set));
+    assert(RMW_RET_OK == rmw_destroy_guard_condition(other_guard));
+    return fired - due;
+}
+
 // Runs one part's attempts until one is within bound_ns, at most ATTEMPTS of them, printing each figure; true if
 // one was.
 static bool best_of(const char* part, uint64_t (*attempt)(const struct fixture*), const struct fixture* fix,
@@ -216,6 +311,7 @@ static bool best_of(const char* part, uint64_t (*attempt)(const struct fixture*)
 
 int main(void) {
     assert(0 == setenv("RMW_TICKLE_EXECUTOR_POLL", "1", 1));
+    assert(0 == setenv("RMW_TICKLE_EXECUTOR_HOLDOVER", "1", 1));
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
@@ -244,6 +340,13 @@ int main(void) {
 
     // 4. Two waits at once on their own guard conditions and wait sets: both end when triggered.
     assert(best_of("4. both waits woken", both_woken, &fix, BOTH_WITHIN_MS * MS));
+
+    // 5-8. The hold-over.
+    assert(impl->executor_holdover_enabled);
+    assert(best_of("5. timer after a hold-over", timer_after_holdover, &fix, HOLDOVER_LATE_MS * MS));
+    holdover_resumed(&fix);
+    holdover_ended_by_zero_wait(&fix);
+    assert(best_of("8. hold-over taken over", holdover_taken_over, &fix, ON_TIME_MS * MS));
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));
     assert(RMW_RET_OK == rmw_destroy_guard_condition(guard));

@@ -56,6 +56,7 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `TICKLE_NODE_ID` | fixed context id | claimed automatically |
 | `TICKLE_ID_REGISTRY` | directory of the context id registry, `off` for none | `/dev/shm` |
 | `RMW_TICKLE_EXECUTOR_POLL` | `0`: receive on the poll thread only | on |
+| `RMW_TICKLE_EXECUTOR_HOLDOVER` | `0`: an `rmw_wait()` that found something releases the receive role at once, not at the next `rmw_wait()` | on |
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | Heartbeat on every Nth RELIABLE sample; `0` off | 64 (window / 16) |
 | `RMW_TICKLE_IDLE_HEARTBEAT_NS` | Heartbeat when unacknowledged and idle this long ([DESIGN 6](DESIGN.md#6-reliability)); `0` off | 250 ms |
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also a FINAL Heartbeat at this fixed rate | off |
