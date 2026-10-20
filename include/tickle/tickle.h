@@ -698,6 +698,9 @@ struct tt_HybridRxWriter {
     uint32_t tick_runs;       // its runs since the last tick, arrived or lost
     uint16_t count;
     uint16_t next;
+    // Samples of this writer's the segment drain passed over as superseded (KEEP_LAST skip-to-newest) since the
+    // reader last noted one: received, not lost, and taken off the jump to the next sample (hybrid_rx_missed()).
+    uint32_t superseded;
     double path_odds;   // rule (e): the chance frame loss alone lost every run of its last all-lost samples
     uint32_t run_tick;  // the reader's tick (+1) at which a run of this writer's last got through; 0: none yet
     uint16_t body_lost; // units of the current sample before its tail found lost

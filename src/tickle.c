@@ -2935,14 +2935,29 @@ static void hybrid_rx_layout(struct tt_HybridRxWriter* writer, uint32_t index, u
 // reader cut off a while, a writer that restarted), or a seq_no that went back (a jump of nearly 2^32). Small samples
 // adding up to whole samples of that size read as lost ones; so does a sample reordered past the next (as a gap inside
 // one does), and one the writer committed and evicted unsent (tail_abandoned), as an abandoned tail does.
+//
+// Samples the segment drain passed over as superseded (writer->superseded, hybrid_rx_superseded()) were received and
+// are taken off the jump first. A KEEP_LAST reader behind a faster writer skips most of the ring, and until 2026-10-20
+// every skip of up to HYBRID_MISSED_MAX samples read here as samples lost whole: on the rig's same-host Array4k
+// BEST_EFFORT cell 2.2M "missed" samples in 20 s, a p of 0.63 for a path that loses nothing, and two
+// getsockopt(SO_MEMINFO) calls per gap (hybrid_rx_receiver_lost(), two gaps per 3-unit sample) on the drain's thread,
+// ~13 system calls per delivered sample on the PC. How many skips fell within the limit followed from the reader's
+// pace, so a faster rmw_wait() (the executor hold-over) put more of them there and read 22% slower on the rig.
 #define HYBRID_MISSED_MAX 8U
 static void hybrid_rx_missed(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t sample,
                              uint32_t count) {
     uint32_t jump = sample - (writer->sample + writer->count); // modulo 2^32: right across the wrap
-    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {
+    uint32_t passed = writer->superseded;
+    writer->superseded = 0; // they lie between the last sample and this one, whatever is judged of the jump
+    if (count != writer->count || jump % count != 0) {
         return;
     }
-    for (uint32_t missed = jump / count; missed != 0; missed--) {
+    uint32_t unseen = jump / count;
+    unseen = unseen > passed ? unseen - passed : 0U;
+    if (unseen > HYBRID_MISSED_MAX) {
+        return;
+    }
+    for (uint32_t missed = unseen; missed != 0; missed--) {
         hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail
         node->hybrid.missed_samples++;
     }
@@ -3009,6 +3024,26 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         hybrid_rx_first_estimate(node);
     }
 }
+
+#if tt_SEGMENT_ENABLED
+// `samples` whole samples of a writer's the segment drain passed over as superseded (skip_superseded_record()):
+// received and not read, so the jump to the next sample read is not loss (hybrid_rx_missed()).
+// A writer the reader has not noted yet has nothing to jump from. Not called for the plan's leading run
+// (segment_skip_run()): that is whole records only, which this reader never notes (hybrid_rx_note() is on the
+// fragment and run paths).
+static void hybrid_rx_superseded(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t samples) {
+    if (!hybrid_rx_capable(node)) {
+        return;
+    }
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+        struct tt_HybridRxWriter* entry = &node->hybrid.rx_writers[i];
+        if (entry->source != tt_CONTEXT_ID_INVALID && entry->source == source && entry->entity_id == entity_id) {
+            entry->superseded += samples;
+            return;
+        }
+    }
+}
+#endif
 
 // ---- RELIABLE: the objective (DESIGN.md section 8, "The objective and the control law") ---------------------------
 
@@ -22212,6 +22247,9 @@ static void skip_superseded_record(struct tt_Context* node, const struct segment
     node->rx_seq_span = 1;
     if (count_sample) {
         node->rx_shm_skipped_superseded++;
+#if tt_HYBRID_TRANSPORT
+        hybrid_rx_superseded(node, rec->source, rec->entity_id, 1);
+#endif
     }
     count_arrival(node, tt_TRANSPORT_SHM); // received, like any record; only not read
     segment_release(node->own_segment, index);
