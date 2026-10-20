@@ -1176,7 +1176,10 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
     // Loaned messages: every buffer this publisher made, lent out or not - one still with the application is its error
     // (rmw.h: publish or return every loan before destroying the publisher), and invalid from now on.
-    size_t loans_held = NULL != pub_impl->slot_loan ? 1U : 0U; // tt_Publisher_destroy() above gave its slot back
+    size_t loans_held = 0;
+    for (size_t k = 0; k < tt_PUBLISHER_CLAIMS; k++) {
+        loans_held += NULL != pub_impl->slot_loans[k] ? 1U : 0U; // tt_Publisher_destroy() above gave the slots back
+    }
     for (size_t i = 0; i < pub_impl->loan_count; i++) {
         loans_held += pub_impl->loan_out[i] ? 1U : 0U;
         rmw_tickle_ros_message_destroy(pub_impl->callbacks, pub_impl->loan_buffers[i], &pub_impl->allocator);
@@ -1185,9 +1188,10 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     // can_loan_messages is set - so a measurement can tell the loaned publish path from the plain one (ab_loans.sh's
     // treatment check reads it, with the subscription's loans_in_place / loans_copied line).
     if (pub_impl->loans_published > 0) {
-        (void)fprintf(stderr, "rmw_tickle: publisher %s loans_published=%llu loans_in_slot=%llu\n",
+        (void)fprintf(stderr,
+                      "rmw_tickle: publisher %s loans_published=%llu loans_in_slot=%llu slot_loans_copied=%llu\n",
                       pub_impl->rmw_publisher.topic_name, (unsigned long long)pub_impl->loans_published,
-                      (unsigned long long)pub_impl->loans_in_slot);
+                      (unsigned long long)pub_impl->loans_in_slot, (unsigned long long)pub_impl->slot_loans_copied);
     }
     if (loans_held > 0) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
@@ -1381,9 +1385,6 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
             if (pub_impl->node->context_impl->tickle_context.id_muted) { // (g8)
                 RMW_SET_ERROR_MSG("rmw_tickle: this context has no id of its own on the link - every id is in use - "
                                   "so nothing can be sent");
-            } else if (tt_RET_ILLEGAL_STATUS == ret) {
-                RMW_SET_ERROR_MSG("rmw_tickle: a message borrowed from this publisher into a shared-memory slot "
-                                  "(RMW_TICKLE_LOAN_PUBLISH_SLOTS=1) is still out - publish or return it first");
             } else if (tt_RET_TOO_LARGE == ret || tt_RET_OUT_OF_BUFFER == ret) {
                 // Large-message stage 2 (DESIGN.md section 8): above RMW_TICKLE_MAX_SAMPLE_BYTES, which the context's
                 // large buffers refuse, or - KEEP_ALL - wider than a matched reader's window.
@@ -1624,7 +1625,8 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
 // buffer into the ring slot (encode-in-slot) or tx_buffer exactly as rmw_publish() encodes a caller's message - for an
 // in-place type, field-wise copies of the bytes as they stand. With RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 a loan may instead
 // be the ring slot itself (lend_slot() below, core's tt_Publisher_claim()): the message is built where it is sent, and
-// its publish copies nothing. A claimed slot stops its reader until it is published (DESIGN.md 10), so it is opt-in.
+// its publish copies nothing. Several may be out at once (tt_PUBLISHER_CLAIMS); a claimed slot is held and the ring
+// passes it over (DESIGN.md 10, "Held slots"). Opt-in all the same (the user, 2026-10-10: off by default).
 //
 // A new buffer is initialised as a new message is (ros_init for C++, zeroed for C); a kept one is lent as its previous
 // loan left it, since a loanable type holds nothing that needs constructing - no string, no sequence - and clearing
@@ -1676,24 +1678,26 @@ static void* lend_buffer(rmw_tickle_publisher_t* pub_impl) {
 }
 
 // A loan built where it is sent: a claimed slot of the one same-host subscriber's ring (core's tt_Publisher_claim()),
-// its message behind the 4-byte psn the publish writes. Only when this publisher lends slots, has no other loan out
-// (core holds one claim per publisher and refuses any other publish of it meanwhile, so a kept-buffer loan could not be
-// published while a slot loan is out), the next psn takes the short form, and the slot holds the message aligned for
-// it. NULL otherwise - a broadcast or several peers, a remote or unattached peer, a full ring, KEEP_ALL with nothing
-// acknowledged - and the caller lends a kept buffer, as without slots. loan_mutex held; takes publish_mutex for the
-// psn and the context lock inside the claim, in that order, as rmw_publish_loaned_message() does.
+// its message behind the 4-byte psn the publish writes. Only when this publisher lends slots, the next psn takes the
+// short form, and the slot holds the message aligned for it. NULL otherwise - a broadcast or several peers, a remote
+// or unattached peer, a full ring, KEEP_ALL with nothing acknowledged, tt_PUBLISHER_CLAIMS slot loans out already -
+// and the caller lends a kept buffer, as without slots: the copy fallback. Other loans, kept buffers or slots, may be
+// out meanwhile, and ordinary publishes go on (core takes a claim's seq_no at its publish). loan_mutex held; takes
+// publish_mutex for the psn and the context lock inside the claim, in that order, as rmw_publish_loaned_message() does.
 //
 // The slot is lent as the ring left it - another record's bytes - as a kept buffer is lent as its last loan left it:
 // set every field. Room is claimed for the whole C struct, which may be longer than its wire bytes (inplace_bytes,
 // the length that is published).
 static void* lend_slot(rmw_tickle_publisher_t* pub_impl) {
-    if (!pub_impl->loan_slots || NULL != pub_impl->slot_loan) {
+    if (!pub_impl->loan_slots) {
         return NULL;
     }
-    for (size_t i = 0; i < pub_impl->loan_count; i++) {
-        if (pub_impl->loan_out[i]) {
-            return NULL;
-        }
+    size_t free_entry = tt_PUBLISHER_CLAIMS;
+    for (size_t k = 0; k < tt_PUBLISHER_CLAIMS && tt_PUBLISHER_CLAIMS == free_entry; k++) {
+        free_entry = NULL == pub_impl->slot_loans[k] ? k : free_entry;
+    }
+    if (tt_PUBLISHER_CLAIMS == free_entry) {
+        return NULL;
     }
     pthread_mutex_lock(&pub_impl->publish_mutex);
     bool short_psn = RMW_TICKLE_PSN_SHORT_BYTES == rmw_tickle_psn_bytes(pub_impl->next_publication_sequence_number);
@@ -1713,27 +1717,39 @@ static void* lend_slot(rmw_tickle_publisher_t* pub_impl) {
         (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher, payload); // a ring of slots sized off 8
         return NULL;
     }
-    pub_impl->slot_loan = message;
+    pub_impl->slot_loans[free_entry] = message;
     return message;
+}
+
+// The entry of slot loan `message`, or tt_PUBLISHER_CLAIMS. loan_mutex held.
+static size_t find_slot_loan(const rmw_tickle_publisher_t* pub_impl, const void* message) {
+    size_t k = 0;
+    while (k < tt_PUBLISHER_CLAIMS && pub_impl->slot_loans[k] != message) {
+        k++;
+    }
+    return NULL == message ? tt_PUBLISHER_CLAIMS : k;
 }
 
 // Publishes the slot loan `message`: its psn written ahead of it and the claim published, the wire bytes being the psn
 // and the type's inplace_bytes. Holds publish_mutex for the psn, as rmw_publish() does, and the context lock around
-// the publish, as publish_attempt() does. The claim is spent whatever core answers. A psn that has meanwhile outgrown
-// the short form (lend_slot() checked it; an ordinary publish cannot move it while the claim is out, so this is a
-// borrow racing a publish across 2^31) has no room ahead of the message, and that one publish is refused.
-static rmw_ret_t publish_slot_loan(rmw_tickle_publisher_t* pub_impl, void* message) {
+// the publish, as publish_attempt() does. When the claim cannot be published where it is - a psn that has meanwhile
+// outgrown the short form (other publishes moved it), or KEEP_ALL with no room at this moment (core keeps the claim
+// then) - the message is published the ordinary way from the slot, which copies it and blocks as rmw_publish() does,
+// and the slot is given back after: the copy fallback. The loan is spent whatever happens. *in_slot: published where
+// it was built. loan_mutex NOT held: the fallback may block.
+static rmw_ret_t publish_slot_loan(const rmw_publisher_t* publisher, rmw_tickle_publisher_t* pub_impl, void* message,
+                                   rmw_publisher_allocation_t* allocation, bool* in_slot) {
+    *in_slot = false;
     rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+    uint8_t* payload = (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES;
     pthread_mutex_lock(&pub_impl->publish_mutex);
     uint64_t psn = pub_impl->next_publication_sequence_number;
-    tt_ret_t ret = tt_RET_PROTOCOL_ERROR;
+    tt_ret_t ret = tt_RET_UNSUPPORTED;
     tt_Context_lock(&context_impl->tickle_context);
     if (RMW_TICKLE_PSN_SHORT_BYTES == rmw_tickle_psn_bytes(psn)) {
-        (void)rmw_tickle_psn_write(psn, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES);
-        ret = tt_Publisher_publish_claimed(&pub_impl->tickle_publisher, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES,
+        (void)rmw_tickle_psn_write(psn, payload);
+        ret = tt_Publisher_publish_claimed(&pub_impl->tickle_publisher, payload,
                                            (uint32_t)(RMW_TICKLE_PSN_SHORT_BYTES + pub_impl->callbacks->inplace_bytes));
-    } else {
-        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES);
     }
     if (tt_RET_OK == ret) {
         pub_impl->last_activity_time = tt_get_ns(); // (DEADLINE) as publish_attempt() sets it
@@ -1743,11 +1759,17 @@ static rmw_ret_t publish_slot_loan(rmw_tickle_publisher_t* pub_impl, void* messa
         pub_impl->next_publication_sequence_number++;
     }
     pthread_mutex_unlock(&pub_impl->publish_mutex);
-    if (tt_RET_OK != ret) {
-        RMW_SET_ERROR_MSG("rmw_tickle: publishing a message borrowed into a shared-memory slot failed");
-        return RMW_RET_ERROR;
+    if (tt_RET_OK == ret) {
+        *in_slot = true;
+        return RMW_RET_OK;
     }
-    return RMW_RET_OK;
+    if (tt_RET_UNSUPPORTED == ret || tt_RET_WOULD_BLOCK == ret) {
+        rmw_ret_t copied = rmw_publish(publisher, message, allocation); // the claim, still out, keeps the bytes
+        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher, payload);
+        return copied;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle: publishing a message borrowed into a shared-memory slot failed");
+    return RMW_RET_ERROR;
 }
 
 // The checks every loan entry point shares; NULL with the error set, or the publisher.
@@ -1818,10 +1840,12 @@ rmw_ret_t rmw_return_loaned_message_from_publisher(const rmw_publisher_t* publis
         return ret;
     }
     pthread_mutex_lock(&pub_impl->loan_mutex);
-    if (NULL != pub_impl->slot_loan && loaned_message == pub_impl->slot_loan) {
+    size_t slot = find_slot_loan(pub_impl, loaned_message);
+    if (slot < tt_PUBLISHER_CLAIMS) {
+        // The slot goes back: the ring had passed it over meanwhile, and nothing of it is sent.
         (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher,
                                          (uint8_t*)loaned_message - RMW_TICKLE_PSN_SHORT_BYTES);
-        pub_impl->slot_loan = NULL;
+        pub_impl->slot_loans[slot] = NULL;
         pthread_mutex_unlock(&pub_impl->loan_mutex);
         return RMW_RET_OK;
     }
@@ -1848,12 +1872,19 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
         return ret;
     }
     pthread_mutex_lock(&pub_impl->loan_mutex);
-    if (NULL != pub_impl->slot_loan && ros_message == pub_impl->slot_loan) {
-        // Under loan_mutex throughout, so a borrow cannot claim again before this claim is spent.
-        ret = publish_slot_loan(pub_impl, ros_message);
-        pub_impl->slot_loan = NULL;
+    size_t slot = find_slot_loan(pub_impl, ros_message);
+    if (slot < tt_PUBLISHER_CLAIMS) {
+        // The entry is freed before the publish, which may block (its copy fallback): a borrow meanwhile may take the
+        // entry, and core, still holding this claim until it is spent, then refuses a claim past its limit - the
+        // borrow lends a kept buffer.
+        pub_impl->slot_loans[slot] = NULL;
+        pthread_mutex_unlock(&pub_impl->loan_mutex);
+        bool in_slot = false;
+        ret = publish_slot_loan(publisher, pub_impl, ros_message, allocation, &in_slot);
+        pthread_mutex_lock(&pub_impl->loan_mutex);
         pub_impl->loans_published++;
-        pub_impl->loans_in_slot += RMW_RET_OK == ret ? 1U : 0U;
+        pub_impl->loans_in_slot += in_slot ? 1U : 0U;
+        pub_impl->slot_loans_copied += in_slot || RMW_RET_ERROR == ret ? 0U : 1U;
         pthread_mutex_unlock(&pub_impl->loan_mutex);
         return ret;
     }

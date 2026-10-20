@@ -73,7 +73,7 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `RMW_TICKLE_PUBLISH_HUGEPAGE` | `0`: a publisher's large-message buffers of 2 MiB or more stay on ordinary pages (default: 2 MiB-aligned, `MADV_HUGEPAGE`; falls back silently without THP) | on |
 | `RMW_TICKLE_LOANS` | `0`: no loans (as `ROS_DISABLE_LOANED_MESSAGES=1`) | on |
 | `RMW_TICKLE_LOAN_RING_SLOTS` | `1`: lend received samples in their ring slot | off |
-| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1`: borrow lends the subscriber's ring slot | off |
+| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1`: borrow lends the subscriber's ring slot (up to 4 at once; then a kept buffer) | off |
 
 Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSEMBLY_CAP_OFF`, `RMW_TICKLE_RUN_UNITS`
 (forced hybrid arms, DESIGN.md section 8), `RMW_TICKLE_TRACE_FILE` (counters at shutdown), the Linux HAL's `TT_*`
@@ -109,8 +109,10 @@ resolved at creation against endpoints already discovered. `rmw_get_publishers_i
 - **Ring slots (both off by default, the user, 2026-10-10):** `RMW_TICKLE_LOAN_RING_SLOTS=1` lends the ring slot; a held
   slot is passed over by the ring's writers (DESIGN.md section 10, "Held slots"), so it stops nothing (until 2026-10-20
   it stopped the ring one lap later). `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1` builds in
-  the subscriber's slot (no publish copy for BEST_EFFORT); while it is out the ring is stopped and every other publish
-  of that publisher fails.
+  the subscriber's slot (no publish copy for BEST_EFFORT): up to `tt_PUBLISHER_CLAIMS` (4) slot loans out at once, each
+  held and passed over by the ring, other publishes going on meanwhile, read in publish order. No slot free (full ring,
+  several or remote peers, 4 out): the borrow lends a kept buffer, and a slot loan that cannot go where it is (a psn
+  past the short form, KEEP_ALL without room) is published by copy (`slot_loans_copied` on the loans line).
 - **Measured:** PC, no visible difference (RESULTS.md "Loaned messages (PC)"). Rig A/B 2026-10-09 (`7a321d26`..`e521bbba`
   against `9d924607`): defaults PASS 12/12; with rclcpp taking loans, RELIABLE Array4k throughput +14.3%. Slot loans
   (`324f6ced`, 2026-10-10): PASS, nothing better or worse.
@@ -155,6 +157,7 @@ Defaults were checked on the rig (two Raspberry Pi 5s, 1 GbE); derive yours. Cor
 | `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x samples left untaken before writers are pushed back |
 | `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x repair time |
 | `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | piggyback interval = window / this; raise it if a reader jumps its window under loss |
+| `RMW_TICKLE_LOAN_PUBLISH_SLOTS` (env) | off | `1` builds loaned messages of same-host one-subscriber topics in its ring slot; `tt_PUBLISHER_CLAIMS` (4) is how many at once |
 
 Retry granularity G (`tt_RELIABLE_RETRY_GRANULARITY`, `tt_CALL_RETRY_GRANULARITY`) is measured by the context; set it
 only to fix G (DESIGN.md section 6).
