@@ -8,6 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+#include <assert.h> // static_assert
 // NOLINTNEXTLINE(misc-include-cleaner) -- picolibc routes EINTR/EAGAIN/EWOULDBLOCK through <sys/errno.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -24,13 +25,18 @@
 #include <tickle/tickle.h>
 
 // After tickle/hal.h, which decides tt_HAL_FREERTOS_NETCONN (hal_freertos.h).
-#if tt_HAL_FREERTOS_NETCONN
-// TickType_t, portMAX_DELAY, pdTRUE and configTICK_RATE_HZ live in projdefs.h, portmacro.h and FreeRTOSConfig.h, which
-// FreeRTOS supports reaching only through FreeRTOS.h - hence the suppression here and the one around their uses
-// (the same reason as hal_freertos.h's).
+#if tt_HAL_FREERTOS_NETCONN || tt_SEGMENT_ENABLED
+// TickType_t, portMAX_DELAY, pdTRUE, configTICK_RATE_HZ and configSUPPORT_DYNAMIC_ALLOCATION live in projdefs.h,
+// portmacro.h and FreeRTOSConfig.h, which FreeRTOS supports reaching only through FreeRTOS.h - hence the suppression
+// here and the one around their uses (the same reason as hal_freertos.h's).
 #include <FreeRTOS.h> // NOLINT(misc-include-cleaner)
+#include <task.h>     // taskENTER_CRITICAL (the segment's tables), vTaskSetTimeOutState (tt_receive())
+#endif
+#if tt_SEGMENT_ENABLED
+#include <portable.h> // pvPortMalloc(), vPortFree()
+#endif
+#if tt_HAL_FREERTOS_NETCONN
 #include <semphr.h>
-#include <task.h>
 
 #include <lwip/api.h>
 #include <lwip/err.h>
@@ -131,6 +137,244 @@ int32_t tt_link_mtu(uint32_t addr) {
     return (int32_t)netif_default->mtu;
 }
 
+// Contexts in one image (hal_freertos.h): the data ports of the contexts bound in this image, 0 for a free entry,
+// written with compare-and-exchange so two tasks binding at once cannot take one entry. A broadcast is copied to each
+// of the others (copy_to_local_contexts(), per build below). A port is the key because no two contexts share one, and
+// because a port is all a copy needs: the address is the netif's, the same for all of them.
+static uint16_t local_ports[tt_HAL_FREERTOS_LOCAL_CONTEXTS];
+
+static void local_register(uint16_t port) {
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_LOCAL_CONTEXTS && port != 0; i++) {
+        uint16_t expected = 0;
+        if (__atomic_compare_exchange_n(&local_ports[i], &expected, port, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            return;
+        }
+    }
+}
+
+static void local_unregister(uint16_t port) {
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_LOCAL_CONTEXTS && port != 0; i++) {
+        uint16_t expected = port;
+        (void)__atomic_compare_exchange_n(&local_ports[i], &expected, 0U, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
+}
+
+// The data port's address as a peer sees it: bound to a specific address, that one; bound to any, the netif's - the
+// only one this image has (tt_get_node_id()).
+static uint32_t own_address_of(uint32_t bound_ip) {
+    if (bound_ip != 0 || netif_default == NULL) {
+        return bound_ip;
+    }
+    return ntohl(ip4_addr_get_u32(netif_ip4_addr(netif_default)));
+}
+
+#if tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED
+// See hal_linux.c's: one address per image, so a port tells two contexts of it apart.
+bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+    return port == node->hal.own_port && (ip == node->hal.own_ip || node->hal.own_ip == 0);
+}
+
+void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
+    *ip = node->hal.own_ip;
+    *port = node->hal.own_port;
+}
+#endif
+
+#if tt_SEGMENT_ENABLED
+// The segment's platform half (hal.h) on FreeRTOS. Every task of an image shares one address space, so a region is a
+// block of RAM, and the "name" a writer attaches by is a key in this table rather than a file: create puts a region
+// under a name, attach finds it and counts one more user, detach counts one fewer, and unlink takes the name away. The
+// memory goes back when it has neither a name nor a user - the lifetime a file in /dev/shm has on Linux, kept so that
+// core's own create/attach/detach/unlink sequence means here what it means there. Core's ring, header checks and
+// incarnation are unchanged: they see a region exactly as they see a mapping.
+//
+// Never tt_SEGMENT_ORPHANED: a region here cannot outlive the context that created it except by that context never
+// being destroyed, and then its sockets are still open too - nothing a name could tell apart (hal.h).
+//
+// Every table operation runs in a critical section: a handful of string compares over tt_HAL_FREERTOS_SEGMENTS
+// entries, and never an allocation, which is made before and released after.
+struct segment_region {
+    void* base; // NULL: a free entry
+    size_t bytes;
+    uint16_t users; // creator and attachers whose detach has not come yet
+    bool named;     // still under its name: a new attach can find it
+    char name[tt_SEGMENT_PATH_LENGTH];
+};
+static struct segment_region segment_regions[tt_HAL_FREERTOS_SEGMENTS];
+
+// The default memory (hal_freertos.h): the FreeRTOS heap, over-allocated by a line so the region can start on one,
+// with the block's own address kept in the word before the region for the release.
+static void* heap_segment_alloc(size_t bytes) {
+#if configSUPPORT_DYNAMIC_ALLOCATION // NOLINT(misc-include-cleaner) - FreeRTOSConfig.h, through FreeRTOS.h
+    uint8_t* raw = (uint8_t*)pvPortMalloc(bytes + tt_SEGMENT_CACHE_LINE);
+    if (raw == NULL) {
+        return NULL;
+    }
+    // Strictly above raw, by at least the heap's own alignment, which is at least a pointer: room for the word below.
+    uintptr_t base = ((uintptr_t)raw + tt_SEGMENT_CACHE_LINE) & ~(uintptr_t)(tt_SEGMENT_CACHE_LINE - 1);
+    ((void**)base)[-1] = raw; // NOLINT(performance-no-int-to-ptr)
+    return (void*)base;       // NOLINT(performance-no-int-to-ptr)
+#else
+    (void)bytes;
+    return NULL; // no heap: no segment unless the application gives memory (tt_freertos_set_segment_memory())
+#endif
+}
+
+static void heap_segment_release(void* region, size_t bytes) {
+    (void)bytes;
+#if configSUPPORT_DYNAMIC_ALLOCATION // NOLINT(misc-include-cleaner)
+    vPortFree(((void**)region)[-1]);
+#else
+    (void)region;
+#endif
+}
+
+static tt_HAL_SEGMENT_ALLOC segment_alloc = heap_segment_alloc;
+static tt_HAL_SEGMENT_RELEASE segment_release_memory = heap_segment_release;
+
+void tt_freertos_set_segment_memory(tt_HAL_SEGMENT_ALLOC alloc, tt_HAL_SEGMENT_RELEASE release) {
+    const bool both = alloc != NULL && release != NULL;
+    segment_alloc = both ? alloc : heap_segment_alloc;
+    segment_release_memory = both ? release : heap_segment_release;
+}
+
+static bool name_is(const char* name, const char* path) {
+    return strncmp(name, path, tt_SEGMENT_PATH_LENGTH) == 0;
+}
+
+// The entry under `path`, or NULL. Called in the critical section.
+static struct segment_region* region_named(const char* path) {
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS; i++) {
+        struct segment_region* region = &segment_regions[i];
+        if (region->base != NULL && region->named && name_is(region->name, path)) {
+            return region;
+        }
+    }
+    return NULL;
+}
+
+// An entry with neither a name nor a user, emptied; its memory into *gone for release outside the critical section.
+static void region_retire_if_unused(struct segment_region* region, void** gone, size_t* gone_bytes) {
+    if (region->named || region->users != 0) {
+        return;
+    }
+    *gone = region->base;
+    *gone_bytes = region->bytes;
+    memset(region, 0, sizeof(*region));
+}
+
+void* tt_segment_create(const char* path, size_t bytes) {
+    if (strnlen(path, tt_SEGMENT_PATH_LENGTH) >= tt_SEGMENT_PATH_LENGTH) {
+        return NULL; // core never forms one this long (segment_name()); a truncated key could name another segment
+    }
+    void* region = segment_alloc(bytes);
+    if (region == NULL) {
+        return NULL; // no segment: this context's peers reach it over UDP
+    }
+    if (((uintptr_t)region & (tt_SEGMENT_CACHE_LINE - 1U)) != 0) {
+        TT_LOG_WARNING("Segment memory is not aligned to %u bytes - no segment", (unsigned)tt_SEGMENT_CACHE_LINE);
+        segment_release_memory(region, bytes);
+        return NULL;
+    }
+    // Zeroed, as a new file is: core writes every field it reads before the magic, but a field added later should not
+    // have to remember that this platform hands out whatever the heap held.
+    memset(region, 0, bytes);
+    void* replaced = NULL;
+    size_t replaced_bytes = 0;
+    bool placed = false;
+    taskENTER_CRITICAL();
+    // Replaces a region left under this name, as Linux's create unlinks first: whoever still uses it keeps it.
+    struct segment_region* previous = region_named(path);
+    if (previous != NULL) {
+        previous->named = false;
+        region_retire_if_unused(previous, &replaced, &replaced_bytes);
+    }
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS && !placed; i++) {
+        struct segment_region* entry = &segment_regions[i];
+        if (entry->base == NULL) {
+            entry->base = region;
+            entry->bytes = bytes;
+            entry->users = 1;
+            entry->named = true;
+            strncpy(entry->name, path, sizeof(entry->name) - 1U);
+            placed = true;
+        }
+    }
+    taskEXIT_CRITICAL();
+    if (replaced != NULL) {
+        segment_release_memory(replaced, replaced_bytes);
+    }
+    if (!placed) {
+        TT_LOG_WARNING("No free segment entry (tt_HAL_FREERTOS_SEGMENTS = %u) - no segment",
+                       (unsigned)tt_HAL_FREERTOS_SEGMENTS);
+        segment_release_memory(region, bytes);
+        return NULL;
+    }
+    return region;
+}
+
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    void* base = NULL;
+    *why = (uint8_t)tt_SEGMENT_ABSENT; // the ordinary answer: a peer in another image, or one without a segment
+    taskENTER_CRITICAL();
+    struct segment_region* region = region_named(path);
+    if (region != NULL && region->bytes < bytes) {
+        *why = (uint8_t)tt_SEGMENT_BAD_HEADER; // smaller than the caller is about to index: as Linux refuses it
+    } else if (region != NULL && region->users < UINT16_MAX) {
+        region->users++;
+        base = region->base;
+        *why = (uint8_t)tt_SEGMENT_ATTACHED;
+    } else if (region != NULL) {
+        *why = (uint8_t)tt_SEGMENT_REFUSED;
+    }
+    taskEXIT_CRITICAL();
+    return base;
+}
+
+void tt_segment_detach(void* mapping, size_t bytes) {
+    (void)bytes; // a region is detached whole, whatever part of it the attach asked for (the header probe)
+    if (mapping == NULL) {
+        return;
+    }
+    void* gone = NULL;
+    size_t gone_bytes = 0;
+    taskENTER_CRITICAL();
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS; i++) {
+        struct segment_region* region = &segment_regions[i];
+        if (region->base == mapping && region->users != 0) {
+            region->users--;
+            region_retire_if_unused(region, &gone, &gone_bytes);
+            break;
+        }
+    }
+    taskEXIT_CRITICAL();
+    if (gone != NULL) {
+        segment_release_memory(gone, gone_bytes);
+    }
+}
+
+void tt_segment_unlink(const char* path) {
+    void* gone = NULL;
+    size_t gone_bytes = 0;
+    taskENTER_CRITICAL();
+    struct segment_region* region = region_named(path);
+    if (region != NULL) {
+        region->named = false;
+        region_retire_if_unused(region, &gone, &gone_bytes);
+    }
+    taskEXIT_CRITICAL();
+    if (gone != NULL) {
+        segment_release_memory(gone, gone_bytes);
+    }
+}
+
+// Not told on this target: the reader's waits are compiled out here (tt_SEGMENT_READER_WAITS, config.h), which is the
+// only thing that asks.
+uint64_t tt_thread_cpu_ns(void) {
+    return 0;
+}
+#endif
+
 #if tt_HAL_FREERTOS_NETCONN
 
 // The netconn build (hal_freertos.h, tt_HAL_FREERTOS_NETCONN). Same two receive sockets, same alternation, same
@@ -196,6 +440,12 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     hal->rx_reads = 0;
     hal->rx_empty_reads = 0;
     hal->rx_quiet = 0;
+    hal->own_ip = 0;
+    hal->own_port = 0;
+#if tt_SEGMENT_ENABLED
+    hal->bell_pending = 0;
+    hal->bell_wakes = 0;
+#endif
     hal->rx_sem = xSemaphoreCreateBinaryStatic(&hal->rx_sem_storage);
     if (hal->rx_sem == NULL) {
         TT_LOG_ERROR("Cannot create receive semaphore");
@@ -221,11 +471,20 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
+    ip_addr_t bound_ip;
+    u16_t bound_port = 0;
+    if (netconn_getaddr(hal->data_conn, &bound_ip, &bound_port, 1) == ERR_OK) {
+        hal->own_ip = own_address_of(lwip_ntohl(ip4_addr_get_u32(ip_2_ip4(&bound_ip))));
+        hal->own_port = bound_port;
+    }
+    local_register(hal->own_port);
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Context* node) {
     struct tt_hal* hal = &node->hal;
+    local_unregister(hal->own_port);
+    hal->own_port = 0;
     if (hal->data_conn != NULL && netconn_delete(hal->data_conn) != ERR_OK) {
         TT_LOG_WARNING("Cannot close data netconn");
     }
@@ -275,10 +534,29 @@ static int32_t send_pieces(struct tt_Context* node, const void* const* pieces, c
     return err == ERR_OK ? (int32_t)total : -1;
 }
 
+// A broadcast, copied to every other context bound in this image (hal_freertos.h, "Contexts in one image"): unicast to
+// the netif's own address, which lwIP loops back, at each one's data port. The copies' results are not the send's: a
+// sibling closing meanwhile is not this send failing. Returns the broadcast's result.
+static int32_t send_broadcast(struct tt_Context* node, const void* const* pieces, const size_t* lens, uint32_t count) {
+    int32_t sent = send_pieces(node, pieces, lens, count, &node->hal.broadcast_ip, _tt_CONFIG.port);
+    if (node->hal.own_ip == 0) {
+        return sent;
+    }
+    ip_addr_t self;
+    ip_addr_set_ip4_u32_val(self, lwip_htonl(node->hal.own_ip));
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_LOCAL_CONTEXTS; i++) {
+        uint16_t port = __atomic_load_n(&local_ports[i], __ATOMIC_SEQ_CST);
+        if (port != 0 && port != node->hal.own_port) {
+            (void)send_pieces(node, pieces, lens, count, &self, port);
+        }
+    }
+    return sent;
+}
+
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     const void* pieces[1] = {buf};
     size_t lens[1] = {len};
-    return send_pieces(node, pieces, lens, 1, &node->hal.broadcast_ip, _tt_CONFIG.port);
+    return send_broadcast(node, pieces, lens, 1);
 }
 
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
@@ -294,7 +572,7 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     const void* pieces[2] = {hdr, body};
     size_t lens[2] = {hdr_len, body_len};
     if (ip == 0) {
-        return send_pieces(node, pieces, lens, 2, &node->hal.broadcast_ip, _tt_CONFIG.port);
+        return send_broadcast(node, pieces, lens, 2);
     }
     ip_addr_t dest;
     ip_addr_set_ip4_u32_val(dest, lwip_htonl(ip));
@@ -367,6 +645,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         if (__atomic_exchange_n(&hal->wake_pending, 0U, __ATOMIC_SEQ_CST) != 0) {
             return -3;
         }
+#if tt_SEGMENT_ENABLED
+        // A rung doorbell is taken whether or not a datagram is waiting too, as hal_linux.c's edge-triggered bell is:
+        // core drains the segment before it sleeps again, whatever woke it.
+        const bool rung = __atomic_exchange_n(&hal->bell_pending, 0U, __ATOMIC_SEQ_CST) != 0;
+#endif
         if ((__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |
              __atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_DATA], __ATOMIC_SEQ_CST)) != 0) {
             int32_t got = rx_read(node, buf, len, ip, port);
@@ -374,6 +657,14 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
                 return got;
             }
         }
+#if tt_SEGMENT_ENABLED
+        if (rung) {
+            hal->bell_wakes++;
+            *ip = 0;
+            *port = 0;
+            return 0; // a rung bell is a zero-length datagram to core, which is what a doorbell always was (hal.h)
+        }
+#endif
         // A give left over from a datagram tt_try_receive() already took wakes this once for nothing; the loop then
         // finds no count and waits again for what is left of the timeout.
         if (xTaskCheckForTimeOut(&start, &remaining) != pdFALSE || xSemaphoreTake(hal->rx_sem, remaining) != pdTRUE) {
@@ -408,6 +699,99 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
     xSemaphoreGive(node->hal.rx_sem);
     return tt_RET_OK;
 }
+
+#if tt_SEGMENT_ENABLED
+// The segment's doorbell (hal.h) in the netconn build: no FIFO and no second wait point - a ring sets the owner's
+// bell_pending and gives the semaphore its tt_receive() already waits on, as tt_wake_signal() does with its own flag.
+// A writer finds the owner by the bell's name, which core builds from the segment's; the handle it keeps is the
+// entry's index and a generation, so a handle kept past the owner's destroy rings nobody rather than whoever took the
+// entry since.
+struct segment_bell {
+    struct tt_Context* node; // NULL: a free entry
+    uint32_t generation;     // 1 to 0x7FFFFF: the handle's upper bits
+    char name[tt_SEGMENT_PATH_LENGTH];
+};
+static struct segment_bell segment_bells[tt_HAL_FREERTOS_SEGMENTS];
+static uint32_t segment_bell_generation;
+#define BELL_INDEX_BITS 8U
+#define BELL_INDEX_MASK ((1U << BELL_INDEX_BITS) - 1U)
+#define BELL_GENERATION_MASK 0x7FFFFFU // keeps a handle positive, which is what says "a bell" to core
+static_assert(tt_HAL_FREERTOS_SEGMENTS <= BELL_INDEX_MASK + 1U, "a bell's index must fit its handle's low bits");
+
+int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
+    int32_t result = -1;
+    taskENTER_CRITICAL();
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS; i++) {
+        if (segment_bells[i].node != NULL && name_is(segment_bells[i].name, path)) {
+            segment_bells[i].node = NULL; // a bell left under this name is replaced, as its segment is
+        }
+    }
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS && result < 0; i++) {
+        struct segment_bell* bell = &segment_bells[i];
+        if (bell->node == NULL) {
+            segment_bell_generation = (segment_bell_generation % BELL_GENERATION_MASK) + 1U;
+            bell->generation = segment_bell_generation;
+            strncpy(bell->name, path, sizeof(bell->name) - 1U);
+            bell->name[sizeof(bell->name) - 1U] = '\0';
+            bell->node = node;
+            result = 0;
+        }
+    }
+    taskEXIT_CRITICAL();
+    if (result < 0) {
+        TT_LOG_WARNING("No free doorbell entry - peers will ring over UDP");
+    }
+    return result;
+}
+
+void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
+    taskENTER_CRITICAL();
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS; i++) {
+        if (segment_bells[i].node == node && name_is(segment_bells[i].name, path)) {
+            segment_bells[i].node = NULL;
+        }
+    }
+    taskEXIT_CRITICAL();
+}
+
+int32_t tt_segment_bell_open(const char* path) {
+    int32_t handle = -1;
+    taskENTER_CRITICAL();
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_SEGMENTS && handle < 0; i++) {
+        if (segment_bells[i].node != NULL && name_is(segment_bells[i].name, path)) {
+            handle = (int32_t)((segment_bells[i].generation << BELL_INDEX_BITS) | i);
+        }
+    }
+    taskEXIT_CRITICAL();
+    return handle;
+}
+
+// Never blocks. The owner is looked up and its flag set in the critical section; the semaphore is given after it,
+// since a give may switch to the owner's task. A destroy between the two leaves the give to a semaphore no tt_receive()
+// waits on any more - one wake-up of nobody.
+void tt_segment_bell_ring(int32_t bell) {
+    const uint32_t index = (uint32_t)bell & BELL_INDEX_MASK;
+    const uint32_t generation = (uint32_t)bell >> BELL_INDEX_BITS;
+    if (bell < 0 || index >= tt_HAL_FREERTOS_SEGMENTS) {
+        return;
+    }
+    SemaphoreHandle_t wake = NULL;
+    taskENTER_CRITICAL();
+    struct tt_Context* owner = segment_bells[index].node;
+    if (owner != NULL && segment_bells[index].generation == generation) {
+        __atomic_store_n(&owner->hal.bell_pending, 1U, __ATOMIC_SEQ_CST);
+        wake = owner->hal.rx_sem;
+    }
+    taskEXIT_CRITICAL();
+    if (wake != NULL) {
+        xSemaphoreGive(wake);
+    }
+}
+
+void tt_segment_bell_close(int32_t bell) {
+    (void)bell; // a handle holds nothing: the entry is the owner's
+}
+#endif
 #else // the BSD socket API
 
 tt_ret_t tt_bind(struct tt_Context* node) {
@@ -419,6 +803,8 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_reads = 0;
     node->hal.rx_empty_reads = 0;
     node->hal.rx_quiet = 0;
+    node->hal.own_ip = 0;
+    node->hal.own_port = 0;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -531,10 +917,19 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_IO_ERROR;
     }
 
+    struct sockaddr_in bound;
+    socklen_t bound_len = sizeof(bound);
+    if (getsockname(node->hal.data_sock, (struct sockaddr*)&bound, &bound_len) == 0) {
+        node->hal.own_ip = own_address_of(ntohl(bound.sin_addr.s_addr));
+        node->hal.own_port = ntohs(bound.sin_port);
+    }
+    local_register(node->hal.own_port);
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Context* node) {
+    local_unregister(node->hal.own_port);
+    node->hal.own_port = 0;
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
         TT_LOG_WARNING("Cannot close data socket: %d", errno);
     }
@@ -548,9 +943,39 @@ void tt_close(struct tt_Context* node) {
     }
 }
 
+// The netconn build's send_broadcast(): `msg`, already sent to the broadcast address, again to every other context
+// bound in this image, at the netif's own address. Its destination is replaced.
+static void copy_to_local_contexts(struct tt_Context* node, struct msghdr* msg) {
+    if (node->hal.own_ip == 0) {
+        return;
+    }
+    struct sockaddr_in self;
+    memset(&self, 0, sizeof(self));
+    self.sin_family = AF_INET;
+    self.sin_addr.s_addr = htonl(node->hal.own_ip);
+    self.sin_len = sizeof(self);
+    msg->msg_name = &self;
+    msg->msg_namelen = sizeof(self);
+    for (uint32_t i = 0; i < tt_HAL_FREERTOS_LOCAL_CONTEXTS; i++) {
+        uint16_t port = __atomic_load_n(&local_ports[i], __ATOMIC_SEQ_CST);
+        if (port != 0 && port != node->hal.own_port) {
+            self.sin_port = htons(port);
+            (void)sendmsg(node->hal.data_sock, msg, 0);
+        }
+    }
+}
+
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
-    return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
-                           sizeof(struct sockaddr_in));
+    int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+                                   sizeof(struct sockaddr_in));
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - sendmsg() only reads it; see tt_send_iov()
+    struct iovec iov = {.iov_base = (void*)(uintptr_t)buf, .iov_len = len};
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    copy_to_local_contexts(node, &msg);
+    return sent;
 }
 
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
@@ -593,7 +1018,11 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
         msg.msg_namelen = sizeof(node->hal.broadcast_addr);
     }
 
-    return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
+    int32_t sent = (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
+    if (ip == 0) {
+        copy_to_local_contexts(node, &msg);
+    }
+    return sent;
 }
 
 // tt_receive()'s wait: select() on both sockets and the wake socket for up to `timeout` (0 = no
@@ -764,6 +1193,34 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
     }
     return tt_RET_OK;
 }
+
+#if tt_SEGMENT_ENABLED
+// No doorbell in the socket build: its tt_receive() waits in select(), which nothing but a socket can end, so a writer
+// rings the owner over UDP - a zero-length datagram to its data port - as hal.h provides for a platform without one.
+int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
+    (void)node;
+    (void)path;
+    return -1;
+}
+
+void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
+    (void)node;
+    (void)path;
+}
+
+int32_t tt_segment_bell_open(const char* path) {
+    (void)path;
+    return -1;
+}
+
+void tt_segment_bell_ring(int32_t bell) {
+    (void)bell;
+}
+
+void tt_segment_bell_close(int32_t bell) {
+    (void)bell;
+}
+#endif
 #endif
 
 // lwIP has no sendmmsg(), so a batch is one send each - the same number of calls core made before batching.

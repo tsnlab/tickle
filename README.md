@@ -65,6 +65,7 @@ All tests and the rig: [docs/TESTING.md](docs/TESTING.md). Live status: <https:/
 | **Delivery** | A zeroed QoS profile is rmw's default: RELIABLE, KEEP_LAST 10. BEST_EFFORT may miss samples, never reorders or duplicates. RELIABLE delivers in order per writer; KEEP_ALL refuses a write rather than drop an unacknowledged sample. Any thread may call a context while one thread polls it (`tt_THREAD_SAFE`). |
 | **Security** | None: any node can claim any identity. Use a dedicated VLAN or link ([docs/ROADMAP.md](docs/ROADMAP.md)). |
 | **Linux** | Shared memory on one host is automatic. io_uring is used when allowed; containers refuse it by default and TickLE then runs a little slower ([recipe](docs/DESIGN.md#containers-allowing-io_uring)). Large samples go with UDP checksum 0; `TT_UDP_CSUM0=0` keeps checksums. |
+| **FreeRTOS** | Contexts in one image use shared memory too: the HAL takes 24 KiB per context from the FreeRTOS heap, or from your own region (`tt_freertos_set_segment_memory()`, `hal_freertos.h`). With it a context is ~13 KB larger; an image with one context can build with `-Dtt_SEGMENT_ENABLED=0`. |
 
 Tuning and how TickLE differs from DDS: [docs/RMW.md](docs/RMW.md#tuning-and-differences-from-dds).
 

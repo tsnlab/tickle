@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdbool.h> // rx_prefer_data
+#include <stddef.h>  // size_t
 #include <stdint.h>
 
 #include <tickle/config.h>
@@ -131,6 +132,10 @@ static inline void tt_thread_yield(void) {
 #include <lwip/sockets.h>
 #endif
 
+// tt_send_batch() here is one send per datagram (lwIP has no sendmmsg()), so core sends a batch's socket datagrams as
+// it meets them rather than gathering them on the stack first (tickle.c, seam_send_batch()).
+#define tt_HAL_SEND_BATCH_LOOPS 1
+
 // The two receive sockets, as indexes into struct tt_hal.rx_arrivals.
 #define tt_HAL_RX_WELL_KNOWN 0
 #define tt_HAL_RX_DATA 1
@@ -181,4 +186,42 @@ struct tt_hal {
     uint32_t rx_empty_reads;
     // Checks the arrival count answered "nothing" without entering lwIP (netconn build only):
     uint32_t rx_quiet;
+    // The data port's own address, host order (tt_own_address(), hal.h): the netif's address unless _tt_CONFIG.addr
+    // names one, and the port lwIP chose. Same-host discovery compares a peer's address with it, the segment is named
+    // from it, and a broadcast is copied to every other context in this image at it ("Contexts in one image" below).
+    uint32_t own_ip;
+    uint16_t own_port;
+#if tt_SEGMENT_ENABLED
+    // The segment doorbell (tt_segment_bell_ring(), hal_freertos.c): set by a writer's ring, then rx_sem is given;
+    // taken (exchanged for 0) by tt_receive(), which reports it as a zero-length datagram. bell_wakes counts those.
+    uint8_t bell_pending;
+    uint32_t bell_wakes;
+#endif
 };
+
+// Contexts in one image (hal_freertos.c). One netif, so every context of an image has the same address, and lwIP
+// loops a datagram back to the image only when it is addressed to that address - never a broadcast. So that two
+// contexts of one image discover each other over UDP as two hosts' contexts do, each broadcast is also sent, as a
+// unicast to the netif's own address, to the data port of every other context of the image bound at the time. At most
+// this many contexts take part; one bound beyond it still works, and only its local siblings do not hear it.
+#ifndef tt_HAL_FREERTOS_LOCAL_CONTEXTS
+#define tt_HAL_FREERTOS_LOCAL_CONTEXTS 4
+#endif
+
+#if tt_SEGMENT_ENABLED
+// The shared-memory segment on FreeRTOS (DESIGN.md section 10, "The segment on FreeRTOS"): every task of an image
+// shares one address space, so a segment is a block of RAM the HAL hands out and finds again by name - no file and
+// no mapping. Regions alive at once (a context's own segment each), and doorbells:
+#ifndef tt_HAL_FREERTOS_SEGMENTS
+#define tt_HAL_FREERTOS_SEGMENTS tt_HAL_FREERTOS_LOCAL_CONTEXTS
+#endif
+// Where a segment's memory comes from. `alloc` returns `bytes` aligned to at least tt_SEGMENT_CACHE_LINE, or NULL -
+// which is not an error: that context has no segment and its same-image peers reach it over UDP. `release` gets back
+// exactly what `alloc` returned, with the same `bytes`, once no context uses the region. The default takes it from
+// the FreeRTOS heap (pvPortMalloc(), over-allocating for the alignment); an application that wants the RAM fixed at
+// link time passes a static region's allocator instead. Set before the first context is created; NULL, NULL puts the
+// default back.
+typedef void* (*tt_HAL_SEGMENT_ALLOC)(size_t bytes);
+typedef void (*tt_HAL_SEGMENT_RELEASE)(void* region, size_t bytes);
+void tt_freertos_set_segment_memory(tt_HAL_SEGMENT_ALLOC alloc, tt_HAL_SEGMENT_RELEASE release);
+#endif
