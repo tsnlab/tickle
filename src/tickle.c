@@ -555,8 +555,10 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 #define TT_SEGMENT_DIR "/dev/shm/"
 #endif
 static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
-    int written = snprintf(buf, size, TT_SEGMENT_DIR "tickle-seg-%u.%u.%u.%u-%u-%u", (ip >> 24) & MASK_8BIT,
-                           (ip >> 16) & MASK_8BIT, (ip >> BITS_IN_1BYTE) & MASK_8BIT, ip & MASK_8BIT, port, context_id);
+    // Each octet as an unsigned int: uint32_t is unsigned long on RV32 (FreeRTOS), where %u would not match it.
+    int written = snprintf(buf, size, TT_SEGMENT_DIR "tickle-seg-%u.%u.%u.%u-%u-%u", (unsigned)((ip >> 24) & MASK_8BIT),
+                           (unsigned)((ip >> 16) & MASK_8BIT), (unsigned)((ip >> BITS_IN_1BYTE) & MASK_8BIT),
+                           (unsigned)(ip & MASK_8BIT), port, context_id);
     return written > 0 && (size_t)written < size ? written : -1;
 }
 
@@ -1795,6 +1797,47 @@ static int32_t seam_send_iov(struct tt_Context* node, const void* hdr, size_t hd
 // A batch is one call and several datagrams, each possibly to a different peer, so the segment is
 // tried per datagram and only the ones that did not take it are left for the socket. The copy
 // happens only when the batch is actually split.
+//
+// Where the HAL's batch is itself one send per datagram (tt_HAL_SEND_BATCH_LOOPS, hal_freertos.h: lwIP has no
+// sendmmsg()), the datagrams left for the socket are sent as they are met instead of gathered first: the same calls, in
+// the same order per peer, without a TX_MAX_BATCH copy of the batch on the stack - 1.5 KB of a FreeRTOS task's stack,
+// since this is inlined into send_datagram(), which every publish passes through.
+#ifndef tt_HAL_SEND_BATCH_LOOPS
+#define tt_HAL_SEND_BATCH_LOOPS 0
+#endif
+#if tt_SEGMENT_ENABLED && tt_HAL_SEND_BATCH_LOOPS
+static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
+                               const uint8_t* context_ids) {
+    uint32_t left = 0;
+    bool failed = false;
+    uint8_t rung_for[TX_MAX_BATCH]; // as below: each peer written to is rung once, after the whole batch
+    uint32_t peers = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        if (segment_deliver_ringing(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,
+                                    datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, false)) {
+            bool seen = false;
+            for (uint32_t known = 0; known < peers && !seen; known++) {
+                seen = rung_for[known] == context_ids[i];
+            }
+            if (!seen) {
+                rung_for[peers++] = context_ids[i];
+            }
+            continue;
+        }
+        count_udp(node, reason, 1);
+        left++;
+        failed = failed || tt_send_batch(node, &datagrams[i], 1) < 0;
+    }
+    for (uint32_t written = 0; written < peers; written++) {
+        struct tt_SegmentPeer* peer = segment_peer(node, rung_for[written]);
+        if (peer->mapping != NULL) {
+            segment_ring_if_asleep(node, rung_for[written], peer->mapping, peer->ip, peer->port);
+        }
+    }
+    return failed ? -1 : (int32_t)left;
+}
+#else
 static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
                                const uint8_t* context_ids) {
 #if tt_SEGMENT_ENABLED
@@ -1838,6 +1881,7 @@ static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatag
     return tt_send_batch(node, datagrams, count);
 #endif
 }
+#endif
 
 // One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
 static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port,
@@ -21516,6 +21560,7 @@ static bool segment_await_next(struct tt_Context* node, uint64_t now, uint64_t u
 //
 // Called at a decision on an empty-looking ring, so an epoch ends within one decision of its last record.
 
+#if tt_SEGMENT_READER_WAITS
 // One epoch's cost per record into its mode's running mean and variance. Costs are clamped to 2^24 ns a record (60
 // records a second), far slower than any stream where the waits can be taken, so the squares fit.
 static void segment_cost_record(struct tt_Context* node, uint8_t mode, uint64_t cost_ns) {
@@ -21623,6 +21668,7 @@ static void segment_epoch_turn(struct tt_Context* node, uint64_t now, uint32_t r
         node->segment_epoch_settling = 1;
     }
 }
+#endif
 
 // poll_wait_io()'s first question at an empty-looking ring: is there something to drain instead of sleeping? A record
 // in the ring is drained, not slept on, one a writer is still filling is waited for - for a while - rather than
@@ -21638,10 +21684,12 @@ static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool ha
     if (header == NULL) {
         return false;
     }
+#if tt_SEGMENT_READER_WAITS
     const uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
     if (node->segment_epoch_ns == 0 || read_index - node->segment_epoch_index >= header->slots) {
         segment_epoch_turn(node, time, read_index);
     }
+#endif // without the waits no epoch is measured, segment_watching stays 0, and the reader always sleeps (config.h)
     uint64_t deadline = has_next ? next : UINT64_MAX;
     if (!until_next_event && time + (uint64_t)timeout < deadline) {
         deadline = time + (uint64_t)timeout;

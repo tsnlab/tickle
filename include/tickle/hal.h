@@ -206,6 +206,7 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
 // the same view do not choose alike. The id this context held before, if any, is released. 0: none free. Without a
 // host registry the choice is made from `avoid` alone, and the link settles any clash. tt_close() releases the id.
 uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt);
+#endif
 
 #if tt_SEGMENT_ENABLED
 // The shared-memory segment's platform half (SHM_PLAN.md stage 1). Only the mapping is here; the
@@ -259,6 +260,7 @@ void tt_segment_bell_close(int32_t bell);
 // told, which leaves only the wall-clock half of the comparison.
 uint64_t tt_thread_cpu_ns(void);
 #endif
+#if tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED
 // (g8) Whether ip:port - host order, as tt_receive() reports a sender - is `node`'s own data socket, which every
 // datagram it sends comes from.
 bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port);

@@ -689,6 +689,18 @@
 #ifndef tt_SEGMENT_PROBE_EVERY_MAX
 #define tt_SEGMENT_PROBE_EVERY_MAX 512
 #endif
+// Whether a reader may wait for its writers without sleeping at all (segment_await_claim(), segment_await_next(),
+// chosen per epoch by segment_epoch_turn()). Those waits spin on the clock, which is a gain only where the writer runs
+// on another core meanwhile. 0 on FreeRTOS: one core, and no time slicing between tasks of one priority
+// (configUSE_TIME_SLICING 0 in platform/freertos), so a reader spinning for its writer is the reason the writer does
+// not run - the reader always sleeps, and its writer rings it (the HAL's doorbell).
+#ifndef tt_SEGMENT_READER_WAITS
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_SEGMENT_READER_WAITS 0
+#else
+#define tt_SEGMENT_READER_WAITS 1
+#endif
+#endif
 
 // Consecutive drain passes with the head of the ring claimed but never published, before the owner
 // says so. A publish takes a memcpy, so a handful of passes over a claimed head is ordinary
