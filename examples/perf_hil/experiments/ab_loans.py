@@ -78,6 +78,15 @@ asks what it always asks. The rules that change:
 Expectation in zcl: D PASS; L IMPROVED or PASS on the rtt cells' p50 (one 1 KB copy fewer per publish, both ends),
 PASS on tput (perf_test borrows nothing; its takes read in place as on main, the ring path decodes as on main).
 
+MODE slots (AB_LOANS_MODE=slots; ab/slot-loans, written 2026-10-20 before any run). Both builds build loans in the
+ring slot (main has had the one-claim slot loan since 324f6ced); B's claimed slot is held out of ring order and read
+by reference, several at once, and B's ring passes held slots (branch ab/slot-loans, DESIGN.md 10). Everything of zcl
+holds except one TREATMENT rule: A's tickle_loans rtt runs must show loans_in_slot > 0 as B's do (A builds in the slot
+too), and A's tickle runs no slot loan, as B's. L then asks: does B's held-and-referenced slot loan cost the loaned rtt
+path anything against main's in-place one (one ring record more per sample: the reference)? Expectation: D PASS; L
+PASS - a WORSE on L's rtt p50 or cpu/sample is the reference's cost, and is reported, not hidden; D decides the
+landing (slot loans stay off by default).
+
 Usage:  ab_loans.py prereg | read A=OUT B=OUT ... | witness RUNS_DIR A|B | selftest
 Exit status: 0 D PASS/IMPROVED, 1 D WORSE, 3 NO VERDICT, 4 VOID, 2 usage.
 """
@@ -104,7 +113,8 @@ CONTROL = [(f"tput/{CONTROL_TOPIC}/{q}", m) for q in QOSES for m in ("delivered_
 HIGHER_BETTER = {"delivered_per_s"}
 WEAK_PCT = 10.0
 ENV_VAR = "ROS_DISABLE_LOANED_MESSAGES"
-ZCL = os.environ.get("AB_LOANS_MODE", "") == "zcl"
+SLOTS_BOTH = os.environ.get("AB_LOANS_MODE", "") == "slots"  # zcl, with A building slot loans too
+ZCL = os.environ.get("AB_LOANS_MODE", "") == "zcl" or SLOTS_BOTH
 # The variables arm tickle_loans sets in mode zcl, besides ENV_VAR, and the value it sets them to.
 ZCL_VARS = {"RMW_TICKLE_LOAN_PUBLISH_SLOTS": "1", "PINGPONG_LOANED_PUBLISH": "1"}
 
@@ -203,7 +213,7 @@ def treatment_of_run(build, stem, counts, envs, zcl_env=None):
     if f"_{CONTROL_TOPIC}_" in stem or (build == "A" and not ZCL):
         return ("VOID" if counts else "ok"), f"{shown} (want no loan field)"
     if ZCL:
-        if build == "A":
+        if build == "A" and not SLOTS_BOTH:
             return ("VOID" if "loans_in_slot" in counts else "ok"), f"{shown} (want no loans_in_slot field)"
         if arm == "tickle":
             return ("VOID" if in_slot else "info"), f"{shown} (default path: want no slot loan)"
@@ -359,7 +369,7 @@ def witness(runs_dir, build):
 
 def selftest():
     """The guards answer, not the defaults: synthetic phases in a temporary directory, in both modes."""
-    global ZCL
+    global ZCL, SLOTS_BOTH
     import tempfile
     results = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -413,15 +423,21 @@ def selftest():
             ("zcl: same", {}, ("PASS", "PASS")),
             ("zcl: A lends (loans_published, no slot field)", {"A": {"a_loans": True}}, ("PASS", "PASS")),
             ("zcl: B builds no rtt loan in a slot", {"B": {"slots": False}}, ("VOID", "VOID")),
-            ("zcl: A shows a slot loan", {"A": {"a_slots": True}}, ("VOID", "VOID")),
+            ("zcl: A shows a slot loan", {"A": {"a_slots": True, "a_loans": True}}, ("VOID", "VOID")),
             ("zcl: B 2% worse", {"B": {"factor": 1.02}}, ("WORSE", "WORSE")),
             ("zcl: variable not received", {"B": {"env_ok": False}}, ("VOID", "VOID")),
         ]
-        saved = ZCL
-        for zcl, table in ((False, cases), (True, zcl_cases)):
-            ZCL = zcl
+        slots_cases = [
+            ("slots: same, both build rtt loans in slots", {"A": {"a_slots": True, "a_loans": True}}, ("PASS", "PASS")),
+            ("slots: A builds no rtt loan in a slot", {"A": {"a_loans": True}}, ("VOID", "VOID")),
+            ("slots: B builds no rtt loan in a slot", {"A": {"a_slots": True, "a_loans": True}, "B": {"slots": False}}, ("VOID", "VOID")),
+            ("slots: B 2% worse", {"A": {"a_slots": True, "a_loans": True}, "B": {"factor": 1.02}}, ("WORSE", "WORSE")),
+        ]
+        saved = (ZCL, SLOTS_BOTH)
+        for zcl, both, table in ((False, False, cases), (True, False, zcl_cases), (True, True, slots_cases)):
+            ZCL, SLOTS_BOTH = zcl, both
             run_cases(table, phase, jit, results)
-        ZCL = saved
+        ZCL, SLOTS_BOTH = saved
     ok = all(r.endswith("OK") for r in results)
     print("SELFTEST " + ("PASS" if ok else "FAIL") + ":\n  " + "\n  ".join(results))
     return 0 if ok else 1

@@ -498,7 +498,10 @@ the next; the reader meets `i + 2` (or `i + slots`: passed, then released) and m
 first if the marking writer has not. The release CASes `p + 2` to `p + slots`, free for the next index at that
 position. Hot paths unchanged: marks are looked at only where a writer or reader used to give up
 (`shm_held_passed` counts the reader's passes). Tests: `test_segment_held.c` (control: byte-identical to the old ring
-with nothing held), `tests/mutants_segment_held.sh`.
+with nothing held), `tests/mutants_segment_held.sh`. Cost with nothing held (PC, `heldslot_samehost_insn_pc.sh`,
+2026-10-20, 6 runs an arm, A P B B P A): PASS 16/16 on instructions per sample, writers -0.08..+0.38%; the be readers'
+count follows the reader's wait mode (sleeping ~890, watching ~1,500-1,700 a sample), not the build. The two slow paths
+are cold and out of line: inlined, the writer's claim carried 3 more instructions (+0.3-0.5% a sample). Rig: pending.
 
 **Claimed-slot publish** (`tt_Publisher_claim` / `_publish_claimed` / `_abandon_claim`): the caller builds the CDR in
 the subscriber's slot.
