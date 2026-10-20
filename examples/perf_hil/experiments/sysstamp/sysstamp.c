@@ -22,6 +22,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +36,9 @@
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 
-#define HEAD_BYTES 192
+#define HEAD_BYTES 256 // 192 until 2026-10-20: a Fast DDS Bench datagram is 212 bytes, its send_ns past byte 192
 #define MAX_RECORDS 65536
 #define NS_PER_SEC 1000000000ULL
 #define PATH_BYTES 512
@@ -54,9 +56,11 @@ enum call {
     CALL_EPOLL_PWAIT,
     CALL_SELECT,
     CALL_PSELECT,
+    CALL_EPOLL_PWAIT2, // 2026-10-20: TickLE's wait set (hal_linux.c rx_wait()), in a TT_HAL_LIBC_CALLS build
 };
-static const char* const call_names[] = {"sendto", "sendmsg", "sendmmsg",   "recvfrom",    "recvmsg", "recvmmsg",
-                                         "poll",   "ppoll",   "epoll_wait", "epoll_pwait", "select",  "pselect"};
+static const char* const call_names[] = {"sendto",   "sendmsg", "sendmmsg",    "recvfrom",   "recvmsg",
+                                         "recvmmsg", "poll",    "ppoll",       "epoll_wait", "epoll_pwait",
+                                         "select",   "pselect", "epoll_pwait2"};
 
 struct record {
     uint64_t t_in;
@@ -87,6 +91,7 @@ static int (*real_epoll_wait)(int, struct epoll_event*, int, int);
 static int (*real_epoll_pwait)(int, struct epoll_event*, int, int, const sigset_t*);
 static int (*real_select)(int, fd_set*, fd_set*, fd_set*, struct timeval*); // NOLINT(misc-include-cleaner)
 static int (*real_pselect)(int, fd_set*, fd_set*, fd_set*, const struct timespec*, const sigset_t*);
+static int (*real_epoll_pwait2)(int, struct epoll_event*, int, const struct timespec*, const sigset_t*);
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -103,14 +108,38 @@ static void* resolve(const char* name) {
     return func;
 }
 
-// Resolved on first use as well as in the constructor: a library's own constructor may make a call before
-// ours has run.
-#define RESOLVE(name)                     \
-    do {                                  \
-        if (real_##name == NULL) {        \
-            real_##name = resolve(#name); \
-        }                                 \
-    } while (0)
+// Resolved in the constructor only, never in a wrapper (2026-10-20). Resolving on first use called dlsym() from
+// whatever thread made the call; in a ROS 2 node on the PC (lyrical, glibc 2.43, lttng-ust's listener threads) both
+// nodes hung in a futex before they started. A call made before the constructor has run goes straight to the system
+// call, unstamped.
+#define RESOLVE(name) (real_##name = resolve(#name))
+#define SIGSET_BYTES (_NSIG / 8)
+#define MS_PER_SEC 1000
+#define NS_PER_MS 1000000L
+#define NS_PER_US 1000L
+
+static int early_poll(struct pollfd* fds, nfds_t nfds, int timeout) { // NOLINT(misc-include-cleaner)
+    struct timespec ts = {timeout / MS_PER_SEC, (long)(timeout % MS_PER_SEC) * NS_PER_MS};
+    return (int)syscall(SYS_ppoll, fds, nfds, timeout < 0 ? NULL : &ts, NULL, SIGSET_BYTES);
+}
+
+static int early_pselect(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, const struct timespec* timeout,
+                         const sigset_t* sigmask) {
+    struct {
+        const sigset_t* mask;
+        size_t bytes;
+    } mask = {sigmask, SIGSET_BYTES};
+    return (int)syscall(SYS_pselect6, nfds, readfds, writefds, exceptfds, timeout, sigmask == NULL ? NULL : &mask);
+}
+
+static int early_select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout) {
+    struct timespec ts = {0, 0};
+    if (timeout != NULL) {
+        ts.tv_sec = timeout->tv_sec;
+        ts.tv_nsec = timeout->tv_usec * NS_PER_US;
+    }
+    return early_pselect(nfds, readfds, writefds, exceptfds, timeout == NULL ? NULL : &ts, NULL);
+}
 
 static struct record* claim(uint16_t call, uint64_t t_in, uint64_t t_out, int64_t ret) {
     if (records == NULL) {
@@ -156,7 +185,9 @@ static void copy_flat(struct record* rec, const void* buf, size_t valid) {
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 ssize_t sendto(int sock, const void* buf, size_t len, int flags, const struct sockaddr* addr, socklen_t addrlen) {
-    RESOLVE(sendto);
+    if (real_sendto == NULL) { // before the constructor: unstamped
+        return syscall(SYS_sendto, sock, buf, len, flags, addr, addrlen);
+    }
     uint64_t t_in = now_ns();
     ssize_t ret = real_sendto(sock, buf, len, flags, addr, addrlen);
     struct record* rec = claim(CALL_SENDTO, t_in, now_ns(), ret);
@@ -168,7 +199,9 @@ ssize_t sendto(int sock, const void* buf, size_t len, int flags, const struct so
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 ssize_t sendmsg(int sock, const struct msghdr* msg, int flags) {
-    RESOLVE(sendmsg);
+    if (real_sendmsg == NULL) { // before the constructor: unstamped
+        return syscall(SYS_sendmsg, sock, msg, flags);
+    }
     uint64_t t_in = now_ns();
     ssize_t ret = real_sendmsg(sock, msg, flags);
     struct record* rec = claim(CALL_SENDMSG, t_in, now_ns(), ret);
@@ -180,7 +213,9 @@ ssize_t sendmsg(int sock, const struct msghdr* msg, int flags) {
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 int sendmmsg(int sock, struct mmsghdr* vec, unsigned int vlen, int flags) {
-    RESOLVE(sendmmsg);
+    if (real_sendmmsg == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_sendmmsg, sock, vec, vlen, flags);
+    }
     uint64_t t_in = now_ns();
     int ret = real_sendmmsg(sock, vec, vlen, flags);
     uint64_t t_out = now_ns();
@@ -198,7 +233,9 @@ int sendmmsg(int sock, struct mmsghdr* vec, unsigned int vlen, int flags) {
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 ssize_t recvfrom(int sock, void* buf, size_t len, int flags, struct sockaddr* addr, socklen_t* addrlen) {
-    RESOLVE(recvfrom);
+    if (real_recvfrom == NULL) { // before the constructor: unstamped
+        return syscall(SYS_recvfrom, sock, buf, len, flags, addr, addrlen);
+    }
     uint64_t t_in = now_ns();
     ssize_t ret = real_recvfrom(sock, buf, len, flags, addr, addrlen);
     struct record* rec = claim(CALL_RECVFROM, t_in, now_ns(), ret);
@@ -210,7 +247,9 @@ ssize_t recvfrom(int sock, void* buf, size_t len, int flags, struct sockaddr* ad
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 ssize_t recvmsg(int sock, struct msghdr* msg, int flags) {
-    RESOLVE(recvmsg);
+    if (real_recvmsg == NULL) { // before the constructor: unstamped
+        return syscall(SYS_recvmsg, sock, msg, flags);
+    }
     uint64_t t_in = now_ns();
     ssize_t ret = real_recvmsg(sock, msg, flags);
     struct record* rec = claim(CALL_RECVMSG, t_in, now_ns(), ret);
@@ -222,7 +261,9 @@ ssize_t recvmsg(int sock, struct msghdr* msg, int flags) {
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 int recvmmsg(int sock, struct mmsghdr* vec, unsigned int vlen, int flags, struct timespec* timeout) {
-    RESOLVE(recvmmsg);
+    if (real_recvmmsg == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_recvmmsg, sock, vec, vlen, flags, timeout);
+    }
     uint64_t t_in = now_ns();
     int ret = real_recvmmsg(sock, vec, vlen, flags, timeout);
     uint64_t t_out = now_ns();
@@ -239,7 +280,9 @@ int recvmmsg(int sock, struct mmsghdr* vec, unsigned int vlen, int flags, struct
 }
 
 int poll(struct pollfd* fds, nfds_t nfds, int timeout) {
-    RESOLVE(poll);
+    if (real_poll == NULL) { // before the constructor: unstamped
+        return early_poll(fds, nfds, timeout);
+    }
     uint64_t t_in = now_ns();
     int ret = real_poll(fds, nfds, timeout);
     (void)claim(CALL_POLL, t_in, now_ns(), ret);
@@ -248,7 +291,9 @@ int poll(struct pollfd* fds, nfds_t nfds, int timeout) {
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 int ppoll(struct pollfd* fds, nfds_t nfds, const struct timespec* timeout, const sigset_t* sigmask) {
-    RESOLVE(ppoll);
+    if (real_ppoll == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_ppoll, fds, nfds, timeout, sigmask, SIGSET_BYTES);
+    }
     uint64_t t_in = now_ns();
     int ret = real_ppoll(fds, nfds, timeout, sigmask);
     (void)claim(CALL_PPOLL, t_in, now_ns(), ret);
@@ -256,7 +301,9 @@ int ppoll(struct pollfd* fds, nfds_t nfds, const struct timespec* timeout, const
 }
 
 int epoll_wait(int epfd, struct epoll_event* events, int maxevents, int timeout) {
-    RESOLVE(epoll_wait);
+    if (real_epoll_wait == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_epoll_pwait, epfd, events, maxevents, timeout, NULL, SIGSET_BYTES);
+    }
     uint64_t t_in = now_ns();
     int ret = real_epoll_wait(epfd, events, maxevents, timeout);
     (void)claim(CALL_EPOLL_WAIT, t_in, now_ns(), ret);
@@ -265,7 +312,9 @@ int epoll_wait(int epfd, struct epoll_event* events, int maxevents, int timeout)
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
 int epoll_pwait(int epfd, struct epoll_event* events, int maxevents, int timeout, const sigset_t* sigmask) {
-    RESOLVE(epoll_pwait);
+    if (real_epoll_pwait == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_epoll_pwait, epfd, events, maxevents, timeout, sigmask, SIGSET_BYTES);
+    }
     uint64_t t_in = now_ns();
     int ret = real_epoll_pwait(epfd, events, maxevents, timeout, sigmask);
     (void)claim(CALL_EPOLL_PWAIT, t_in, now_ns(), ret);
@@ -273,7 +322,9 @@ int epoll_pwait(int epfd, struct epoll_event* events, int maxevents, int timeout
 }
 
 int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout) {
-    RESOLVE(select);
+    if (real_select == NULL) { // before the constructor: unstamped
+        return early_select(nfds, readfds, writefds, exceptfds, timeout);
+    }
     uint64_t t_in = now_ns();
     int ret = real_select(nfds, readfds, writefds, exceptfds, timeout);
     (void)claim(CALL_SELECT, t_in, now_ns(), ret);
@@ -282,14 +333,42 @@ int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struc
 
 int pselect(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, const struct timespec* timeout,
             const sigset_t* sigmask) {
-    RESOLVE(pselect);
+    if (real_pselect == NULL) { // before the constructor: unstamped
+        return early_pselect(nfds, readfds, writefds, exceptfds, timeout, sigmask);
+    }
     uint64_t t_in = now_ns();
     int ret = real_pselect(nfds, readfds, writefds, exceptfds, timeout, sigmask);
     (void)claim(CALL_PSELECT, t_in, now_ns(), ret);
     return ret;
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc names these __fd etc., reserved
+int epoll_pwait2(int epfd, struct epoll_event* events, int maxevents, const struct timespec* timeout,
+                 const sigset_t* sigmask) {
+    if (real_epoll_pwait2 == NULL) { // before the constructor: unstamped
+        return (int)syscall(SYS_epoll_pwait2, epfd, events, maxevents, timeout, sigmask, SIGSET_BYTES);
+    }
+    uint64_t t_in = now_ns();
+    int ret = real_epoll_pwait2(epfd, events, maxevents, timeout, sigmask);
+    (void)claim(CALL_EPOLL_PWAIT2, t_in, now_ns(), ret);
+    return ret;
+}
+
 __attribute__((constructor)) static void sysstamp_init(void) {
+    // Every symbol is resolved here, and only here (RESOLVE, above).
+    RESOLVE(sendto);
+    RESOLVE(sendmsg);
+    RESOLVE(sendmmsg);
+    RESOLVE(recvfrom);
+    RESOLVE(recvmsg);
+    RESOLVE(recvmmsg);
+    RESOLVE(poll);
+    RESOLVE(ppoll);
+    RESOLVE(epoll_wait);
+    RESOLVE(epoll_pwait);
+    RESOLVE(select);
+    RESOLVE(pselect);
+    RESOLVE(epoll_pwait2);
     void* mem =
         mmap(NULL, sizeof(struct record) * MAX_RECORDS, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem != MAP_FAILED) {
