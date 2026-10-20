@@ -110,9 +110,11 @@ In `examples/perf_hil/experiments/`; each header holds its pre-registered readin
 | `rig_preflight.sh` / `rig_dryrun.sh` | every cell shape runs (PC, ~70 s) / a harness end to end against stand-in Pis |
 | `s6_transport_cells.sh`, `rmw_samehost.sh`, `rmw_crosshost_rtt.sh`, `rmw_keepall_rig.sh` | same-host; rmw same-host; rmw RTT; rmw KEEP_ALL (`CREATION_TRACE=1`) |
 | `core_cost_ab.sh` / `core_cost_pi_drift.sh` | core CPU per sample on the PC / the Pi bench's A/A floor |
+| `l4_rtt_rig.sh`, `stepb_rtt_rig.sh` | rmw large messages by round trip on one clock: cross-host L4 / same-host step B, with each process's own CPU over the schedule (no perf_test) |
 
 Also `.github/scripts/compare_rmw_perf.sh` (rmw vs both vendors, `box` lock). Never pin perf_test to one CPU: it hangs
-with any rmw (`rmw_wait_hang_repro.sh`).
+with any rmw (`rmw_wait_hang_repro.sh`). perf_test's subscriber CPU includes its AnalyzeRunner busy-waiting about one
+period a second (`bcf8624d`): at 30 Hz it swamps a small cell's rmw cost, so a CPU control is not read from it.
 
 ### 6.1 Gate v2: TickLE-vs-TickLE rig A/B
 
