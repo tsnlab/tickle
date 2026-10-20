@@ -206,6 +206,20 @@ MUTANTS = [
         "",
         "test_context_destroy_resolves_an_outstanding_claim",
     ),
+    (
+        "the drain counting a reference read",
+        "src/tickle.c",
+        "                taken += (unsigned)stall >> 1U;\n",
+        "",
+        "test_a_sample_read_by_reference_ends_the_poll",
+    ),
+    (
+        "a reference read saying so (the 2026-10-20 stall)",
+        "src/tickle.c",
+        "lend_finish_release(node) ? HEAD_STALL_READ_LAST : HEAD_STALL_READ;",
+        "lend_finish_release(node) ? HEAD_STALL_STOP : HEAD_STALL_PASSED;",
+        "test_a_sample_read_by_reference_ends_the_poll",
+    ),
 ]
 
 def build_and_run(control=None):
