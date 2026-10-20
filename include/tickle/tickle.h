@@ -3003,6 +3003,13 @@ struct tt_WriterProxy {
     // needed so a burst of DATA packets while a gap is open doesn't schedule a new timer per
     // packet.
     bool acknack_scheduled;
+    // Set when a sample of this writer's found its reorder slot taken by another writer's and was un-received
+    // (hold_for_reorder(), tickle.c); collided_seq_no is the highest such seq_no. Until the watermark passes it, a new
+    // gap is NACKed from the watermark up (extend_gap_to_watermark(), tickle.c): NACKed alone, a collided sample is
+    // resent into the same taken slot on every arrival - the multi-writer re-request storm
+    // (tests/test_reorder_window.c).
+    bool collided;
+    uint32_t collided_seq_no;
     // 0 (this entry's own creation default): no Heartbeat seen yet from this writer - the
     // Subscriber falls back to inferring gaps purely from received_bitmap, today's only behavior
     // (a Publisher that never calls tt_Publisher_set_heartbeat_period() never sends one, so this

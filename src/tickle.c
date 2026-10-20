@@ -12957,6 +12957,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy_clear_received(proxy);
             proxy->retry = 0;
             proxy->acknack_scheduled = false;
+            proxy->collided = false;
             proxy->heartbeat_last_seq_no = 0;
             // A reused slot must not inherit a departed writer's recovery estimate: a new writer
             // may be on a different path entirely.
@@ -13769,6 +13770,22 @@ static uint32_t absorb_seq_span(struct tt_WriterProxy* proxy, uint32_t first_off
     return absorbed;
 }
 
+// While a sample of this writer's lies un-received because another writer's held sample has its reorder slot
+// (tt_WriterProxy.collided), a new gap is NACKed from the watermark up, not from the highest sample held. The collided
+// sample is the highest held when it is cleared, so the next arrival reports it as a new gap; NACKed alone it is resent
+// at once, arrives ahead of the watermark's gap again, finds the slot still taken - the other writer's gap is not
+// repaired yet - and is un-received again: a re-request per arrival (2 writers at 20% loss, slots = window: 65 DATA a
+// sample and 555 of 4,000 delivered, tests/test_reorder_window.c). Asked for with the watermark's gap, it comes after
+// that gap's repair and in order, needing no slot - what a Subscriber with no buffer does on every arrival, here only
+// until the watermark passes the collision.
+static void extend_gap_to_watermark(struct tt_WriterProxy* proxy, struct new_gap_range* new_gap) {
+    if (seq_delta(proxy->collided_seq_no, proxy->ack_seq_no) < 0) {
+        proxy->collided = false; // the watermark has passed every collided sample
+        return;
+    }
+    new_gap->low_bit = 0;
+}
+
 static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t offset, struct new_gap_range* new_gap) {
     if (bitmap_test_bit(proxy->received_bitmap, offset)) {
         RSTAT_INC(duplicates);
@@ -14043,6 +14060,9 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     bool retry_already_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
     if (retry_already_armed && new_gap.low_bit >= 0) {
+        if (proxy->collided) {
+            extend_gap_to_watermark(proxy, &new_gap);
+        }
         RSTAT_INC(acknack_new_gap);
         send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
     }
@@ -16541,6 +16561,19 @@ static void frag_fast_spill_if_overtaken(struct tt_Context* node, const struct t
 }
 #endif
 
+// A sample whose reorder slot is taken: when another writer's sample holds it - which leaves when its own writer's gap
+// is repaired, not when this one is asked for again - marks the collision (extend_gap_to_watermark()).
+static void note_collision(struct tt_WriterProxy* proxy, const struct tt_ReorderSlot* slot,
+                           const struct data_delivery_ctx* ctx) {
+    if (slot->context_id == ctx->header->source && slot->entity_id == ctx->entity_id) {
+        return;
+    }
+    if (!proxy->collided || seq_delta(ctx->seq_no, proxy->collided_seq_no) > 0) {
+        proxy->collided_seq_no = ctx->seq_no;
+    }
+    proxy->collided = true;
+}
+
 // Hold a sample that arrived ahead of a gap, or - if it cannot be held - un-receive it so the
 // ordinary ACKNACK exchange fetches it again later.
 //
@@ -16579,6 +16612,7 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
                 slot->entity_id == ctx->entity_id) {
                 return;
             }
+            note_collision(proxy, slot, ctx);
         } else {
             slot->seq_no = ctx->seq_no;
             slot->timestamp = ctx->timestamp;
