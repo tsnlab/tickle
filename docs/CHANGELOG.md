@@ -41,6 +41,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 - rmw_tickle DEADLINE re-arms at the last activity + P and counts every missed period; a gap between P and 2P was
   missed before (D4, `d2818e79`).
+- A hybrid reader no longer counts samples the segment drain passed over as superseded (KEEP_LAST skip-to-newest) as
+  samples lost whole. Same-host Array4k BEST_EFFORT read up to 2.2M `missed_samples` in 20 s and announced p = 0.63 for
+  shared memory, and paid two `getsockopt(SO_MEMINFO)` per gap on the drain's thread (~13 a delivered sample on the PC).
 
 ## [2.0.0] - 2026-10-18
 
