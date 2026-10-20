@@ -47,15 +47,23 @@ cleanup() { rm -rf "$OUT"; }
 trap cleanup EXIT # the only EXIT trap here - a second would silently replace it
 
 jobs="$(nproc 2>/dev/null || echo 4)"
-if ! make -s -C "$REPO/platform/freertos" -j"$jobs" CROSS="$CROSS" all \
-    OBJ_DIR="$OUT/obj" ELF="$OUT/RTOSDemo-selftest-1.elf"; then
-    echo "build_freertos: FAILED - CI's 'Build - FreeRTOS RISC-V' would fail the same way"
-    exit 1
-fi
-# The step's own artefact, not make's exit status, is what says it linked.
-[ -s "$OUT/RTOSDemo-selftest-1.elf" ] || {
-    echo "build_freertos: make exited 0 but produced no ELF"
-    exit 1
-}
-echo "build_freertos: linked $(stat -c %s "$OUT/RTOSDemo-selftest-1.elf") bytes"
+# Twice: the default image, as CI builds it, and with the shared-memory segment compiled in (-Dtt_SEGMENT_ENABLED=1;
+# off by default on FreeRTOS since 2026-10-21), so the segment's code still links for RV32 - a 64-bit atomic in it
+# would otherwise reach no gate.
+for variant in default segment; do
+    flags=""
+    [ "$variant" = segment ] && flags="-Dtt_SEGMENT_ENABLED=1"
+    elf="$OUT/RTOSDemo-selftest-1-$variant.elf"
+    if ! make -s -C "$REPO/platform/freertos" -j"$jobs" CROSS="$CROSS" all \
+        OBJ_DIR="$OUT/obj-$variant" ELF="$elf" TT_FLAGS="$flags"; then
+        echo "build_freertos: FAILED ($variant) - CI's 'Build - FreeRTOS RISC-V' would fail the same way"
+        exit 1
+    fi
+    # The step's own artefact, not make's exit status, is what says it linked.
+    [ -s "$elf" ] || {
+        echo "build_freertos: make exited 0 but produced no ELF ($variant)"
+        exit 1
+    }
+    echo "build_freertos: linked $(stat -c %s "$elf") bytes ($variant)"
+done
 exit 0

@@ -237,7 +237,8 @@ $(printf '%-10s FAIL (%s)' "$label" "$verdict")"
 
 # Two contexts in ONE image over the shared-memory segment the HAL provides (main_segment.c, ROLE=segment), one image
 # per arm: shm (the HAL's default memory), static (the application's own region), refused (no memory: the UDP
-# fallback) and off (-Dtt_SEGMENT_ENABLED=0, the build every FreeRTOS image was before - the control that the
+# fallback) - all three built with -Dtt_SEGMENT_ENABLED=1, since the segment is off by default on FreeRTOS - and off
+# (-Dtt_SEGMENT_ENABLED=0, the default image, named explicitly - the control that the
 # counters see lwIP when it carries the samples). main_segment.c holds the pre-registered reading and decides; its PASS
 # line and the finisher's status must agree, as for the selftest. Netconn build only: the socket build has no doorbell,
 # so its writers ring over UDP and the shm arm's "no unicast over UDP" would not hold by design.
@@ -288,9 +289,9 @@ run_rx_hint_mutant always_maybe "netconn: tt_rx_maybe_ready() is false with noth
     '    if ((__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' \
     '    if (false && (__atomic_load_n(&hal->rx_arrivals[tt_HAL_RX_WELL_KNOWN], __ATOMIC_SEQ_CST) |' || status=1
 run_selftest socket || status=1
-run_segment 1 shm || status=1
-run_segment 2 static || status=1
-run_segment 3 refused || status=1
+run_segment 1 shm -Dtt_SEGMENT_ENABLED=1 || status=1
+run_segment 2 static -Dtt_SEGMENT_ENABLED=1 || status=1
+run_segment 3 refused -Dtt_SEGMENT_ENABLED=1 || status=1
 run_segment 4 off -Dtt_SEGMENT_ENABLED=0 || status=1
 run_round_trip uint64 publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip set_bool client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1

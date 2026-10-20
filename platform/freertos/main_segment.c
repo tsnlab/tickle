@@ -13,12 +13,11 @@
 // matching stay UDP. Context A (id 11) publishes a RELIABLE topic and a BEST_EFFORT one; context B (id 12) subscribes
 // to both. Each context is polled by its own task; a control task publishes and decides.
 //
-// SEGMENT_TEST_ARM (test.sh builds each arm as its own image):
-//   1 shm      - the segment, its memory from the HAL's default allocator (the FreeRTOS heap)
-//   2 static   - the segment, its memory from a static region this file gives the HAL
-//   (tt_freertos_set_segment_memory()) 3 refused  - the segment compiled in, but no memory for it: the allocator
-//   refuses, so no segment exists 4 off      - the module compiled out (-Dtt_SEGMENT_ENABLED=0), the build every
-//   FreeRTOS image was before
+// SEGMENT_TEST_ARM (test.sh builds each arm as its own image; 1-3 with -Dtt_SEGMENT_ENABLED=1):
+//   1 shm     - the segment, its memory from the HAL's default allocator (the FreeRTOS heap)
+//   2 static  - the segment, its memory from a static region given to tt_freertos_set_segment_memory()
+//   3 refused - the segment compiled in, but the allocator refuses: no segment exists
+//   4 off     - the module compiled out (-Dtt_SEGMENT_ENABLED=0), the FreeRTOS default
 //
 // The reading, pre-registered and enforced below (decide()), not only described here. Counts are deltas over the
 // measured window: N samples per topic, published once both directions are attached (arms 1-2) or once matched

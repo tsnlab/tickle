@@ -262,11 +262,16 @@ EXTERNAL_TIDY_FILES = $(ROOT)/src/hal_freertos.c $(ROOT)/include/tickle/hal_free
 # files a commit touches, so a file's old findings surface the first time anyone edits it. This runs
 # both files the way CI does.
 CLANG_TIDY ?= clang-tidy
+# Twice: as CI builds them, and with the shared-memory segment compiled in (off by default here, and most of the
+# HAL's segment code is behind tt_SEGMENT_ENABLED).
 lint-headers-ci:
+	for segment in 0 1; do \
 	$(CLANG_TIDY) --quiet --warnings-as-errors='*' $(ROOT)/include/tickle/hal_freertos.h $(ROOT)/src/hal_freertos.c -- -x c \
 	    --target=riscv32-unknown-elf -march=rv32imac_zicsr_zifencei -mabi=ilp32 -isystem $(PICOLIBC_INCLUDE) \
-	    -DTT_PLATFORM_FREERTOS -I. -Iboard -Ilwip_arch -I$(FREERTOS)/include -I$(RISCV_PORT) \
-	    -I$(LWIP)/src/include -I$(LWIP_FREERTOS_PORT)/include -I$(ROOT)/include -I$(ROOT)/src
+	    -DTT_PLATFORM_FREERTOS -Dtt_SEGMENT_ENABLED=$$segment -I. -Iboard -Ilwip_arch -I$(FREERTOS)/include \
+	    -I$(RISCV_PORT) -I$(LWIP)/src/include -I$(LWIP_FREERTOS_PORT)/include -I$(ROOT)/include -I$(ROOT)/src \
+	    || exit 1; \
+	done
 
 lint:
 	find . -path './obj-*' -prune -o -name '*.[ch]' -exec clang-format --dry-run --Werror {} +

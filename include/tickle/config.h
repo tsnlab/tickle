@@ -593,16 +593,21 @@
 // tt_MAX_BUFFER_LENGTH (rmw_tickle, to 65507) gets it too: its samples then fragment at the control
 // datagram, while service requests and responses, which do not fragment, keep the large datagram.
 // -Dtt_FRAG_ENABLED=0 keeps such a build on the OS's IP fragmentation instead - the benchmark's ipfrag arm.
-// (SHM_PLAN.md) The shared-memory transport. 1 on every platform since 2026-10-20 (the user's decision, ROADMAP
-// "Wired work" 4(e)): on FreeRTOS the segment is a region of RAM the HAL hands out and finds again by name, shared by
-// the contexts of one image (hal_freertos.c; DESIGN.md section 10, "The segment on FreeRTOS"), where it was compiled
-// out before. 0 still compiles the module out entirely - same shape as tt_CONTEXT_ID_CLAIM above, and for the same
-// reason: a module the user can turn off has to actually leave when it is off, not merely be skipped at runtime. On
-// FreeRTOS that is the choice for an image that never runs two contexts: compiled in, the module costs each context
+// (SHM_PLAN.md) The shared-memory transport. 1 on Linux, 0 on FreeRTOS. On FreeRTOS the segment is a region of RAM
+// the HAL hands out and finds again by name, shared by the contexts of one image (hal_freertos.c; DESIGN.md section
+// 10, "The segment on FreeRTOS"), and it is off by default (the user, 2026-10-21): compiled in, it costs each context
 // 12.8 KB of RAM whether or not a segment is ever built - struct tt_Context is 35,616 bytes against 22,808 on RV32,
-// most of it the peer table (tt_Context.segment_peers[]) - and the image about 16 KB of code (2026-10-20).
+// most of it the peer table (tt_Context.segment_peers[]) - the image about 16 KB of code, and by default a segment's
+// memory comes from the FreeRTOS heap. An image running several contexts that exchange data builds with
+// -Dtt_SEGMENT_ENABLED=1 (README.md, FreeRTOS). 0 compiles the module out entirely - same shape as
+// tt_CONTEXT_ID_CLAIM above, and for the same reason: a module the user can turn off has to actually leave when it is
+// off, not merely be skipped at runtime.
 #ifndef tt_SEGMENT_ENABLED
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_SEGMENT_ENABLED 0
+#else
 #define tt_SEGMENT_ENABLED 1
+#endif
 #endif
 
 // SHM_PLAN.md stage 1: the shared-memory segment's own capacity, as a byte budget with the slot

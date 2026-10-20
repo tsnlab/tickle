@@ -22,7 +22,7 @@ Run from the repository root. Figures: [RESULTS.md](RESULTS.md).
 | `tests/version_mix.sh [PARENT]` | a `tt_VERSION` 13 core and this tree's refuse each other's announce, each applying its own (control) | C compiler, git |
 | `make test-samehost` | two nodes on one host, plus an io_uring-refused pass | |
 | `make test-linux` | two nodes in two netns over a veth pair | `sudo ip` |
-| `make test-freertos` | HAL selftest, two contexts in one image over the segment (4 arms), then round trips under QEMU | RISC-V toolchain, QEMU |
+| `make test-freertos` | HAL selftest, two contexts in one image over the segment (4 arms, `-Dtt_SEGMENT_ENABLED=1` and the default off), then round trips under QEMU | RISC-V toolchain, QEMU |
 | `make test-all` | `test headers-cpp check-doc-shas check-rig-lock check-bench-shapes test-samehost test-linux test-freertos` | all of the above |
 | `make test-typesupport` / `make regen` | generator pytest / regenerate codecs (CI fails on a diff) | Python |
 | `make test-rmw` / `make test-rmw-behaviour` | rmw ctest suite in a netns / plus CI's interface checks | ROS 2 workspace (`RMW_TEST_WS`, `~/rmw_accept_dev`, `~/rmw_accept_ws`) |

@@ -448,8 +448,8 @@ in-process delivery under the same rules; otherwise own DATA is dropped.
 ## 10. Shared-memory transport
 
 A second carrier, not a protocol: a ring slot holds the datagram that would have gone on the wire, through the same
-acceptance path. Chosen per peer. On by default (`tt_SEGMENT_ENABLED`): between processes on Linux, between the
-contexts of one image on FreeRTOS (below).
+acceptance path. Chosen per peer. `tt_SEGMENT_ENABLED`: on by default on Linux, between processes; off by default on
+FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one image (below).
 
 **The segment.**
 
@@ -501,7 +501,8 @@ the subscriber's slot.
 | re-checked | if the destination changed since the claim, the bytes are copied and published ordinarily (`shm_claims_copied`) |
 | RELIABLE | still copies into its cache; destroy abandons an outstanding claim |
 
-**The segment on FreeRTOS** (the user, 2026-10-20). Contexts in tasks of one image share an address space, so the HAL
+**The segment on FreeRTOS** (the user, 2026-10-20; off by default, 2026-10-21). Contexts in tasks of one image share an
+address space, so the HAL
 (`hal_freertos.c`) gives the ring as RAM it finds again by name; core's ring, header checks, fence, incarnation and
 sleep generations are unchanged. Discovery and matching stay UDP.
 
@@ -514,8 +515,9 @@ sleep generations are unchanged. Discovery and matching stay UDP.
 | same image | one netif address, and lwIP loops back only unicast to it: each broadcast is also sent to every other bound context's data port (`tt_HAL_FREERTOS_LOCAL_CONTEXTS`), arriving as a unicast would |
 | cost | 12.8 KB RAM per context (`segment_peers[]`), ~16 KB code (RV32); a poll task's stack peak 4.1 KB, 3.7 KB without (QEMU) |
 
-Shown by `platform/freertos/main_segment.c` in `make test-freertos`: RELIABLE and BEST_EFFORT, 200 samples each, all
-over the ring with no unicast over lwIP; with no memory, and compiled out, the same samples over UDP.
+Shown by `platform/freertos/main_segment.c` in `make test-freertos`, built with `-Dtt_SEGMENT_ENABLED=1`: RELIABLE and
+BEST_EFFORT, 200 samples each, all over the ring with no unicast over lwIP; with no memory, and compiled out (the
+default), the same samples over UDP. The `freertos link` gate links an RV32 image both ways.
 
 ## 11. Memory model
 
@@ -634,7 +636,7 @@ Compile-time `-D` overrides unless noted; blank rmw column = core default.
 | `tt_HAL_RX_HINT` | AUTO (0) | | io_uring receive hint |
 | `tt_HAL_FREERTOS_NETCONN` | 1 | | FreeRTOS netconn receive hint; 0 = BSD sockets |
 | `tt_SOCKET_BUFFER_SIZE` | 1 MiB | 4 MiB | SO_SNDBUF/SO_RCVBUF request |
-| `tt_SEGMENT_ENABLED` | 1 | 1 | shared-memory transport (FreeRTOS: between contexts of one image) |
+| `tt_SEGMENT_ENABLED` | 1 (0 FreeRTOS) | 1 | shared-memory transport (FreeRTOS: between contexts of one image) |
 | `tt_SEGMENT_BYTES` | 768 KiB (24 KiB FreeRTOS) | | ring budget: 512 (16) slots of 1472 B |
 | `tt_SEGMENT_READER_WAITS` | 1 (0 FreeRTOS) | | reader may spin for writers instead of sleeping |
 | `tt_HAL_FREERTOS_LOCAL_CONTEXTS` / `_SEGMENTS` | 4 / 4 | | contexts of one image that hear each other's broadcasts / segments alive |
