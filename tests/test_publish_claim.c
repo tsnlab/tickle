@@ -650,6 +650,44 @@ static void test_no_room_for_the_reference_drops_as_a_full_ring(void) {
     teardown(arm);
 }
 
+// A sample read through its reference is a record taken, as one read in its own slot is: the drain counts it, and the
+// poll that took it hands it back. It did not (2026-10-20): segment_ref_at_head() processed the datagram from the
+// drain's "nothing readable" branch and the drain returned 0, so the poll went round, found the ring empty and slept on
+// top of a sample already delivered - until the budget or the next scheduler entry. rmw_perf_pingpong with slot loans
+// on both sides: every round trip waited out the ping's deadline or a 250 ms idle Heartbeat (rtt p50 ~200-250 ms, 20
+// round trips in 3 s against ~4,400; ab_loans.sh's PC preflight). The control is the same sample encoded into its own
+// slot; both arms must end the poll at once, and the claimed arm must have read a reference (its treatment).
+static void test_a_sample_read_by_reference_ends_the_poll(void) {
+    for (int mode = ENCODED; mode <= CLAIMED; mode++) {
+        struct arm* arm = &arms[mode];
+        setup(arm);
+        test_mock_receive_advances_clock = true;              // a wait with nothing arriving lets its whole length pass
+        const int64_t budget = 500 * (int64_t)tt_MILLISECOND; // what the ping's spin_once() passes
+
+        // The drain itself: one record taken, through the reference or in its slot.
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)send_one(arm, (enum mode)mode, 1, 64));
+        bool emptied = false;
+        EXPECT_EQ_U32(1, drain_own_segment(&arm->owner, &emptied));
+        EXPECT_TRUE(emptied);
+
+        // The poll: handed back at once, never asleep on what it took.
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)send_one(arm, (enum mode)mode, 2, 64));
+        const uint64_t start = test_mock_now;
+        const tt_ret_t polled = tt_Context_poll(&arm->owner, budget);
+        EXPECT_EQ_U32(2, (uint32_t)arm->owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+        EXPECT_EQ_U64(mode == CLAIMED ? 2U : 0U, arm->owner.segment_refs_read); // the arm's treatment
+        EXPECT_EQ_U64(mode == CLAIMED ? 2U : 0U, arm->owner.segment_held_passed);
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)polled);
+        EXPECT_EQ_INT(0, test_mock_receive_call_count);
+        EXPECT_TRUE(test_mock_now - start < (uint64_t)budget);
+        if (test_mock_now - start >= (uint64_t)budget) {
+            printf("  %s: the poll held a delivered sample for %llu ms\n", mode == CLAIMED ? "claimed" : "encoded",
+                   (unsigned long long)((test_mock_now - start) / tt_MILLISECOND));
+        }
+        teardown(arm);
+    }
+}
+
 // The destination changed between claim and publish (here a match Heartbeat fell due): the sample is copied out and
 // published the ordinary way and the claimed slot given back; the reader passes the claim's index and gets the sample
 // with the bytes the caller wrote.
@@ -746,6 +784,7 @@ int main(void) {
     test_what_cannot_be_claimed();
     test_full_ring_and_keep_all();
     test_no_room_for_the_reference_drops_as_a_full_ring();
+    test_a_sample_read_by_reference_ends_the_poll();
     test_a_changed_destination_is_published_by_copy();
     test_context_destroy_resolves_an_outstanding_claim();
     printf("test_publish_claim: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

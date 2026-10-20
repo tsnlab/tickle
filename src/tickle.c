@@ -21802,28 +21802,43 @@ static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decid
     node->segment_sleep_cost_ns = (uint64_t)(mean + (((int64_t)cost - mean) / (int64_t)count));
 }
 
+// What the drain does after note_head_stall(): bit 0, it reads on (else it stops here, as at an empty ring); bit 1, a
+// record was read at the head - a reference's datagram, processed in its held slot (segment_ref_at_head()) - and is
+// counted as one taken, as a record read in its own slot is. Counted or not decides whether the poll hands back:
+// every caller of drain_own_segment() reads "took nothing" as "nothing delivered", and a sample delivered through a
+// reference and not counted was slept on until the poll's deadline (2026-10-20, test_publish_claim.c,
+// test_a_sample_read_by_reference_ends_the_poll).
+enum head_stall {
+    HEAD_STALL_STOP = 0,      // empty, claimed and unpublished, or a fence still held: the drain stops
+    HEAD_STALL_PASSED = 1,    // a fence or a held index passed, a reference refused: the drain reads on, nothing taken
+    HEAD_STALL_READ_LAST = 2, // a reference read, and it was the last same-host peer's farewell: the ring is gone
+    HEAD_STALL_READ = 3       // a reference read: one record taken, and the drain reads on
+};
+
 static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
-static bool segment_ref_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
+static enum head_stall segment_ref_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
 // Half the range of the free-running ring indices: b - a below it means b is at or after a (serial comparison).
 #define SEGMENT_INDEX_HALF 0x80000000U
 
 // The drain found nothing it could read at the head: an empty ring, a head claimed and not yet published, or a fence
-// (tt_SEGMENT_SPAN_FENCE), which segment_read() and segment_take() leave where it is. True when the head was a fence
-// now passed, and the drain reads on; false when the drain stops here - and a fence still held stops it exactly as an
-// empty ring does, so its caller reads the socket next, which is what the fence is waiting for.
-static bool note_head_stall(struct tt_Context* node) {
+// (tt_SEGMENT_SPAN_FENCE), which segment_read() and segment_take() leave where it is, as they leave a reference
+// (tt_SEGMENT_SPAN_REF) and a held index. enum head_stall says what the drain does next: it reads on past a fence now
+// passed, a held index passed or a reference read - counting the reference's record as one taken - or it stops here;
+// a fence still held stops it exactly as an empty ring does, so its caller reads the socket next, which is what the
+// fence is waiting for.
+static enum head_stall note_head_stall(struct tt_Context* node) {
     struct tt_SegmentHeader* header = node->own_segment;
     uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // the owner's own
     if (write_index == read_index) {
         node->segment_head_stall_passes = 0; // nothing outstanding: the ring is genuinely empty
-        return false;
+        return HEAD_STALL_STOP;
     }
     const struct tt_SegmentSlot* head = (const struct tt_SegmentSlot*)segment_slot(header, read_index);
     const uint32_t sequence = __atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE);
     if (sequence == read_index + 1U && head->seq_span == tt_SEGMENT_SPAN_FENCE) {
         node->segment_head_stall_passes = 0; // published: not a stall, whatever it waits for
-        return segment_fence_at_head(node, header, read_index);
+        return segment_fence_at_head(node, header, read_index) ? HEAD_STALL_PASSED : HEAD_STALL_STOP;
     }
     if (sequence == read_index + 1U && head->seq_span == tt_SEGMENT_SPAN_REF) {
         node->segment_head_stall_passes = 0;
@@ -21832,7 +21847,7 @@ static bool note_head_stall(struct tt_Context* node) {
     if (segment_pass_head(header, read_index, sequence)) {
         node->segment_held_passed++;
         node->segment_head_stall_passes = 0;
-        return true;
+        return HEAD_STALL_PASSED;
     }
     node->segment_head_stalls++;
     node->segment_head_stall_passes++;
@@ -21843,7 +21858,7 @@ static bool note_head_stall(struct tt_Context* node) {
                        "falls back to UDP from here, which is correct but will look like a sizing problem.",
                        (unsigned)(read_index & (header->slots - 1U)), (unsigned)node->segment_head_stall_passes);
     }
-    return false;
+    return HEAD_STALL_STOP;
 }
 
 // segment_release() of `count` slots from `index` on, with read_index moved once, past the last: the slots the drain
@@ -21946,9 +21961,10 @@ static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHead
 // was retained, which gives it back at its release (lend_release_slot()). The reference itself is released first. A
 // reference this ring cannot have been sent - malformed, naming a slot that is not held, or one a sample of ours holds
 // - is counted and passed, so no writer can wedge the ring or take a slot back from under a retained sample with one.
-// True when the drain reads on; false when the record was the last same-host peer's farewell and the ring is gone.
-__attribute__((cold, noinline)) static bool segment_ref_at_head(struct tt_Context* node,
-                                                                struct tt_SegmentHeader* header, uint32_t index) {
+// HEAD_STALL_READ when the datagram was read and the drain reads on, HEAD_STALL_READ_LAST when it was the last
+// same-host peer's farewell and the ring is gone, HEAD_STALL_PASSED when the reference was refused and nothing read.
+__attribute__((cold, noinline)) static enum head_stall
+segment_ref_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index) {
     const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(header, index);
     struct tt_SegmentRef desc = {0, 0};
     const bool framed = slot->length == sizeof(desc);
@@ -21971,7 +21987,7 @@ __attribute__((cold, noinline)) static bool segment_ref_at_head(struct tt_Contex
 #endif
     if (!valid) {
         node->segment_refs_refused++;
-        return true;
+        return HEAD_STALL_PASSED;
     }
     node->segment_refs_read++;
     uint8_t* record = segment_slot_payload(target);
@@ -21981,12 +21997,12 @@ __attribute__((cold, noinline)) static bool segment_ref_at_head(struct tt_Contex
     if (!(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index))) {
         segment_unhold(header, desc.index);
     }
-    return !(node->lend.segment_release_deferred && lend_finish_release(node));
+    return node->lend.segment_release_deferred && lend_finish_release(node) ? HEAD_STALL_READ_LAST : HEAD_STALL_READ;
 #else
     memcpy(node->rx_buffer, record, desc.length);
     segment_unhold(header, desc.index);
     (void)process_datagram_locked(node, (int32_t)desc.length, sender_ip, sender_port, tt_TRANSPORT_SHM, 1);
-    return true;
+    return HEAD_STALL_READ;
 #endif
 }
 
@@ -22673,8 +22689,11 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
                               &sender_port, &seq_span)) {
 #endif
                 // Empty, or a head nobody is coming back for - the two look alike - or a fence: held, which stops the
-                // drain here as an empty ring does, or passed, and the drain reads on.
-                ran_dry = !note_head_stall(node);
+                // drain here as an empty ring does, or passed, and the drain reads on. A reference read here is a
+                // record taken (enum head_stall).
+                const enum head_stall stall = note_head_stall(node);
+                ran_dry = ((unsigned)stall & 1U) == 0;
+                taken += (unsigned)stall >> 1U;
                 continue;
             }
             node->segment_head_stall_passes = 0; // something was read, so the head is moving
