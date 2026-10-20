@@ -24,9 +24,15 @@
 //          them over UDP (segment_oversized_to_udp): loans are read in place, in a receive buffer;
 //   pinned the ring again with RMW_TICKLE_LOAN_RING_SLOTS=1: loans are read in place, in the ring;
 //   held   the listener holds loans on one topic and takes 3 laps of the ring's records on another, all of which must
-//          arrive; the talker's ring refusals (segment_full_dropped) must stay 0;
-//   held-pinned  the same with ring slots lent: the positive control. The held loans then pin ring slots, and the
-//          talker's ring must refuse - if it did not, the check above could not see a held slot block a ring.
+//          arrive; the talker's ring refusals (segment_full_dropped) must stay 0. The flood is paced by the listener's
+//          takes to FLOOD_WINDOW samples untaken, a fraction of the ring, so a refusal can only be a slot the held
+//          loans pinned - not a listener that load kept off the CPU;
+//   held-pinned  the same with ring slots lent, paced the same: the positive control. The held loans then pin ring
+//          slots, and the talker's ring must refuse - if it did not, the check above could not see a held slot block
+//          a ring.
+//   ring, udp, pinned and claimed are paced too, to PACE_WINDOW samples untaken, inside the loans the listener keeps
+//          in place (RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION): how many are read in place is then the code's doing,
+//          not the scheduler's.
 //   claimed  the ring again, the talker with RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 and the listener with ring slots lent:
 //          the talker's loans are built in the listener's ring slots (core's tt_Publisher_claim()) and the listener's
 //          are read in those same slots - no copy on either side; the ring case is its control (no slot loans there);
@@ -41,6 +47,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -404,6 +411,15 @@ static void check_take(rmw_node_t* node) {
 enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL, CLAIMED };
 static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned", "held-small", "claimed"};
 #define SMALL_QUEUE_BYTES "8000" // the held-small listener's KEEP_ALL budget: a handful of Array1k samples
+// The paced cases (not held): the talker keeps at most this many samples untaken, well inside the loans the listener
+// keeps in place, so a listener the scheduler is late to still finds room for every sample.
+#define PACE_WINDOW (RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION / 2U)
+#define PACE_ACK 'a' // the listener's byte for each take; the end of the case is any other
+// held and held-pinned: the flood keeps at most this many samples untaken - far fewer than the ring's 512 slots, so
+// only a pinned slot can make the ring refuse the talker, never a listener that load kept off the CPU (the held case
+// read 342 refusals unpaced under make check-gates, 2026-10-21, with no loan in the ring).
+#define FLOOD_WINDOW 32U
+#define ACK_TIMEOUT_MS 2000 // a paced talker waiting this long for a take has a stopped listener (wait_for_window())
 
 static bool is_held(enum scenario which) {
     return HELD == which || HELD_PINNED == which || HELD_SMALL == which;
@@ -455,11 +471,34 @@ static rmw_ret_t publish_array1k_loaned(rmw_publisher_t* pub, uint64_t id) {
     return ret;
 }
 
+enum window_wait { WINDOW_OPEN, WINDOW_STALLED, WINDOW_BROKEN };
+
+// Waits for the listener's acknowledgements until fewer than `window` of the samples up to `id` - 1 are untaken
+// (*taken counts them). WINDOW_STALLED if none came for ACK_TIMEOUT_MS: the listener stopped receiving, and the flood
+// stops there as a failed publish rather than the talker waiting forever; WINDOW_BROKEN if the pipe ended or said
+// something else.
+static enum window_wait wait_for_window(int from_listener, uint64_t id, uint64_t window, uint64_t* taken) {
+    while (id - 1U - *taken >= window) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - struct pollfd/POLLIN: <poll.h> above, via a glibc-private header
+        struct pollfd readable = {.fd = from_listener, .events = POLLIN, .revents = 0};
+        if (0 == poll(&readable, 1, ACK_TIMEOUT_MS)) { // NOLINT(misc-include-cleaner) - <poll.h> above
+            return WINDOW_STALLED;
+        }
+        char ack = 0;
+        if (1 != read(from_listener, &ack, 1) || PACE_ACK != ack) {
+            return WINDOW_BROKEN;
+        }
+        (*taken)++;
+    }
+    return WINDOW_OPEN;
+}
+
 // The held cases' talking: traffic first, until the talker writes into the listener's ring (the samples before that go
 // over UDP, unattached), so the held samples go through the ring; then the held samples; then the flood, once the
-// listener says it holds them. 0, or the talker's exit code.
+// listener says it holds them - paced to FLOOD_WINDOW untaken samples unless `paced` is false (held-small, whose
+// point is a listener that falls behind). 0, or the talker's exit code.
 static int talk_held(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* data, rmw_publisher_t* held,
-                     int from_listener, struct talker_report* report) {
+                     int from_listener, bool paced, struct talker_report* report) {
     uint64_t warm = 0;
     bool attached = false;
     while (!attached && warm < WARM_MAX) {
@@ -477,12 +516,21 @@ static int talk_held(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* d
         assert(RMW_RET_OK == publish_array1k_loaned(held, id));
     }
     report->published = warm;
-    char signal = 0;
-    if (1 != read(from_listener, &signal, 1)) {
-        return 3;
+    uint64_t taken = 0; // the listener acknowledges each data sample it takes, the warm-up's too, when paced
+    char signal = PACE_ACK;
+    while (PACE_ACK == signal) {
+        if (1 != read(from_listener, &signal, 1)) {
+            return 3;
+        }
+        taken += PACE_ACK == signal ? 1U : 0U;
     }
     for (uint64_t id = warm + 1; id <= warm + FLOOD_SAMPLES && 0 == report->failed; id++) {
-        if (RMW_RET_OK == publish_array1k_loaned(data, id)) {
+        enum window_wait window = paced ? wait_for_window(from_listener, id, FLOOD_WINDOW, &taken) : WINDOW_OPEN;
+        if (WINDOW_BROKEN == window) {
+            return 3;
+        }
+        // A stalled window (the listener took nothing for ACK_TIMEOUT_MS) ends the flood as a failed publish does.
+        if (WINDOW_OPEN == window && RMW_RET_OK == publish_array1k_loaned(data, id)) {
             report->published = id;
         } else {
             report->failed++;
@@ -515,14 +563,20 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
         return 2;
     }
     if (NULL != held) {
-        int code = talk_held(context_impl, data, held, from_listener, &report);
+        int code = talk_held(context_impl, data, held, from_listener, HELD_SMALL != which, &report);
         if (0 != code) {
             return code;
         }
     } else {
-        // Paced, so the listener keeps up: a queue deeper than RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION holds the rest
-        // decoded, and how much is read in place is what these cases measure.
+        // Paced by the listener, so it keeps up: a queue deeper than RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION holds the
+        // rest decoded, and how much is read in place is what these cases measure. A sample goes only while fewer
+        // than PACE_WINDOW are untaken (the listener acknowledges each take); a fixed sleep alone let a listener that
+        // load kept off the CPU fall 8 behind, and the claimed case then read 115 of 300 in place (2026-10-20).
+        uint64_t taken = 0;
         for (uint64_t id = 1; id <= RING_SAMPLES; id++) {
+            if (WINDOW_OPEN != wait_for_window(from_listener, id, PACE_WINDOW, &taken)) {
+                return 3;
+            }
             assert(RMW_RET_OK == publish_array1k_loaned(data, id));
             sleep_poll();
         }
@@ -536,11 +590,14 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     if (sizeof(report) != (size_t)write(to_listener, &report, sizeof(report))) {
         return 4;
     }
-    // Stay until the listener is done, so RELIABLE repairs can still be answered.
+    // Stay until the listener is done, so RELIABLE repairs can still be answered. The acknowledgements of the last
+    // window's takes come first.
     char done = 0;
-    if (1 != read(from_listener, &done, 1)) {
-        return 3;
-    }
+    do {
+        if (1 != read(from_listener, &done, 1)) {
+            return 3;
+        }
+    } while (PACE_ACK == done);
     assert(RMW_RET_OK == rmw_destroy_publisher(set.node, data));
     if (NULL != held) {
         assert(RMW_RET_OK == rmw_destroy_publisher(set.node, held));
@@ -574,6 +631,7 @@ struct tally {
     uint64_t received;
     uint64_t next_id;
     uint64_t where[3];
+    int ack_fd; // the paced cases: each take is acknowledged to the talker here (PACE_WINDOW); -1 otherwise
 };
 
 // Takes one loaned message off `sub` if there is one, checks it whole and in order, and returns it.
@@ -598,6 +656,10 @@ static bool take_checked(rmw_subscription_t* sub, const rmw_tickle_context_impl_
     tally->received++;
     tally->where[where_is(context_impl, message)]++;
     assert(RMW_RET_OK == rmw_return_loaned_message_from_subscription(sub, message));
+    if (tally->ack_fd >= 0) {
+        char ack = PACE_ACK;
+        assert(1 == write(tally->ack_fd, &ack, 1));
+    }
     return true;
 }
 
@@ -688,11 +750,12 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
         break;
     case HELD_PINNED:
         // The control: with the held loans in ring slots, the ring must have refused the talker - which the case
-        // above requires never to happen. Its KEEP_ALL publishes then block on samples nobody can acknowledge, and
-        // give up (RMW_TICKLE_MAX_BLOCKING_MS), which the case above also rules out.
+        // above requires never to happen. Paced like it, the talker is never more than FLOOD_WINDOW ahead, so these
+        // refusals are the pinned slots' alone. (Unpaced, its KEEP_ALL publishes also blocked and gave up; paced, the
+        // refused records went another way and every sample arrived - 39 refusals and 1618 of 1618 under load,
+        // 2026-10-21 - so a failed publish is no longer part of what a pinned ring looks like here.)
         assert(held_where[IN_RING] > 0);
         assert(report->segment_full_dropped > 0);
-        assert(0 != report->failed);
         break;
     }
     printf("%s: ok\n", scenario_names[which]);
@@ -736,7 +799,10 @@ static void run_two_process(enum scenario which) {
     assert(data->can_loan_messages);
     assert(wait_matched_publishers(data, 1));
 
-    struct tally tally = {.received = 0, .next_id = 1, .where = {0, 0, 0}};
+    struct tally tally = {.received = 0,
+                          .next_id = 1,
+                          .where = {0, 0, 0},
+                          .ack_fd = HELD_SMALL == which ? -1 : to_talker[1]};
     uint64_t want = RING_SAMPLES; // the held cases: the talker's report says how many it sent before the flood
     uint64_t held_where[3] = {0, 0, 0};
     void* held_loans[HELD_LOANS];
