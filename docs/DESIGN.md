@@ -504,10 +504,11 @@ the subscriber's slot.
 
 | rule | detail |
 |---|---|
-| when | a lone DATA to one attached same-host peer; otherwise refused with a reason (`UNSUPPORTED`, `OUT_OF_BUFFER`, `WOULD_BLOCK`, `ILLEGAL_STATUS`), meaning "publish ordinarily" |
-| one claim per publisher | while out, ordinary publishes are refused; the seq_no is taken at the publish; the slot stops its ring until published |
-| re-checked | if the destination changed since the claim, the bytes are copied and published ordinarily (`shm_claims_copied`) |
-| RELIABLE | still copies into its cache; destroy abandons an outstanding claim |
+| when | a lone DATA to one attached same-host peer whose segment has `tt_SEGMENT_FEATURE_HELD_REF`; otherwise refused with a reason (`UNSUPPORTED`, `OUT_OF_BUFFER`, `WOULD_BLOCK`, `ILLEGAL_STATUS`), meaning "publish ordinarily" |
+| held, by reference | the claimed slot is held at once (the ring passes it); the publish writes a `tt_SEGMENT_SPAN_REF` record (`struct tt_SegmentRef`: index, length) in the next free index, and the reader reads the datagram in the held slot there, then gives it back (`shm_refs_read`; a malformed or foreign one: `shm_refs_refused`). No room for the reference: dropped as a full ring drops |
+| several per publisher | up to `tt_PUBLISHER_CLAIMS` (4); ordinary publishes go on meanwhile; the seq_no is taken at the publish, so samples are read in publish order (until 2026-10-20: one claim, other publishes refused, the ring stopped at it) |
+| re-checked | if the destination changed since the claim, the bytes are copied and published ordinarily (`shm_claims_copied`); KEEP_ALL is checked at the claim and at the publish (`WOULD_BLOCK` keeps the claim) |
+| RELIABLE | still copies into its cache; destroy abandons every outstanding claim |
 
 ## 11. Memory model
 
@@ -638,6 +639,7 @@ Compile-time `-D` overrides unless noted; blank rmw column = core default.
 | `tt_SEGMENT_FENCE_HOLD_NS` / `_FENCES_SEEN` | 1 ms / 8 | | fence wait / remembered |
 | `tt_SEGMENT_PROBE_EVERY_MAX` | 512 | | spin re-probe ceiling, epochs |
 | `tt_SAMPLE_LENDING` | 1 (0 FreeRTOS) | 1 | receive-buffer lending |
+| `tt_PUBLISHER_CLAIMS` | 4 | | claimed slots one Publisher may hold at once |
 | `tt_SAMPLE_RETAIN_MAX` | 16 | | samples held per context |
 | `tt_RX_POOL_MAX` | 32 | | attached receive buffers |
 | `tt_CONTEXT_ID_CLAIM` | 1 (0 FreeRTOS) | 1 | host-registry id claiming |
