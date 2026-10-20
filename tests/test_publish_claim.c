@@ -14,10 +14,12 @@
 // The claim this file holds the API to is that the caller's fill replaced the encoder and nothing else changed: each
 // comparison runs one scenario twice from identical state - once with tt_Publisher_publish() (whose encoder writes the
 // same slot, try_publish_into_slot()) and once with claim, fill, publish_claimed - and compares every ring record, the
-// reliable cache, seq_no and the counters. Then the rules: one claim per publisher, no other publish behind it, the
-// ring stopped at the claim until it is published, abandon and both destroys giving the slot back empty, the mapping
-// pinned while claimed, the shapes and states that refuse a claim (and say which), and the claim whose destination
-// changed before its publish, which is copied out and sent the ordinary way, in ring order.
+// reliable cache, seq_no and the counters - record by record as the reader gets them, the claimed arm's through their
+// references (tt_SEGMENT_SPAN_REF). Then the rules: several claims per publisher and its ordinary publishes meanwhile,
+// the ring never stopped at a claim (its slot is held and passed over), samples read in publish order, abandon and
+// both destroys giving the slot back, the mapping pinned while claimed, the shapes and states that refuse a claim (and
+// say which), KEEP_ALL at the claim and at its publish, a ring with no room for the reference, and the claim whose
+// destination changed before its publish, which is copied out and sent the ordinary way.
 #define tt_LOCAL_DELIVERY 1 // rmw_tickle's setting, so the local-subscriber refusal is compiled and tested
 
 #include <stdint.h>
@@ -187,23 +189,92 @@ static tt_ret_t send_one(struct arm* arm, enum mode mode, uint32_t id, int32_t s
         return claimed;
     }
     fill_pattern(payload, id, size);
-    return tt_Publisher_publish_claimed(&arm->pub, (uint32_t)size);
+    return tt_Publisher_publish_claimed(&arm->pub, payload, (uint32_t)size);
+}
+
+// A ring record as the reader gets it: in its own slot, or - a reference - in the held slot it names.
+struct logical {
+    const struct tt_SegmentSlot* header; // sender and span
+    const uint8_t* bytes;
+    uint32_t length;
+    uint16_t span;
+};
+
+// Every published record of the arm's ring in ring order, without reading any: references resolved, held slots (a
+// claim's own index) left out, as the reader leaves them.
+#define LOGICAL_MAX 64
+static uint32_t logical_records(struct arm* arm, struct logical* out) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < ring(arm)->write_index && count < LOGICAL_MAX; i++) {
+        const struct tt_SegmentSlot* slot = slot_at(arm, i);
+        if (slot->sequence != i + 1U) {
+            continue;
+        }
+        if (slot->seq_span == tt_SEGMENT_SPAN_REF) {
+            struct tt_SegmentRef desc;
+            memcpy(&desc, slot + 1, sizeof(desc));
+            out[count] = (struct logical) {slot, (const uint8_t*)(slot_at(arm, desc.index) + 1), desc.length, 1};
+        } else {
+            out[count] = (struct logical) {slot, (const uint8_t*)(slot + 1), slot->length, slot->seq_span};
+        }
+        count++;
+    }
+    return count;
+}
+
+// The reader's next record, consumed: segment_read(), and past what it leaves at the head - an index passed while
+// held (segment_pass_head()), or a reference, read in its held slot which is then given back - as the drain does
+// (note_head_stall(), segment_ref_at_head()).
+static bool ring_next(struct arm* arm, uint8_t* buf, uint32_t* len, uint32_t* ip) {
+    struct tt_SegmentHeader* r = ring(arm);
+    for (;;) {
+        uint16_t port = 0;
+        uint16_t span = 0;
+        if (segment_read(r, buf, tt_CONTROL_MAX_LENGTH, len, ip, &port, &span)) {
+            return true;
+        }
+        const uint32_t read_index = r->read_index;
+        if (r->write_index == read_index) {
+            return false;
+        }
+        const struct tt_SegmentSlot* head = slot_at(arm, read_index);
+        if (segment_pass_head(r, read_index, head->sequence)) {
+            continue;
+        }
+        if (head->sequence != read_index + 1U || head->seq_span != tt_SEGMENT_SPAN_REF) {
+            return false;
+        }
+        struct tt_SegmentRef desc;
+        memcpy(&desc, head + 1, sizeof(desc));
+        *ip = head->sender_ip;
+        segment_release(r, read_index);
+        memcpy(buf, slot_at(arm, desc.index) + 1, desc.length);
+        *len = desc.length;
+        segment_unhold(r, desc.index);
+        return true;
+    }
+}
+
+static uint32_t seq_no_of(const uint8_t* datagram) {
+    return ((const struct tt_DataHeader*)(datagram + sizeof(struct tt_SingleHeader)))->seq_no;
 }
 
 static void expect_arms_identical(const char* what) {
     struct arm* encoded = &arms[ENCODED];
     struct arm* claimed = &arms[CLAIMED];
-    EXPECT_EQ_U32(ring(encoded)->write_index, ring(claimed)->write_index);
-    uint32_t records = ring(encoded)->write_index;
+    struct logical a_records[LOGICAL_MAX];
+    struct logical b_records[LOGICAL_MAX];
+    uint32_t records = logical_records(encoded, a_records);
+    EXPECT_EQ_U32(records, logical_records(claimed, b_records));
+    EXPECT_TRUE(records > 0);
     for (uint32_t i = 0; i < records; i++) {
-        const struct tt_SegmentSlot* a = slot_at(encoded, i);
-        const struct tt_SegmentSlot* b = slot_at(claimed, i);
-        EXPECT_EQ_U32(a->sequence, b->sequence);
+        const struct logical* a = &a_records[i];
+        const struct logical* b = &b_records[i];
         EXPECT_EQ_U32(a->length, b->length);
-        EXPECT_EQ_U32(a->sender_ip, b->sender_ip);
-        EXPECT_EQ_INT(a->sender_port, b->sender_port);
-        EXPECT_EQ_INT(a->seq_span, b->seq_span);
-        if (memcmp(a + 1, b + 1, a->length) != 0) {
+        EXPECT_EQ_U32(a->header->sender_ip, b->header->sender_ip);
+        EXPECT_EQ_INT(a->header->sender_port, b->header->sender_port);
+        EXPECT_EQ_INT(a->span, b->span);
+        if (a->length != b->length || memcmp(a->bytes, b->bytes, a->length) != 0) {
             printf("  %s: record %u differs between the encoded and the claimed publish\n", what, (unsigned)i);
             EXPECT_TRUE(false);
         }
@@ -249,13 +320,18 @@ static void test_a_claimed_publish_writes_what_the_encoder_writes(void) {
     EXPECT_EQ_U64(0, arms[CLAIMED].sender.segment_claims_copied);
     EXPECT_EQ_U32(sizeof(struct tt_Header), arms[CLAIMED].sender.tx_tail); // tx_buffer never used
 
+    EXPECT_EQ_U64(SIZE_COUNT, arms[CLAIMED].sender.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(2 * SIZE_COUNT, ring(&arms[CLAIMED])->write_index); // each claim's held index and its reference
+
     struct arm* arm = &arms[CLAIMED];
     uint8_t* payload = NULL;
+    const uint32_t next = ring(arm)->write_index;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 1024, &payload));
     EXPECT_EQ_U32(4, (uint32_t)((uintptr_t)payload % 8U));
-    EXPECT_TRUE(payload == segment_slot(ring(arm), SIZE_COUNT) + sizeof(struct tt_SegmentSlot) +
+    EXPECT_TRUE(payload == segment_slot(ring(arm), next) + sizeof(struct tt_SegmentSlot) +
                                sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_U32(next + 2U, slot_at(arm, next)->sequence); // held from the claim on
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     teardown_pair();
 }
 
@@ -279,46 +355,71 @@ static void test_reliable_claims_cache_what_the_encoder_caches(void) {
     teardown_pair();
 }
 
-// One claim per publisher; nothing else from it while the claim is out; the reader stopped at the claimed slot; and
-// once published, the ring and the publisher go on.
-static void test_the_rules_while_a_claim_is_out(void) {
+// Several claims at once, and the Publisher's ordinary publishes go on meanwhile; the reader is never stopped at a
+// claim - its index is passed - and gets every sample in publish order whatever order the claims were made in, each
+// with the seq_no it took at its publish. Then the slots are back and the ring runs on.
+static void test_several_claims_and_publishes_meanwhile(void) {
     struct arm* arm = &arms[CLAIMED];
     setup(arm);
-    uint8_t* payload = NULL;
-    uint8_t* second = NULL;
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_publish_claimed(&arm->pub, 0)); // nothing claimed
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    EXPECT_EQ_U32(1, arm->sender.segment_peers[OWNER_ID].claims);
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_claim(&arm->pub, 64, &second));
-    EXPECT_TRUE(second == NULL);
+    uint8_t* payloads[tt_PUBLISHER_CLAIMS];
+    uint8_t bogus[64];
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_publish_claimed(&arm->pub, bogus, 0)); // not claimed
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub, bogus));
+    for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS; k++) {
+        payloads[k] = NULL;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payloads[k]));
+        EXPECT_EQ_U32(k + 2U, slot_at(arm, k)->sequence); // held
+    }
+    EXPECT_EQ_U32(tt_PUBLISHER_CLAIMS, arm->pub.claims_out);
+    EXPECT_EQ_U32(tt_PUBLISHER_CLAIMS, arm->sender.segment_peers[OWNER_ID].claims);
+    uint8_t* one_more = NULL;
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_claim(&arm->pub, 64, &one_more));
+    EXPECT_TRUE(one_more == NULL);
+
     struct sample sample = {9, 64};
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_publish(&arm->pub, (struct tt_Data*)&sample));
-    EXPECT_EQ_U32(1, ring(arm)->write_index);    // claimed: write_index moved past it
-    EXPECT_EQ_U32(0, slot_at(arm, 0)->sequence); // and not published: the reader has nothing to read
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&arm->pub, (struct tt_Data*)&sample)); // meanwhile
+    EXPECT_EQ_U32(1, arm->pub.seq_no);
     uint8_t buf[tt_CONTROL_MAX_LENGTH];
     uint32_t len = 0;
     uint32_t ip = 0;
-    uint16_t port = 0;
-    uint16_t span = 0;
-    EXPECT_TRUE(!segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
-
-    // Another writer into the same ring goes behind the claim and waits there.
-    EXPECT_TRUE(segment_write(ring(arm), buf, 8, NULL, 0, REMOTE_IP, REMOTE_PORT, 1));
-    EXPECT_TRUE(!segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
-
-    fill_pattern(payload, 9, 64);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, 64));
-    EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
-    EXPECT_EQ_U32(1, arm->pub.seq_no);
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
-    EXPECT_EQ_U32(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + 64, len);
-    EXPECT_EQ_U32(1, ((const struct tt_DataHeader*)(buf + sizeof(struct tt_SingleHeader)))->seq_no);
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span)); // then the one behind it
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip)); // past the four held indices, not stopped at them
+    EXPECT_EQ_U32(1, seq_no_of(buf));
+    EXPECT_EQ_U64(0, arm->owner.segment_held_passed); // (ring_next() passes without the owner's counter)
+    EXPECT_TRUE(!ring_next(arm, buf, &len, &ip));
+    EXPECT_TRUE(segment_write(ring(arm), buf, 8, NULL, 0, REMOTE_IP, REMOTE_PORT, 1)); // another writer, not behind
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
     EXPECT_EQ_U32(8, len);
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_publish_claimed(&arm->pub, 0)); // spent
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&arm->pub, (struct tt_Data*)&sample));
-    EXPECT_EQ_U32(2, arm->pub.seq_no);
+
+    // Published last claim first: read in that order, seq_nos 2.. in that order.
+    for (uint32_t k = tt_PUBLISHER_CLAIMS; k-- > 0;) {
+        fill_pattern(payloads[k], 100 + k, 64);
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payloads[k], 64));
+    }
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
+    EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
+    EXPECT_EQ_U32(1 + tt_PUBLISHER_CLAIMS, arm->pub.seq_no);
+    uint8_t expected[64];
+    for (uint32_t n = 0; n < tt_PUBLISHER_CLAIMS; n++) {
+        const uint32_t k = tt_PUBLISHER_CLAIMS - 1U - n;
+        EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+        EXPECT_EQ_U32(ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + 64), len);
+        EXPECT_EQ_U32(2 + n, seq_no_of(buf));
+        EXPECT_EQ_U32(SENDER_IP, ip);
+        fill_pattern(expected, 100 + k, 64);
+        EXPECT_TRUE(memcmp(buf + sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader), expected, 64) == 0);
+        EXPECT_EQ_U32(k + ring(arm)->slots, slot_at(arm, k)->sequence); // given back by the reader
+    }
+    EXPECT_TRUE(!ring_next(arm, buf, &len, &ip));
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_publish_claimed(&arm->pub, payloads[0], 0)); // spent
+    EXPECT_EQ_U64(tt_PUBLISHER_CLAIMS, arm->sender.segment_claims_published);
+
+    // Two laps more, claims and publishes alternating: every slot comes round free.
+    for (uint32_t n = 0; n < 2U * ring(arm)->slots; n++) {
+        test_mock_now += CLOCK_STEP;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)send_one(arm, (n % 2U) != 0 ? CLAIMED : ENCODED, n, 32));
+        EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+    }
+    EXPECT_EQ_U64(0, arm->sender.segment_full_dropped);
     teardown(arm);
 }
 
@@ -331,37 +432,48 @@ static void test_a_claim_publishes_its_length_not_its_capacity(void) {
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 128, &payload));
     fill_pattern(payload, 3, 128);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, 100));
-    EXPECT_EQ_U32(ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + 100),
-                  slot_at(arm, 0)->length);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Publisher_publish_claimed(&arm->pub, 65));
-    EXPECT_EQ_U32(0, slot_at(arm, 1)->length);
-    EXPECT_EQ_U32(2, slot_at(arm, 1)->sequence);
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 100));
+    struct logical records[LOGICAL_MAX];
+    EXPECT_EQ_U32(1, logical_records(arm, records));
+    EXPECT_EQ_U32(ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + 100), records[0].length);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload)); // index 2
+    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 65));
+    EXPECT_EQ_U32(2 + ring(arm)->slots, slot_at(arm, 2)->sequence); // given back: free for the next lap
+    EXPECT_EQ_U32(3, ring(arm)->write_index);                       // and no reference written
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
     EXPECT_EQ_U32(1, arm->pub.seq_no);
     teardown(arm);
 }
 
-// Abandon and destroy give the slot back as the empty record the reader drops, spending no seq_no.
+// Abandon and destroy give the slot back, spending no seq_no and writing nothing: the reader passes the claim's index.
 static void test_abandon_and_destroy_give_the_slot_back(void) {
     struct arm* arm = &arms[CLAIMED];
     setup(arm);
+    const uint32_t slots = ring(arm)->slots;
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub));
-    EXPECT_EQ_U32(1, slot_at(arm, 0)->sequence);
-    EXPECT_EQ_U32(0, slot_at(arm, 0)->length);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
+    EXPECT_EQ_U32(slots, slot_at(arm, 0)->sequence); // free for the next lap; index 0 stays passed
     EXPECT_EQ_U32(0, arm->pub.seq_no);
     EXPECT_EQ_U64(1, arm->sender.segment_claims_abandoned);
     EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub, payload)); // spent
 
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    uint8_t* first = NULL;
+    uint8_t* second = NULL;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &first));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &second));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_destroy(&arm->pub));
-    EXPECT_EQ_U32(2, slot_at(arm, 1)->sequence);
-    EXPECT_EQ_U32(0, slot_at(arm, 1)->length);
+    EXPECT_EQ_U32(1 + slots, slot_at(arm, 1)->sequence);
+    EXPECT_EQ_U32(2 + slots, slot_at(arm, 2)->sequence);
     EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
+    EXPECT_EQ_U64(3, arm->sender.segment_claims_abandoned);
+    uint8_t buf[tt_CONTROL_MAX_LENGTH];
+    uint32_t len = 0;
+    uint32_t ip = 0;
+    EXPECT_TRUE(!ring_next(arm, buf, &len, &ip)); // nothing to read: three indices passed
+    EXPECT_EQ_U32(3, ring(arm)->read_index);
     teardown(arm);
 }
 
@@ -379,7 +491,7 @@ static void test_a_claimed_mapping_stays_mapped(void) {
     EXPECT_TRUE(entry->mapping == mapping);
     EXPECT_EQ_U32(0, entry->recheck_in); // put off, not done
     uint64_t attached = arm->sender.segment_attach[tt_SEGMENT_ATTACHED];
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     EXPECT_TRUE(peer_segment(&arm->sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
     EXPECT_EQ_U64(attached + 1, arm->sender.segment_attach[tt_SEGMENT_ATTACHED]); // the control: revalidated now
     teardown(arm);
@@ -391,7 +503,8 @@ static void test_a_claimed_mapping_stays_mapped(void) {
 static struct tt_Publisher other_pub;
 static void refuse_one_write_long_after(struct arm* arm) {
     other_pub = arm->pub; // a second Publisher of the sender, to the same peer
-    other_pub.claim_slot = NULL;
+    memset(other_pub.claims, 0, sizeof(other_pub.claims));
+    other_pub.claims_out = 0;
     other_pub.endpoint.entity_id = 0x11110002;
     arm->sender.segment_peers[OWNER_ID].last_progress_ns = test_mock_now;
     test_mock_now += tt_SEGMENT_DEAD_READER_NS + 1;
@@ -410,7 +523,7 @@ static void test_a_claimed_mapping_outlives_the_dead_reader_rule(void) {
     refuse_one_write_long_after(arm);
     EXPECT_TRUE(arm->sender.segment_full_dropped > 0);
     EXPECT_TRUE(arm->sender.segment_peers[OWNER_ID].mapping != NULL);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     refuse_one_write_long_after(arm);
     EXPECT_TRUE(arm->sender.segment_peers[OWNER_ID].mapping == NULL); // the control: no claim, given up
     teardown(arm);
@@ -420,7 +533,7 @@ static void test_a_claimed_mapping_outlives_the_dead_reader_rule(void) {
 static void expect_unsupported(struct arm* arm, uint32_t length) {
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_UNSUPPORTED, (int)tt_Publisher_claim(&arm->pub, length, &payload));
-    EXPECT_TRUE(payload == NULL && arm->pub.claim_slot == NULL);
+    EXPECT_TRUE(payload == NULL && arm->pub.claims_out == 0);
     EXPECT_EQ_U32(0, ring(arm)->write_index);
 }
 
@@ -463,7 +576,12 @@ static void test_what_cannot_be_claimed(void) {
     expect_unsupported(arm, LARGEST_WHOLE_CDR + 1);
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, LARGEST_WHOLE_CDR, &payload));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
+    teardown(arm);
+
+    setup(arm); // a reader that cannot pass a held slot or read a reference (a build before 2026-10-20)
+    ring(arm)->features &= (uint16_t)~tt_SEGMENT_FEATURE_HELD_REF;
+    expect_unsupported(arm, 64);
     teardown(arm);
 
     setup(arm); // no segment: a different address behind the context id
@@ -473,7 +591,8 @@ static void test_what_cannot_be_claimed(void) {
 }
 
 // A full ring: OUT_OF_BUFFER, nothing claimed - the caller publishes ordinarily, which drops and counts it.
-// KEEP_ALL with nothing acknowledged to make room: WOULD_BLOCK, as the publish would say.
+// KEEP_ALL with nothing acknowledged to make room: WOULD_BLOCK, as the publish would say - at the claim, and at its
+// publish when ordinary publishes since took the room: the claim is kept then, and can be abandoned.
 static void test_full_ring_and_keep_all(void) {
     struct arm* arm = &arms[CLAIMED];
     setup(arm);
@@ -483,7 +602,7 @@ static void test_full_ring_and_keep_all(void) {
     }
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OUT_OF_BUFFER, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
     EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
     teardown(arm);
 
@@ -492,14 +611,48 @@ static void test_full_ring_and_keep_all(void) {
     arm->cache.depth = 1; // one unacknowledged sample is all KEEP_ALL may hold
     EXPECT_EQ_INT((int)tt_RET_OK, (int)send_one(arm, CLAIMED, 1, 64));
     EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
     EXPECT_TRUE(arm->pub.writable_pending);
+    teardown(arm);
+
+    setup(arm);
+    make_reliable(arm, true, ARENA_MAX);
+    arm->cache.depth = 1;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload)); // room now
+    struct sample sample = {2, 64};
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&arm->pub, (struct tt_Data*)&sample)); // takes it
+    fill_pattern(payload, 3, 64);
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 64));
+    EXPECT_EQ_U32(1, arm->pub.claims_out); // kept
+    EXPECT_EQ_U32(1, arm->pub.seq_no);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
+    teardown(arm);
+}
+
+// No room left for the reference at the publish: the sample is dropped as a full ring drops one - counted, its seq_no
+// spent - and its held slot given back.
+static void test_no_room_for_the_reference_drops_as_a_full_ring(void) {
+    struct arm* arm = &arms[CLAIMED];
+    setup(arm);
+    uint8_t* payload = NULL;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    uint8_t filler[16];
+    memset(filler, 0x5A, sizeof(filler));
+    while (segment_write(ring(arm), filler, sizeof(filler), NULL, 0, OWNER_IP, OWNER_PORT, 1)) {
+    }
+    fill_pattern(payload, 4, 64);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 64));
+    EXPECT_EQ_U64(1, arm->sender.segment_full_dropped);
+    EXPECT_EQ_U64(0, arm->sender.segment_claims_published);
+    EXPECT_EQ_U32(1, arm->pub.seq_no);
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
+    EXPECT_EQ_U32(ring(arm)->slots, slot_at(arm, 0)->sequence); // given back
     teardown(arm);
 }
 
 // The destination changed between claim and publish (here a match Heartbeat fell due): the sample is copied out and
-// published the ordinary way, the claimed slot goes back empty, and the reader gets the empty record and then the
-// sample - in that order, with the bytes the caller wrote.
+// published the ordinary way and the claimed slot given back; the reader passes the claim's index and gets the sample
+// with the bytes the caller wrote.
 static void test_a_changed_destination_is_published_by_copy(void) {
     struct arm* arm = &arms[CLAIMED];
     setup(arm);
@@ -507,24 +660,22 @@ static void test_a_changed_destination_is_published_by_copy(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 200, &payload));
     fill_pattern(payload, 42, 200);
     arm->pub.match_heartbeat_pending = true;
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, 200));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 200));
     EXPECT_EQ_U64(1, arm->sender.segment_claims_copied);
     EXPECT_EQ_U64(0, arm->sender.segment_claims_published);
     EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
     EXPECT_EQ_U32(1, arm->pub.seq_no);
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
+    EXPECT_EQ_U32(ring(arm)->slots, slot_at(arm, 0)->sequence); // given back
     uint8_t buf[tt_CONTROL_MAX_LENGTH];
     uint32_t len = 99;
     uint32_t ip = 0;
-    uint16_t port = 0;
-    uint16_t span = 0;
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
-    EXPECT_EQ_U32(0, len); // the claimed slot, empty
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
     // The copy: a match Heartbeat and then the DATA, in one datagram (full headers).
     uint8_t expected[200];
     fill_pattern(expected, 42, 200);
     EXPECT_TRUE(len >= 200 && memcmp(buf + len - 200, expected, 200) == 0);
+    EXPECT_TRUE(!ring_next(arm, buf, &len, &ip));
     teardown(arm);
 }
 
@@ -539,15 +690,14 @@ static bool in_detached_region(const void* p) {
     return false;
 }
 
-// tt_Context_destroy() with a claim still out resolves it before the mapping goes: the slot is given back as the
-// empty record, so the subscriber's ring runs on past it for the other writers, and the Publisher holds nothing that
-// points into the unmapped region - a later abandon or destroy is refused and writes nowhere. The control: the same
-// teardown with nothing claimed, where the other writer's record is the first the reader takes.
-static void destroy_sender_behind_another_writer(struct arm* arm, bool claim) {
+// tt_Context_destroy() with a claim still out resolves it before the mapping goes: the slot is given back, so the
+// subscriber's ring runs on past it for the other writers, and the Publisher holds nothing that points into the
+// unmapped region - a later abandon or destroy is refused and writes nowhere. The control: the same teardown with
+// nothing claimed, where the other writer's record is the first the reader takes.
+static void destroy_sender_behind_another_writer(struct arm* arm, bool claim, uint8_t** payload) {
     setup(arm);
-    uint8_t* payload = NULL;
     if (claim) {
-        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, payload));
     }
     uint8_t other[8] = {0};
     EXPECT_TRUE(segment_write(ring(arm), other, sizeof(other), NULL, 0, REMOTE_IP, REMOTE_PORT, 1));
@@ -558,37 +708,27 @@ static void expect_the_other_writer_read(struct arm* arm) {
     uint8_t buf[tt_CONTROL_MAX_LENGTH];
     uint32_t len = 99;
     uint32_t ip = 0;
-    uint16_t port = 0;
-    uint16_t span = 0;
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
     EXPECT_EQ_U32(8, len);
     EXPECT_EQ_U32(REMOTE_IP, ip);
 }
 static void test_context_destroy_resolves_an_outstanding_claim(void) {
     struct arm* arm = &arms[CLAIMED];
+    uint8_t* payload = NULL;
 
-    destroy_sender_behind_another_writer(arm, false); // the control: nothing claimed
+    destroy_sender_behind_another_writer(arm, false, &payload); // the control: nothing claimed
     expect_the_other_writer_read(arm);
     teardown(arm);
 
-    destroy_sender_behind_another_writer(arm, true);
-    EXPECT_EQ_U32(1, slot_at(arm, 0)->sequence); // the claimed slot published before the unmap...
-    EXPECT_EQ_U32(0, slot_at(arm, 0)->length);   // ...as the empty record
+    destroy_sender_behind_another_writer(arm, true, &payload);
+    EXPECT_EQ_U32(ring(arm)->slots, slot_at(arm, 0)->sequence); // the claimed slot given back before the unmap
     EXPECT_EQ_U64(1, arm->sender.segment_claims_abandoned);
-    EXPECT_TRUE(arm->pub.claim_slot == NULL);
-    EXPECT_TRUE(arm->pub.claim_slot == NULL || !in_detached_region(arm->pub.claim_slot));
-    uint8_t buf[tt_CONTROL_MAX_LENGTH];
-    uint32_t len = 99;
-    uint32_t ip = 0;
-    uint16_t port = 0;
-    uint16_t span = 0;
-    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
-    EXPECT_EQ_U32(0, len);             // the given-back claim, which the reader drops...
-    expect_the_other_writer_read(arm); // ...and the ring runs on behind it
+    EXPECT_EQ_U32(0, arm->pub.claims_out);
+    expect_the_other_writer_read(arm); // the reader passes the claim's index, and the ring runs on
 
     // Later calls on the Publisher find nothing claimed and write nowhere.
     const uint32_t sequence = slot_at(arm, 0)->sequence;
-    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     EXPECT_EQ_U32(sequence, slot_at(arm, 0)->sequence);
     EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
     EXPECT_EQ_U64(1, arm->sender.segment_claims_abandoned);
@@ -598,13 +738,14 @@ static void test_context_destroy_resolves_an_outstanding_claim(void) {
 int main(void) {
     test_a_claimed_publish_writes_what_the_encoder_writes();
     test_reliable_claims_cache_what_the_encoder_caches();
-    test_the_rules_while_a_claim_is_out();
+    test_several_claims_and_publishes_meanwhile();
     test_a_claim_publishes_its_length_not_its_capacity();
     test_abandon_and_destroy_give_the_slot_back();
     test_a_claimed_mapping_stays_mapped();
     test_a_claimed_mapping_outlives_the_dead_reader_rule();
     test_what_cannot_be_claimed();
     test_full_ring_and_keep_all();
+    test_no_room_for_the_reference_drops_as_a_full_ring();
     test_a_changed_destination_is_published_by_copy();
     test_context_destroy_resolves_an_outstanding_claim();
     printf("test_publish_claim: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

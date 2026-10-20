@@ -1710,7 +1710,7 @@ static void* lend_slot(rmw_tickle_publisher_t* pub_impl) {
     }
     void* message = payload + RMW_TICKLE_PSN_SHORT_BYTES;
     if (((uintptr_t)message & (callbacks->ros_struct_align - 1U)) != 0) {
-        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher); // a ring of slots sized off 8
+        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher, payload); // a ring of slots sized off 8
         return NULL;
     }
     pub_impl->slot_loan = message;
@@ -1730,10 +1730,10 @@ static rmw_ret_t publish_slot_loan(rmw_tickle_publisher_t* pub_impl, void* messa
     tt_Context_lock(&context_impl->tickle_context);
     if (RMW_TICKLE_PSN_SHORT_BYTES == rmw_tickle_psn_bytes(psn)) {
         (void)rmw_tickle_psn_write(psn, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES);
-        ret = tt_Publisher_publish_claimed(&pub_impl->tickle_publisher,
+        ret = tt_Publisher_publish_claimed(&pub_impl->tickle_publisher, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES,
                                            (uint32_t)(RMW_TICKLE_PSN_SHORT_BYTES + pub_impl->callbacks->inplace_bytes));
     } else {
-        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher);
+        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher, (uint8_t*)message - RMW_TICKLE_PSN_SHORT_BYTES);
     }
     if (tt_RET_OK == ret) {
         pub_impl->last_activity_time = tt_get_ns(); // (DEADLINE) as publish_attempt() sets it
@@ -1819,7 +1819,8 @@ rmw_ret_t rmw_return_loaned_message_from_publisher(const rmw_publisher_t* publis
     }
     pthread_mutex_lock(&pub_impl->loan_mutex);
     if (NULL != pub_impl->slot_loan && loaned_message == pub_impl->slot_loan) {
-        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher); // the slot goes back empty: the ring moves on
+        (void)tt_Publisher_abandon_claim(&pub_impl->tickle_publisher,
+                                         (uint8_t*)loaned_message - RMW_TICKLE_PSN_SHORT_BYTES);
         pub_impl->slot_loan = NULL;
         pthread_mutex_unlock(&pub_impl->loan_mutex);
         return RMW_RET_OK;

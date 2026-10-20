@@ -575,6 +575,99 @@ static void test_release_from_another_thread(void) {
     rig_down();
 }
 
+// ---- Claimed slots read by reference (tt_Publisher_claim(), DESIGN.md section 10, "Held slots").
+
+// A claim built as value_encode() builds the sample, and published.
+static uint8_t* claim_value(uint32_t value) {
+    uint8_t* payload = NULL;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&rig.pub, SMALL_SAMPLE_BYTES, &payload));
+    if (payload != NULL) {
+        memset(payload, (int)(value & 0xFFU), SMALL_SAMPLE_BYTES);
+        memcpy(payload, &value, sizeof(value));
+    }
+    return payload;
+}
+
+// The drain reads a claimed sample through its reference, in publish order behind an ordinary one published while
+// the claim was out; the sample can be retained where it lies, in the claimed slot, which then stays held across
+// laps (passed over) until the release - the same as a slot read in place.
+static void test_a_claim_is_read_by_reference_and_can_be_kept(void) {
+    rig_up(true, 0);
+    cb.mode = KEEP_FIRST;
+    test_mock_now += 1000000;
+    uint8_t* payload = claim_value(900);
+    publish(901); // meanwhile: read first
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&rig.pub, payload, SMALL_SAMPLE_BYTES));
+    drain(&rig.owner);
+    EXPECT_EQ_U32(2, cb.seen);
+    EXPECT_EQ_U32(901, cb.values[0]);
+    EXPECT_EQ_U32(900, cb.values[1]);
+    EXPECT_EQ_U64(1, rig.owner.segment_refs_read);
+    EXPECT_EQ_U64(0, rig.owner.segment_refs_refused);
+    EXPECT_EQ_U32(SLOTS, slot_sequence(&rig.owner, 0)); // the claim's slot, given back once read
+    rig_down();
+
+    rig_up(true, 0);
+    cb.mode = KEEP_FIRST;
+    test_mock_now += 1000000;
+    payload = claim_value(910);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&rig.pub, payload, SMALL_SAMPLE_BYTES));
+    drain(&rig.owner);
+    EXPECT_EQ_U32(1, cb.kept_count);
+    EXPECT_TRUE(cb.kept[0].sample.payload == payload); // lent where the publisher built it
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0));
+    for (uint32_t i = 1; i <= 2 * SLOTS; i++) {
+        publish(910 + i);
+        drain(&rig.owner);
+    }
+    EXPECT_TRUE(kept_intact(&cb.kept[0]));
+    EXPECT_EQ_U32((2 * SLOTS) + 1, cb.seen);
+    EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
+    EXPECT_EQ_U32(0, (slot_sequence(&rig.owner, 0) - 0U) % SLOTS); // free again at its position
+    publish(999);
+    drain(&rig.owner);
+    EXPECT_EQ_U32(999, cb.values[cb.seen - 1]);
+    rig_down();
+}
+
+// A reference this ring cannot have been sent is counted and passed, and takes nothing back: one naming a slot that
+// is not held, and one naming a slot a sample of ours holds - whose bytes stay intact. The ring runs on after both.
+static void forge_reference(uint32_t index, uint32_t length) {
+    struct tt_SegmentRef desc = {index, length};
+    uint32_t claimed = 0;
+    struct tt_SegmentSlot* slot = segment_claim(rig.owner.own_segment, &claimed);
+    EXPECT_TRUE(slot != NULL);
+    if (slot != NULL) {
+        memcpy(segment_slot_payload(slot), &desc, sizeof(desc));
+        segment_publish_as(slot, claimed, (uint32_t)sizeof(desc), PEER_IP, PEER_PORT, (uint16_t)tt_SEGMENT_SPAN_REF);
+    }
+}
+static void test_a_reference_that_cannot_be_is_refused(void) {
+    rig_up(true, 0);
+    cb.mode = KEEP_FIRST;
+    publish(950);
+    drain(&rig.owner); // index 0, retained: held
+    publish(951);
+    drain(&rig.owner);                      // index 1, read and given back
+    uint8_t* claimed = claim_value(0);      // index 2: a slot held by a claim, never published
+    forge_reference(1, SMALL_SAMPLE_BYTES); // index 3: names a slot that is free
+    forge_reference(0, SMALL_SAMPLE_BYTES); // index 4: names the slot we hold
+    forge_reference(2, 0);                  // index 5: a held slot, but no length
+    publish(952);
+    drain(&rig.owner);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&rig.pub, claimed));
+    EXPECT_EQ_U64(3, rig.owner.segment_refs_refused);
+    EXPECT_EQ_U64(0, rig.owner.segment_refs_read);
+    EXPECT_EQ_U32(3, cb.seen);
+    EXPECT_EQ_U32(952, cb.values[2]);
+    EXPECT_TRUE(kept_intact(&cb.kept[0]));
+    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0)); // still ours
+    EXPECT_EQ_U32(1 + SLOTS, slot_sequence(&rig.owner, 1));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
+    rig_down();
+}
+
 // tt_Context_destroy() forgets every held sample: a release afterwards is refused and writes nothing.
 static void test_destroy_forgets_held_samples(void) {
     rig_up(true, 0);
@@ -735,6 +828,8 @@ static void test_a_socket_sample_is_aligned_for_a_64_bit_type(void) {
 int main(void) {
     test_a_socket_sample_is_aligned_for_a_64_bit_type();
     test_a_retained_slot_survives_a_lap();
+    test_a_claim_is_read_by_reference_and_can_be_kept();
+    test_a_reference_that_cannot_be_is_refused();
     test_unretained_records_are_released_as_read();
     test_a_held_slot_blocks_no_ring();
     test_skip_to_newest_never_frees_a_retained_slot();
