@@ -488,7 +488,16 @@ The ring cannot be the RELIABLE retention cache: its memory is the receiver's.
 | what is lent | the ring slot (left unreleased until release), the receive buffer (`rx_buffer` plus a pool, `tt_Context_set_rx_pool()`, `tt_RX_POOL_MAX`), or a large buffer; buffers 8-aligned |
 | not lent | samples from small fragments, a reorder buffer, local delivery or a backlog (`tt_RET_UNSUPPORTED`; copy) |
 | handles | at most `tt_SAMPLE_RETAIN_MAX`, with generations; a bad release is refused and touches nothing; release from any thread |
-| **a held slot blocks only its own ring, one lap later** | hold for less than one lap at the stream's rate, or copy |
+| a held slot is passed over | see "Held slots" below; a ring under 4 slots keeps the old rule (full one lap later) |
+
+**Held slots** (2026-10-20). A slot whose record is still in use after it was read carries a held mark instead of
+"published": free for index i is `i`, published `i + 1`, held `p + 2` (p: the last index it was published or passed
+at). A writer that meets a held slot at index i moves the mark to `i + 2` by CAS, moves `write_index` past i and claims
+the next; the reader meets `i + 2` (or `i + slots`: passed, then released) and moves past it, moving `write_index`
+first if the marking writer has not. The release CASes `p + 2` to `p + slots`, free for the next index at that
+position. Hot paths unchanged: marks are looked at only where a writer or reader used to give up
+(`shm_held_passed` counts the reader's passes). Tests: `test_segment_held.c` (control: byte-identical to the old ring
+with nothing held), `tests/mutants_segment_held.sh`.
 
 **Claimed-slot publish** (`tt_Publisher_claim` / `_publish_claimed` / `_abandon_claim`): the caller builds the CDR in
 the subscriber's slot.

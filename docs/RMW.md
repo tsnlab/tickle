@@ -105,8 +105,9 @@ resolved at creation against endpoints already discovered. `rmw_get_publishers_i
   local or misaligned ones are decoded.
 - **Publish:** the borrow lends a kept buffer (up to 64); one copy remains. Set every field: a reused buffer is not cleared.
   A large in-place type is copied a send at a time, just ahead of the datagrams (DESIGN.md section 8, "Encoding while sending").
-- **Ring slots (both off by default, the user, 2026-10-10):** `RMW_TICKLE_LOAN_RING_SLOTS=1` lends the ring slot, but
-  a held slot stops that ring for every topic one lap (512 records) later. `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1` builds in
+- **Ring slots (both off by default, the user, 2026-10-10):** `RMW_TICKLE_LOAN_RING_SLOTS=1` lends the ring slot; a held
+  slot is passed over by the ring's writers (DESIGN.md section 10, "Held slots"), so it stops nothing (until 2026-10-20
+  it stopped the ring one lap later). `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1` builds in
   the subscriber's slot (no publish copy for BEST_EFFORT); while it is out the ring is stopped and every other publish
   of that publisher fails.
 - **Measured:** PC, no visible difference (RESULTS.md "Loaned messages (PC)"). Rig A/B 2026-10-09 (`7a321d26`..`e521bbba`
