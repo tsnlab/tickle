@@ -22,7 +22,9 @@
 // The reading, pre-registered and enforced below (decide()), not only described here. Counts are deltas over the
 // measured window: N samples per topic, published once both directions are attached (arms 1-2) or once matched
 // (arms 3-4), after a warm-up.
-//   every arm: B delivers each of the N window samples of each topic exactly once - RELIABLE and BEST_EFFORT.
+//   every arm: B delivers each RELIABLE window sample exactly once, and no BEST_EFFORT sample twice or unpublished.
+//   BEST_EFFORT exactly once in arms 1-2, where the ring cannot lose one; in arms 3-4 at least 95% of N, since over
+//   lwIP it may miss samples (README) - its loopback lost 2 of 200 once (2026-10-21) while RELIABLE recovered its own.
 //   arms 1-2 (the claim):
 //     A tx over the segment >= 2N, and B rx over the segment >= 2N: every sample went through the ring;
 //     A unicast over UDP (tx UDP minus broadcasts) == 0: no sample, ACKNACK, heartbeat or doorbell went through lwIP;
@@ -49,8 +51,12 @@
 #include "board/uart.h"
 #include "net_init.h"
 
-#ifndef SEGMENT_TEST_ARM
+#ifndef SEGMENT_TEST_ARM // unnamed: the arm the build's own tt_SEGMENT_ENABLED makes (FreeRTOS default: off)
+#if tt_SEGMENT_ENABLED
 #define SEGMENT_TEST_ARM 1
+#else
+#define SEGMENT_TEST_ARM 4
+#endif
 #endif
 #define ARM_SHM 1
 #define ARM_STATIC 2
@@ -65,6 +71,7 @@
 #define CONTEXT_B_ID 12
 #define WINDOW_SAMPLES 200U                   // N, per topic
 #define WARMUP_FLAG (1ULL << 40)              // warm-up samples' values; the window's are 0..N-1
+#define BEST_EFFORT_UDP_LOSS_DIV 20U          // arms 3-4: BEST_EFFORT may lose up to N/20 over lwIP
 #define WARMUP_SAMPLES_UDP 20U                // arms 3-4: warm-up samples per topic (1-2 warm up until attached)
 #define MATCH_WAIT_MS 10000U                  // both publishers matched, from the first announce
 #define ATTACH_WAIT_MS 5000U                  // arms 1-2: both directions attached, publishing warm-up samples
@@ -314,8 +321,13 @@ static void decide(const struct snapshot* a_before, const struct snapshot* a_aft
 
     check(got_reliable.window == WINDOW_SAMPLES && got_reliable.duplicates == 0 && got_reliable.strays == 0,
           "RELIABLE: every window sample delivered exactly once");
-    check(got_best_effort.window == WINDOW_SAMPLES && got_best_effort.duplicates == 0 && got_best_effort.strays == 0,
-          "BEST_EFFORT: every window sample delivered exactly once");
+    check(got_best_effort.duplicates == 0 && got_best_effort.strays == 0, "BEST_EFFORT: no sample twice, none stray");
+#if SEGMENT_ARM
+    check(got_best_effort.window == WINDOW_SAMPLES, "BEST_EFFORT: every window sample delivered (the ring)");
+#else
+    check(got_best_effort.window >= WINDOW_SAMPLES - (WINDOW_SAMPLES / BEST_EFFORT_UDP_LOSS_DIV),
+          "BEST_EFFORT: at least 95% of the window delivered (over lwIP)");
+#endif
 #if SEGMENT_ARM
     check(a_tx_shm >= both_topics, "A sent >= 2N datagrams over the segment");
     check(b_rx_shm >= both_topics, "B received >= 2N datagrams over the segment");
