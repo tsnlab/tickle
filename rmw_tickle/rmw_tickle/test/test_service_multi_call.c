@@ -24,6 +24,15 @@
 // - a BEST_EFFORT client (D6), the second case's control the other way: call N + 1 goes at once, ending the oldest
 //   call, and only that call's answer is dropped.
 // Runs in the rmw suite's private netns (run_rmw_suite.sh).
+//
+// When a wait for requests or responses runs out, the test says what it saw before it fails (2026-10-21): the phase,
+// how long it waited, which responses came under which sequence ids, the client's calls still in flight, and every
+// request the service still holds or is handed within STRAY_MS - one nobody sent anew would be a request handed to the
+// service twice. It failed once under make check-gates (load 21-36, 2026-10-20) with only "got == count" in a
+// take_responses() of the warm-up or the first case, 4 s after the answers went out; 150 runs alongside make
+// check-gates did not reproduce it, so this is what the next occurrence has to name. No bound was relaxed: 4 s for an
+// answer between two endpoints of one process is not a timing assumption a loaded PC can break, so a miss is reported
+// as the failure it is.
 
 #include <assert.h>
 #include <stdbool.h>
@@ -66,6 +75,10 @@
 #define BEST_EFFORT_FIRST 600U
 #define WARM_RESEND_POLLS 50 // one second
 #define SETTLE_MS 200L       // how long an answer the ended call should not get is given to arrive
+#define STRAY_MS 500L        // failure diagnostics: how long the service is watched for requests nobody sent anew
+
+static const char* phase = "warm-up"; // the case running, for the failure diagnostics
+static rmw_service_t* the_service;    // the one service, which the failure diagnostics drain
 
 struct pair {
     uint32_t first;
@@ -141,9 +154,31 @@ struct taken_request {
     struct pair request;
 };
 
+// Failure diagnostics: every request the service holds now or is handed within STRAY_MS, with its sequence id.
+static void print_stray_requests(void) {
+    int strays = 0;
+    for (long waited = 0; waited < STRAY_MS; waited += POLL_MS) {
+        rmw_service_info_t info;
+        struct pair request = {0, 0};
+        bool taken = false;
+        (void)rmw_take_request(the_service, &info, &request, &taken);
+        while (taken) {
+            strays++;
+            printf("test_service_multi_call:   the service still had request first=%u (sequence id %lld)\n",
+                   request.first, (long long)info.request_id.sequence_number);
+            taken = false;
+            (void)rmw_take_request(the_service, &info, &request, &taken);
+        }
+        sleep_poll();
+    }
+    printf("test_service_multi_call:   %d request(s) at the service after the wait\n", strays);
+    (void)fflush(stdout);
+}
+
 // Takes `count` requests from the service, polling; asserts they all came.
 static void take_requests(rmw_service_t* service, struct taken_request* into, int count) {
     int got = 0;
+    uint64_t started = now_ns();
     for (int attempt = 0; attempt < POLLS && got < count; attempt++) {
         bool taken = false;
         assert(RMW_RET_OK == rmw_take_request(service, &into[got].info, &into[got].request, &taken));
@@ -152,6 +187,11 @@ static void take_requests(rmw_service_t* service, struct taken_request* into, in
         } else {
             sleep_poll();
         }
+    }
+    if (got != count) {
+        printf("test_service_multi_call: %s: %d of %d requests reached the service in %.0f ms\n", phase, got, count,
+               (double)(now_ns() - started) / (double)NS_PER_MS);
+        (void)fflush(stdout);
     }
     assert(got == count);
 }
@@ -166,6 +206,7 @@ static void answer(rmw_service_t* service, struct taken_request* request) {
 static int take_responses(rmw_client_t* client, const int64_t* sequences, const struct pair* sent, int count) {
     int got = 0;
     int matched = 0;
+    uint64_t started = now_ns();
     for (int attempt = 0; attempt < POLLS && got < count; attempt++) {
         rmw_service_info_t info;
         struct pair response = {0, 0};
@@ -176,11 +217,23 @@ static int take_responses(rmw_client_t* client, const int64_t* sequences, const 
             continue;
         }
         got++;
+        printf("test_service_multi_call: %s: response %u under sequence id %lld\n", phase, response.first,
+               (long long)info.request_id.sequence_number);
         for (int k = 0; k < count; k++) {
             if (sequences[k] == info.request_id.sequence_number) {
                 matched += response.first == sent[k].first + sent[k].second && MARK == response.second ? 1 : 0;
             }
         }
+    }
+    if (got != count) {
+        const rmw_tickle_client_t* impl = (const rmw_tickle_client_t*)client->data;
+        printf("test_service_multi_call: %s: %d of %d responses in %.0f ms; the client has %u call(s) in flight\n",
+               phase, got, count, (double)(now_ns() - started) / (double)NS_PER_MS, impl->calls_in_flight);
+        for (int k = 0; k < count; k++) {
+            printf("test_service_multi_call:   awaited first=%u under sequence id %lld\n", sent[k].first,
+                   (long long)sequences[k]);
+        }
+        print_stray_requests();
     }
     assert(got == count);
     return matched;
@@ -188,6 +241,7 @@ static int take_responses(rmw_client_t* client, const int64_t* sequences, const 
 
 // N in a row, all in flight at once; taken together, answered in reverse order.
 static void n_in_a_row(rmw_client_t* client, rmw_service_t* service) {
+    phase = "in a row";
     int64_t sequences[N];
     struct pair sent[N];
     for (int k = 0; k < N; k++) {
@@ -215,6 +269,7 @@ static void n_in_a_row(rmw_client_t* client, rmw_service_t* service) {
 
 // N in flight, unanswered: call N + 1 waits for a slot and then fails; one answer frees a slot for it.
 static void one_more_waits_then_fails(rmw_client_t* client, rmw_service_t* service) {
+    phase = "one more";
     int64_t sequences[N + 1];
     struct pair sent[N + 1];
     for (int k = 0; k < N; k++) {
@@ -249,6 +304,7 @@ static void one_more_waits_then_fails(rmw_client_t* client, rmw_service_t* servi
 // Action-like: the result requests of two goals wait at the service (taken, the goals still running) while another
 // client calls too; the goals finish in reverse order.
 static void action_like_get_result(rmw_client_t* result_client, rmw_client_t* other_client, rmw_service_t* service) {
+    phase = "action-like";
     int goals = N >= 2 ? 2 : 1;
     int64_t sequences[2];
     struct pair sent[2];
@@ -307,6 +363,7 @@ static bool serve_and_take(rmw_client_t* client, rmw_service_t* service, bool* r
 // outstanding has most likely been lost): call N + 1 goes at once, ending the oldest call, whose answer - it comes
 // after all here - is dropped; the other N are answered under their own sequence ids.
 static void best_effort_ends_the_oldest(rmw_client_t* client, rmw_service_t* service) {
+    phase = "best effort";
     int64_t sequences[N + 1];
     struct pair sent[N + 1];
     for (int k = 0; k < N; k++) {
@@ -356,6 +413,7 @@ int main(void) {
     rmw_client_t* client = rmw_create_client(node, &service_handle, "/multi_call_add", &qos);
     rmw_client_t* other_client = rmw_create_client(node, &service_handle, "/multi_call_add", &qos);
     assert(NULL != service && NULL != client && NULL != other_client);
+    the_service = service;
 
     // Warm-up: one call, retried by core until discovery has matched the client and the service.
     int64_t sequence = 0;
@@ -379,6 +437,7 @@ int main(void) {
     rmw_qos_profile_t actual;
     assert(RMW_RET_OK == rmw_client_request_publisher_get_actual_qos(best_effort, &actual));
     assert(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == actual.reliability);
+    phase = "best-effort warm-up";
     bool warmed = false;
     for (int attempt = 0; attempt < POLLS && !warmed; attempt++) {
         if (attempt % WARM_RESEND_POLLS == 0) { // a call, then a second of polls for its answer
