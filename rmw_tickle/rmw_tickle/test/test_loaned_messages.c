@@ -27,9 +27,10 @@
 //          arrive; the talker's ring refusals (segment_full_dropped) must stay 0. The flood is paced by the listener's
 //          takes to FLOOD_WINDOW samples untaken, a fraction of the ring, so a refusal can only be a slot the held
 //          loans pinned - not a listener that load kept off the CPU;
-//   held-pinned  the same with ring slots lent, paced the same: the positive control. The held loans then pin ring
-//          slots, and the talker's ring must refuse - if it did not, the check above could not see a held slot block
-//          a ring.
+//   held-pinned  the same with ring slots lent, paced the same: the held loans then hold ring slots, which the ring
+//          passes over (core's held slots, DESIGN.md section 10) - the talker's ring must not refuse, every sample must
+//          arrive, and the listener must have passed the held slots (segment_held_passed), or the case held nothing.
+//          Until 2026-10-20 a held slot stopped the ring a lap later and this case required the refusal.
 //   ring, udp, pinned and claimed are paced too, to PACE_WINDOW samples untaken, inside the loans the listener keeps
 //          in place (RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION): how many are read in place is then the code's doing,
 //          not the scheduler's.
@@ -711,7 +712,7 @@ static struct talker_report receive_until_reported(rmw_subscription_t* data,
 
 // What each case requires. The line printed after the checks is what the mutant sweep reads.
 static void check_case(enum scenario which, const struct tally* tally, const uint64_t* held_where,
-                       const struct talker_report* report, uint64_t want, uint64_t declines) {
+                       const struct talker_report* report, uint64_t want, uint64_t declines, uint64_t held_passed) {
     switch (which) {
     case RING:
         assert(want == tally->received && want == report->published);
@@ -749,13 +750,14 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
         assert(declines > 0);
         break;
     case HELD_PINNED:
-        // The control: with the held loans in ring slots, the ring must have refused the talker - which the case
-        // above requires never to happen. Paced like it, the talker is never more than FLOOD_WINDOW ahead, so these
-        // refusals are the pinned slots' alone. (Unpaced, its KEEP_ALL publishes also blocked and gave up; paced, the
-        // refused records went another way and every sample arrived - 39 refusals and 1618 of 1618 under load,
-        // 2026-10-21 - so a failed publish is no longer part of what a pinned ring looks like here.)
+        // The held loans are in ring slots, and the ring passes them: as held, every flood sample went and arrived and
+        // the ring never refused the talker - and the listener did pass held slots, or nothing here was held. Paced
+        // like the held case, the talker is never more than FLOOD_WINDOW ahead, so a refusal here would be a pinned
+        // slot's.
         assert(held_where[IN_RING] > 0);
-        assert(report->segment_full_dropped > 0);
+        assert(report->published > FLOOD_SAMPLES && report->published == tally->received && 0 == report->failed);
+        assert(0 == report->segment_full_dropped);
+        assert(held_passed > 0);
         break;
     }
     printf("%s: ok\n", scenario_names[which]);
@@ -838,9 +840,11 @@ static void run_two_process(enum scenario which) {
     assert(tally.where[ELSEWHERE] == sub_impl->loans_copied);
     tt_Context_lock(&context_impl->tickle_context);
     uint64_t declines = sub_impl->tickle_subscriber.accept_declines;
+    uint64_t held_passed = context_impl->tickle_context.segment_held_passed;
     tt_Context_unlock(&context_impl->tickle_context);
+    printf("%s: the listener passed %llu held ring slots\n", scenario_names[which], (unsigned long long)held_passed);
     printf("%s: the listener's queue declined %llu samples\n", scenario_names[which], (unsigned long long)declines);
-    check_case(which, &tally, held_where, &report, want, declines);
+    check_case(which, &tally, held_where, &report, want, declines, held_passed);
     if (held_case) {
         for (size_t i = 0; i < HELD_LOANS; i++) {
             assert(RMW_RET_OK == rmw_return_loaned_message_from_subscription(held, held_loans[i]));

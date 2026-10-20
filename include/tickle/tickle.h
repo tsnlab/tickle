@@ -1289,6 +1289,9 @@ struct tt_Context {
     uint64_t segment_claims_published;
     uint64_t segment_claims_copied;
     uint64_t segment_claims_abandoned;
+    // Ring indices the owner moved past because the writers passed them while their slot was held (a retained sample,
+    // a claim): DESIGN.md section 10, "Held slots".
+    uint64_t segment_held_passed;
     // drain_rx() passes ended because the own ring held a record after tt_RX_CLOCK_REFRESH datagrams of one drain (the
     // ring-turn rule: a socket that never empties cannot starve the ring). A drain that empties the socket sooner never
     // asks, so 0 is the common case; a build without the rule prints no such field.
