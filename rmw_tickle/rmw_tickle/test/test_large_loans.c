@@ -36,7 +36,6 @@
 #include <unistd.h>
 
 #include <sys/wait.h>
-#include <tickle/config.h>
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -153,6 +152,9 @@ struct endpoint_set {
     rmw_node_t* node;
 };
 
+// The next open_set()'s opts.net.segment_slot_bytes: 0, the default, unless a case sets it.
+static uint32_t next_slot_bytes;
+
 static void open_set(struct endpoint_set* set, const char* node_name) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     set->options = rmw_get_zero_initialized_init_options();
@@ -160,6 +162,8 @@ static void open_set(struct endpoint_set* set, const char* node_name) {
     set->options.enclave = rcutils_strdup("/", allocator);
     set->context = rmw_get_zero_initialized_context();
     assert(RMW_RET_OK == rmw_init(&set->options, &set->context));
+    // The context's core options, between rmw_init() and the node that creates the core context from them.
+    ((rmw_tickle_context_impl_t*)set->context.impl)->init_options.net.segment_slot_bytes = next_slot_bytes;
     set->node = rmw_create_node(&set->context, node_name, "/");
     assert(NULL != set->node);
 }
@@ -261,7 +265,7 @@ static void run(enum scenario which) {
     close(to_talker[0]);
     assert(0 == fcntl(to_listener[0], F_SETFL, O_NONBLOCK));
 
-    _tt_CONFIG.segment_slot_bytes = SMALL_SLOT_BYTES; // read when the listener builds its ring, after the fork
+    next_slot_bytes = SMALL_SLOT_BYTES; // read when the listener builds its ring, after the fork
     struct endpoint_set set;
     open_set(&set, "large_listener");
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)set.node->data)->context_impl;
@@ -320,7 +324,7 @@ static void run(enum scenario which) {
 
     assert(RMW_RET_OK == rmw_destroy_subscription(set.node, sub));
     close_set(&set);
-    _tt_CONFIG.segment_slot_bytes = 0;
+    next_slot_bytes = 0;
     close(to_listener[0]);
     close(to_talker[1]);
     assert(0 == unsetenv("RMW_TICKLE_LOANS"));

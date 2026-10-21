@@ -196,29 +196,30 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
 //   RMW_TICKLE_LARGE_FRAGMENTATION  auto | mtu | ip    how a writer puts a multi-datagram sample's units on the wire
 //   RMW_TICKLE_REASSEMBLY_CAP_OFF   1                  a reader advertises its ceiling uncapped (a forced arm's reader)
 // The log line is load-bearing: a rig arm is VOID unless it shows the treatment it asked for.
-static void configure_hybrid_transport(void) {
+static void configure_hybrid_transport(struct tt_NetOptions* net) {
 #if tt_HYBRID_TRANSPORT
     const char* mode = getenv("RMW_TICKLE_LARGE_FRAGMENTATION");
     if (mode != NULL && mode[0] != '\0') {
         if (strcmp(mode, "mtu") == 0) {
-            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+            net->large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
         } else if (strcmp(mode, "ip") == 0) {
-            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+            net->large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
         } else if (strcmp(mode, "auto") == 0) {
-            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
+            net->large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
         } else {
             RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_LARGE_FRAGMENTATION='%s' is not auto, mtu or ip; ignored",
                                    mode);
         }
     }
     const char* cap_off = getenv("RMW_TICKLE_REASSEMBLY_CAP_OFF");
-    _tt_CONFIG.reassembly_cap_off = (uint8_t)(cap_off != NULL && strcmp(cap_off, "1") == 0 ? 1 : 0);
+    net->reassembly_cap_off = (uint8_t)(cap_off != NULL && strcmp(cap_off, "1") == 0 ? 1 : 0);
     static const char* const names[] = {"auto", "auto", "mtu", "ip"};
-    RCUTILS_LOG_INFO_NAMED(
-        "rmw_tickle", "hybrid transport: large_fragmentation=%s reassembly_cap=%s",
-        names[_tt_CONFIG.large_fragmentation <= tt_LARGE_FRAGMENTATION_IP ? _tt_CONFIG.large_fragmentation
-                                                                          : tt_LARGE_FRAGMENTATION_AUTO],
-        _tt_CONFIG.reassembly_cap_off != 0 ? "off" : "on");
+    RCUTILS_LOG_INFO_NAMED("rmw_tickle", "hybrid transport: large_fragmentation=%s reassembly_cap=%s",
+                           names[net->large_fragmentation <= tt_LARGE_FRAGMENTATION_IP ? net->large_fragmentation
+                                                                                       : tt_LARGE_FRAGMENTATION_AUTO],
+                           net->reassembly_cap_off != 0 ? "off" : "on");
+#else
+    (void)net;
 #endif
 }
 
@@ -364,20 +365,22 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
 
     context->impl = (rmw_context_impl_t*)impl;
 
-    // _tt_CONFIG is one process-wide TickLE HAL config (include/tickle/config.h), not something
-    // rmw_init_options_t carries a slot for - a hardcoded subnet here would silently break every
+    // The core context's options (struct tt_InitOptions, tickle.h), this context's own. The broadcast address is not
+    // something rmw_init_options_t carries a slot for - a hardcoded subnet here would silently break every
     // ROS 2 graph not on that exact network. TICKLE_BROADCAST_ADDR lets a deployment override the
-    // HAL's own compiled-in default (see src/hal_linux.c / src/hal_freertos.c) the same way
+    // compiled-in default (_tt_CONTEXT_BROADCAST, config.h) the same way
     // examples/linux's drivers let `-b` do it for a CLI-driven process; unset, this leaves that
     // default untouched instead of guessing.
-    _tt_CONFIG.port = _tt_CONTEXT_PORT + (int)domain_id; // see the domain check at the top
+    struct tt_NetOptions* net = &impl->init_options.net;
+    tt_InitOptions_default(&impl->init_options);
+    net->port = (uint16_t)(_tt_CONTEXT_PORT + (int)domain_id); // see the domain check at the top
 
     char* broadcast_addr = getenv("TICKLE_BROADCAST_ADDR");
     if (broadcast_addr != NULL) {
-        _tt_CONFIG.broadcast = broadcast_addr;
+        net->broadcast = broadcast_addr;
     }
 
-    // Same reasoning as TICKLE_BROADCAST_ADDR just above, for _tt_CONFIG.context_id (config.h's own
+    // Same reasoning as TICKLE_BROADCAST_ADDR just above, for opts.net.context_id (tickle.h's own
     // doc comment on that field spells out exactly this scenario): tt_get_node_id()'s auto-detect
     // derives a node's id from the last octet of its own address on the broadcast subnet, which
     // silently collides whenever two rmw_tickle processes share one host/interface (e.g.
@@ -389,9 +392,9 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // rmw_tickle nodes on one host (e.g. rmw-perf.yml's own launch template).
     char* node_id = getenv("TICKLE_NODE_ID");
     if (node_id != NULL) {
-        _tt_CONFIG.context_id = atoi(node_id);
+        net->context_id = atoi(node_id);
     }
-    configure_hybrid_transport();
+    configure_hybrid_transport(net);
 
     configure_discovery(impl, &options->discovery_options);
     return RMW_RET_OK;
@@ -400,12 +403,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
 // ---- (g6, RMW_GAPS_PLAN.md) ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS. Our own implementation of the
 // behaviour rmw_cyclonedds shows (read and probed 2026-09-28): an unset range refuses node creation; SUBNET is the
 // links plus the static peers; SYSTEM_DEFAULT the links alone; LOCALHOST loopback plus the static peers, others
-// dropped; OFF nothing at all. _tt_CONFIG is one per process, so the last rmw_init's options are the ones every
-// context uses (rmw_cyclonedds refuses a second domain with different ones; a process here that mixes them gets the
-// last).
-
-#define PEER_TEXT_LENGTH 64
-static char peer_text[tt_MAX_LINK_COUNT][PEER_TEXT_LENGTH]; // what _tt_CONFIG.links[i].broadcast points at
+// dropped; OFF nothing at all. Each rmw context has its own options (rmw_tickle_context_impl_t.init_options), so two
+// contexts in one process may differ (rmw_cyclonedds refuses a second domain with different ones).
 
 // One static peer as core's peer link wants it: "a.b.c.d" or "a.b.c.d/nn". A hostname is looked up now, IPv4 only.
 static bool peer_as_ipv4(const char* peer, char* out, size_t size) {
@@ -415,7 +414,7 @@ static bool peer_as_ipv4(const char* peer, char* out, size_t size) {
         return false; // IPv6: TickLE is IPv4
     }
     if (NULL != slash) { // a subnet: its address must be literal
-        char address[PEER_TEXT_LENGTH];
+        char address[RMW_TICKLE_PEER_TEXT_LENGTH];
         size_t length = (size_t)(slash - peer);
         if (length == 0 || length >= sizeof(address)) {
             return false;
@@ -440,15 +439,16 @@ static bool peer_as_ipv4(const char* peer, char* out, size_t size) {
 }
 
 // The static peers as links 1.., after link 0 - the one the scalar addr/broadcast settings describe.
-static void configure_static_peers(const rmw_discovery_options_t* discovery) {
-    _tt_CONFIG.link_count = 0;
+static void configure_static_peers(rmw_tickle_context_impl_t* impl, const rmw_discovery_options_t* discovery) {
+    struct tt_NetOptions* net = &impl->init_options.net;
+    net->link_count = 0;
     if (0 == discovery->static_peers_count) {
         return; // no link table: core builds link 0 from the scalar settings, as always
     }
-    _tt_CONFIG.links[0].broadcast = _tt_CONFIG.broadcast;
-    _tt_CONFIG.links[0].addr = _tt_CONFIG.addr;
-    _tt_CONFIG.links[0].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
-    _tt_CONFIG.links[0].peer = false;
+    net->links[0].broadcast = net->broadcast;
+    net->links[0].addr = net->addr;
+    net->links[0].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
+    net->links[0].peer = false;
     uint8_t count = 1;
     for (size_t i = 0; i < discovery->static_peers_count; i++) {
         const char* peer = discovery->static_peers[i].peer_address;
@@ -457,18 +457,18 @@ static void configure_static_peers(const rmw_discovery_options_t* discovery) {
                                    peer, tt_MAX_LINK_COUNT - 1);
             continue;
         }
-        if (!peer_as_ipv4(peer, peer_text[count], sizeof(peer_text[count]))) {
+        if (!peer_as_ipv4(peer, impl->static_peer_text[count], sizeof(impl->static_peer_text[count]))) {
             RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                    "static peer %s ignored: not an IPv4 address, subnet or IPv4 host name", peer);
             continue;
         }
-        _tt_CONFIG.links[count].broadcast = peer_text[count];
-        _tt_CONFIG.links[count].addr = NULL;
-        _tt_CONFIG.links[count].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
-        _tt_CONFIG.links[count].peer = true;
+        net->links[count].broadcast = impl->static_peer_text[count];
+        net->links[count].addr = NULL;
+        net->links[count].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
+        net->links[count].peer = true;
         count++;
     }
-    _tt_CONFIG.link_count = count > 1 ? count : 0;
+    net->link_count = count > 1 ? count : 0;
 }
 
 static void ignore_static_peers(const rmw_discovery_options_t* discovery, const char* why) {
@@ -479,15 +479,16 @@ static void ignore_static_peers(const rmw_discovery_options_t* discovery, const 
 }
 
 static void configure_discovery(rmw_tickle_context_impl_t* impl, const rmw_discovery_options_t* discovery) {
+    struct tt_NetOptions* net = &impl->init_options.net;
     impl->discovery_range_unset = false;
-    _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_SUBNET;
-    _tt_CONFIG.link_count = 0;
+    net->discovery_range = tt_DISCOVERY_RANGE_SUBNET;
+    net->link_count = 0;
     switch (discovery->automatic_discovery_range) {
     case RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET:
         impl->discovery_range_unset = true; // rmw_create_node() refuses, as rmw_cyclonedds does (observed 2026-09-28)
         break;
     case RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET:
-        configure_static_peers(discovery);
+        configure_static_peers(impl, discovery);
         break;
     case RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT:
         ignore_static_peers(discovery, "SYSTEM_DEFAULT");
@@ -499,17 +500,17 @@ static void configure_discovery(rmw_tickle_context_impl_t* impl, const rmw_disco
                                    "overridden, as nothing may leave this host",
                                    getenv("TICKLE_BROADCAST_ADDR"));
         }
-        _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_LOCALHOST;
-        _tt_CONFIG.broadcast = "127.255.255.255";
+        net->discovery_range = tt_DISCOVERY_RANGE_LOCALHOST;
+        net->broadcast = "127.255.255.255";
         // Bound to loopback, unless a static peer must be able to reach this context's data socket.
-        _tt_CONFIG.addr = discovery->static_peers_count > 0 ? "0.0.0.0" : "127.0.0.1";
-        configure_static_peers(discovery);
+        net->addr = discovery->static_peers_count > 0 ? "0.0.0.0" : "127.0.0.1";
+        configure_static_peers(impl, discovery);
         break;
     case RMW_AUTOMATIC_DISCOVERY_RANGE_OFF:
         ignore_static_peers(discovery, "OFF");
-        _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_OFF;
-        _tt_CONFIG.broadcast = "127.255.255.255";
-        _tt_CONFIG.addr = "127.0.0.1";
+        net->discovery_range = tt_DISCOVERY_RANGE_OFF;
+        net->broadcast = "127.255.255.255";
+        net->addr = "127.0.0.1";
         RCUTILS_LOG_INFO_NAMED("rmw_tickle", "ROS_AUTOMATIC_DISCOVERY_RANGE=OFF: this process sends nothing and hears "
                                              "nothing; its own nodes still talk to each other");
         break;

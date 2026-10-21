@@ -235,6 +235,9 @@ void rmw_tickle_qos_resolve_request(const rmw_qos_profile_t* requested, const st
 // block", since 0 is "the default" there.
 uint64_t rmw_tickle_max_blocking_from_tt(const struct tt_QosProfile* actual);
 
+// One static peer as text ("a.b.c.d[/nn]"), as rmw_tickle_context_impl_t.static_peer_text holds it.
+#define RMW_TICKLE_PEER_TEXT_LENGTH 64
+
 // Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
 // declared in this order rather than the other way around.
@@ -382,6 +385,13 @@ struct rmw_tickle_context_impl_t {
     _Atomic uint64_t large_block_timeouts;
     // (g6) rmw_init was given RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET: rmw_create_node() refuses, as the vendors do.
     bool discovery_range_unset;
+    // This context's core options (struct tt_InitOptions), built by rmw_init() from the domain, the discovery options
+    // and the environment (TICKLE_BROADCAST_ADDR, TICKLE_NODE_ID, RMW_TICKLE_LARGE_FRAGMENTATION,
+    // RMW_TICKLE_REASSEMBLY_CAP_OFF), and handed to tt_Context_create_with() by the first rmw_create_node(). Per
+    // context: two rmw contexts in one process no longer share one process-wide _tt_CONFIG. static_peer_text holds
+    // what init_options.net.links[i].broadcast points at, for as long as the context lives.
+    struct tt_InitOptions init_options;
+    char static_peer_text[tt_MAX_LINK_COUNT][RMW_TICKLE_PEER_TEXT_LENGTH];
     atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;   // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;              // CLOCK_MONOTONIC timerfd: the lease, armed on release

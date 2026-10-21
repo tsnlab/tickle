@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <tickle/config.h>
+#include <tickle/tickle.h> // struct tt_NetOptions
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -27,6 +28,7 @@
 #include "rmw/init_options.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw_tickle_c/rmw_tickle.h" // rmw_tickle_context_impl_t.init_options
 
 static rmw_init_options_t options;
 static rmw_context_t context;
@@ -51,6 +53,11 @@ static void start(rmw_automatic_discovery_range_t range, const char* const* peer
     assert(RMW_RET_OK == rmw_init(&options, &context));
 }
 
+// The core options rmw_init() built for this context.
+static const struct tt_NetOptions* net(void) {
+    return &((rmw_tickle_context_impl_t*)context.impl)->init_options.net;
+}
+
 static void stop(void) {
     assert(RMW_RET_OK == rmw_shutdown(&context));
     assert(RMW_RET_OK == rmw_context_fini(&context));
@@ -62,29 +69,29 @@ int main(void) {
 
     // LOCALHOST with peers: loopback, the data socket open to the peers, two peer links (IPv6 skipped).
     start(RMW_AUTOMATIC_DISCOVERY_RANGE_LOCALHOST, peers, 3);
-    assert(tt_DISCOVERY_RANGE_LOCALHOST == _tt_CONFIG.discovery_range);
-    assert(0 == strcmp("127.255.255.255", _tt_CONFIG.broadcast) && 0 == strcmp("0.0.0.0", _tt_CONFIG.addr));
-    assert(3 == _tt_CONFIG.link_count && !_tt_CONFIG.links[0].peer);
-    assert(_tt_CONFIG.links[1].peer && 0 == strcmp("127.0.0.1", _tt_CONFIG.links[1].broadcast));
-    assert(_tt_CONFIG.links[2].peer && 0 == strcmp("10.9.9.0/24", _tt_CONFIG.links[2].broadcast));
+    assert(tt_DISCOVERY_RANGE_LOCALHOST == net()->discovery_range);
+    assert(0 == strcmp("127.255.255.255", net()->broadcast) && 0 == strcmp("0.0.0.0", net()->addr));
+    assert(3 == net()->link_count && !net()->links[0].peer);
+    assert(net()->links[1].peer && 0 == strcmp("127.0.0.1", net()->links[1].broadcast));
+    assert(net()->links[2].peer && 0 == strcmp("10.9.9.0/24", net()->links[2].broadcast));
     stop();
 
     // LOCALHOST alone: bound to loopback.
     start(RMW_AUTOMATIC_DISCOVERY_RANGE_LOCALHOST, NULL, 0);
-    assert(0 == strcmp("127.0.0.1", _tt_CONFIG.addr) && 0 == _tt_CONFIG.link_count);
+    assert(0 == strcmp("127.0.0.1", net()->addr) && 0 == net()->link_count);
     stop();
 
     // OFF and SYSTEM_DEFAULT: the peers are ignored.
     start(RMW_AUTOMATIC_DISCOVERY_RANGE_OFF, peers, 3);
-    assert(tt_DISCOVERY_RANGE_OFF == _tt_CONFIG.discovery_range && 0 == _tt_CONFIG.link_count);
+    assert(tt_DISCOVERY_RANGE_OFF == net()->discovery_range && 0 == net()->link_count);
     stop();
     start(RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT, peers, 3);
-    assert(tt_DISCOVERY_RANGE_SUBNET == _tt_CONFIG.discovery_range && 0 == _tt_CONFIG.link_count);
+    assert(tt_DISCOVERY_RANGE_SUBNET == net()->discovery_range && 0 == net()->link_count);
     stop();
 
     // SUBNET with peers: the links, plus the peers.
     start(RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET, peers, 3);
-    assert(tt_DISCOVERY_RANGE_SUBNET == _tt_CONFIG.discovery_range && 3 == _tt_CONFIG.link_count);
+    assert(tt_DISCOVERY_RANGE_SUBNET == net()->discovery_range && 3 == net()->link_count);
     stop();
 
     // NOT_SET: rmw_init passes, rmw_create_node refuses - what the vendors do.

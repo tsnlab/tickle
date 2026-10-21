@@ -508,12 +508,11 @@ static void* poll_thread_main(void* arg) {
 // found (zeroed, from rmw_init()'s own allocation), safe to retry on a later rmw_create_node()
 // call.
 static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
-    // tt_Context_create() reads its setup (node id, bind address, broadcast address) entirely from
-    // the process-wide _tt_CONFIG (rmw_init()'s own TICKLE_BROADCAST_ADDR handling, or its
-    // compiled-in defaults) - see tickle.h's "Lifetime / ownership" note.
-    tt_ret_t ret = tt_Context_create(&context_impl->tickle_context);
+    // The context's own options (node id, bind address, broadcast address, links), as rmw_init() built them from the
+    // domain, the discovery options and the environment - see rmw_tickle_context_impl_t.init_options.
+    tt_ret_t ret = tt_Context_create_with(&context_impl->tickle_context, &context_impl->init_options);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Context_create() failed");
+        RMW_SET_ERROR_MSG("tt_Context_create_with() failed");
         return RMW_RET_ERROR;
     }
 

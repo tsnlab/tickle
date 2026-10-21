@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <tickle/config.h> // _tt_CONFIG, _tt_CONTEXT_PORT
+#include <tickle/config.h> // _tt_CONTEXT_PORT
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -41,7 +41,7 @@ static rmw_ret_t init_with_domain(size_t domain_id, int* port) {
     rmw_context_t context = rmw_get_zero_initialized_context();
     rmw_ret_t ret = rmw_init(&options, &context);
     if (RMW_RET_OK == ret) {
-        *port = _tt_CONFIG.port;
+        *port = ((rmw_tickle_context_impl_t*)context.impl)->init_options.net.port;
         assert(RMW_RET_OK == rmw_shutdown(&context));
         assert(RMW_RET_OK == rmw_context_fini(&context));
     }
