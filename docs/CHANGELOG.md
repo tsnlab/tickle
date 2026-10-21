@@ -52,6 +52,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   count, back-off, stuck-gap warning and the idle HEARTBEAT's period and floor per context (`struct tt_ReliableOptions`;
   each zero is its config.h constant). `tt_reliable_retry_interval_configured()` takes the context. Default wire bytes
   and timing unchanged.
+- **Poll and socket settings per context** (`tt_InitOptions.poll` and `.socket`, bundle 6): the receive loop's clock
+  refresh, lock chunk, busy slice and I/O interleave; the socket buffer size, the io_uring hint (AUTO or URING), the
+  drain's sizes and hold-off, and the six Linux HAL switches that were environment variables only (`TT_UDP_OFFLOAD`,
+  `TT_UDP_CSUM0`, `TT_RX_DIRECT`, `TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`, `TT_RX_NONBLOCK`). A switch's variable, when
+  set, still decides over the option. Defaults unchanged; the receive loop reads its two per-datagram bounds once per
+  drain.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,

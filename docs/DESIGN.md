@@ -635,7 +635,7 @@ context's `tt_InitOptions.reliable` (section 2).
 | `tt_HYBRID_SCALE_AT` | 1.9x | | `R p` change that rescales `n_fail` |
 | `tt_HYBRID_PATH_CLEAN_NS` | 60 s | | MTU-only after a failed path (2 tau) |
 | `tt_HYBRID_WINDOW_FRAMES` | 2^20 | | loss window halving |
-| `tt_RX_DRAIN_BYTES` / `_MAX` | 4,352 KiB / 4x | | drain buffers |
+| `tt_RX_DRAIN_BYTES` / `_MAX` | 4,352 KiB / 4x | | drain buffers; per context `socket.drain_*`, with `_BUFFERS`, `_HOLDOFF_NS` |
 | `tt_THREAD_SAFE` | 1 | 1 | locks; 0 for a single-task MCU |
 | `tt_CONTEXT_TX_INTERVAL` | 1 ms | | batch flush tick |
 | `tt_CONTEXT_UPDATE_INTERVAL` | 1 s | | discovery summary interval |
@@ -681,18 +681,18 @@ context's `tt_InitOptions.reliable` (section 2).
 | `tt_SERVER_CACHE_ENTRY_LENGTH`, `tt_CLIENT_CACHE_LENGTH` | 2 x buffer | 8 | inline storage (rmw attaches its own) |
 | `tt_MAX_SCHEDULER_LENGTH` | 128 | 512 | scheduler entries |
 | `tt_SCHED_INBOX_LENGTH` | 32 | | cross-thread timer inbox |
-| `tt_SCHEDULER_IO_INTERLEAVE` | 8 | | due entries before an I/O check |
-| `tt_RECEIVE_TIMEOUT` | 100 us | | poll slice some callers pass |
+| `tt_SCHEDULER_IO_INTERLEAVE` | 8 | | due entries before an I/O check; per context `poll.scheduler_io_interleave` |
+| `tt_RECEIVE_TIMEOUT` | 100 us | | busy-poll slice, idle-socket recheck; per context `poll.receive_timeout` |
 | `tt_RX_BATCH` | 32 (1 if buffer > control) | | datagrams per `recvmmsg()` |
-| `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read |
-| `tt_RX_LOCK_CHUNK` | 8 | | datagrams per lock hold, bounds a publisher's wait |
+| `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read; per context `poll.rx_clock_refresh` |
+| `tt_RX_LOCK_CHUNK` | 8 | | datagrams per lock hold, bounds a publisher's wait; per context `poll.rx_lock_chunk` |
 | `TT_RX_TIMER_LONG_NS` | 10 ms | | longer waits end on the `timerfd`; 0 = never |
 | `TT_RX_TIMER_LONG_EXACT` | 1 | | re-arm whenever the deadline differs (0 = only earlier) |
 | `TT_RX_TIMER_EDGE` | 1 | | edge-triggered `timerfd`, no `read()` |
 | `TT_RX_TIMER_SLACK_NS` | 1 | | polling thread timer slack; 0 = leave it |
-| `tt_HAL_RX_HINT` | AUTO (0) | | io_uring receive hint |
+| `tt_HAL_RX_HINT` | AUTO (0) | | io_uring receive hint; AUTO or URING per context `socket.rx_hint`, READ compiled |
 | `tt_HAL_FREERTOS_NETCONN` | 1 | | FreeRTOS netconn receive hint; 0 = BSD sockets |
-| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | 4 MiB | SO_SNDBUF/SO_RCVBUF request |
+| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | 4 MiB | SO_SNDBUF/SO_RCVBUF request; per context `socket.buffer_size` |
 | `tt_SEGMENT_ENABLED` | 1 (0 FreeRTOS) | 1 | shared-memory transport (FreeRTOS: between contexts of one image) |
 | `tt_SEGMENT_BYTES` | 768 KiB (24 KiB FreeRTOS) | | ring budget: 512 (16) slots of 1472 B |
 | `tt_SEGMENT_READER_WAITS` | 1 (0 FreeRTOS) | | reader may spin for writers instead of sleeping |
@@ -716,8 +716,10 @@ context's `tt_InitOptions.reliable` (section 2).
 | `_tt_CONTEXT_PORT` | 8282 | + domain | well-known port |
 | `_tt_CONTEXT_BROADCAST` | 255.255.255.255 | | set the link's directed broadcast |
 
-Linux HAL environment switches (A/B controls, on unless `0`): `TT_UDP_OFFLOAD`, `TT_UDP_CSUM0`, `TT_RX_NONBLOCK`,
-`TT_RX_DIRECT`, `TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`.
+Linux HAL switches, on by default: `TT_UDP_OFFLOAD`, `TT_UDP_CSUM0`, `TT_RX_NONBLOCK`, `TT_RX_DIRECT`,
+`TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`. Each is a context option (`tt_InitOptions.socket`, `tt_SWITCH_ON` / `_OFF`) and
+an environment variable (the A/B control): the variable, when set, decides (`0` off, anything else on); unset, the
+option does.
 
 ## 16. Where the older documents went
 
