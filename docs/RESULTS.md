@@ -30,7 +30,7 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean from creation, block wait, Bench 64 B, ms | **0.250** | 0.379 | 0.336 | 48c |
+| RTT mean from creation, block wait, Bench 64 B, ms | **0.245** | 0.383 | 0.335 | 48c |
 | delivered msg/s, RELIABLE KEEP_ALL, Array1k, 5% loss | **74,129** | does not run | 1,808 | 73 |
 
 **rmw, same host** ([rmw layer, same host](#rmw-layer-same-host)): WIN 52, DRAW 0, LOSE 0 of 52.
@@ -66,7 +66,14 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 - **L4, 21 letters:** delivered % where everyone delivered 100% (13); against FastDDS as shipped, CPU per MB at I1,
   I1 best effort, I4 RELIABLE and I4s (8).
 
-**Behind inside a lead (not scored):** rmw_tickle's kernel wake is ~6 us slower than the vendors' blocking `recvmsg`.
+**Behind inside a lead (not scored):** on the pong Pi, rmw_tickle's receive call returns ~4-5 us after the vendors'
+(`KH`, Bench BEST_EFFORT, 3 reps x 101 round trips an rmw, wire control PASS: tap -> receive return p50 18.0 against
+CycloneDDS 12.8 and FastDDS 13.8 us, SLOWER against both by the range rule; RELIABLE NOT READ, wire control failed). Its
+wait returns at 12.9 us (rep p50s 12.5-13.3), level with the vendors' blocking receive; the gap lies between that and
+its receive call's return. Measured on the `TT_HAL_LIBC_CALLS` build (the shipped build's raw syscalls are invisible to
+`sysstamp`, which adds 8-10 us to its round trip). The whole tap -> callback is still shorter: p50 23.5-24.0 against
+34.0-37.7 / 48.4-50.4 us. Corrected 2026-10-21: this line read "kernel wake ~6 us slower" (September, 18.2 against 12.6
+us), not split further.
 zenoh-pico (reference) has the better figure in rows 5-7, 18-19, 24 and 35. Hybrid AUTO's p99 is above forced MTU at
 0.01% and 0.1% loss ([Hybrid](#hybrid-transport-large-samples-rig)).
 
@@ -306,7 +313,7 @@ every cell is a WIN against FastDDS):
 
 | wait | Bench 64 B BEST_EFFORT | Bench RELIABLE | Array1k BEST_EFFORT | Array1k RELIABLE | src |
 |---|---|---|---|---|---|
-| block | 48c **0.250** / 0.379 / 0.336 | 49c **0.251** / 0.395 / 0.327 | 50c **0.270** / 0.402 / 0.351 | 51c **0.276** / 0.419 / 0.335 | Wc |
+| block | 48c **0.245** / 0.383 / 0.335 | 49c **0.246** / 0.398 / 0.325 | 50c **0.266** / 0.401 / 0.350 | 51c **0.268** / 0.411 / 0.339 | WH |
 | busy poll | 52c **0.299** / 0.377 / 0.331 | 53c **0.301** / 0.389 / 0.325 | 54c **0.320** / 0.398 / 0.350 | 55c **0.320** / 0.413 / 0.334 | Jc |
 | poll 50 us | 56c **0.348** / 0.413 / 0.370 | 57c **0.353** / 0.421 / 0.368 | 58c **0.373** / 0.427 / 0.388 | 59c 0.376 / 0.438 / 0.377 DRAW | Jc |
 | poll 100 us | 60c **0.370** / 0.431 / 0.389 | 61c 0.377 / 0.444 / 0.378 DRAW | 62c **0.394** / 0.452 / 0.410 | 63c 0.401 / 0.465 / 0.396 LOSE | Jc |
@@ -327,6 +334,12 @@ every cell is a WIN against FastDDS):
 - **Row 63c LOSE:** the cause is in [Every LOSE](#every-lose).
 - **VOID(loss):** none of 494 reps; 20 cells CONTROL PASS. The `18f16b85` run lost 14 reps, mostly rmw_tickle's reply to
   seq 1 sent before its publisher matched; `ping_node` warms up first since `d0650110`.
+- **Re-measured 2026-10-21:** 48c-51c come from `430ae86d` (`WH`, 3 reps x 100 round trips, rotated order, CONTROL
+  PASS in all 4 cells, WIN against both unchanged). rmw_tickle against its own `Wc` (0.250 / 0.251 / 0.270 / 0.276):
+  4-9 us lower, rep ranges disjoint in 48c and 51c, overlapping in 49c and 50c; the vendors moved -8 to +4 us. Of
+  the 63 production commits between the builds, the one aimed at this path is the executor hold-over (`58bd6b1a`: no
+  `timerfd_settime()` between the datagram and its callback). Two sessions, not an A/B, so not attributed: the PC had
+  not resolved it and the harness expected "within noise". (`Wd`, before the timer slack, read 0.300-0.322.)
 - **Re-read 2026-10-18:** 48c-67c come from `29826912` (7 poll reps, as `18f16b85`). The 1 ns polling-thread timer
   slack (`119d14bd`) cut block wait (48c 0.302 -> 0.250 ms). 59c, 61c WIN -> DRAW, 63c DRAW -> LOSE, 64c DRAW -> WIN;
   the 3-rep `d0650110` run (`Wd`/`Jd`) had read 59c, 61c and 63c the same.
@@ -419,6 +432,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | W | rmw block wait | `934f90de` | 2026-09-30 | `results/rmw_4way_block_934f90de_2026-09-30.txt` |
 | Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `29826912` | 2026-10-18 | `creation_rtt_rmw{W,J}_29826912_20261018-111338.*` |
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
+| WH, KH | `rmw_holdover_rig.sh` (WH: `rmw_crosshost_creation.py`; KH: `rmw_pcap_split.py`, capture + `sysstamp`) | `430ae86d` | 2026-10-21 | `holdover_rmw{W,K}_430ae86d_20261021-185529.*` (`.creation.txt`, `.split.txt`) |
 | K, Ke | `rmw_keepall_rig.sh` (Ke: equal bounds) | `ae724688`, `29dff630` | 2026-10-06, -08 | `rmw_keepall_rig_O2_20261006-123017.txt`, `rmw_keepall_equal_main_29dff630_20261008-134901.*` |
 | Ctl | perf_test ping-pong | `4fca013b` | 2026-10-17 | `creation_latency_ctl_20261017-094944.*` |
 | SF | `fair_samehost_remeasure.sh`, `fair_samehost_summary.py` | `e521bbba` | 2026-10-09 | `fair_samehost_e521bbba_20261009-033254.*` |
