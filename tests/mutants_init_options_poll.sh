@@ -31,7 +31,8 @@ run() {
         cat "$TMP/build.log" >&2
         return 2
     }
-    (cd "$ROOT/platform/linux" && "$bin" > "$TMP/run.log" 2>&1)
+    # A mutant may loop (a zero lock chunk drains nothing, forever): 60 s is far past the test's own second.
+    (cd "$ROOT/platform/linux" && timeout 60 "$bin" > "$TMP/run.log" 2>&1)
 }
 
 failed=0
@@ -56,6 +57,8 @@ EOF
     run "$TMP/mutant_tickle.c" || status=$?
     if [ "$status" = 1 ]; then
         printf 'PASS  killed    %s\n' "$name"
+    elif [ "$status" = 124 ]; then
+        printf 'PASS  killed    %s (the test hung: timeout)\n' "$name"
     else
         printf 'FAIL  survived  %s (exit %s)\n' "$name" "$status"
         failed=1
@@ -73,18 +76,19 @@ check '"poll.receive_timeout"'
 check '"poll.scheduler_io_interleave"'
 
 replace "read: drain_rx() ignores rx_clock_refresh" \
-    "const uint32_t refresh = poll_rx_clock_refresh(node);" "const uint32_t refresh = tt_RX_CLOCK_REFRESH;"
+    "const uint32_t refresh = node->opts.poll.rx_clock_refresh;" "const uint32_t refresh = tt_RX_CLOCK_REFRESH;"
 replace "read: drain_rx() ignores rx_lock_chunk" \
-    "const uint32_t chunk = poll_rx_lock_chunk(node);
+    "const uint32_t chunk = node->opts.poll.rx_lock_chunk;
     if (len >= 0) {" "const uint32_t chunk = tt_RX_LOCK_CHUNK;
     if (len >= 0) {"
 replace "read: node_poll() ignores scheduler_io_interleave" \
-    "interleave = poll_scheduler_io_interleave(node);" "interleave = tt_SCHEDULER_IO_INTERLEAVE;"
+    "consecutive_scheduler_runs < node->opts.poll.scheduler_io_interleave" \
+    "consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE"
 replace "read: node_poll() ignores receive_timeout" \
-    "busy_slice = poll_receive_timeout(node);" "busy_slice = tt_RECEIVE_TIMEOUT;"
-replace "read: a context built by hand reads 0, not the default" \
-    "return node->opts.poll.rx_clock_refresh != 0 ? node->opts.poll.rx_clock_refresh : (uint32_t)tt_RX_CLOCK_REFRESH;" \
-    "return node->opts.poll.rx_clock_refresh;"
+    "time - poll_start >= node->opts.poll.receive_timeout" "time - poll_start >= tt_RECEIVE_TIMEOUT"
+replace "init: a context built by hand keeps a zero poll group" \
+    "    resolve_poll_options(&node->opts.poll);
+    tt_lock_init" "    tt_lock_init"
 replace "resolve: a zero rx_lock_chunk is not the default" \
     "poll->rx_lock_chunk = tt_RX_LOCK_CHUNK;" "poll->rx_lock_chunk = 1;"
 
