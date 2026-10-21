@@ -403,7 +403,7 @@ int32_t tt_link_mtu(uint32_t addr) {
 // where a burst of full-size samples overflows the socket and is lost below TickLE, invisibly.
 // Plan's review: name the sysctl, because nothing else will tell the user it is the limit.
 #define tt_RCVBUF_WARN_DATAGRAMS 16
-static void report_receive_buffer(int sock, const char* which) {
+static void report_receive_buffer(int sock, const char* which, int asked) {
     int granted = 0;
     socklen_t length = sizeof(granted);
     // NOLINTNEXTLINE(misc-include-cleaner) - same as the setsockopt() calls below
@@ -413,9 +413,9 @@ static void report_receive_buffer(int sock, const char* which) {
     if ((long)granted < (long)tt_RCVBUF_WARN_DATAGRAMS * tt_MAX_BUFFER_LENGTH) {
         TT_LOG_WARNING("%s socket receive buffer is %d bytes (asked %d) - fewer than %d datagrams of %d bytes; raise "
                        "net.core.rmem_max to let it grow",
-                       which, granted, (int)tt_SOCKET_BUFFER_SIZE, tt_RCVBUF_WARN_DATAGRAMS, tt_MAX_BUFFER_LENGTH);
+                       which, granted, asked, tt_RCVBUF_WARN_DATAGRAMS, tt_MAX_BUFFER_LENGTH);
     } else {
-        TT_LOG_DEBUG("%s socket receive buffer is %d bytes (asked %d)", which, granted, (int)tt_SOCKET_BUFFER_SIZE);
+        TT_LOG_DEBUG("%s socket receive buffer is %d bytes (asked %d)", which, granted, asked);
     }
 }
 
@@ -665,6 +665,44 @@ void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port)
 }
 #endif
 
+// ---- The context's socket options (struct tt_SocketOptions, tickle.h; tt_InitOptions bundle 6)
+//
+// Read when tt_bind() sets the sockets up. A switch's environment variable, when set, decides over the option: "0" off,
+// anything else on - as it always did, so the A/B controls stay a switch of the environment over one binary. Unset, the
+// option decides; 0 (tt_SWITCH_DEFAULT) is on, as every one of them is by default. A context built by hand (opts 0)
+// reads the defaults.
+static bool socket_switch(const char* env, uint8_t option) {
+    const char* setting = getenv(env);
+    if (setting != NULL) {
+        return strcmp(setting, "0") != 0;
+    }
+    return option != tt_SWITCH_OFF;
+}
+
+static int socket_buffer_size(const struct tt_Context* node) {
+    return node->opts.socket.buffer_size != 0 ? (int)node->opts.socket.buffer_size : (int)tt_SOCKET_BUFFER_SIZE;
+}
+
+#if tt_RX_DRAIN
+// The drain's sizes and hold-off (opts.socket.drain_*), read when a drain is set up or cut short, never per datagram.
+static uint32_t drain_bytes(const struct tt_Context* node) {
+    return node->opts.socket.drain_bytes != 0 ? node->opts.socket.drain_bytes : (uint32_t)tt_RX_DRAIN_BYTES;
+}
+
+static uint32_t drain_buffers(const struct tt_Context* node) {
+    return node->opts.socket.drain_buffers != 0 ? node->opts.socket.drain_buffers : (uint32_t)tt_RX_DRAIN_BUFFERS;
+}
+
+static uint32_t drain_bytes_max(const struct tt_Context* node) {
+    return node->opts.socket.drain_bytes_max != 0 ? node->opts.socket.drain_bytes_max : (uint32_t)tt_RX_DRAIN_BYTES_MAX;
+}
+
+static uint64_t drain_holdoff_ns(const struct tt_Context* node) {
+    return node->opts.socket.drain_holdoff_ns != 0 ? node->opts.socket.drain_holdoff_ns
+                                                   : (uint64_t)tt_RX_DRAIN_HOLDOFF_NS;
+}
+#endif
+
 #if tt_HAL_IO_URING
 static bool uring_setup(struct tt_Context* node);
 static void uring_close(struct tt_Context* node);
@@ -749,10 +787,9 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.epoll_fd_plus1 = epoll_fd + 1;
-    // The wait's deadline timer (rx_wait_lazy()). Without it, or with TT_RX_LAZY_TIMER=0 (the A/B control), each wait
-    // takes its timeout as before.
-    const char* lazy = getenv("TT_RX_LAZY_TIMER");
-    if (lazy != NULL && strcmp(lazy, "0") == 0) {
+    // The wait's deadline timer (rx_wait_lazy()). Without it - opts.socket.rx_lazy_timer off, or TT_RX_LAZY_TIMER=0
+    // (the A/B control) - each wait takes its timeout as before.
+    if (!socket_switch("TT_RX_LAZY_TIMER", node->opts.socket.rx_lazy_timer)) {
         return;
     }
     int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC); // tt_get_ns()'s clock
@@ -764,9 +801,9 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.timer_fd_plus1 = timer + 1;
-    // The timer only after a wait that ended for a datagram (rx_wait_epoll()); TT_RX_LAZY_ADAPT=0: after every wait.
-    const char* adapt = getenv("TT_RX_LAZY_ADAPT");
-    node->hal.timer_adapt = adapt == NULL || strcmp(adapt, "0") != 0;
+    // The timer only after a wait that ended for a datagram (rx_wait_epoll()); opts.socket.rx_lazy_adapt off, or
+    // TT_RX_LAZY_ADAPT=0: after every wait.
+    node->hal.timer_adapt = socket_switch("TT_RX_LAZY_ADAPT", node->opts.socket.rx_lazy_adapt);
 #else
     (void)node;
 #endif
@@ -797,9 +834,9 @@ static void wait_set_setup(struct tt_Context* node) {
 // the counters' writes included, so its send and receive paths are the ones it had before offload existed - gate v2 on
 // the rig (2026-10-12) read the always-compiled version +65 instructions a round trip at reliable_latency p1.
 #if TT_HAL_UDP_GSO || TT_HAL_UDP_GRO
-static bool udp_offload_allowed(void) {
-    const char* setting = getenv("TT_UDP_OFFLOAD");
-    return setting == NULL || strcmp(setting, "0") != 0;
+// opts.socket.udp_offload, unless TT_UDP_OFFLOAD is set.
+static bool udp_offload_allowed(const struct tt_Context* node) {
+    return socket_switch("TT_UDP_OFFLOAD", node->opts.socket.udp_offload);
 }
 #endif
 
@@ -811,7 +848,7 @@ static bool udp_offload_allowed(void) {
 // which IP would then fragment. getsockopt(UDP_SEGMENT) exists from the same release, so it is the check.
 static void gso_setup(struct tt_Context* node) {
     node->hal.gso_on = false;
-    if (!udp_offload_allowed()) {
+    if (!udp_offload_allowed(node)) {
         return;
     }
     int size = 0;
@@ -881,7 +918,7 @@ static void gro_setup(struct tt_Context* node) {
     node->hal.gro_next = 0;
     node->hal.gro_end = 0;
     node->hal.gro_base = NULL;
-    if (!udp_offload_allowed()) {
+    if (!udp_offload_allowed(node)) {
         return;
     }
     if (!gro_option(node, 1)) {
@@ -1099,11 +1136,10 @@ static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_
 //
 // Sends were blocking (flags 0) where the caller wants that: tt_send(), tt_send_to(), tt_send_iov() and
 // tt_send_batch(). They keep it: a send the full buffer refuses waits for room (POLLOUT, the same threshold the
-// writable watch uses) and is made again, as the kernel would have waited inside the call. TT_RX_NONBLOCK=0 in the
-// environment leaves both sockets blocking (the A/B control).
+// writable watch uses) and is made again, as the kernel would have waited inside the call. opts.socket.rx_nonblock off,
+// or TT_RX_NONBLOCK=0 in the environment (the A/B control), leaves both sockets blocking.
 static void sockets_nonblocking(struct tt_Context* node) {
-    const char* nonblock = getenv("TT_RX_NONBLOCK");
-    node->hal.nonblocking = nonblock == NULL || strcmp(nonblock, "0") != 0;
+    node->hal.nonblocking = socket_switch("TT_RX_NONBLOCK", node->opts.socket.rx_nonblock);
     if (!node->hal.nonblocking) {
         return;
     }
@@ -1216,7 +1252,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.drain_rearm = 0;
     node->hal.drain_returned = 0;
     node->hal.drain_rearms = 0;
-    node->hal.drain_budget = tt_RX_DRAIN_BYTES;
+    node->hal.drain_budget = drain_bytes(node); // opts.socket.drain_bytes
     node->hal.drain_overran = false;
     node->hal.drain_grows = 0;
 #if TT_HAL_UDP_GRO
@@ -1287,7 +1323,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     // Best-effort: the kernel clamps this to net.core.[rw]mem_max for an unprivileged process,
     // so a failure or a smaller-than-requested result here isn't fatal, just less headroom
     // against bursty drops.
-    int buffer_size = tt_SOCKET_BUFFER_SIZE;
+    int buffer_size = socket_buffer_size(node); // opts.socket.buffer_size
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_SNDBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set socket send buffer size: %s", strerror(errno));
@@ -1296,7 +1332,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set socket receive buffer size: %s", strerror(errno));
     }
-    report_receive_buffer(node->hal.sock, "Well-known");
+    report_receive_buffer(node->hal.sock, "Well-known", buffer_size);
 
     // The well-known socket always binds the wildcard, never opts.net.addr. Measured on Linux:
     // a socket bound to a unicast address receives no broadcasts at all, directed or limited - so
@@ -1341,7 +1377,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_IO_ERROR;
     }
 
-    buffer_size = tt_SOCKET_BUFFER_SIZE;
+    buffer_size = socket_buffer_size(node);
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_SNDBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set data socket send buffer size: %s", strerror(errno));
@@ -1350,7 +1386,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set data socket receive buffer size: %s", strerror(errno));
     }
-    report_receive_buffer(node->hal.data_sock, "Data");
+    report_receive_buffer(node->hal.data_sock, "Data", buffer_size);
 
     // This one does honour opts.net.addr. Left at 0.0.0.0 it behaves as before; set to a local
     // address it scopes this node's sends to the link that owns that address, which is the
@@ -1382,10 +1418,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     sockets_nonblocking(node);
     wait_set_setup(node); // without it tt_receive() builds a ppoll() set per call, as it always did
 #if TT_HAL_RX_DIRECT
-    {
-        const char* direct = getenv("TT_RX_DIRECT");
-        node->large.direct_allowed = direct == NULL || strcmp(direct, "0") != 0;
-    }
+    node->large.direct_allowed = socket_switch("TT_RX_DIRECT", node->opts.socket.rx_direct);
 #endif
 
 #if TT_HAL_UDP_GRO
@@ -1399,7 +1432,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #endif
 
 #if tt_HAL_IO_URING
-    if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
+    if (!uring_setup(node) && node->opts.socket.rx_hint == tt_SOCKET_RX_HINT_URING) {
         tt_close(node); // the reason was logged by uring_refused()
         return tt_RET_UNSUPPORTED;
     }
@@ -1750,8 +1783,7 @@ static bool gso_refused(struct tt_Context* node, int err) {
 #if TT_HAL_UDP_CSUM0
 static void csum0_setup(struct tt_Context* node) {
     node->hal.csum0 = 0;
-    const char* setting = getenv("TT_UDP_CSUM0");
-    if (setting != NULL && strcmp(setting, "0") == 0) {
+    if (!socket_switch("TT_UDP_CSUM0", node->opts.socket.udp_csum0)) {
         return; // every datagram keeps its checksum
     }
     int enable = 1;
@@ -2695,7 +2727,7 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
             // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
             if ((out->flags & MSG_TRUNC) != 0 || written < DRAIN_HEADER || out->payloadlen > written - DRAIN_HEADER) {
                 hal->drain_truncated++;
-                hal->drain_holdoff_until = tt_get_ns() + tt_RX_DRAIN_HOLDOFF_NS;
+                hal->drain_holdoff_until = tt_get_ns() + drain_holdoff_ns(node);
                 drain_give_back(hal, bid);
                 drain_stop(node); // and the retry this datagram's sender will make is read from the socket, whole
                 continue;
@@ -2745,8 +2777,8 @@ static uint32_t drain_size_for(const struct tt_hal* hal, uint32_t datagram_bytes
 // stopped instead, to be set up again once what it took is handed out.
 static bool drain_running_serves(struct tt_Context* node, uint32_t datagram_bytes) {
     struct tt_hal* hal = &node->hal;
-    const bool grows = hal->drain_overran && drain_held(node) == 0 && hal->drain_count < tt_RX_DRAIN_BUFFERS &&
-                       hal->drain_budget < tt_RX_DRAIN_BYTES_MAX;
+    const bool grows = hal->drain_overran && drain_held(node) == 0 && hal->drain_count < drain_buffers(node) &&
+                       hal->drain_budget < drain_bytes_max(node);
     if (datagram_bytes == 0 || (drain_size_for(hal, datagram_bytes) <= hal->drain_size && !grows)) {
         return true;
     }
@@ -2770,11 +2802,11 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         }
         drain_release(hal);
     }
-    if (hal->drain_fd >= 0 && hal->drain_overran && drain_held(node) == 0 && hal->drain_count < tt_RX_DRAIN_BUFFERS &&
-        hal->drain_budget < tt_RX_DRAIN_BYTES_MAX) {
-        // The last drain overran: twice the buffers (tt_RX_DRAIN_BYTES_MAX, hal_linux.h).
-        hal->drain_budget =
-            hal->drain_budget <= tt_RX_DRAIN_BYTES_MAX / 2U ? hal->drain_budget * 2U : tt_RX_DRAIN_BYTES_MAX;
+    const uint32_t bytes_max = drain_bytes_max(node);
+    if (hal->drain_fd >= 0 && hal->drain_overran && drain_held(node) == 0 && hal->drain_count < drain_buffers(node) &&
+        hal->drain_budget < bytes_max) {
+        // The last drain overran: twice the buffers, up to opts.socket.drain_bytes_max (tt_RX_DRAIN_BYTES_MAX).
+        hal->drain_budget = hal->drain_budget <= bytes_max / 2U ? hal->drain_budget * 2U : bytes_max;
         hal->drain_grows++;
         TT_LOG_INFO("Receive drain: its %u buffers of %u bytes overran - %u KB of them from now on",
                     (unsigned)hal->drain_count, (unsigned)hal->drain_size, (unsigned)(hal->drain_budget / 1024U));
@@ -2782,7 +2814,7 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     }
     hal->drain_overran = false;
     if (hal->drain_fd < 0) {
-        uint32_t count = tt_RX_DRAIN_BUFFERS;
+        uint32_t count = drain_buffers(node);
         while (count > 1U && (uint64_t)count * size > hal->drain_budget) {
             count /= 2U;
         }
@@ -3770,12 +3802,16 @@ static void uring_close(struct tt_Context* node) {
 // Refused is not an error: Docker's default seccomp profile, Kubernetes' RuntimeDefault and
 // kernel.io_uring_disabled all refuse it, and the context works without it - every check then reads the socket, as
 // it did before. Said once per process, so the reason a deployment is slower is in its log (README, "io_uring").
-static void uring_refused(const char* step, int err) {
-#if tt_HAL_RX_HINT == tt_RX_HINT_URING
-    TT_LOG_ERROR("io_uring refused (%s: %s) and this build requires it (tt_HAL_RX_HINT=tt_RX_HINT_URING) - not "
-                 "creating the context. Allow io_uring (README.md, \"io_uring\") or build with tt_RX_HINT_AUTO.",
-                 step, strerror(err));
-#else
+// A context whose opts.socket.rx_hint is tt_SOCKET_RX_HINT_URING (the default in a tt_HAL_RX_HINT=tt_RX_HINT_URING
+// build) requires it: the refusal fails its creation.
+static void uring_refused(const struct tt_Context* node, const char* step, int err) {
+    if (node->opts.socket.rx_hint == tt_SOCKET_RX_HINT_URING) {
+        TT_LOG_ERROR("io_uring refused (%s: %s) and this context requires it (opts.socket.rx_hint "
+                     "tt_SOCKET_RX_HINT_URING) - not creating the context. Allow io_uring (README.md, \"io_uring\") or "
+                     "use tt_SOCKET_RX_HINT_AUTO.",
+                     step, strerror(err));
+        return;
+    }
     static bool told = false;
     if (!told) {
         told = true;
@@ -3783,7 +3819,6 @@ static void uring_refused(const char* step, int err) {
                        "See README.md, \"io_uring\", to allow it.",
                        step, strerror(err));
     }
-#endif
 }
 
 static bool uring_setup(struct tt_Context* node) {
@@ -3799,7 +3834,7 @@ static bool uring_setup(struct tt_Context* node) {
     // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
     int ring_fd = (int)syscall(__NR_io_uring_setup, URING_ENTRIES, &params);
     if (ring_fd < 0) {
-        uring_refused("io_uring_setup", errno);
+        uring_refused(node, "io_uring_setup", errno);
         return false;
     }
     hal->uring_fd = ring_fd;
@@ -3812,7 +3847,7 @@ static bool uring_setup(struct tt_Context* node) {
     void* sq_map = mmap(NULL, hal->uring_sq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
                         IORING_OFF_SQ_RING);
     if (sq_map == MAP_FAILED) {
-        uring_refused("mmap SQ", errno);
+        uring_refused(node, "mmap SQ", errno);
         uring_close(node);
         return false;
     }
@@ -3822,7 +3857,7 @@ static bool uring_setup(struct tt_Context* node) {
         cq_map = mmap(NULL, hal->uring_cq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
                       IORING_OFF_CQ_RING);
         if (cq_map == MAP_FAILED) {
-            uring_refused("mmap CQ", errno);
+            uring_refused(node, "mmap CQ", errno);
             uring_close(node);
             return false;
         }
@@ -3832,7 +3867,7 @@ static bool uring_setup(struct tt_Context* node) {
     void* sqes =
         mmap(NULL, hal->uring_sqes_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd, IORING_OFF_SQES);
     if (sqes == MAP_FAILED) {
-        uring_refused("mmap SQEs", errno);
+        uring_refused(node, "mmap SQEs", errno);
         uring_close(node);
         return false;
     }

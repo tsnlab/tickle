@@ -368,8 +368,8 @@ MUTANTS = [
     (
         "bind: TT_RX_DIRECT=0 ignored",
         "src/hal_linux.c",
-        '        node->large.direct_allowed = direct == NULL || strcmp(direct, "0") != 0;',
-        "        node->large.direct_allowed = true;",
+        '    node->large.direct_allowed = socket_switch("TT_RX_DIRECT", node->opts.socket.rx_direct);',
+        "    node->large.direct_allowed = true;",
         HAL,
     ),
     # The deadline timer's rule (hal_linux.c rx_wait_epoll(), counted by plain waits since 2026-10-14): 12b and 12c.

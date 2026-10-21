@@ -928,8 +928,42 @@ struct tt_PollOptions {
     uint32_t scheduler_io_interleave;
 };
 
+// A switch of struct tt_SocketOptions: 0 = the default (on), or one of these. The Linux HAL's environment variable of
+// the same subject, when set, decides over the option ("0" off, anything else on) - the A/B control a binary is run
+// with stays a switch of the environment. On is "where the build and the kernel have it": a build or kernel without
+// the feature runs without it, as with the environment variable. Other HALs have none of these and ignore them.
+#define tt_SWITCH_DEFAULT 0U
+#define tt_SWITCH_ON 1U
+#define tt_SWITCH_OFF 2U
+// struct tt_SocketOptions.rx_hint: how the Linux HAL learns that a socket has something (hal_linux.h, tt_HAL_RX_HINT).
+// 0 = the build's tt_HAL_RX_HINT. A build with tt_HAL_RX_HINT=tt_RX_HINT_READ has no io_uring to choose.
+#define tt_SOCKET_RX_HINT_AUTO 1U  // io_uring when the system allows it, else a read per check
+#define tt_SOCKET_RX_HINT_URING 2U // io_uring or no context: a refusal fails creation with tt_RET_UNSUPPORTED
+// The receive drain's buffers (hal_linux.h, tt_RX_DRAIN): a count is a power of two, at most this (io_uring's limit).
+#define tt_SOCKET_DRAIN_BUFFERS_MAX 32768U
+#define tt_SOCKET_DRAIN_HOLDOFF_MAX (60ULL * tt_SECOND)
+
+// The sockets the HAL opens (bundle 6). Read once, when tt_Context_create_with() binds them. Every 0 = the default.
 struct tt_SocketOptions {
-    uint8_t reserved;
+    // SO_SNDBUF and SO_RCVBUF asked of both sockets, in bytes (tt_SOCKET_BUFFER_SIZE). The kernel clamps it to
+    // net.core.[rw]mem_max. At most INT_MAX.
+    uint32_t buffer_size;
+    // tt_SWITCH_*, each with its Linux environment variable (hal_linux.c says what each does):
+    uint8_t udp_offload;   // UDP_GRO and UDP_SEGMENT, TT_UDP_OFFLOAD
+    uint8_t udp_csum0;     // UDP checksum 0 on IP-fragmented datagrams, TT_UDP_CSUM0
+    uint8_t rx_direct;     // a large sample's run read straight into its assembly, TT_RX_DIRECT
+    uint8_t rx_lazy_timer; // the wait's deadline timer in the epoll set, TT_RX_LAZY_TIMER
+    uint8_t rx_lazy_adapt; // that timer only after a wait that ended for a datagram, TT_RX_LAZY_ADAPT
+    uint8_t rx_nonblock;   // both sockets O_NONBLOCK, TT_RX_NONBLOCK
+    uint8_t rx_hint;       // tt_SOCKET_RX_HINT_*
+    // The receive drain (builds with tt_RX_DRAIN; others ignore these): the bytes of buffers a drain starts with
+    // (tt_RX_DRAIN_BYTES), the most buffers (tt_RX_DRAIN_BUFFERS; a power of two), the bytes an overrun may grow it
+    // to (tt_RX_DRAIN_BYTES_MAX; 0 = four times drain_bytes, at least drain_bytes), and how long no drain starts
+    // after a datagram too long for its buffers (tt_RX_DRAIN_HOLDOFF_NS, nanoseconds).
+    uint32_t drain_bytes;
+    uint32_t drain_buffers;
+    uint32_t drain_bytes_max;
+    uint64_t drain_holdoff_ns;
 };
 struct tt_HybridOptions {
     uint8_t reserved;

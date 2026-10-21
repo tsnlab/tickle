@@ -101,13 +101,13 @@ MUTANTS = [
     (
         "env: TT_UDP_CSUM0=0 ignored, always on",
         HAL,
-        '    if (setting != NULL && strcmp(setting, "0") == 0) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
+        '    if (!socket_switch("TT_UDP_CSUM0", node->opts.socket.udp_csum0)) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
         "    if (false) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;",
     ),
     (
         "env: the default ignored, never on",
         HAL,
-        '    if (setting != NULL && strcmp(setting, "0") == 0) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
+        '    if (!socket_switch("TT_UDP_CSUM0", node->opts.socket.udp_csum0)) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
         "    if (true) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;",
     ),
     (

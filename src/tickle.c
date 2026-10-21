@@ -585,8 +585,48 @@ static void resolve_poll_options(struct tt_PollOptions* poll) {
     }
 }
 
+// A tt_SWITCH_* left at 0: on, as every one of them is by default.
+static void resolve_switch(uint8_t* value) {
+    if (*value == tt_SWITCH_DEFAULT) {
+        *value = tt_SWITCH_ON;
+    }
+}
+
 static void resolve_socket_options(struct tt_SocketOptions* socket) {
-    (void)socket;
+    if (socket->buffer_size == 0) {
+        socket->buffer_size = (uint32_t)tt_SOCKET_BUFFER_SIZE;
+    }
+    resolve_switch(&socket->udp_offload);
+    resolve_switch(&socket->udp_csum0);
+    resolve_switch(&socket->rx_direct);
+    resolve_switch(&socket->rx_lazy_timer);
+    resolve_switch(&socket->rx_lazy_adapt);
+    resolve_switch(&socket->rx_nonblock);
+    if (socket->rx_hint == 0) {
+#if defined(tt_HAL_RX_HINT) && tt_HAL_RX_HINT == tt_RX_HINT_URING
+        socket->rx_hint = tt_SOCKET_RX_HINT_URING;
+#else
+        socket->rx_hint = tt_SOCKET_RX_HINT_AUTO; // a build without io_uring: AUTO is what it does, a read per check
+#endif
+    }
+    // The drain's defaults are the Linux HAL's (hal_linux.h); a HAL without a drain leaves these 0.
+#ifdef tt_RX_DRAIN_BYTES
+    if (socket->drain_bytes == 0) {
+        socket->drain_bytes = tt_RX_DRAIN_BYTES;
+    }
+    if (socket->drain_buffers == 0) {
+        socket->drain_buffers = tt_RX_DRAIN_BUFFERS;
+    }
+    if (socket->drain_bytes_max == 0) {
+        // tt_RX_DRAIN_BYTES_MAX's own rule, four times the start, against this context's start.
+        socket->drain_bytes_max = socket->drain_bytes == tt_RX_DRAIN_BYTES ? (uint32_t)tt_RX_DRAIN_BYTES_MAX
+                                  : socket->drain_bytes <= UINT32_MAX / 4U ? socket->drain_bytes * 4U
+                                                                           : UINT32_MAX;
+    }
+    if (socket->drain_holdoff_ns == 0) {
+        socket->drain_holdoff_ns = tt_RX_DRAIN_HOLDOFF_NS;
+    }
+#endif
 }
 
 static void resolve_hybrid_options(struct tt_HybridOptions* hybrid) {
@@ -855,9 +895,51 @@ static tt_ret_t validate_poll_options(const struct tt_PollOptions* poll) {
     return tt_RET_OK;
 }
 
+// Resolved, so a switch is tt_SWITCH_ON or tt_SWITCH_OFF.
+static bool valid_switch(uint8_t value) {
+    return value == tt_SWITCH_ON || value == tt_SWITCH_OFF;
+}
+
 static tt_ret_t validate_socket_options(const struct tt_SocketOptions* socket) {
-    if (socket->reserved != 0) {
-        return reject_option("socket.reserved", "is not 0");
+    if (socket->buffer_size > (uint32_t)INT32_MAX) {
+        return reject_option("socket.buffer_size", "exceeds INT_MAX (setsockopt() takes an int)");
+    }
+    if (!valid_switch(socket->udp_offload)) {
+        return reject_option("socket.udp_offload", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->udp_csum0)) {
+        return reject_option("socket.udp_csum0", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->rx_direct)) {
+        return reject_option("socket.rx_direct", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->rx_lazy_timer)) {
+        return reject_option("socket.rx_lazy_timer", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->rx_lazy_adapt)) {
+        return reject_option("socket.rx_lazy_adapt", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->rx_nonblock)) {
+        return reject_option("socket.rx_nonblock", "is not a tt_SWITCH_* value");
+    }
+    if (socket->rx_hint != tt_SOCKET_RX_HINT_AUTO && socket->rx_hint != tt_SOCKET_RX_HINT_URING) {
+        return reject_option("socket.rx_hint", "is not a tt_SOCKET_RX_HINT_* value");
+    }
+#if !defined(tt_HAL_IO_URING) || !tt_HAL_IO_URING
+    if (socket->rx_hint == tt_SOCKET_RX_HINT_URING) {
+        return reject_option("socket.rx_hint", "needs a build with io_uring (tt_HAL_RX_HINT other than READ)");
+    }
+#endif
+    // A power of two (the ring's index mask), at most io_uring's limit; 0 only where the HAL has no drain.
+    if ((socket->drain_buffers & (socket->drain_buffers - 1U)) != 0 ||
+        socket->drain_buffers > tt_SOCKET_DRAIN_BUFFERS_MAX) {
+        return reject_option("socket.drain_buffers", "is not a power of two at most tt_SOCKET_DRAIN_BUFFERS_MAX");
+    }
+    if (socket->drain_bytes_max < socket->drain_bytes) {
+        return reject_option("socket.drain_bytes_max", "is below drain_bytes");
+    }
+    if (socket->drain_holdoff_ns > tt_SOCKET_DRAIN_HOLDOFF_MAX) {
+        return reject_option("socket.drain_holdoff_ns", "exceeds tt_SOCKET_DRAIN_HOLDOFF_MAX");
     }
     return tt_RET_OK;
 }
