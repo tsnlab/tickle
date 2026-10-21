@@ -397,9 +397,10 @@
 // 2026-10-09) a same-host srtt of 1-2 us put that ceiling below G, and every wait was cut to it. The doubling is what
 // the old floor was really for: a call gives up after (count + 1) waits, so with a constant interval one fast answer
 // shrank the budget of every later call to a few round trips, and an answer slower than that timed out
-// (CONTEXT_NODE_PLAN.md "Client retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the budget
-// (2^(count+1) - 1) first waits - 15 with the default count - so a retry can fire early without the call giving up
-// early.
+// (CONTEXT_NODE_PLAN.md "Client retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the sends span
+// (2^count - 1) first waits - 7 with the default count - so a retry can fire early without the call giving up early,
+// and after the last send the call waits a whole ceiling for an answer (2026-10-21: as the next doubling, 8 first
+// waits, it gave up ~0.8 ms after a call at a 30 us srtt, inside a peer's scheduling stall).
 //
 // INTERVAL is the seed: the first wait until a client has its first answer, standing in for srtt. GRANULARITY 0
 // (the default) is twice the reliable retry's G - this context's measured timer lateness, or the fixed
