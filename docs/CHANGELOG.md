@@ -49,6 +49,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   first wait went from 0.4 ms to 290-600 ms within ~120 calls, and c21 made 130-430 calls/s of 1,000. Only calls never
   resent are sampled now (Karn); a resent call's doublings carry to the next call's first wait until a clean answer
   (RFC 6298 5.5-5.7, `tt_CALL_BACKOFF_MAX`).
+- A core service call on the auto path gave up 15 first waits after it was made, ~0.8 ms at a 30 us srtt, so a peer
+  preempted for a millisecond timed calls out on a lossless link; once Karn stopped resent calls' answers from widening
+  the estimate, the PC preflight of c20 (-r 0) failed 14 of 57 jobs that way (main: 1 of 53). After its last send a call
+  now waits the ceiling, `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x max(srtt, G), for an answer: no extra send, and still
+  within the deadline (`tests/test_call_retry_adaptive.c`).
 - A server whose `tt_MAX_SERVER_CACHE_COUNT` slots all held live answers evicted the one sent longest ago to keep a new
   one, and a retry for the evicted call ran its callback again. The new request is now turned away before its
   callback runs (the client retries; a slot frees within one answer lifetime), unless its Client already holds

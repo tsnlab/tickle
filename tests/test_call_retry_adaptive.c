@@ -291,9 +291,10 @@ static void test_the_ceiling_is_a_multiple_of_srtt_or_g(void) {
 }
 
 // A same-host srtt of a microsecond or two: the first wait is still srtt + G, and each retry still doubles it, so a
-// call gives up after 15 first waits. With a ceiling of 64 x srtt (until 2026-10-09) it was 128 us, below G: every
-// wait was cut to it, and a call gave up within ~0.5 ms - one scheduler hiccup; service_window_a timed out hundreds
-// of calls a run that way. Killed by: the ceiling of srtt alone put back.
+// call's sends go out at 0, 1, 3 and 7 first waits, and it gives up a ceiling after the last (call_next_wake()). With a
+// ceiling of 64 x srtt (until 2026-10-09) it was 128 us, below G: every wait was cut to it, and a call gave up within
+// ~0.5 ms - one scheduler hiccup; service_window_a timed out hundreds of calls a run that way. Killed by: the ceiling
+// of srtt alone put back.
 static void test_a_same_host_srtt_keeps_g_and_the_doubling(void) {
     setup(0);
     client.latency = 2 * US;
@@ -304,7 +305,27 @@ static void test_a_same_host_srtt_keeps_g_and_the_doubling(void) {
     EXPECT_EQ_U64(4 * first, compute_retry_interval(&client, 2));
     uint64_t took = 0;
     EXPECT_TRUE(!run_call(NEVER, &took));
-    EXPECT_EQ_U64(((2ULL << tt_CALL_RETRY_COUNT) - 1) * first, took);
+    EXPECT_EQ_U64((((1ULL << tt_CALL_RETRY_COUNT) - 1) * first) + (CALL_G * tt_CALL_RETRY_MAX_SRTT_MULTIPLE), took);
+}
+
+// The peer stalls for longer than a call's sends span - a server process preempted for a few milliseconds while its
+// client's srtt is tens of microseconds - and then answers. The answer is taken: after the last send the call waits a
+// whole ceiling, not the next doubling. Until 2026-10-21 it gave up 8 first waits after the last send, 15 in all
+// (~0.8 ms at the PC's c20 srtt of ~30 us), and a 1 ms stall timed calls out on a lossless link: the PC preflight of
+// the rig's c20 (-r 0) timed out 1-28 calls in 14 of 57 jobs, each ~0.8 ms after it was made, once Karn's algorithm
+// (process_callresponse()) stopped the answers to resent calls from widening the estimate, which had hidden it (main:
+// 1 of 53). Killed by: the last send's wait back to the doubling (the call times out at 15 first waits).
+static void test_a_stall_past_the_sends_is_still_answered(void) {
+    setup(0);
+    client.latency = 30 * US;
+    client.latency_var = 0;
+    uint64_t first = compute_retry_interval(&client, 0);
+    uint64_t sends_span = ((1ULL << tt_CALL_RETRY_COUNT) - 1) * first;   // the last send goes out here
+    uint64_t stall = (((2ULL << tt_CALL_RETRY_COUNT) - 1) * first) + MS; // past where it used to give up
+    EXPECT_TRUE(stall < sends_span + (CALL_G * tt_CALL_RETRY_MAX_SRTT_MULTIPLE));
+    uint64_t took = 0;
+    EXPECT_TRUE(run_call(stall, &took));
+    EXPECT_EQ_U64(stall, took);
 }
 
 // A send that takes a while - on Linux, a write that wakes the server on the same CPU and is preempted by it - must
@@ -341,7 +362,7 @@ static void test_each_retry_of_a_call_waits_twice_as_long(void) {
     EXPECT_EQ_U64(unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 10)); // the ceiling
     uint64_t took = 0;
     EXPECT_TRUE(!run_call(NEVER, &took));
-    EXPECT_EQ_U64(((2ULL << tt_CALL_RETRY_COUNT) - 1) * first, took);
+    EXPECT_EQ_U64((((1ULL << tt_CALL_RETRY_COUNT) - 1) * first) + (unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE), took);
 }
 
 // Before any answer the seed tt_CALL_RETRY_INTERVAL stands in for srtt, and the server's response cache is kept for
@@ -376,6 +397,7 @@ int main(void) {
     test_a_large_srtt_is_not_clamped_to_250ms();
     test_the_ceiling_is_a_multiple_of_srtt_or_g();
     test_a_same_host_srtt_keeps_g_and_the_doubling();
+    test_a_stall_past_the_sends_is_still_answered();
     test_the_round_trip_counts_from_before_the_send();
     test_each_retry_of_a_call_waits_twice_as_long();
     test_the_seed_is_used_until_a_first_answer();

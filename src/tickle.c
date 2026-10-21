@@ -7179,12 +7179,22 @@ static uint64_t call_deadline(const struct tt_Client* client) {
 }
 
 // When the wait after the call's `retry`-th send, starting at `now`, ends: the retry interval, cut short at the
-// call's deadline.
+// call's deadline. On the auto path the wait after the last send is the ceiling (call_retry_bounds()), not the next
+// doubling: nothing is sent after it, so its length costs nothing on the wire, and all it decides is how late an
+// answer may still be taken. As the doubling it was 8 first waits, and a call gave up 15 first waits after it was made
+// - ~0.8 ms at a 30 us srtt, shorter than a peer preempted for a millisecond: the PC preflight of the rig's c20 (-r 0,
+// no loss) timed out calls in a quarter of its runs once Karn's algorithm (process_callresponse()) stopped resent
+// calls' answers from widening the estimate (tests/test_call_retry_adaptive.c, 2026-10-21). An explicit interval keeps
+// its own (count + 1) waits.
 static uint64_t call_next_wake(const struct tt_ClientCall* call, uint32_t retry, uint64_t now) {
     const struct tt_Client* client = call->client;
     uint64_t deadline = call_deadline(client);
     uint64_t deadline_at = deadline > UINT64_MAX - call->cache_time ? UINT64_MAX : call->cache_time + deadline;
     uint64_t wait = compute_retry_interval(client, retry);
+    if (deadline != UINT64_MAX && retry >= call_retry_count(client)) {
+        uint64_t first = 0;
+        call_retry_bounds(client, &first, &wait); // the last send's wait: the ceiling
+    }
     uint64_t wake = wait > UINT64_MAX - now ? UINT64_MAX : now + wait;
     return wake < deadline_at ? wake : deadline_at;
 }
