@@ -136,7 +136,7 @@ ONE_CALL_DEFINES = -Dtt_CLIENT_MAX_OUTSTANDING=1
 ONE_CALL_TEST_BINS = $(addprefix $(OBJ)/tests-one-call/,test_client_call test_callresponse test_client_multi_call \
                      test_two_clients_one_service test_server_cache test_call_retry_adaptive test_process_callrequest \
                      test_endpoint_storage test_scheduler_headroom test_service_best_effort \
-                     test_service_retry_horizon)
+                     test_service_retry_horizon test_kept_answer_lazy_expiry)
 
 .PHONY: all library examples set_bool uint64 ping_pong perf test config-renames print-large-defines test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan coverage
 
