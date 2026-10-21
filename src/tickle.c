@@ -3346,11 +3346,9 @@ static uint32_t hybrid_units_within(const struct tt_Context* node, uint32_t ceil
     uint32_t framing = large ? HYBRID_RUN_L_WIRE_FRAMING : HYBRID_RUN_WIRE_FRAMING;
     uint32_t unit = large ? HYBRID_UNIT_L : HYBRID_UNIT;
     uint32_t units = ceiling > framing ? (ceiling - framing) / unit : 0U;
-    if (units < 1U) {
-        return 1U;
-    }
     uint32_t limit = node->opts.hybrid_transport.n_max;
-    return units > limit ? limit : units;
+    units = units < limit ? units : limit;
+    return units > 1U ? units : 1U;
 }
 
 // Whether this context keeps the reader's side of the hybrid transport at all (tt_HybridState.rx_capable). Never in a
@@ -3593,19 +3591,41 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
 static double hybrid_test_forced_p = -1.0;
 #endif
 
-static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events,
-                                  const struct tt_HybridOptions* opts) {
+static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events) {
     estimate->frames += frames;
     estimate->events += events;
     if (events != 0) {
         estimate->frames_at_event = estimate->frames;
     }
-    if (estimate->frames >= opts->window_frames) {
+    if (estimate->frames >= estimate->window_frames) {
         estimate->frames /= 2U;
         estimate->events /= 2U;
         estimate->frames_at_event /= 2U;
         estimate->frames_at_doubt /= 2U;
     }
+}
+
+// The estimate emptied, the constants copied into it kept (window_frames, stale_floor_frames).
+static void loss_estimate_restart(struct tt_LossEstimate* estimate) {
+    *estimate = (struct tt_LossEstimate) {0, 0, 0, 0, estimate->window_frames, estimate->stale_floor_frames};
+}
+
+// The stale rule's floor in whole clean frames: a count c is below the real floor f exactly when it is below ceil(f),
+// so the compare at each tail is an integer one. Saturated at UINT32_MAX (a p_min so small no stream reaches it).
+#define HYBRID_FRAMES_MAX 4294967295.0
+static uint32_t hybrid_stale_floor(const struct tt_HybridOptions* opts) {
+    double floor = hybrid_stale_exposure(opts) / opts->stale_p_min;
+    if (!(floor < HYBRID_FRAMES_MAX)) {
+        return UINT32_MAX;
+    }
+    uint32_t frames = (uint32_t)floor;
+    return (double)frames < floor ? frames + 1U : frames;
+}
+
+// The constants a reader's estimates carry, from the context's options (hybrid_reader_start(); tests building an
+// estimate by hand call it too).
+static void loss_estimate_init(struct tt_LossEstimate* estimate, const struct tt_HybridOptions* opts) {
+    *estimate = (struct tt_LossEstimate) {0, 0, 0, 0, opts->window_frames, hybrid_stale_floor(opts)};
 }
 
 // A gap put down to a receiver drop (hybrid_rx_receiver_lost()): its frames are not seen, neither as loss nor as clean.
@@ -3656,14 +3676,15 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate, const s
         return false;
     }
 #endif
-    if (estimate->events == 0 || estimate->events > opts->stale_events || estimate->frames_at_event == 0) {
+    // events in 1..stale_events, as one unsigned compare (0 wraps past every stale_events).
+    if (estimate->events - 1U >= opts->stale_events || estimate->frames_at_event == 0) {
         return false;
     }
     // The stretch starts at the last event or the last doubtful gap, whichever is later, and F ends there too.
     uint32_t anchor =
         estimate->frames_at_doubt > estimate->frames_at_event ? estimate->frames_at_doubt : estimate->frames_at_event;
     uint32_t clean = estimate->frames - anchor;
-    if ((double)clean < hybrid_stale_exposure(opts) / opts->stale_p_min) { // the floor: 9,210 frames by default
+    if (clean < estimate->stale_floor_frames) { // the floor: 9,210 frames by default
         double stretch = 1.0 + ((double)clean / (double)anchor);
         double chance = 1.0; // of a stretch this long after this many events, on a steady path
         for (uint32_t i = 0; i < estimate->events; i++) {
@@ -3832,29 +3853,33 @@ static uint16_t hybrid_rx_announce_code(const struct tt_HybridState* hybrid, con
 // the run window - runs sent and lost, with their frames - pooled since the last decision and per writer. R (units a
 // second) and each writer's runs a second (for the queue lifetime) are counted with them.
 
-// One run of `size` units sent, lost or not.
-static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool lost,
-                               const struct tt_HybridOptions* opts) {
+// One run of `size` units sent, lost or not; the window halves at *window_frames, read after the window is updated.
+// The run windows carry no copy of their own: a writer's is one of tt_HybridRxWriter's 48 bytes, and 52 made its
+// stride 56, more arithmetic per lookup of a writer, per received datagram. And by pointer, not by value: a value is
+// read before the call, so ahead of the stores through `window`, which may alias it - the compiler then loaded it into
+// a register first, an instruction more per received run, where read after them it is a compare with memory
+// (examples/perf_hil/experiments/hybrid_options_insn.sh).
+static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool lost, const uint32_t* window_frames) {
     window->sent++;
     window->lost += lost ? 1U : 0U;
     window->frames += size;
-    if (window->frames >= opts->window_frames) {
+    if (window->frames >= *window_frames) {
         window->sent /= 2U;
         window->lost /= 2U;
         window->frames /= 2U;
     }
 }
 
-// A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate. These
-// two take the context, not its state and options apart: both are offsets from it, so the options cost no argument of
-// their own on a path taken per received run (examples/perf_hil/experiments/hybrid_options_insn.sh).
+// A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate.
+// Always inlined, as it was on constants: out of line it cost +480 instructions a 1 MB sample on the PC
+// (examples/perf_hil/experiments/hybrid_options_insn.sh).
 __attribute__((always_inline)) static inline void
 hybrid_rx_run(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t size, bool lost) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    const struct tt_HybridOptions* opts = &node->opts.hybrid_transport;
-    run_window_observe(&hybrid->window, size, lost, opts);
-    run_window_observe(&writer->runs, size, lost, opts);
-    loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U, opts);
+    // The run windows halve where the estimates do (tt_LossEstimate.window_frames, every copy the same).
+    run_window_observe(&hybrid->window, size, lost, &hybrid->mtu_loss.window_frames);
+    run_window_observe(&writer->runs, size, lost, &hybrid->mtu_loss.window_frames);
+    loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U);
     writer->tick_runs++;
     hybrid->window_n = size > hybrid->window_n ? size : hybrid->window_n;
 }
@@ -3863,9 +3888,8 @@ hybrid_rx_run(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_
 __attribute__((always_inline)) static inline void hybrid_rx_mtu(struct tt_Context* node, uint32_t units,
                                                                 uint32_t lost) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    const struct tt_HybridOptions* opts = &node->opts.hybrid_transport;
-    loss_estimate_observe(&hybrid->rx_loss, units, lost, opts);
-    loss_estimate_observe(&hybrid->mtu_loss, units, lost, opts);
+    loss_estimate_observe(&hybrid->rx_loss, units, lost);
+    loss_estimate_observe(&hybrid->mtu_loss, units, lost);
 }
 
 // Receiver drops are not path loss. A datagram the receiving host took off the wire and then dropped - its socket's
@@ -3902,7 +3926,7 @@ static uint32_t hybrid_rx_receiver_lost(struct tt_Context* node, uint32_t datagr
     }
     hybrid->receiver_lost += taken;
     if (taken != 0 && hybrid->advertised_loss == 0) {
-        hybrid->rx_loss = (struct tt_LossEstimate) {0, 0, 0, 0}; // no p announced yet: the first starts after it
+        loss_estimate_restart(&hybrid->rx_loss); // no p announced yet: the first starts after it
     } else if (taken != 0) {
         loss_estimate_doubt(&hybrid->rx_loss);
     }
@@ -3956,7 +3980,7 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
             }
         } else if (hybrid_rx_receiver_lost(node, 1) == 0) {
             // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
-            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1, &node->opts.hybrid_transport);
+            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);
             writer->body_lost += body_end - from;
         }
     }
@@ -16187,6 +16211,10 @@ static void hybrid_reader_start(struct tt_Context* node) {
     hybrid->cap_off = node->opts.net.reassembly_cap_off != 0;
     hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max, node->opts.hybrid_transport.slow_start);
     hybrid->lifetime_ns = node->opts.hybrid_transport.queue_lifetime_ns;
+    // Where the estimates and the run windows halve, and the stale rule's floor, copied into the estimates
+    // (tt_LossEstimate.window_frames, stale_floor_frames).
+    loss_estimate_init(&hybrid->rx_loss, &node->opts.hybrid_transport);
+    loss_estimate_init(&hybrid->mtu_loss, &node->opts.hybrid_transport);
     hybrid->advertised = hybrid->rx_capable ? hybrid_cap_bytes(node, hybrid->cap, n_max) : node->ip_reassembly_max;
 }
 
