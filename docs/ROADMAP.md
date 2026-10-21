@@ -30,8 +30,8 @@ Cross-host latency is a round trip on one clock (the user, 2026-10-18).
 Static configuration moves into `struct tt_InitOptions` (the user, 2026-10-21; DESIGN.md section 2), before the
 per-network profiles. Bundles, one branch each: 1 the API and `net` (`_tt_CONFIG`) - done on `feat/initoptions-1`;
 2 discovery and liveliness timings; 3 reliability timings; 4 service timings; 5 QoS defaults - done on
-`feat/initoptions-5-qos`; 6 poll, socket and HAL
-settings - on `ab/initoptions-6-poll-socket`, rig A/B pending; 7 hybrid estimators; 8 segment settings (2-8 in parallel, each in its own placeholder group); 9 runtime
+`feat/initoptions-5-qos`; 6 poll, socket and HAL settings - on `ab/initoptions-6-poll-socket`, rig A/B pending;
+7 hybrid estimators; 8 segment settings (2-8 in parallel, each in its own placeholder group); 9 runtime
 capacities up to the compiled maxima; 10 large tables into caller storage. Rules for every bundle: the default
 context byte-identical on the wire, each check refused with a test and a mutant, each field shown to change
 behaviour, no hot-path cost (rig A/B for 3, 6, 7, 9, 10). `tt_*_storage_size()` keeps its signature; interop
