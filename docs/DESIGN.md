@@ -57,8 +57,8 @@ trace-identical (`tests/wire_identity_service.sh`).
 **Discovery options** (`tt_InitOptions.discovery`, bundle 2). The discovery and liveliness timings of sections 5 and 9
 are the context's own: cycle, update interval, tx interval, lease divisor, longest lease, list-request retry and
 attempts, liveliness deferral and its cap, miss threshold (the silence is derived per context), the full-scheduler
-warning interval. The config.h constants are their defaults. Checked at creation: every duration at most a day, the tx
-interval at most the update interval, and the silence above `tt_SEGMENT_DEAD_READER_NS` (was a `static_assert`). The
+warning interval. The config.h constants are their defaults. Checked at creation: every duration at most a day and the
+tx interval at most the update interval (the silence against the segment's dead-reader time moved to bundle 8). The
 peers judge a context's silence by their own update interval and miss threshold, which no announce carries, so a context
 created with either different from the default logs a WARNING. The lease floor (`lease_divisor` x tx interval) is the
 context's at an endpoint's creation; `tt_QosProfile_resolve()` and `tt_*_storage_size()`, which have no context, keep
@@ -86,6 +86,17 @@ is trace-identical (`tests/wire_identity_hybrid_estimator.sh`). On the rig (`rmw
 build): Array1m 30 Hz and Array4m 15 Hz reliable cross-host, 100% delivered and latency equal at 0, 0.1 and 1% loss; at 1%
 CPU per run is bimodal on both arms (about 4.5 / 3.5 or 5.5 / 4.5 ms per MB, sub / pub), and 10 reps per arm gave 2/10
 runs in the high mode on each (Fisher p 0.71) and low-mode CPU +0.77% sub, -0.04% pub.
+
+**Segment options** (`tt_InitOptions.segment`, bundle 8; section 10). The ring's bytes and slot size (`slot_bytes`, moved
+from `net.segment_slot_bytes`, which no release carried), the fence hold, the dead-reader time, the drain bound per poll,
+the reader's re-measure bound, the stall report and the attach-retry and revalidation counts; each 0 = its config.h
+constant. `bytes` sets the slot count (largest power of two that fits, 4 to the build's `tt_SEGMENT_SLOTS`, which sizes
+the reader's per-slot state); 0 keeps `tt_SEGMENT_SLOTS` slots at any slot size, as before. `dead_reader_ns` 0 is derived
+at creation from the context's discovery timing (one update interval; `tt_SEGMENT_DEAD_READER_NS` at the defaults).
+Checked: slot holds a datagram, 4 to `tt_SEGMENT_SLOTS` slots, fence hold < dead reader < silence, `probe_every_max` a
+power of two (the window is a mask; no 64-bit modulo on rv32). Per-record and per-send cost unchanged: the drain bound
+is read once a poll, the send counts only when a countdown is reset. `tt_PUBLISHER_CLAIMS` and `tt_SEGMENT_FENCES_SEEN`
+stay compile-time.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
@@ -509,7 +520,7 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 | one per receiving context | `/dev/shm/tickle-seg-<ip>-<port>-<context id>`, written by every same-host peer |
 | the header is the authority | magic, `tt_SEGMENT_VERSION` (6), owner, `incarnation`, geometry, `features`; any mismatch: UDP, counted |
 | slots | power of two, 16 B header (`length`, sender, `seq_span`, `sequence`) + payload; claim by CAS, publish `index + 1` with release, free with `index + slots`; no wrap straddle |
-| geometry | `tt_SEGMENT_BYTES` / (16 + `tt_SEGMENT_SLOT_BYTES`) rounded down; runtime `segment_slot_bytes`; too large: UDP (`segment_oversized_to_udp`) |
+| geometry | `tt_SEGMENT_BYTES` / (16 + `tt_SEGMENT_SLOT_BYTES`) rounded down; runtime `segment.bytes` and `segment.slot_bytes`; too large: UDP (`segment_oversized_to_udp`) |
 | `seq_span` | seq_nos a record covers; only from a slot, never the network; `tt_SEGMENT_SPAN_FENCE` marks a fence |
 
 **Lifecycle (lazy).** Built when the first same-host peer appears, released when the last goes. **No writer uses a dead
