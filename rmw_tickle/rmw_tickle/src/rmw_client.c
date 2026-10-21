@@ -40,7 +40,7 @@
 #include <string.h>
 #include <time.h> // clock_gettime(), CLOCK_MONOTONIC
 
-#include <tickle/config.h> // tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
+#include <tickle/config.h> // tt_SECOND, tt_CLIENT_MAX_OUTSTANDING
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
@@ -233,12 +233,12 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // any call slower than that, and the late response would be ignored.
     //
     // So a call lives as long as the server keeps it: retried every RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS
-    // until tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, after which the server has dropped it too. A retry of
-    // a request still pending on the server does not re-run its callback (find_pending_slot(),
-    // tickle.c); once answered, a retry gets the cached response. A BEST_EFFORT client (D6) sends the request once and
-    // keeps the call for that same span, so a deferred answer still reaches it.
+    // until the context's deferred-response timeout (rmw_tickle_client_retry_count()), after which the
+    // server has dropped it too. A retry of a request still pending on the server does not re-run its callback
+    // (find_pending_slot(), tickle.c); once answered, a retry gets the cached response. A BEST_EFFORT client (D6) sends
+    // the request once and keeps the call for that same span, so a deferred answer still reaches it.
     client_impl->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
-    client_impl->service.call_retry_count = RMW_TICKLE_CLIENT_RETRY_COUNT;
+    client_impl->service.call_retry_count = rmw_tickle_client_retry_count(&node_impl->context_impl->tickle_context);
 
     // Responses kept untaken: the QoS depth, as a DDS response reader keeps (KEEP_LAST), never fewer than the calls
     // that can be in flight; RMW_TICKLE_CLIENT_RESPONSE_DEFAULT_DEPTH when the profile gives no depth.

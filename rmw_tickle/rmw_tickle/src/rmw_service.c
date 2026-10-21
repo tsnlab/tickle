@@ -254,7 +254,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     // schedule, 75 ms - a client retrying after 100 ms found nothing kept and its request was served twice
     // (2026-10-21, tests/test_service_retry_horizon.c).
     svc->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
-    svc->service.call_retry_count = RMW_TICKLE_CLIENT_RETRY_COUNT;
+    svc->service.call_retry_count = rmw_tickle_client_retry_count(&node_impl->context_impl->tickle_context);
 
     svc->response_storage = allocator->zero_allocate(1, callbacks.response->tickle_struct_size, allocator->state);
     if (NULL == svc->response_storage) {
