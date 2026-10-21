@@ -91,10 +91,12 @@
 #ifndef tt_CONTEXT_TX_INTERVAL
 #define tt_CONTEXT_TX_INTERVAL tt_MILLISECOND // nanosecond
 #endif
-// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
-// re-send interval override (0 = auto, i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as
-// struct tt_Service.call_retry_interval). A Topic's deadline_duration/lifespan_duration (tickle.h)
-// are still reserved for #2/#6, not this.
+// The reliability timing from here to tt_IDLE_HEARTBEAT_RETRY_MULTIPLE (but for tt_RELIABLE_REQUEST_HISTORY, which
+// sizes an array) is, since tt_InitOptions bundle 3, the default of a context's struct tt_ReliableOptions (tickle.h):
+// each constant is what that field's zero stands for, and a context may run with other values. QoS roadmap #5
+// (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK re-send interval override (0 = auto,
+// i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as struct tt_Service.call_retry_interval). A Topic's
+// deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
 #ifndef tt_RELIABLE_DEADLINE
 #define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
 #endif

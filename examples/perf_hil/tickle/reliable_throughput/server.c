@@ -431,7 +431,7 @@ int main(int argc, char** argv) {
            BENCH_FRAG_COUNT(node, frag_duplicate), BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
-           sub.gap_abandoned, sub.gap_evicted, (unsigned long long)tt_reliable_retry_interval_configured(),
+           sub.gap_abandoned, sub.gap_evicted, (unsigned long long)tt_reliable_retry_interval_configured(&node),
            first_writer->recovery_srtt_ns, first_writer->recovery_rttvar_ns, node.timer_lateness_ns,
            node.timer_lateness_mean_ns, (int)tt_RX_BATCH, (unsigned long long)node.hal.rx_batch_calls,
            (unsigned long long)node.hal.rx_batch_datagrams, (unsigned long long)node.hal.rx_batch_full,

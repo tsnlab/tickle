@@ -218,7 +218,8 @@ static void test_the_retry_intervals_use_the_measured_lateness(void) {
     memset(&proxy, 0, sizeof(proxy));
     proxy.recovery_srtt_ns = 400 * (uint32_t)US;
     proxy.recovery_rttvar_ns = 0;
-    EXPECT_EQ_U64((400 + 250) * US, retry_interval_for(0, reliable_retry_granularity(&node), &proxy));
+    EXPECT_EQ_U64((400 + 250) * US,
+                  retry_interval_for(&node.opts.reliable, 0, reliable_retry_granularity(&node), &proxy));
     if (tt_RELIABLE_RETRY_INTERVAL == 0 && tt_RELIABLE_RETRY_GRANULARITY == 0) {
         EXPECT_EQ_U64((400 + 250) * US, reliable_retry_interval(&node, &proxy));
     }

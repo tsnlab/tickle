@@ -317,8 +317,8 @@ MUTANTS = [
     ),
     (
         "(srtt) the reliable retry's ceiling a multiple of srtt alone",
-        "    uint64_t unit = srtt > granularity ? srtt : granularity;\n    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX",
-        "    uint64_t unit = srtt;\n    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX",
+        "    uint64_t unit = srtt > granularity ? srtt : granularity;\n    uint64_t ceiling = unit * (uint64_t)reliable->max_srtt_multiple",
+        "    uint64_t unit = srtt;\n    uint64_t ceiling = unit * (uint64_t)reliable->max_srtt_multiple",
         "test_retry_interval_estimate_converges_and_is_bounded",
         "test_reliable_pubsub",
     ),

@@ -875,9 +875,26 @@ struct tt_DiscoveryOptions {
 #define tt_LIVELINESS_NO_DEFERRALS UINT8_MAX // tt_DiscoveryOptions.liveliness_max_deferrals: judge at once
 #define tt_DISCOVERY_MAX_DURATION_NS (86400ULL * tt_SECOND) // the longest tt_DiscoveryOptions duration: one day
 
-// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
+// The reliability timing (ROADMAP "Context options" bundle 3): what config.h's tt_RELIABLE_* constants, the timer
+// lateness's starting value and the idle HEARTBEAT's settings were for every context in the process. Each zero is that
+// constant - so in a build that sets one with -D, the build's value; where config.h gives 0 a meaning of its own
+// (deadline and retry_interval: none, dynamic; retry_granularity: measured) that meaning is the default. See config.h
+// for what each one does and why its default is what it is.
+#define tt_RELIABLE_NO_BACKOFF UINT8_MAX // tt_ReliableOptions.backoff_shift: no back-off, every retry at the interval
 struct tt_ReliableOptions {
-    uint8_t reserved;
+    uint64_t deadline;               // a fixed ACKNACK retry interval over retry_interval; 0 = tt_RELIABLE_DEADLINE
+    uint64_t retry_interval;         // 0 = tt_RELIABLE_RETRY_INTERVAL (whose 0 is the dynamic interval)
+    uint64_t retry_initial;          // the dynamic interval before a sample; 0 = tt_RELIABLE_RETRY_INITIAL
+    uint64_t retry_granularity;      // a fixed G; 0 = tt_RELIABLE_RETRY_GRANULARITY (whose 0 is the measured G)
+    uint64_t timer_lateness_initial; // the measured G before its first sample; 0 = tt_TIMER_LATENESS_INITIAL
+    uint64_t stuck_warn_interval;    // 0 = tt_RELIABLE_STUCK_WARN_INTERVAL
+    // A RELIABLE Publisher's idle HEARTBEAT period when its own tt_PublisherOptions.idle_heartbeat_ns is 0; 0 =
+    // tt_IDLE_HEARTBEAT_PERIOD, tt_QOS_DURATION_INFINITE = off.
+    uint64_t idle_heartbeat_period;
+    uint16_t max_srtt_multiple;             // 0 = tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
+    uint16_t idle_heartbeat_retry_multiple; // 0 = tt_IDLE_HEARTBEAT_RETRY_MULTIPLE
+    uint8_t retry;                          // 0 = tt_RELIABLE_RETRY; at most UINT8_MAX - 1
+    uint8_t backoff_shift; // 0 = tt_RELIABLE_RETRY_BACKOFF_SHIFT; at most 16, or tt_RELIABLE_NO_BACKOFF
 };
 // The context-wide defaults of its services' retry schedule and kept answers (config.h, "CALL_RETRY"), each 0 = the
 // compiled tt_* of the same name. A Client's own tt_ClientOptions.call_retry_* (or its tt_Service's) still override the
@@ -910,6 +927,7 @@ struct tt_QosDefaults {
     uint32_t keep_all_bytes;  // KEEP_ALL history.bytes; 0 = tt_QOS_KEEP_ALL_BYTES_DEFAULT
     uint64_t max_blocking_ns; // a Publisher's reliability.max_blocking_ns; 0 = tt_QOS_MAX_BLOCKING_DEFAULT_NS
 };
+// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
 struct tt_PollOptions {
     uint8_t reserved;
 };
@@ -3058,12 +3076,11 @@ uint8_t tt_Publisher_matched_count(const struct tt_Publisher* pub);
 // fires nothing; such a caller bounds its wait.
 bool tt_Publisher_large_in_flight(struct tt_Publisher* pub);
 
-// The ACKNACK retry interval this library was built with (2026-09-25): tt_RELIABLE_DEADLINE when set,
-// else tt_RELIABLE_RETRY_INTERVAL - 0 meaning dynamic. A function rather than the macro because it
-// answers for how libtickle itself was compiled, which a caller's own view of config.h cannot: an
-// application built with one -D against a library built with another would otherwise report the
-// mode it asked for, not the mode it ran.
-uint64_t tt_reliable_retry_interval_configured(void);
+// The ACKNACK retry interval this context runs with: its tt_ReliableOptions.deadline when set, else its
+// retry_interval - 0 meaning dynamic. Per context since tt_InitOptions bundle 3 (until then the build's
+// tt_RELIABLE_DEADLINE / tt_RELIABLE_RETRY_INTERVAL, the same for every context); a function rather than a field read
+// because it answers for the context's resolved options, which the library's own build fills in. 0 for a NULL node.
+uint64_t tt_reliable_retry_interval_configured(const struct tt_Context* node);
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
 // struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how

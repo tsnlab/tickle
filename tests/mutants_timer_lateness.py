@@ -96,7 +96,7 @@ MUTANTS = [
     (
         "no cold start: G 0 until the first sample",
         "src/tickle.c",
-        "    return measured != 0 ? (uint64_t)measured : (uint64_t)tt_TIMER_LATENESS_INITIAL;",
+        "    return measured != 0 ? (uint64_t)measured : reliable_opts(node)->timer_lateness_initial;",
         "    return (uint64_t)measured;",
         "test_cold_start_is_the_old_constant",
     ),
@@ -111,8 +111,8 @@ MUTANTS = [
     (
         "the reliable retry handed the cold G",
         "src/tickle.c",
-        "    return retry_interval_for(reliable_retry_configured(), reliable_retry_granularity(node), proxy);",
-        "    return retry_interval_for(reliable_retry_configured(), reliable_retry_granularity(NULL), proxy);",
+        "    return retry_interval_for(reliable_opts(node), reliable_retry_configured(node), reliable_retry_granularity(node),",
+        "    return retry_interval_for(reliable_opts(node), reliable_retry_configured(node), reliable_retry_granularity(NULL),",
         "test_the_retry_intervals_use_the_measured_lateness",
     ),
     (

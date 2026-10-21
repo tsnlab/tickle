@@ -495,8 +495,46 @@ static void resolve_discovery_options(struct tt_DiscoveryOptions* discovery) {
     }
 }
 
+// What each zero of struct tt_ReliableOptions stands for: config.h's constants as this build sets them. Also the
+// options of the code paths that have no context to ask (reliable_opts()). The idle HEARTBEAT's 0 there is "off", which
+// in the options is tt_QOS_DURATION_INFINITE.
+static const struct tt_ReliableOptions reliable_defaults = {
+    .deadline = (uint64_t)tt_RELIABLE_DEADLINE,
+    .retry_interval = (uint64_t)tt_RELIABLE_RETRY_INTERVAL,
+    .retry_initial = (uint64_t)tt_RELIABLE_RETRY_INITIAL,
+    .retry_granularity = (uint64_t)tt_RELIABLE_RETRY_GRANULARITY,
+    .timer_lateness_initial = (uint64_t)tt_TIMER_LATENESS_INITIAL,
+    .stuck_warn_interval = (uint64_t)tt_RELIABLE_STUCK_WARN_INTERVAL,
+    .idle_heartbeat_period =
+        tt_IDLE_HEARTBEAT_PERIOD != 0 ? (uint64_t)tt_IDLE_HEARTBEAT_PERIOD : tt_QOS_DURATION_INFINITE,
+    .max_srtt_multiple = (uint16_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE,
+    .idle_heartbeat_retry_multiple = (uint16_t)tt_IDLE_HEARTBEAT_RETRY_MULTIPLE,
+    .retry = (uint8_t)tt_RELIABLE_RETRY,
+    .backoff_shift = tt_RELIABLE_RETRY_BACKOFF_SHIFT != 0 ? (uint8_t)tt_RELIABLE_RETRY_BACKOFF_SHIFT
+                                                          : (uint8_t)tt_RELIABLE_NO_BACKOFF,
+};
+
+// Each zero replaced by reliable_defaults' field: after this every reader takes node->opts.reliable as it is.
 static void resolve_reliable_options(struct tt_ReliableOptions* reliable) {
-    (void)reliable;
+    const struct tt_ReliableOptions* def = &reliable_defaults;
+    reliable->deadline = reliable->deadline != 0 ? reliable->deadline : def->deadline;
+    reliable->retry_interval = reliable->retry_interval != 0 ? reliable->retry_interval : def->retry_interval;
+    reliable->retry_initial = reliable->retry_initial != 0 ? reliable->retry_initial : def->retry_initial;
+    reliable->retry_granularity =
+        reliable->retry_granularity != 0 ? reliable->retry_granularity : def->retry_granularity;
+    reliable->timer_lateness_initial =
+        reliable->timer_lateness_initial != 0 ? reliable->timer_lateness_initial : def->timer_lateness_initial;
+    reliable->stuck_warn_interval =
+        reliable->stuck_warn_interval != 0 ? reliable->stuck_warn_interval : def->stuck_warn_interval;
+    reliable->idle_heartbeat_period =
+        reliable->idle_heartbeat_period != 0 ? reliable->idle_heartbeat_period : def->idle_heartbeat_period;
+    reliable->max_srtt_multiple =
+        reliable->max_srtt_multiple != 0 ? reliable->max_srtt_multiple : def->max_srtt_multiple;
+    reliable->idle_heartbeat_retry_multiple = reliable->idle_heartbeat_retry_multiple != 0
+                                                  ? reliable->idle_heartbeat_retry_multiple
+                                                  : def->idle_heartbeat_retry_multiple;
+    reliable->retry = reliable->retry != 0 ? reliable->retry : def->retry;
+    reliable->backoff_shift = reliable->backoff_shift != 0 ? reliable->backoff_shift : def->backoff_shift;
 }
 
 // What the defaults must be is checked at creation (validate_service_options()); here only that each fits its field.
@@ -756,9 +794,35 @@ static tt_ret_t validate_discovery_options(const struct tt_DiscoveryOptions* dis
     return tt_RET_OK;
 }
 
+// The checks a constant never needed: each value here can now be anything its type holds. A retry wait is a fixed
+// interval shifted left by the back-off, so none of the three may overflow 64 bits at the largest shift; the ceiling is
+// max(srtt, G) times a uint16_t, which a G above 32 bits - fixed, or the measured one's starting value - could
+// overflow; and the retry counters saturate at UINT8_MAX, so a retry count there would never be passed (and `retry +
+// 1`, where the back-off starts, never reached).
+#define RELIABLE_BACKOFF_SHIFT_MAX 16U
 static tt_ret_t validate_reliable_options(const struct tt_ReliableOptions* reliable) {
-    if (reliable->reserved != 0) {
-        return reject_option("reliable.reserved", "is not 0");
+    if (reliable->retry == UINT8_MAX) {
+        return reject_option("reliable.retry", "is UINT8_MAX, which the saturating retry counters never pass");
+    }
+    uint8_t shift = reliable->backoff_shift == tt_RELIABLE_NO_BACKOFF ? 0U : reliable->backoff_shift;
+    if (shift > RELIABLE_BACKOFF_SHIFT_MAX) {
+        return reject_option("reliable.backoff_shift", "is above 16 and not tt_RELIABLE_NO_BACKOFF");
+    }
+    uint64_t wait_max = UINT64_MAX >> shift;
+    if (reliable->deadline > wait_max) {
+        return reject_option("reliable.deadline", "overflows 64 bits backed off by backoff_shift");
+    }
+    if (reliable->retry_interval > wait_max) {
+        return reject_option("reliable.retry_interval", "overflows 64 bits backed off by backoff_shift");
+    }
+    if (reliable->retry_initial > wait_max) {
+        return reject_option("reliable.retry_initial", "overflows 64 bits backed off by backoff_shift");
+    }
+    if (reliable->retry_granularity > UINT32_MAX) {
+        return reject_option("reliable.retry_granularity", "is above UINT32_MAX ns, where the ceiling overflows");
+    }
+    if (reliable->timer_lateness_initial > UINT32_MAX) {
+        return reject_option("reliable.timer_lateness_initial", "is above UINT32_MAX ns, where the ceiling overflows");
     }
     return tt_RET_OK;
 }
@@ -6192,8 +6256,8 @@ static bool names_any_open(const struct tt_WriterProxy* proxy, int high_bit, con
 #endif
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
-static uint64_t reliable_retry_configured(void);
-static uint64_t reliable_retry_interval_publisher(void);
+static uint64_t reliable_retry_configured(const struct tt_Context* node);
+static uint64_t reliable_retry_interval_publisher(const struct tt_Context* node);
 static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now);
 static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_ns);
 static void rtt_estimate_fold(uint32_t* srtt_ns, uint32_t* rttvar_ns, uint64_t sample_ns);
@@ -6256,9 +6320,11 @@ static void wall_offset_refresh(struct tt_Context* node) {
 // zeroed inbox state array only happens to mean "empty".
 static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
-    // when this changes nothing) or built by hand in a whitebox test (the service group still zero). The call path
-    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest).
+    // when this changes nothing) or built by hand in a whitebox test (the service and reliable groups still zero). The
+    // call path reads the service options, and the repair path the reliable ones, with no fallback for a zero
+    // (service_call_retry_interval(), resend_suppressed() and the rest).
     resolve_service_options(&node->opts.service);
+    resolve_reliable_options(&node->opts.reliable);
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -7450,7 +7516,11 @@ static tt_ret_t publisher_reset(struct tt_Context* node, struct tt_Publisher* pu
     pub->ack_solicit_seq_no = 0;
     pub->ack_solicited = false;
     pub->resolicit_armed = false;
-    pub->idle_heartbeat_ns = tt_IDLE_HEARTBEAT_PERIOD; // on for a RELIABLE writer - config.h says why and how often
+    // On for a RELIABLE writer at the context's period (tt_IDLE_HEARTBEAT_PERIOD by default) - config.h says why and
+    // how often; tt_QOS_DURATION_INFINITE there is off, 0 here.
+    pub->idle_heartbeat_ns = node->opts.reliable.idle_heartbeat_period == tt_QOS_DURATION_INFINITE
+                                 ? 0
+                                 : node->opts.reliable.idle_heartbeat_period;
     pub->last_heartbeat_ns = 0;
     pub->idle_check_ns = 0; // the first publish arms it
     pub->idle_heartbeats = 0;
@@ -7883,22 +7953,27 @@ static void timer_lateness_fold(struct tt_Context* node, uint64_t lateness_ns) {
                      __ATOMIC_RELAXED);
 }
 
-// The measured G, or tt_TIMER_LATENESS_INITIAL - the constant it replaced - until the first sample (or with no
-// context to ask, as a test's bare proxy has none).
-static uint64_t timer_lateness_ns(const struct tt_Context* node) {
-    uint32_t measured = node != NULL ? __atomic_load_n(&node->timer_lateness_ns, __ATOMIC_RELAXED) : 0U;
-    return measured != 0 ? (uint64_t)measured : (uint64_t)tt_TIMER_LATENESS_INITIAL;
+// A context's reliability options, or with no context to ask - a test's bare proxy has none - the build's defaults.
+static const struct tt_ReliableOptions* reliable_opts(const struct tt_Context* node) {
+    return node != NULL ? &node->opts.reliable : &reliable_defaults;
 }
 
-// The reliable retry's G: a fixed tt_RELIABLE_RETRY_GRANULARITY if the build sets one, else the measured lateness.
-// The measured path takes the setting as a parameter for the same reason retry_interval_for() does: a test can reach
-// it in a build whose default is fixed.
+// The measured G, or the options' timer_lateness_initial (tt_TIMER_LATENESS_INITIAL, the constant it replaced) until
+// the first sample.
+static uint64_t timer_lateness_ns(const struct tt_Context* node) {
+    uint32_t measured = node != NULL ? __atomic_load_n(&node->timer_lateness_ns, __ATOMIC_RELAXED) : 0U;
+    return measured != 0 ? (uint64_t)measured : reliable_opts(node)->timer_lateness_initial;
+}
+
+// The reliable retry's G: the options' fixed retry_granularity if set, else the measured lateness. The measured path
+// takes the setting as a parameter for the same reason retry_interval_for() does: a test can reach it in a build whose
+// default is fixed.
 static uint64_t granularity_for(uint64_t configured, const struct tt_Context* node) {
     return configured != 0 ? configured : timer_lateness_ns(node);
 }
 
 static uint64_t reliable_retry_granularity(const struct tt_Context* node) {
-    return granularity_for((uint64_t)tt_RELIABLE_RETRY_GRANULARITY, node);
+    return granularity_for(reliable_opts(node)->retry_granularity, node);
 }
 
 // A call's G: a fixed tt_CALL_RETRY_GRANULARITY, else twice the reliable retry's - two late-running events in a
@@ -8664,8 +8739,8 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
 // Sends one solicitation unless the shared throttle says it's too soon. Split out so the watermark
 // path below and the refusal path in tt_Publisher_publish() can't drift apart on the throttle.
 static uint64_t ack_solicit_min_gap(const struct tt_Publisher* pub) {
-    return pub->ack_solicit_period_ns > reliable_retry_interval_publisher() ? pub->ack_solicit_period_ns
-                                                                            : reliable_retry_interval_publisher();
+    uint64_t interval = reliable_retry_interval_publisher(pub->node);
+    return pub->ack_solicit_period_ns > interval ? pub->ack_solicit_period_ns : interval;
 }
 
 static void solicit_ack_throttled(struct tt_Publisher* pub) {
@@ -12285,9 +12360,11 @@ static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher*
     encode_and_send_heartbeat(node, pub, first_seq_no, target, 1, tt_HEARTBEAT_FLAG_FINAL);
 }
 
-// The idle HEARTBEAT's period: the configured one, never below tt_IDLE_HEARTBEAT_RETRY_MULTIPLE retry intervals.
+// The idle HEARTBEAT's period: the configured one, never below the options' idle_heartbeat_retry_multiple
+// (tt_IDLE_HEARTBEAT_RETRY_MULTIPLE) retry intervals.
 static uint64_t idle_heartbeat_period(const struct tt_Publisher* pub) {
-    uint64_t floor = (uint64_t)tt_IDLE_HEARTBEAT_RETRY_MULTIPLE * reliable_retry_interval_publisher();
+    uint64_t floor = (uint64_t)reliable_opts(pub->node)->idle_heartbeat_retry_multiple *
+                     reliable_retry_interval_publisher(pub->node);
     return pub->idle_heartbeat_ns > floor ? pub->idle_heartbeat_ns : floor;
 }
 
@@ -12420,8 +12497,8 @@ uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
     return result;
 }
 
-uint64_t tt_reliable_retry_interval_configured(void) {
-    return reliable_retry_configured();
+uint64_t tt_reliable_retry_interval_configured(const struct tt_Context* node) {
+    return node != NULL ? reliable_retry_configured(node) : 0;
 }
 
 static uint32_t publisher_min_acked_seq_no_locked(const struct tt_Publisher* pub) {
@@ -14043,14 +14120,14 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
 
 // How long a repair this reader asked for is taken to be on its way: the measured repair transit's srtt +
 // max(G, 4 * rttvar) - the retry timer's own formula, on a sample that counts only the
-// transit - or tt_RELIABLE_RETRY_INITIAL before there is one. srtt alone (d603d369) was too short at c6 on the rig: a
-// repair queued behind ~850 Mbps of the writer's own data arrives with a spread as wide as its mean (rttvar ~ srtt),
-// and every one later than srtt was asked for again. The transit is not the recovery estimate the timer runs on,
-// which a lost repair or a bounded reader's declines lengthen: f3451cd8 was about a reader whose timer had grown to
-// ~130 ms while its writer, stopped and refused, would have answered within a round trip.
+// transit - or the options' retry_initial (tt_RELIABLE_RETRY_INITIAL) before there is one. srtt alone (d603d369) was
+// too short at c6 on the rig: a repair queued behind ~850 Mbps of the writer's own data arrives with a spread as wide
+// as its mean (rttvar ~ srtt), and every one later than srtt was asked for again. The transit is not the recovery
+// estimate the timer runs on, which a lost repair or a bounded reader's declines lengthen: f3451cd8 was about a reader
+// whose timer had grown to ~130 ms while its writer, stopped and refused, would have answered within a round trip.
 static uint64_t repair_in_flight_ns(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
     if (proxy->transit_srtt_ns == 0) {
-        return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+        return node->opts.reliable.retry_initial;
     }
     uint64_t spread = 4ULL * proxy->transit_rttvar_ns;
     uint64_t granularity = reliable_retry_granularity(node);
@@ -14267,47 +14344,45 @@ static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy) 
     send_acknack_range(node, proxy, 0, highest_relevant_bit(proxy));
 }
 
-// The reliable Subscriber's ACKNACK retry cadence - tt_RELIABLE_DEADLINE when set, otherwise
-// tt_RELIABLE_RETRY_INTERVAL (config.h, Phase 1-b). Shared by acknack_retry() and
+// The reliable Subscriber's ACKNACK retry cadence - the options' deadline (tt_RELIABLE_DEADLINE) when set, otherwise
+// their retry_interval (tt_RELIABLE_RETRY_INTERVAL; config.h, Phase 1-b). Shared by acknack_retry() and
 // maybe_arm_acknack_retry() so the first retry and every later one use the same interval.
-// The configured interval: tt_RELIABLE_DEADLINE when set, else tt_RELIABLE_RETRY_INTERVAL - which
-// may be 0, meaning dynamic.
-// Chosen by the preprocessor rather than a conditional expression: with the dynamic default both
-// macros are 0, and `0 != 0 ? 0 : 0` is a conditional with identical branches.
-static uint64_t reliable_retry_configured(void) {
-#if tt_RELIABLE_DEADLINE != 0
-    return (uint64_t)tt_RELIABLE_DEADLINE;
-#else
-    return (uint64_t)tt_RELIABLE_RETRY_INTERVAL;
-#endif
+// The configured interval: the deadline when set, else retry_interval - which may be 0, meaning dynamic.
+static uint64_t reliable_retry_configured(const struct tt_Context* node) {
+    const struct tt_ReliableOptions* reliable = reliable_opts(node);
+    return reliable->deadline != 0 ? reliable->deadline : reliable->retry_interval;
 }
 
 // One proxy's interval, given the configured value. A non-zero configured value is the caller's
 // explicit choice and wins outright. 0 derives it from this proxy's own recovery estimate (see
 // tt_WriterProxy.recovery_srtt_ns): srtt + max(G, 4 * rttvar) - G being `granularity`, the context's
 // reliable_retry_granularity() - at most
-// tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE * max(srtt, G), or tt_RELIABLE_RETRY_INITIAL until there is a first
-// sample. See config.h for why the bounds are relative and why the one absolute term remains.
+// max_srtt_multiple * max(srtt, G), or retry_initial until there is a first sample (`reliable`, the context's
+// options: tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE and tt_RELIABLE_RETRY_INITIAL by default). See config.h for why the
+// bounds are relative and why the one absolute term remains.
 //
 // The configured value is a parameter rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
 // untestable in the default build.
-static uint64_t retry_interval_of(uint64_t granularity, uint32_t srtt_ns, uint32_t rttvar_ns);
+static uint64_t retry_interval_of(const struct tt_ReliableOptions* reliable, uint64_t granularity, uint32_t srtt_ns,
+                                  uint32_t rttvar_ns);
 
-static uint64_t retry_interval_for(uint64_t configured, uint64_t granularity, const struct tt_WriterProxy* proxy) {
+static uint64_t retry_interval_for(const struct tt_ReliableOptions* reliable, uint64_t configured, uint64_t granularity,
+                                   const struct tt_WriterProxy* proxy) {
     if (configured != 0) {
         return configured;
     }
     if (proxy == NULL) {
-        return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+        return reliable->retry_initial;
     }
-    return retry_interval_of(granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);
+    return retry_interval_of(reliable, granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);
 }
 
-// srtt + max(G, 4 * rttvar), at most MAX_SRTT_MULTIPLE * max(srtt, G); INITIAL with no sample (srtt 0).
-static uint64_t retry_interval_of(uint64_t granularity, uint32_t srtt_ns, uint32_t rttvar_ns) {
+// srtt + max(G, 4 * rttvar), at most max_srtt_multiple * max(srtt, G); retry_initial with no sample (srtt 0).
+static uint64_t retry_interval_of(const struct tt_ReliableOptions* reliable, uint64_t granularity, uint32_t srtt_ns,
+                                  uint32_t rttvar_ns) {
     if (srtt_ns == 0) {
-        return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+        return reliable->retry_initial;
     }
     uint64_t srtt = srtt_ns;
     uint64_t spread = 4ULL * rttvar_ns;
@@ -14320,7 +14395,7 @@ static uint64_t retry_interval_of(uint64_t granularity, uint32_t srtt_ns, uint32
     // zero-delay test link does - put the ceiling below G and every wait was cut to it: an srtt of 1 ns retried every
     // 64 ns, a storm (2026-10-16, test_a_busy_writers_send_is_not_timed_as_the_path once its busy samples were gone).
     uint64_t unit = srtt > granularity ? srtt : granularity;
-    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE;
+    uint64_t ceiling = unit * (uint64_t)reliable->max_srtt_multiple;
     return interval > ceiling ? ceiling : interval;
 }
 
@@ -14333,7 +14408,8 @@ static bool writer_still_sending(const struct tt_WriterProxy* proxy, uint64_t no
 #endif
 
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
-    return retry_interval_for(reliable_retry_configured(), reliable_retry_granularity(node), proxy);
+    return retry_interval_for(reliable_opts(node), reliable_retry_configured(node), reliable_retry_granularity(node),
+                              proxy);
 }
 
 #if tt_LARGE_SAMPLES
@@ -14342,20 +14418,21 @@ static uint64_t reliable_retry_interval(const struct tt_Context* node, const str
 // is longer than the path's `interval`. A configured interval is used as given.
 static uint64_t retry_cadence_while_sending(const struct tt_Context* node, const struct tt_WriterProxy* proxy,
                                             uint64_t interval) {
-    if (reliable_retry_configured() != 0 || proxy->sending_srtt_ns == 0) {
+    if (reliable_retry_configured(node) != 0 || proxy->sending_srtt_ns == 0) {
         return interval;
     }
-    uint64_t sending =
-        retry_interval_of(reliable_retry_granularity(node), proxy->sending_srtt_ns, proxy->sending_rttvar_ns);
+    uint64_t sending = retry_interval_of(reliable_opts(node), reliable_retry_granularity(node), proxy->sending_srtt_ns,
+                                         proxy->sending_rttvar_ns);
     return sending > interval ? sending : interval;
 }
 #endif
 
 // A Publisher has no recovery estimate of its own - it is the Subscriber that times recoveries - so
-// in dynamic mode its ACK-solicitation throttle keeps the fixed starting value it always had.
-static uint64_t reliable_retry_interval_publisher(void) {
-    uint64_t configured = reliable_retry_configured();
-    return configured != 0 ? configured : (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+// in dynamic mode its ACK-solicitation throttle keeps the fixed starting value it always had (the options'
+// retry_initial).
+static uint64_t reliable_retry_interval_publisher(const struct tt_Context* node) {
+    uint64_t configured = reliable_retry_configured(node);
+    return configured != 0 ? configured : reliable_opts(node)->retry_initial;
 }
 
 // Folds one request-to-recovery time into proxy's estimate, RFC 6298-style: on the first sample
@@ -14409,7 +14486,7 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
     }
-    if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
+    if (node->rx_targeted && proxy->retry <= node->opts.reliable.retry) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (!proxy->probe_busy) {
             note_recovery_sample(proxy, took);
@@ -14451,11 +14528,11 @@ static void note_large_arrival(const struct tt_Context* node, struct tt_WriterPr
 #endif
 
 // How long acknack_retry() waits before asking again: the retry interval, shifted left by the proxy's back-off
-// (RFC 6298 section 5.5's doubling, capped at 2^tt_RELIABLE_RETRY_BACKOFF_SHIFT). Requests now go on until the writer
-// repairs the gap or says it is gone, so a reader whose requests or repairs are all lost - a path down, a writer that
-// stopped answering - must not keep asking at the pace of a healthy recovery, each request a resend of everything it
-// names. A KEEP_ALL writer's gaps keep the plain interval, as they always had: they never gave up, and its flow control
-// waits on exactly that repair.
+// (RFC 6298 section 5.5's doubling, capped at 2^backoff_shift, the options' - tt_RELIABLE_RETRY_BACKOFF_SHIFT).
+// Requests now go on until the writer repairs the gap or says it is gone, so a reader whose requests or repairs are all
+// lost - a path down, a writer that stopped answering - must not keep asking at the pace of a healthy recovery, each
+// request a resend of everything it names. A KEEP_ALL writer's gaps keep the plain interval, as they always had: they
+// never gave up, and its flow control waits on exactly that repair.
 static uint64_t acknack_retry_delay(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
     uint64_t interval = reliable_retry_interval(node, proxy);
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {
@@ -14472,12 +14549,14 @@ static uint64_t acknack_retry_delay(const struct tt_Context* node, const struct 
 // the PC's p4 cell at 1% loss (max rate, KEEP_LAST 64, keep_last_repair_pc_ab.sh) a back-off on the retry count alone
 // held gaps up to 16 intervals past their eviction, and one run in ten collapsed that way: 35% delivered, 747,004
 // resends, over a million "cannot hold fragment" (the parent's worst run of ten: 95.4%).
-static void acknack_retry_note_frontier(struct tt_WriterProxy* proxy, int highest) {
+static void acknack_retry_note_frontier(const struct tt_ReliableOptions* reliable, struct tt_WriterProxy* proxy,
+                                        int highest) {
     uint32_t frontier = proxy->ack_seq_no + (uint32_t)highest;
-    if (frontier != proxy->retry_frontier || proxy->retry <= tt_RELIABLE_RETRY) {
+    uint8_t shift = reliable->backoff_shift == tt_RELIABLE_NO_BACKOFF ? 0U : reliable->backoff_shift;
+    if (frontier != proxy->retry_frontier || proxy->retry <= reliable->retry) {
         proxy->retry_frontier = frontier;
         proxy->backoff = 0; // a new gap's retries start plain too, whatever the last one reached
-    } else if (proxy->backoff < (uint8_t)tt_RELIABLE_RETRY_BACKOFF_SHIFT) {
+    } else if (proxy->backoff < shift) {
         proxy->backoff++;
     }
 }
@@ -14561,8 +14640,8 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
         proxy->retry--;
     }
 #endif
-    acknack_retry_note_frontier(proxy, highest);
-    if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
+    acknack_retry_note_frontier(&node->opts.reliable, proxy, highest);
+    if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == node->opts.reliable.retry + 1) {
         // Counted once per gap, at the point the back-off may start, as it was where a bounded policy used to give up.
         RSTAT_INC(giveups_suppressed_unknown);
     }
@@ -14583,8 +14662,8 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // it is gone. KEEP_ALL warns from the first retry, as it always has. Rate-limited by time rather than retry count,
     // so the cadence doesn't change with the retry interval.
     uint64_t now = tt_get_ns();
-    if ((proxy->keep_all == tt_WRITER_KEEP_ALL_YES || proxy->retry > tt_RELIABLE_RETRY) &&
-        now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
+    if ((proxy->keep_all == tt_WRITER_KEEP_ALL_YES || proxy->retry > node->opts.reliable.retry) &&
+        now - proxy->stuck_warned_ns >= node->opts.reliable.stuck_warn_interval) {
         proxy->stuck_warned_ns = now;
         TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (%s: no give-up)",
                        proxy->ack_seq_no, proxy->context_id, proxy->retry,
@@ -19428,21 +19507,23 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
 // many retries. Without a bound the PC's p4 cell at 1% loss resent 412,632 datagrams where the parent resent 19-31
 // thousand, and delivered half as many samples (keep_last_repair_pc_ab.sh, first run). So past tt_RELIABLE_RETRY
 // resends - as fast as before up to there - an entry goes again at most once per retry interval (the Publisher's,
-// reliable_retry_interval_publisher(): the configured one, else tt_RELIABLE_RETRY_INITIAL), the nack suppression an
+// reliable_retry_interval_publisher(): the configured one, else retry_initial), the nack suppression an
 // RTPS writer applies. A request it suppresses is neither answered nor told the datagram is gone; the reader's next
 // one, backed off, finds it due. Per entry, not per reader: a second reader asking within the interval waits too.
 // Not under KEEP_ALL, which never had a cap: its unacknowledged run is bounded by its own flow control, and a reader
 // stuck on a datagram blocks the writer on exactly that one (as acknack_retry_delay() leaves its requests unbacked).
 #define RESENT_AT_SHIFT 10U // tt_ReliableCacheIndex.resent_at: tt_get_ns() >> 10, about microseconds
-static bool resend_suppressed(const struct tt_ReliableCacheIndex* entry, bool pub_keep_all) {
-    if (pub_keep_all || entry->retry < tt_RELIABLE_RETRY) {
+static bool resend_suppressed(const struct tt_Context* node, const struct tt_ReliableCacheIndex* entry,
+                              bool pub_keep_all) {
+    if (pub_keep_all || entry->retry < node->opts.reliable.retry) {
         return false;
     }
     uint32_t now = (uint32_t)(tt_get_ns() >> RESENT_AT_SHIFT);
-    return now - entry->resent_at < (uint32_t)(reliable_retry_interval_publisher() >> RESENT_AT_SHIFT);
+    return now - entry->resent_at < (uint32_t)(reliable_retry_interval_publisher(node) >> RESENT_AT_SHIFT);
 }
 
-static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
+static struct tt_ReliableCacheIndex* find_resendable_cache_entry(const struct tt_Context* node,
+                                                                 struct tt_ReliableCache* cache, uint16_t depth,
                                                                  uint32_t missing_seq_no, uint64_t lifespan_duration_ns,
                                                                  bool pub_keep_all, bool* gone) {
     struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, missing_seq_no);
@@ -19452,7 +19533,7 @@ static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_Relia
         return NULL; // empty slot, a tombstone (evicted, or never cached because the sample was
                      // larger than the whole arena), or taken over by a different seq_no since
     }
-    if (resend_suppressed(cache_entry, pub_keep_all)) {
+    if (resend_suppressed(node, cache_entry, pub_keep_all)) {
         RSTAT_INC(null_retry_cap);
         return NULL; // held, and resent less than a retry interval ago: not gone, not yet again
     }
@@ -19523,8 +19604,8 @@ static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* 
     }
 #endif
     bool gone = false;
-    struct tt_ReliableCacheIndex* cache_entry =
-        find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, pub->keep_all, &gone);
+    struct tt_ReliableCacheIndex* cache_entry = find_resendable_cache_entry(
+        node, cache, depth, missing_seq_no, pub->lifespan_duration_ns, pub->keep_all, &gone);
     if (cache_entry == NULL) {
         return gone;
     }
