@@ -845,8 +845,23 @@ struct tt_DiscoveryOptions {
 struct tt_ReliableOptions {
     uint8_t reserved;
 };
+// The context-wide defaults of its services' retry schedule and kept answers (config.h, "CALL_RETRY"), each 0 = the
+// compiled tt_* of the same name. A Client's own tt_ClientOptions.call_retry_* (or its tt_Service's) still override the
+// first two for that Client. The client's schedule is interop-semantic: a server keeps an answer as long as it
+// reckons the client may retry (server_client_window(), tickle.c), from its own figures, since nothing on the wire
+// carries the client's - so a context whose call_retry_count, call_retry_interval, call_retry_max_srtt_multiple or
+// call_deadline_per_send differs from the build's is created, with a warning that its peers assume the build's.
+#define tt_CALL_RETRY_GRANULARITY_AUTO UINT32_MAX // tt_ServiceOptions.call_retry_granularity: twice the reliable G
 struct tt_ServiceOptions {
-    uint8_t reserved;
+    uint32_t call_retry_interval; // ns, the seed of an auto call's first wait; 0 = tt_CALL_RETRY_INTERVAL
+    uint32_t call_retry_count;    // retries of a call; 0 = tt_CALL_RETRY_COUNT
+    // ns, a call's G; 0 = tt_CALL_RETRY_GRANULARITY; tt_CALL_RETRY_GRANULARITY_AUTO = twice the reliable retry's G
+    uint32_t call_retry_granularity;
+    uint16_t call_retry_max_srtt_multiple; // a wait's ceiling in max(srtt, G); 0 = tt_CALL_RETRY_MAX_SRTT_MULTIPLE
+    uint16_t server_cache_gap_multiple; // answers kept this x the observed retry gap; 0 = tt_SERVER_CACHE_GAP_MULTIPLE
+    uint64_t call_deadline_per_send; // ns, an auto call ends within (count + 1) x this; 0 = tt_CALL_DEADLINE_PER_SEND
+    // ns, a deferred request's time to be answered; 0 = tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
+    uint64_t server_deferred_response_timeout;
 };
 // What a zero in a struct tt_QosProfile field resolves to when an endpoint is created on this context (each 0 here =
 // the config.h default named). The tt_*_storage_size() functions keep the config.h defaults; an endpoint whose zeroed
@@ -2193,7 +2208,7 @@ struct tt_Service {
 
     // QoS
     uint32_t call_retry_interval; // 0 means auto
-    uint32_t call_retry_count;    // 0 means tt_CALL_RETRY_COUNT
+    uint32_t call_retry_count;    // 0 means the context's (tt_ServiceOptions.call_retry_count, tt_CALL_RETRY_COUNT)
 };
 
 struct tt_Topic;
@@ -3707,7 +3722,7 @@ struct tt_SubscriberOptions {
 struct tt_ClientOptions {
     tt_CLIENT_CALLBACK callback;  // required
     uint32_t call_retry_interval; // ns; 0 = adaptive. Replaces tt_Service.call_retry_interval for this Client
-    uint32_t call_retry_count;    // 0 = tt_CALL_RETRY_COUNT. Replaces tt_Service.call_retry_count
+    uint32_t call_retry_count;    // 0 = the context's (tt_ServiceOptions). Replaces tt_Service.call_retry_count
     uint32_t max_request_bytes;   // 0 = the inline cache (tt_CLIENT_CACHE_LENGTH per call); else in caller storage
 };
 

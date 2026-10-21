@@ -419,6 +419,8 @@
 // kept waiting - not a link estimate; a service whose answers may take longer sets call_retry_interval (and count)
 // explicitly, which is used as given with no deadline, as rmw_tickle does. The backoff stops growing srtt at the
 // deadline, since no wait can be longer.
+// Each CALL_* and SERVER_* below is the default of the struct tt_ServiceOptions field of the same name (tickle.h),
+// set per context; the checks between them are made at creation (validate_service_options(), tickle.c).
 #ifndef tt_CALL_RETRY_INTERVAL
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND) // nanosecond - the seed, until a first answer
 #endif
@@ -1555,10 +1557,6 @@ static_assert(tt_LARGE_PEER_REGIONS >= 1, "taking same-host large samples needs 
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
-static_assert(tt_CALL_DEADLINE_PER_SEND >= tt_CALL_RETRY_INTERVAL,
-              "the seed's first wait fits inside the deadline of a call");
-static_assert(tt_CALL_RETRY_MAX_SRTT_MULTIPLE >= 1, "a wait's ceiling is at least srtt");
-static_assert(tt_SERVER_CACHE_GAP_MULTIPLE >= 1, "a response is kept at least one observed retry gap");
 static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");
 static_assert(tt_UPDATE_MAX_PARTS >= 1 && tt_UPDATE_MAX_PARTS <= UINT8_MAX,
