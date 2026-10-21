@@ -6,17 +6,22 @@ still passes means the test is not testing what its name says - which is the fai
 exists to catch, and which has happened twice already in this file's history (a contention test that
 passed against the pre-fix writer, and an address test that compared zero with zero).
 
-Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it (the control always runs).
+Run from the repository root. MUTANTS=<substring> runs only the mutants whose name contains it (the control always
+runs).
+
+Refuses to start (exit 2) if any anchor is not in its file exactly once, checked for every mutant before the control
+runs - from f3c2f6d9 to 2026-10-21 "ringing for a batch once" matched twice and "stalled-head detection" not at all,
+and the sweep reported them as two problems among its verdicts rather than refusing - or if a file it edits is already
+modified. Every child is bounded (tests/mutant_guard.py: 2 GB of address space, a deadline, at most 256 KB of its
+output kept); the files are restored after each mutant, on an exception and on SIGINT/SIGTERM/SIGHUP, with a fresh
+mtime so make rebuilds.
 """
 import os
 import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_transport_seam"
@@ -67,8 +72,23 @@ MUTANTS = [
     (
         "ringing for a batch once, after its last record",
         "src/tickle.c",
-        "datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, false)) {",
-        "datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, true)) {",
+        # seam_send_batch() has two bodies since f3c2f6d9: the tt_HAL_SEND_BATCH_LOOPS one (FreeRTOS, not compiled
+        # into this test) and the sendmmsg() one Linux builds. The anchor takes the latter by its own comment; the
+        # former cannot decide anything here and would only come back NOT_COMPILED.
+        "    // The peers this batch wrote to, each rung once after the whole batch is in (segment_ring_if_asleep()).\n"
+        "    uint8_t rung_for[TX_MAX_BATCH];\n"
+        "    uint32_t peers = 0;\n"
+        "    for (uint32_t i = 0; i < count; i++) {\n"
+        "        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;\n"
+        "        if (segment_deliver_ringing(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,\n"
+        "                                    datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, false)) {",
+        "    // The peers this batch wrote to, each rung once after the whole batch is in (segment_ring_if_asleep()).\n"
+        "    uint8_t rung_for[TX_MAX_BATCH];\n"
+        "    uint32_t peers = 0;\n"
+        "    for (uint32_t i = 0; i < count; i++) {\n"
+        "        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;\n"
+        "        if (segment_deliver_ringing(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,\n"
+        "                                    datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, true)) {",
         "test_a_batch_is_rung_for_once_after_its_last_record",
     ),
     (
@@ -81,8 +101,14 @@ MUTANTS = [
     (
         "stalled-head detection",
         "src/tickle.c",
-        "                ran_dry = !note_head_stall(node);",
-        "                ran_dry = true; // note_head_stall(node) not asked -- mutant",
+        # b3bcfb62 (a reference read at the head counts as a record taken) made note_head_stall() return an enum head_stall
+        # instead of a bool; the drain's one call to it is still the mechanism. The mutant never asks it and takes the
+        # drain as run dry, as the old one did. (void) keeps the now-uncalled static function referenced.
+        "                const enum head_stall stall = note_head_stall(node);\n"
+        "                ran_dry = ((unsigned)stall & 1U) == 0;",
+        "                const enum head_stall stall = HEAD_STALL_STOP; // note_head_stall(node) not asked -- mutant\n"
+        "                (void)note_head_stall;\n"
+        "                ran_dry = ((unsigned)stall & 1U) == 0;",
         "test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem",
     ),
     (
@@ -235,43 +261,29 @@ MUTANTS = [
 
 
 def build_and_run(control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True, cwd=ROOT / "platform/linux",
-    )
+    linux = ROOT / "platform/linux"
+    build = run_capped(["make", "-s", "-j2", str(BIN.relative_to(linux))], timeout=900, cwd=linux)
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
-    run = subprocess.run([str(BIN)], capture_output=True, text=True)
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    run = run_capped([str(BIN)], timeout=300, cwd=linux)
+    if run.timed_out:
+        return "HANG", run.output  # a kill too: the test did not pass
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def main():
-    backup = tempfile.mkdtemp(prefix="shm_mutants_")
-    touched = {m[1] for m in MUTANTS}
-    for rel in touched:
-        shutil.copy2(ROOT / rel, pathlib.Path(backup) / rel.replace("/", "_"))
-
-    def restore():
-        for rel in touched:
-            # copy(), not copy2(), and then touch: copy2 preserves the ORIGINAL mtime, so a restored
-            # file looks older than the object files built from the mutant while it was applied, and
-            # make then considers the build up to date. The next `make test` after a sweep ran a
-            # binary compiled from mutated source and reported failures that were not in the tree -
-            # a check answering about something other than the thing being checked, in the harness
-            # whose whole job is to prevent exactly that.
-            shutil.copy(pathlib.Path(backup) / rel.replace("/", "_"), ROOT / rel)
-            (ROOT / rel).touch()
-
+    be_nice()
+    check_anchors(ROOT, [(name, rel, old, new) for name, rel, old, new, _test in MUTANTS])
     failures = 0
-    try:
+    with SourceGuard(ROOT, [m[1] for m in MUTANTS]) as guard:
         verdict, output = build_and_run()
-        print(f"[control]  parent, unmutated                      -> {verdict}")
+        print(f"[control]  parent, unmutated                      -> {verdict}", flush=True)
         if verdict != "PASS":
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
-            return 1
+            return 2
         control = code_digest(BIN)
 
         only = os.environ.get("MUTANTS", "")
@@ -279,28 +291,20 @@ def main():
             if only and only not in name:
                 continue
             path = ROOT / rel
-            text = path.read_text()
-            count = text.count(old)
-            if count != 1:
-                # The substitution that matches nothing is the sweep's own version of a test that
-                # cannot fail, so it is an error rather than a skip.
-                print(f"[ERROR]    {name:40s} -> anchor matched {count} times, not 1")
-                failures += 1
-                continue
-            path.write_text(text.replace(old, new))
-            assert path.read_text().count(old) == 0, "substitution did not apply"
-            verdict, output = build_and_run(control)
-            restore()
-            expected = "FAIL"
-            ok = verdict == expected
+            path.write_text(guard.original(rel).replace(old, new, 1))
+            try:
+                verdict, output = build_and_run(control)
+            finally:
+                guard.restore()
+            ok = verdict in ("FAIL", "HANG")
             failures += 0 if ok else 1
-            print(f"[{label(verdict, ok):8s}] {name:40s} -> {verdict} (wanted {expected}, guard: {test})")
-            if not ok:
+            print(f"[{label(verdict, ok):8s}] {name:40s} -> {verdict} (wanted FAIL, guard: {test})", flush=True)
+            if ok:
+                print(f"           killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}")
+            else:
                 print(output[-1500:])
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
 
+    print(usage_line())
     print("mutant sweep:", "all mutants died" if failures == 0 else f"{failures} problem(s)")
     return 1 if failures else 0
 
