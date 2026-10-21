@@ -60,10 +60,10 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | Heartbeat on every Nth RELIABLE sample; `0` off | 64 (window / 16) |
 | `RMW_TICKLE_IDLE_HEARTBEAT_NS` | Heartbeat when unacknowledged and idle this long ([DESIGN 6](DESIGN.md#6-reliability)); `0` off | 250 ms |
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also a FINAL Heartbeat at this fixed rate | off |
-| `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish blocks | 100 |
+| `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish blocks; read at `rmw_init()` into the context's `tt_InitOptions.qos` | 100 |
 | `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | see [below](#large-samples-blocking-publish) | 0 (off) |
-| `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache | 1 MiB |
-| `RMW_TICKLE_KEEP_ALL_BYTES` / `_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget / space reserved per sample | 512 KiB / 1472 B |
+| `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache, a service's cached responses; read at `rmw_init()` (`qos.history_bytes`) | 1 MiB |
+| `RMW_TICKLE_KEEP_ALL_BYTES` / `_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget, read at `rmw_init()` (`qos.keep_all_bytes`) / space reserved per sample | 512 KiB / 1472 B |
 | `RMW_TICKLE_READER_KEEP_ALL_BYTES` | untaken bytes one KEEP_ALL subscription holds; then it declines | 512 KiB |
 | `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples held; fewer than the window less one, by this or the budget, hold none (core refuses them: they storm). An unbounded or large type (window 8192) holds none | tracking window (1024) |
 | `RMW_TICKLE_REORDER_BYTES` | reorder budget per RELIABLE subscription | 1024 x (24 + 1472) B |

@@ -34,6 +34,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (the `tt_MAX_PEER_COUNT > threshold` static_assert moved there). `tt_Context_create()` reads `_tt_CONFIG` once, as
   before; writing it is deprecated. rmw_tickle builds its options from the same environment variables and keeps them
   per rmw context. Wire bytes of a default context unchanged. HAL: `tt_get_node_id()` takes the context.
+- **QoS defaults per context** (`tt_InitOptions.qos`, bundle 5): depth, KEEP_ALL depth, the two byte caps and
+  `max_blocking_ns` that a zero profile field takes. `tt_*_storage_size()` keep their signatures and config.h's
+  defaults; `tt_Publisher_storage_size_for()` / `tt_Subscriber_storage_size_for()` size for a context, and storage short
+  of what a raised default needs is refused with the field named. rmw_tickle reads `RMW_TICKLE_CACHE_BYTES`,
+  `RMW_TICKLE_KEEP_ALL_BYTES` and `RMW_TICKLE_MAX_BLOCKING_MS` once, at `rmw_init()`, into these.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,

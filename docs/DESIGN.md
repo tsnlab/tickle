@@ -416,11 +416,11 @@ KEEP_LAST 5), `_SERVICES_DEFAULT`. `tt_*_get_actual_qos()` returns the resolved 
 
 | rule | detail |
 |---|---|
-| zero field | the computed default, `rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, infinite |
+| zero field | the computed default, `rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, AUTOMATIC, infinite. A zero depth, `history.bytes` or `max_blocking_ns` takes the creating context's default (`tt_InitOptions.qos`, bundle 5), unless set config.h's |
 | resolution | `tt_QosProfile_resolve()`: SYSTEM_DEFAULT, BEST_AVAILABLE (from the discovery table), and out-of-range values refused, not adjusted |
 | reorder buffer | a RELIABLE Subscriber's `reorder_slots`: 0 = its window, else at least the window less one or `tt_QOS_REORDER_NONE`; fewer are refused, since they storm with re-requests under loss (16 of 256 at 20%: 65 of 2,000 samples after 21 M DATA, `tests/test_reorder_window.c`) |
 | hot path | the resolved profile is written into the endpoint's existing fields; only what none held is appended |
-| storage | the caller's, `tt_*_storage_size()` bytes; a profile that needs it fails without it, never falls back to BEST_EFFORT. A Publisher's: the cache, an index ring of depth samples' datagrams, an arena of (depth + 1) records on a 64 B boundary. Creation clears only what holds anything (a reorder slot: its header) |
+| storage | the caller's, `tt_*_storage_size()` bytes - `tt_*_storage_size_for(ctx, ...)` on a context whose `qos` raises a default: the former keep config.h's, and short storage is refused with the size and the raising field named, never overrun or answered with a smaller history; a profile that needs it fails without it, never falls back to BEST_EFFORT. A Publisher's: the cache, an index ring of depth samples' datagrams, an arena of (depth + 1) records on a 64 B boundary. Creation clears only what holds anything (a reorder slot: its header) |
 | per sample | nothing the hand-built caches did not pay: a KEEP_LAST cache whose ring and arena keep the depth for samples of its type's largest shape skips the sample count (`depth_assured_*`) until a sample falls outside it |
 | depth | counts samples; `history.bytes` caps a Publisher's cache: a warning at creation, the depth kept in `tt_*_get_actual_qos()`. An unbounded type (`max_encoded_size` 0, or a size its binding chose: `max_encoded_size_estimated`) keeps the depth asked for; a sample that does not fit is counted at publish (`depth_shortfalls`) |
 | not QoS | `tt_PublisherOptions`, `tt_SubscriberOptions`, `tt_ClientOptions` (call retry), `tt_ServerOptions` |
@@ -635,10 +635,10 @@ Compile-time `-D` overrides unless noted; blank rmw column = core default.
 | `tt_RELIABLE_STUCK_WARN_INTERVAL` | 5 s | | stuck-gap warning |
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | 256 / 8192 | reader window; 8192 holds an 11.3 MiB sample |
 | `tt_IDLE_HEARTBEAT_PERIOD` | 250 ms | | P; a 10 Hz stream never pays it; 0 = off |
-| `tt_MAX_RELIABLE_HISTORY` | 64 | | example cache depth |
-| `tt_QOS_DEPTH_DEFAULT` / `tt_QOS_KEEP_ALL_DEPTH_DEFAULT` | 10 / 256 | | a zero `history.depth`: rmw's / one ACK window |
-| `tt_QOS_HISTORY_BYTES_DEFAULT` / `tt_QOS_KEEP_ALL_BYTES_DEFAULT` | 1 MiB / 512 KiB | | a zero `history.bytes`, as rmw_tickle's |
-| `tt_QOS_MAX_BLOCKING_DEFAULT_NS` | 100 ms | | zero `max_blocking_ns`; a zero `reorder_slots` is the window |
+| `tt_MAX_RELIABLE_HISTORY` | 64 | | rmw_tickle's and the examples' cache depth; core reads none |
+| `tt_QOS_DEPTH_DEFAULT` / `tt_QOS_KEEP_ALL_DEPTH_DEFAULT` | 10 / 256 | | a zero `history.depth`: rmw's / one ACK window; per context `tt_InitOptions.qos.depth` / `keep_all_depth` |
+| `tt_QOS_HISTORY_BYTES_DEFAULT` / `tt_QOS_KEEP_ALL_BYTES_DEFAULT` | 1 MiB / 512 KiB | | a zero `history.bytes`, as rmw_tickle's; per context `qos.history_bytes` / `keep_all_bytes` |
+| `tt_QOS_MAX_BLOCKING_DEFAULT_NS` | 100 ms | | zero `max_blocking_ns`, per context `qos.max_blocking_ns`; a zero `reorder_slots` is the window |
 | `tt_CLIENT_MAX_OUTSTANDING` | 4 | | calls per Client |
 | `tt_CLIENT_CALL_WINDOW` | 8 | | answers kept per Client (2 x outstanding) |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | seed until a first answer |
