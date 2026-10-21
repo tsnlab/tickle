@@ -7769,7 +7769,8 @@ static uint64_t call_retry_window(uint64_t first, uint64_t ceiling, uint32_t wai
 // The first wait of a call on the auto path, and the ceiling of each: srtt + max(G, 4 * rttvar) and
 // tt_CALL_RETRY_MAX_SRTT_MULTIPLE * max(srtt, G), with the seed tt_CALL_RETRY_INTERVAL standing in for srtt until a
 // first answer. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
-static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, uint64_t* ceiling) {
+__attribute__((always_inline)) static inline void call_retry_bounds(const struct tt_Client* client, uint64_t* first,
+                                                                    uint64_t* ceiling) {
     if (client->latency == 0) {
         *first = service_call_retry_interval(client->node);
         *ceiling = *first * service_call_retry_max_srtt_multiple(client->node);
@@ -18394,7 +18395,7 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
 // a first wait of ~300 ms (srtt + 4 rttvar), so a lost answer's retry came ~200 ms after the server stopped keeping it,
 // and the callback ran a second time for one call (test_service_exactly_once.c, the rig's service cell c21,
 // 2026-10-21).
-static uint64_t server_client_window(const struct tt_Server* server) {
+__attribute__((always_inline)) static inline uint64_t server_client_window(const struct tt_Server* server) {
     const struct tt_Service* service = server->service;
     uint32_t count =
         service->call_retry_count != 0 ? service->call_retry_count : service_call_retry_count(server->node);
@@ -18403,8 +18404,8 @@ static uint64_t server_client_window(const struct tt_Server* server) {
         return call_retry_window(service->call_retry_interval, service->call_retry_interval, waits);
     }
     uint64_t sends = (uint64_t)waits + 1U; // the deadline's (count + 1), and one for the last retry's way here
-    uint64_t per_send = service_call_deadline_per_send(server->node);
-    return sends > UINT64_MAX / per_send ? UINT64_MAX : sends * per_send;
+    // At most 2^32 + 1 sends of at most 2^32 - 1 ns each (a 32-bit deadline per send): the product fits.
+    return sends * service_call_deadline_per_send(server->node);
 }
 
 // How long an answered response is kept for a retrying client: how long the client may retry (server_client_window()),
@@ -18428,7 +18429,8 @@ static void note_client_retry_gap(struct tt_Server* server, uint64_t gap) {
 }
 
 // (Re-)sets slot `slot`'s expiry one lifetime from `now` (server_cache_live() reads it). Takes no scheduler entry.
-static void set_server_cache_expiry(struct tt_Server* server, int slot, uint64_t now) {
+__attribute__((always_inline)) static inline void set_server_cache_expiry(struct tt_Server* server, int slot,
+                                                                          uint64_t now) {
     uint64_t lifetime = server_cache_lifetime(server);
     server->cache_expires_at[slot] = lifetime > UINT64_MAX - now ? UINT64_MAX : now + lifetime;
 }
