@@ -31,6 +31,17 @@
 #   VOID         the chain's own VOID / REFUSED, gate v2's NO VERDICT, a k that does not match the rows read, a requested
 #                cell with no CPU witness row, a latency cell with no rtt row, a missing or empty file.
 #   reported     gate v2's own verdict line, cells with void rows, P-vs-A drift rows, user instructions above +0.1%.
+#   service      with the service cells in CORE_CELLS (c18-c21, 2026-10-21): a service cell also needs an rtt row, and
+#                the arm files are read for DEFECT rows (a callback run twice for one call): any in B is FAIL (B's own
+#                criterion, even when A has them too); in A or P only, REPORTED. calls_per_s is a witness (rate:
+#                listed, not blocking). On the PC, main itself ran a callback twice in c21 (N4) in 2 of 3 runs
+#                (2026-10-21): until core is fixed, c21 fails any B, so a change that is not that fix A/Bs on
+#                CORE_CELLS="18 19 20" and reads c21 as the defect's tracker.
+#
+# SERVICE CELLS RIG TIME (estimated 2026-10-21, not yet run): a service run is ~20 s (3 s server start, 2 s discovery,
+# 2 + 5 + 2 s, the drain, ssh), 25 s at 10 Hz (-d 10); 4 cells x 3 reps x 6 blocks = 72 runs = ~26 min, plus the six
+# blocks' Pi builds (~5 min each, as the core stage's) - CORE_CELLS="18 19 20 21" EST_MIN=60. Added to the 12-cell
+# stage: EST_MIN=135.
 #
 # BEFORE THE WAIT (nothing of the rig is taken): the checks; core_ab_read.py --selftest at the harness commit; PC
 # preflight builds of A and B (pc_preflight_build.sh at each commit, PF_BUILDS/<sha12>, built when missing, WITHOUT
@@ -52,8 +63,13 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 SELF_REL=examples/perf_hil/experiments/rig_queue_core_ab.sh
 XREL=examples/perf_hil/experiments
-CORE_CELLS="1 2 3 4 8 13 14 15 10 11 16 17"
-N_SPECS=12
+# CORE_CELLS= (2026-10-21) chooses the campaign cells, e.g. the service cells for a service-path change:
+#   CORE_CELLS="18 19 20 21"                              the service cells alone (c18-c21, TickLE core client/server)
+#   CORE_CELLS="1 2 3 4 8 13 14 15 10 11 16 17 18 19 20 21"   the core stage plus the service cells
+# Every number must name a campaign_sweep.sh cell; the spec count is checked against it below. EST_MIN= is the rig
+# estimate for the 1.5x deadline line (default 105, the 12-cell stage; see RIG TIME).
+CORE_CELLS="${CORE_CELLS:-1 2 3 4 8 13 14 15 10 11 16 17}"
+N_SPECS=$(wc -w <<<"$CORE_CELLS")
 MEM_KB=2097152
 SAFE=$HOME/rig_results_safe
 PF_BUILDS=${PF_BUILDS:-/home/semih/pc_preflight_builds}
@@ -63,7 +79,8 @@ WAIT_LOG=${WAIT_LOG:-}
 WAIT_LINE=${WAIT_LINE:-}
 WAIT_MAX_S=${WAIT_MAX_S:-86400}
 RIG_LOCK_WAIT=${RIG_LOCK_WAIT:-36000}
-EST_MIN=105
+EST_MIN=${EST_MIN:-105}
+case "$EST_MIN" in "" | *[!0-9]*) echo "EST_MIN must be whole minutes" >&2; exit 1 ;; esac
 export TMPDIR=/home/semih/tmp_build
 rc=1
 say() { echo "$(date -Is) $*"; }
@@ -85,10 +102,12 @@ if [ "${CORE_AB_LOCKED:-0}" = 1 ]; then
     cr=$?
     cp /tmp/"${TAG}"_* /tmp/"${TAG}".done "$OUTD/" 2>/dev/null
     say "  chain rc=$cr: $(cat "$OUTD/${TAG}.done" 2>/dev/null || echo '(no done file)')"
+    # The arm files too: a service cell's DEFECT row (a callback run twice) is not an ok row, so only they show it.
     timeout 300 python3 "$X/core_ab_read.py" --compare "$OUTD/${TAG}_compare.txt" --done "$OUTD/${TAG}.done" \
-        --cells "$CORE_CELLS" --a "${A:0:12}" --b "${B:0:12}" > "$OUTD/reading.txt" 2>&1
+        --cells "$CORE_CELLS" --a "${A:0:12}" --b "${B:0:12}" --arm-a "$OUTD/${TAG}_A.txt" --arm-b "$OUTD/${TAG}_B.txt" \
+        --arm-p "$OUTD/${TAG}_P.txt" > "$OUTD/reading.txt" 2>&1
     rr=$?
-    grep -aE '^(chain|gate v2|  BLOCKING|  OTHER|  [0-9]+/[0-9]+ WORSE|CORE AB VERDICT)' "$OUTD/reading.txt" | cut -c1-230 | sed 's/^/  /'
+    grep -aE '^(chain|gate v2|  BLOCKING|  OTHER|  DEFECT|  REPORTED|  [0-9]+/[0-9]+ WORSE|CORE AB VERDICT)' "$OUTD/reading.txt" | cut -c1-230 | sed 's/^/  /'
     case $rr in
     0) exit 0 ;;
     1) exit 2 ;;
@@ -135,12 +154,21 @@ G show "$HARNESS:$SELF_REL" 2> /dev/null | cmp -s - "${BASH_SOURCE[0]}" ||
     refuse "this script differs from ${HARNESS:0:8}:$SELF_REL (commit it, or launch the harness commit's copy)"
 for f in "$XREL/core_ab_read.py:CORE AB VERDICT" "$XREL/campaign_ab_chain.sh:v2) ARMS=\"A P B B P A\"" \
     "$XREL/ab_compare.py:--placement" "$XREL/gate_v2.py:def report" "$XREL/campaign_sweep.sh:PREFLIGHT_CELLS_ONLY" \
-    "$XREL/rig_preflight.sh:SHA" "examples/perf_hil/rig_lock.sh:RIG_LOCK_SCOPE"; do
+    "$XREL/rig_preflight.sh:SHA" "examples/perf_hil/rig_lock.sh:RIG_LOCK_SCOPE" "$XREL/core_ab_read.py:--arm-b" \
+    "$XREL/service_cell_verdict.py:DEFECT(dup_exec"; do
     G show "$HARNESS:${f%%:*}" 2> /dev/null | grep -qF -- "${f#*:}" ||
         refuse "${HARNESS:0:8}:${f%%:*} has no '${f#*:}' (not a gate v2 harness)"
 done
 for c in "$A" "$B"; do
     G cat-file -e "$c:$XREL/pc_preflight_build.sh" 2> /dev/null || refuse "${c:0:8} has no pc_preflight_build.sh (cannot build its PC preflight)"
+    # The Pis build each arm's bench from that arm's own tree, so a service cell needs the bench in A and in B: an A/B
+    # branch made before the service cells landed is rebased onto them first (A = that main, B = the rebased change).
+    for n in $CORE_CELLS; do
+        [ "$n" -ge 18 ] 2> /dev/null || continue
+        G cat-file -e "$c:examples/perf_hil/tickle/service_call/client.c" 2> /dev/null ||
+            refuse "${c:0:8} has no tickle/service_call bench, needed by service cell c$n (rebase the A/B onto the commit that added it)"
+        break
+    done
 done
 if [ -d "$RUNNER" ]; then
     [ "$(git -C "$RUNNER" rev-parse HEAD 2> /dev/null)" = "$HARNESS" ] || refuse "$RUNNER exists and is not at ${HARNESS:0:8}"
@@ -239,13 +267,14 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "WOULD RUN (under the lock, ~$EST_MIN min): cd $RUNNER && TAG=$TAG A=$A B=$B GATE=v2 REPS=3 CELLS=\"$CORE_CELLS\"" \
         "PREFLIGHT=0 $RUNNER/$XREL/campaign_ab_chain.sh > $OUTD/chain.log 2>&1"
     echo "WOULD RUN (under the lock): cp /tmp/${TAG}_* /tmp/${TAG}.done $OUTD/; python3 $RUNNER/$XREL/core_ab_read.py" \
-        "--compare $OUTD/${TAG}_compare.txt --done $OUTD/${TAG}.done --cells \"$CORE_CELLS\" --a ${A:0:12} --b ${B:0:12} > $OUTD/reading.txt"
+        "--compare $OUTD/${TAG}_compare.txt --done $OUTD/${TAG}.done --cells \"$CORE_CELLS\" --a ${A:0:12} --b ${B:0:12}" \
+        "--arm-a $OUTD/${TAG}_A.txt --arm-b $OUTD/${TAG}_B.txt --arm-p $OUTD/${TAG}_P.txt > $OUTD/reading.txt"
     say "=== DRY_RUN clean: every check passed; nothing was built, preflighted, waited for or locked ==="
     rc=0
     exit 0
 fi
 say "--- taking the rig lock (hil, RIG_LOCK_WAIT=${RIG_LOCK_WAIT}s) ---"
-export CORE_AB_LOCKED=1 RIG_LOCK_SCOPE=hil RIG_LOCK_WAIT A B TAG OUTD RUNNER
+export CORE_AB_LOCKED=1 RIG_LOCK_SCOPE=hil RIG_LOCK_WAIT A B TAG OUTD RUNNER CORE_CELLS EST_MIN
 "$RUNNER/examples/perf_hil/rig_lock.sh" "$RUNNER/$SELF_REL"
 lr=$?
 case $lr in

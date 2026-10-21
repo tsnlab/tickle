@@ -36,6 +36,13 @@
 #     Inside the spread is a draw.
 #   - Expected, recorded so neither reads as a surprise: TickLE should LOSE cell 6 (P4 under loss),
 #     because a lost IP fragment costs it the whole datagram while RTPS retransmits one fragment.
+#   - Service cells (shape S, c18-c21, appended 2026-10-21): TickLE only - DDS has no service API at the core layer,
+#     so a vendor in FWS runs nothing there and prints no row. A TickLE core client calls a core server on the other
+#     Pi (tickle/service_call/: latency is the call's ROUND TRIP on the client's clock, CPU and RSS per call on both
+#     sides) at 1 kHz, 10 Hz and as fast as answers come, at N0, and at 1 kHz under N4 (5% loss each way). Each row is
+#     read by service_cell_verdict.py, whose header is the pre-registration: sample counts first, the duplicate
+#     counter's own control (probes) in every run, the shaping's own drop counters at N4, and DEFECT(dup_exec:...)
+#     when the server's callback answered any call twice - the falsifier, never folded into a VOID.
 #
 # DRY_RUN=1 prints the plan and the tc sequence without touching the rig or holding the lock.
 set -euo pipefail
@@ -127,7 +134,18 @@ MATRIX=(
     "T|p4|Q1|N0|best_effort_throughput|"
     "L|p3|Q0|N0|reliable_latency|"
     "L|p4|Q0|N0|reliable_latency|"
+    # Service cells (2026-10-21; header): TickLE only. Q0 here is the services default profile (RELIABLE, core's auto
+    # retry schedule on both sides). The extra args are the client's rate and measured window: -r 0 is "as fast as
+    # answers come" (up to tt_CLIENT_MAX_OUTSTANDING calls in flight); 10 Hz gets -d 10 so its window holds 100 calls.
+    # N4 is the loss arm: 5% each way (tc_apply), where retries and kept answers are what is exercised.
+    "S|p1|Q0|N0|service_call|-r 1000 -d 5"
+    "S|p1|Q0|N0|service_call|-r 10 -d 10"
+    "S|p1|Q0|N0|service_call|-r 0 -d 5"
+    "S|p1|Q0|N4|service_call|-r 1000 -d 5"
 )
+# Scenarios only TickLE has (no DDS harness): built and run for tickle alone, whatever FWS says.
+TICKLE_ONLY_SCENARIOS="service_call"
+tickle_only() { case " $TICKLE_ONLY_SCENARIOS " in *" $1 "*) return 0 ;; esac; return 1; }
 # Scenario/payload pairs that have to exist as built directories.
 needed_variants() {
     local spec
@@ -136,6 +154,29 @@ needed_variants() {
         echo "${scenario}_${payload}"
     done | sort -u
 }
+
+# The service cells need their bench in the commit the Pis build (each arm's own tree), and commits from before
+# 2026-10-21 have none. Without CELLS the matrix then simply ends at c17 for that commit, with a note (the service cells
+# are the last four, so no other cell's number moves); a CELLS that names one refuses. The commit is SHA, or origin/main
+# as the build below resolves it; a PREFLIGHT_CELLS_ONLY listing without SHA lists every cell.
+SERVICE_NOTE=""
+svc_commit="${SHA:-}"
+[ -z "$svc_commit" ] && [ "${PREFLIGHT_CELLS_ONLY:-0}" != 1 ] && svc_commit=$(git -C "$REPO" rev-parse origin/main)
+if [ -n "$svc_commit" ] && ! git -C "$REPO" cat-file -e "$svc_commit:examples/perf_hil/tickle/service_call/client.c" 2>/dev/null; then
+    if [ -n "${CELLS:-}" ]; then
+        for i in $CELLS; do
+            case "${MATRIX[$((i - 1))]:-}" in S\|*)
+                echo "REFUSED: cell c$i is a service cell and ${svc_commit:0:8} has no tickle/service_call bench" >&2
+                exit 1 ;;
+            esac
+        done
+    else
+        no_svc=()
+        for spec in "${MATRIX[@]}"; do case "$spec" in S\|*) ;; *) no_svc+=("$spec") ;; esac; done
+        SERVICE_NOTE="service cells c$((${#no_svc[@]} + 1))-c${#MATRIX[@]} left out: ${svc_commit:0:8} has no tickle/service_call bench"
+        MATRIX=("${no_svc[@]}")
+    fi
+fi
 
 # CELLS="1 5 3 4 6" runs only those combinations (1-based, in MATRIX order), keeping each cell's
 # number so its label still matches the published c-numbers. Added 2026-09-26 to re-establish c6
@@ -212,18 +253,37 @@ ssh_h() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}
 # be the check - which is why it was `|| true`, and why a real failure (no NOPASSWD for tc, the same
 # shape as the sudo/tcpdump hole of 2026-09-24) would have left netem in place silently and shaped
 # every later measurement on this rig, including CI's. The qdisc is read back instead.
-tc_netem_present() { ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
+# N4 (2026-10-21, the service cells' loss arm) shapes BOTH directions at the client's eth0, so it needs nothing on the
+# server Pi (setup-rpi-tc-sudoers.sh grants tc on the client Pi only): egress netem loss 5%, as N1, and an ingress
+# qdisc whose u32 filter drops 1 in 20 incoming UDP datagrams at random (gact netrand). A service loses requests one way
+# and answers the other, and only a lost ANSWER makes the server serve a retry from its kept answer - the path this arm
+# exists for. Every other condition removes the ingress qdisc first, and tc_netem_present() counts it as shaping.
+# Each tc is its own ssh command of the plain form "sudo -n tc <args>": the Pis' sudoers grant tc alone, and
+# rig_dryrun.sh's stand-in maps exactly that form (no shell operators) into its namespace.
+tc_netem_present() { ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -qE 'netem|ingress'; }
 tc_apply() {
+    # The ingress drop exists only under N4; any other condition starts without it ("del" fails when there is none).
+    ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 ingress" >/dev/null 2>&1 || true
     case "$1" in
         N0) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
             if tc_netem_present; then
-                echo "FATAL: netem still on $RPI_CLIENT eth0 after del - the rig is left shaped" >&2
+                echo "FATAL: netem or the ingress drop still on $RPI_CLIENT eth0 after del - the rig is left shaped" >&2
                 ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" >&2 || true
                 return 1
             fi ;;
         N1) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
         N2) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
         N3) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
+        N4) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" || return 1
+            ssh_h "$RPI_CLIENT" "sudo -n tc qdisc add dev eth0 ingress" || return 1
+            ssh_h "$RPI_CLIENT" "sudo -n tc filter add dev eth0 parent ffff: protocol ip prio 1 u32 match ip protocol 17 0xff action gact ok random netrand drop 20" ||
+                return 1
+            # Read back, not trusted from the exit status: a kernel without the ingress qdisc or gact must stop the
+            # campaign here rather than run a "loss each way" cell that lost one way.
+            if ! ssh_h "$RPI_CLIENT" "tc filter show dev eth0 ingress" 2>/dev/null | grep -q gact; then
+                echo "FATAL: N4's ingress drop is not on $RPI_CLIENT eth0 (tc filter show dev eth0 ingress has no gact)" >&2
+                return 1
+            fi ;;
         *)  echo "unknown network condition $1" >&2; return 1 ;;
     esac
 }
@@ -231,7 +291,28 @@ tc_describe() {
     case "$1" in
         N0) echo "none" ;; N1) echo "loss 5%" ;;
         N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
+        N4) echo "loss 5% each way" ;;
     esac
+}
+# The shaping's own drop counters on the client's eth0, as "egress_dropped=<n> ingress_dropped=<n>": netem's and the
+# ingress gact's, cumulative since each was added (a cell takes the difference over its run), 0 where none is
+# installed. service_cell_verdict.py's treatment witness at N4 (R7): an arm that dropped nothing applied nothing.
+tc_drop_counts() {
+    local q f
+    q=$(ssh_h "$RPI_CLIENT" "tc -s qdisc show dev eth0" 2>/dev/null || true)
+    f=$(ssh_h "$RPI_CLIENT" "tc -s filter show dev eth0 ingress" 2>/dev/null || true)
+    printf '%s %s\n' "$(tc_dropped_after netem <<<"$q")" "$(tc_dropped_after gact <<<"$f")"
+}
+# The first "dropped <n>" after the first line naming $1, from tc -s output on stdin; 0 when there is none.
+tc_dropped_after() {
+    awk -v what="$1" 'index($0, what) { seen = 1 } seen && match($0, /dropped [0-9]+/) {
+        print substr($0, RSTART + 8, RLENGTH - 8); found = 1; exit } END { if (!found) print 0 }'
+}
+tc_drops_delta() { # $1 "<egress> <ingress>" before, $2 after -> "egress_dropped=<d> ingress_dropped=<d>"
+    local b1 b2 a1 a2
+    read -r b1 b2 <<<"$1"
+    read -r a1 a2 <<<"$2"
+    echo "egress_dropped=$((a1 - b1)) ingress_dropped=$((a2 - b2))"
 }
 # Not under DRY_RUN (2026-10-06): the trap ssh'es to the rig and deletes its root qdisc, and a dry run holds no lock -
 # so a DRY_RUN=1 started while another campaign ran a loss cell would have removed that cell's netem mid-run.
@@ -244,10 +325,10 @@ fi
 # the only place that can be caught is the start of the next one. Refusing is deliberate: silently
 # clearing it would hide that some earlier run died holding the rig shaped.
 if [ "$DRY_RUN" != 1 ] && tc_netem_present; then
-    say "REFUSING TO START: $RPI_CLIENT eth0 already has netem on it, so N0 would not be 'no shaping'."
+    say "REFUSING TO START: $RPI_CLIENT eth0 already has netem (or N4's ingress drop) on it, so N0 would not be 'no shaping'."
     ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
     say "A previous run was probably SIGKILLed. Clear it and re-run:"
-    say "  ssh -i $SSH_KEY ci@$RPI_CLIENT 'sudo -n tc qdisc del dev eth0 root'"
+    say "  ssh -i $SSH_KEY ci@$RPI_CLIENT 'sudo -n tc qdisc del dev eth0 root; sudo -n tc qdisc del dev eth0 ingress'"
     exit 1
 fi
 
@@ -275,7 +356,7 @@ case "$TICKLE_EXTRA_CFLAGS" in
 esac
 say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench; empty: the plain build)"
 say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on every TickLE process; 1 only with FWS=tickle)"
-say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
+say "--- plan: ${#MATRIX[@]} combinations x [$FWS] x ${REPS} reps (scenarios $TICKLE_ONLY_SCENARIOS: TickLE only) ---"
 i=0
 for spec in "${MATRIX[@]}"; do
     IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
@@ -284,6 +365,7 @@ for spec in "${MATRIX[@]}"; do
         "$i" "$shape" "$payload" "$qos" "$scenario" "$(tc_describe "$net")" "${extra:-(no extra args)}")"
 done
 say ""
+[ -z "$SERVICE_NOTE" ] || say "NOTE: $SERVICE_NOTE"
 say "--- variants to build: $(needed_variants | paste -sd' ') ---"
 if [ "$DRY_RUN" = 1 ]; then
     say "DRY_RUN=1: nothing was run, the rig was not touched and no lock was taken."
@@ -296,6 +378,8 @@ SHA="${SHA:-$(git -C "$REPO" rev-parse origin/main)}"
 say "FWS=$FWS"
 say "--- deploying $SHA and building $(needed_variants | wc -l) variant(s) x 3 frameworks on both rpis ---"
 VARIANTS="$(needed_variants | paste -sd' ')"
+# A case pattern of the TickLE-only scenarios, for the remote loops below: no DDS harness exists to build or look for.
+TO_PAT="${TICKLE_ONLY_SCENARIOS// /|}"
 # `wait` with no arguments returns 0 however the background jobs ended, so a BUILD FAILED on either
 # rpi would print and the sweep would carry on through 108 cells against a stale or missing build.
 # Each PID is waited on individually, and then the binaries are checked for existence - the exit
@@ -308,6 +392,7 @@ cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}
   for fw in $FWS; do
+    case \$scen in $TO_PAT) [ \$fw = tickle ] || continue ;; esac
     x=; [ \$fw = tickle ] && x='bash -x'
     (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' \$x ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
       || { echo \"BUILD FAILED: \$fw \$scen \$size\"; tail -8 /tmp/campaign_build_\${fw}_\$v.log; exit 1; }
@@ -328,12 +413,13 @@ for pid in "${pids[@]}"; do wait "$pid" || build_failed=1; done
 missing=""
 for host in "${HOSTS[@]}"; do
     absent="$(ssh_h "$host" "for v in $VARIANTS; do for fw in $FWS; do
+  case \${v%_p[0-9]} in $TO_PAT) [ \$fw = tickle ] || continue ;; esac
   for b in client server; do d=~/tickle/examples/perf_hil/\$fw/\$v/\$b
     [ -x \"\$d\" ] || echo \"\$fw/\$v/\$b\"; done; done; done" 2>&1)"
     [ -z "$absent" ] || missing+="$host: $(tr '\n' ' ' <<<"$absent")"
 done
 [ -z "$missing" ] || { say "MISSING BINARIES after a build that reported success: $missing"; exit 1; }
-say "all $(( $(wc -w <<<"$VARIANTS") * 3 * 2 )) binaries present on both rpis"
+say "all binaries of $(wc -w <<<"$VARIANTS") variant(s) x [$FWS] present on both rpis (TickLE-only: $TICKLE_ONLY_SCENARIOS)"
 # The TickLE builds' own record of their flags (gate v2 A1): each traced build log is copied back beside $OUT and read by
 # build_flags_check.sh - the flags on the bench's compile lines and in the core prefix it linked. A build that does not
 # show TICKLE_EXTRA_CFLAGS stops the campaign here; one "build flags verified" line per host and variant is the record
@@ -449,9 +535,13 @@ window_void() { # $1 shape, $2 result line(s)
 # $1 combination number, $2 shape, $3 payload, $4 qos, $5 network, $6 scenario, $7 extra, $8 fw, $9 rep
 cell() {
     local num=$1 shape=$2 payload=$3 qos=$4 net=$5 scenario=$6 extra=$7 fw=$8 rep=$9
+    # A scenario only TickLE has: nothing to run for a vendor, and no row (the header says so).
+    if tickle_only "$scenario" && [ "$fw" != tickle ]; then return 0; fi
     local left; left=$(wait_rig_quiet)
     local args="-d $DUR"
     [ "$shape" = L ] && args="-i 0.1 -d 10"
+    # A service cell's rate and measured window are its matrix args (-r, -d), which come first below.
+    [ "$shape" = S ] && args=""
     args="$args $(window_args "$shape")"
     # The QoS all three get, identically and explicitly (see the matrix header).
     local common
@@ -459,10 +549,16 @@ cell() {
     [ -n "$common" ] && args="$common $args"
     # TickLE's extra args select KEEP_ALL; the DDS harnesses have it as their default (section 5).
     [ "$fw" = tickle ] && [ -n "$extra" ] && args="$extra $args"
-    local res raw nlines ninsn
+    local res raw nlines ninsn drops_before="" tc_fields=""
+    # A service cell reads the shaping's drop counters around its run (service_cell_verdict.py R7).
+    [ "$shape" = S ] && drops_before=$(tc_drop_counts)
     # shellcheck disable=SC2086 # $args is deliberately word-split into the harness's argv
     raw=$(cd "$PH/$fw" && timeout 180 ./run_scenario.sh "${scenario}_${payload}" $args 2>"$OUT.cell_stderr" | grep '^RESULT:' || true)
+    [ "$shape" = S ] && tc_fields=$(tc_drops_delta "$drops_before" "$(tc_drop_counts)")
     res=$(tr '\n' ' ' <<<"$raw" | sed -E 's/RESULT: framework=[a-z]+ scenario=[a-z_0-9]+ //g; s/ +$//' || true)
+    # The treatment as it was applied, on the row itself. At the end: campaign_summary.py gives text before the first
+    # role= to the client, and a chunk there would take the client's place.
+    [ -n "$tc_fields" ] && [ -n "$res" ] && res="$res $tc_fields"
     local verdict=ok
     [ -n "$res" ] || verdict="VOID(no RESULT line)"
     # Gate v2 A2: under INSN_COUNT=1 every TickLE RESULT line (client and server) must carry its counts. A line without
@@ -525,6 +621,20 @@ cell() {
     fi
     case "$res" in *instrument=ok*) ;; *instrument=fail*) verdict="VOID($(grep -oE 'instrument=fail:[a-z,]+' <<<"$res" | head -1))" ;;
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac
+    # A service cell is read by service_cell_verdict.py (its header is the pre-registration). DEFECT - a call the
+    # server's callback answered twice - replaces any verdict, a VOID included: it is a finding about the code and
+    # must not read as "could not look". Otherwise its VOID applies to a row that was ok so far.
+    if [ "$shape" = S ] && [ -n "$res" ]; then
+        local sv
+        sv=$(python3 "$HERE/service_cell_verdict.py" --net "$net" --args "$args" --tc "$tc_fields" <<<"$raw" 2>&1 ||
+            true)
+        case "$sv" in
+        DEFECT\(*) verdict=$sv ;;
+        ok) ;;
+        VOID\(*) [ "$verdict" = ok ] && verdict=$sv ;;
+        *) [ "$verdict" = ok ] && verdict="VOID(service_cell_verdict:unreadable)" ;;
+        esac
+    fi
     say "$(printf 'c%-2s %s %-2s %-2s %-22s %-10s rep%s | %s | %s' \
         "$num" "$shape" "$payload" "$qos" "$(tc_describe "$net")" "$fw" "$rep" "$verdict" "${res:-none}")"
     if [ "$FAIL_FAST_FIRST_CELL" = 1 ] && [ "$CELLS_RUN" = 0 ] && [ -z "$res" ]; then

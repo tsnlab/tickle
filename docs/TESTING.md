@@ -56,7 +56,8 @@ and `rmw-perf.yml` (`tickle-perf`) by hand. After every push, check **every** wo
 ## 3. The rig
 
 - Two Raspberry Pi 5s (rpi#1 client, rpi#2 server), data on `eth0` `192.168.10.0/24`, SSH over 10.1.1.x. Loss and
-  delay: `tc netem` on the client's egress. Runner setup: `git show 3c0c505b:.github/scripts/README.md`.
+  delay: `tc netem` on the client's egress; N4 (service cells) adds an ingress `gact` drop of 1 in 20 UDP datagrams
+  there, so both directions lose 5% with `tc` on the client only. Runner setup: `git show 3c0c505b:.github/scripts/README.md`.
 - **Lock:** `examples/perf_hil/rig_lock.sh`, taken **inside** the detached job. `RIG_LOCK_SCOPE=hil` (default, the
   Pis) or `box` (the lab PC); `RIG_LOCK_WAIT=0` fails at once. Test it by taking it; the file only names the last holder.
 - **PC:** never run TickLE in the default netns (it reaches the rig over 10.1.1.x). A private netns needs a default
@@ -106,6 +107,7 @@ In `examples/perf_hil/experiments/`; each header holds its pre-registered readin
 | Harness | Answers |
 |---|---|
 | `campaign_sweep.sh` / `campaign_summary.py` | cross-vendor campaign / its verdicts (`--selftest`) |
+| `campaign_sweep.sh` c18-c21, `service_cell_verdict.py` | core services cross-host, TickLE only (`tickle/service_call`): round trip per call on the client's clock, CPU and RSS per call, at 1 kHz, 10 Hz, max rate, and 1 kHz under 5% loss each way; DEFECT when a call's callback answered twice. In a gate v2 A/B with `rig_queue_core_ab.sh CORE_CELLS=` |
 | `campaign_ab_chain.sh`, `ab_samehost.sh` (`WITNESS=`), `rmw_gate_v2_chain.sh` | gate v2 A/B: cross-host, same-host, rmw |
 | `rig_preflight.sh` / `rig_dryrun.sh` | every cell shape runs (PC, ~70 s) / a harness end to end against stand-in Pis |
 | `s6_transport_cells.sh`, `rmw_samehost.sh`, `rmw_crosshost_rtt.sh`, `rmw_keepall_rig.sh` | same-host; rmw same-host; rmw RTT; rmw KEEP_ALL (`CREATION_TRACE=1`) |

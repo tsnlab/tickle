@@ -36,7 +36,8 @@
 #     gate's own validation sets (B = A's commit under another alignment: a placement-only "change");
 #   - every TickLE process is counted (campaign_sweep.sh INSN_COUNT=1): PRIMARY defaults to executed instructions per
 #     sample, user and kernel, every role and cell; WITNESS defaults to cpu_s_per_Msample, send_mbps, recv_mbps,
-#     rtt_avg_ms. Both decide; a WORSE must exceed the Bonferroni t threshold AND the placement floor.
+#     rtt_avg_ms, calls_per_s (the service cells' rate). Both decide; a WORSE must exceed the Bonferroni t threshold
+#     AND the placement floor.
 #   PRIMARY= / WITNESS= narrow them (same item syntax as above). GATE=v1 runs the old A B B A chain read by the old rule
 #   (--primary required), for repeating a chain run before 2026-10-11.
 #   Outputs: /tmp/${TAG}_b<n>_<arm>_<sha8>.{txt,log}, /tmp/${TAG}_{A,P,B}.txt, /tmp/${TAG}_compare.txt, /tmp/${TAG}.done.
@@ -69,8 +70,9 @@ fi
 echo "=== campaign_ab_chain $(date -Is) GATE=$GATE TAG=$TAG A=$A B=$B REPS=$REPS blocks: $ARMS" \
     "flags A='$TICKLE_EXTRA_CFLAGS' P='$P_EXTRA_CFLAGS' B='$B_EXTRA_CFLAGS' harness=$(git rev-parse --short HEAD) ==="
 if [ "${PREFLIGHT:-1}" != 0 ]; then
-    mapfile -t pf_specs < <(PREFLIGHT_CELLS_ONLY=1 FWS=tickle $X/campaign_sweep.sh)
     for sha in $(printf '%s\n' "$A" "$B" | sort -u); do
+        # Per commit: the service cells are listed only for a commit that has their bench (campaign_sweep.sh).
+        mapfile -t pf_specs < <(SHA=$sha PREFLIGHT_CELLS_ONLY=1 FWS=tickle $X/campaign_sweep.sh)
         if ! SHA=$sha FWS=tickle $X/rig_preflight.sh "${pf_specs[@]}" > "/tmp/${TAG}_preflight_${sha:0:8}.log" 2>&1; then
             tail -25 "/tmp/${TAG}_preflight_${sha:0:8}.log"
             echo "=== chain REFUSED $(date -Is): preflight failed for $sha, see /tmp/${TAG}_preflight_${sha:0:8}.log ===" |

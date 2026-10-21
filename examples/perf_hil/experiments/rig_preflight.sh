@@ -46,7 +46,12 @@
 # CycloneDDS is, as ROS lyrical's 11.0.1 (the rig runs jazzy's 0.10.5 or rolling's 11.0.1), so its harness is run.
 #
 # Usage: rig_preflight.sh 'scenario:payload:net:common args:tickle-only args' ...
-#   net is N0..N3 as in campaign_sweep.sh. Example: 'reliable_throughput:p1:N0:-N 2048 -B 100:-Q'
+#   net is N0..N3 as in campaign_sweep.sh, and N4 (5% loss each way: netem on the client's veth egress, a gact drop on
+#   its ingress) for service_call. Example: 'reliable_throughput:p1:N0:-N 2048 -B 100:-Q'
+#   service_call (TickLE only; vendors in FWS are skipped for it): -d $PF_SVC_D (3 s) after the cell's -r/-d, the
+#   throughput warm-up and cool-down, and the rig's own reading on the two lines - service_cell_verdict.py, with the
+#   job's tc drop counters; its VOID fails the job, its DEFECT (a call answered twice) is printed as a NOTE, not a fail;
+#   drained=answered, and no call unanswered at N0.
 #   env: SHA FWS PREFLIGHT_TOPO PREFLIGHT_SRC PF_JOBS(4) PF_DUR PF_EDGE_S PF_LAT_D PF_LAT_I PF_LAT_EDGE PF_LAT_EDGE_MAX_S
 #        TICKLE_P4_PATH
 #        PREFLIGHT_OUT (default ~/rig_results_safe/preflight/<stamp>_<sha8>; every job's logs and the summary)
@@ -63,6 +68,12 @@ if [ "${1:-}" = "--job" ]; then
     if [ -n "$J_NETEM" ]; then
         # shellcheck disable=SC2086 # the netem arguments are deliberately word-split
         tc qdisc add dev "$J_CIFACE" root netem $J_NETEM || { echo "server_rc=- client_rc=- note=netem_failed" >"$J_STATUS"; exit 1; }
+    fi
+    # N4's other direction, as campaign_sweep.sh puts it on the rig's eth0: 1 in 20 incoming UDP datagrams dropped.
+    if [ "$J_INGRESS_DROP" = 1 ]; then
+        { tc qdisc add dev "$J_CIFACE" ingress && tc filter add dev "$J_CIFACE" parent ffff: protocol ip prio 1 u32 \
+            match ip protocol 17 0xff action gact ok random netrand drop 20; } ||
+            { echo "server_rc=- client_rc=- note=ingress_drop_failed" >"$J_STATUS"; exit 1; }
     fi
     export LD_LIBRARY_PATH="$J_LDP"
     srv_env=("BENCH_IFACE=$J_SBENCH")
@@ -84,6 +95,9 @@ if [ "${1:-}" = "--job" ]; then
     # shellcheck disable=SC2086 # J_ARGS is deliberately word-split into argv
     (cd "$J_DIR" && exec timeout -s INT -k 5 "$J_CTIMEOUT" env "${cli_env[@]}" ./client $J_ARGS) >"$J_CLOG" 2>&1 </dev/null
     crc=$?
+    # The shaping's own drop counters (the service cells' treatment witness), read while the qdiscs still exist.
+    { tc -s qdisc show dev "$J_CIFACE"; echo "--- ingress filters"; tc -s filter show dev "$J_CIFACE" ingress; } \
+        >"$J_TCSTATS" 2>&1
     stop=sigint
     case "$(readlink "/proc/$spid/exe" 2>/dev/null)" in
     */server) kill -INT "$spid" ;;
@@ -116,6 +130,9 @@ PF_LAT_D=${PF_LAT_D:-1}
 PF_LAT_I=${PF_LAT_I:-0.005}
 PF_LAT_EDGE=${PF_LAT_EDGE:-512}
 PF_LAT_EDGE_MAX_S=${PF_LAT_EDGE_MAX_S:-20}
+# A service cell's measured window: 3 s, so the 10 Hz cell makes 30 measured calls, above service_cell_verdict.py's
+# floor of 20 (1 s would make 10 and void the cell here though nothing is wrong).
+PF_SVC_D=${PF_SVC_D:-3}
 CYCLONE_LIB=${CYCLONE_LIB:-/opt/ros/lyrical/lib/x86_64-linux-gnu}
 CYCLONE_BIN=${CYCLONE_BIN:-/opt/ros/lyrical/bin}
 case "$TOPO" in veth | samens) ;; *) echo "PREFLIGHT_TOPO must be veth or samens" >&2; exit 2 ;; esac
@@ -206,7 +223,7 @@ declare -a SPECS=()
 for spec in "$@"; do
     IFS=':' read -r scen payload net _common _extra <<<"$spec"
     case "$scen:$payload:$net" in
-    *_throughput:p[1-4]:N[0-3] | reliable_latency:p[1-4]:N[0-3]) ;;
+    *_throughput:p[1-4]:N[0-3] | reliable_latency:p[1-4]:N[0-3] | service_call:p[1-4]:N[04]) ;;
     *) say "PREFLIGHT FAIL: cannot read cell spec '$spec' (want scenario:pN:NN:args:tickle_args)"; exit 1 ;;
     esac
     SPECS+=("$spec")
@@ -217,7 +234,10 @@ say "    ${#SPECS[@]} cell(s), ${#VARIANTS[@]} variant(s): ${VARIANTS[*]}"
 
 FAILS=()
 SKIPPED=()
+NOTES=()
 declare -A FW_OK=()
+# Scenarios only TickLE has (campaign_sweep.sh's TICKLE_ONLY_SCENARIOS): no vendor harness is built or run for them.
+tickle_only() { [ "$1" = service_call ]; }
 build_fw() { # $1 fw
     local fw=$1 v scen size log
     case "$fw" in
@@ -240,6 +260,7 @@ build_fw() { # $1 fw
     for v in "${VARIANTS[@]}"; do
         scen=${v%_p[0-9]}
         size=${v##*_}
+        tickle_only "$scen" && [ "$fw" != tickle ] && continue
         log="$OUTD/build_${fw}_$v.log"
         # HOME points into the work directory for the build: TickLE's build.sh installs its core under $HOME, and the
         # prefixes there belong to whatever checkout last built them - a preflight must neither use nor refill them.
@@ -272,11 +293,14 @@ required_fields() { # $1 scenario, $2 role
     best_effort_throughput:server) echo "recv lost win_s win_recv win_recv_mbps warmup_s cooldown_s" ;;
     reliable_latency:client) echo "sent recv rtt_min_ms rtt_avg_ms rtt_max_ms warmup cooldown measured measured_sent edge_max_s" ;;
     reliable_latency:server) echo "" ;;
+    service_call:client) echo "sent recv timeouts probes probes_answered measured_sent measured calls_per_s rtt_avg_ms rtt_p99_ms warmup_s cooldown_s win_s" ;;
+    service_call:server) echo "recv runs ignored dup_exec exec_max probe_ok probe_bad unjudged win_recv warmup_s cooldown_s" ;;
     esac
 }
 # Appends "<why>" lines to $1 (a file) for everything wrong with one job.
-check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 clog, $7 slog, $8 status
-    local P=$1 fw=$2 scen=$3 net=$4 keep_all=$5 clog=$6 slog=$7 status=$8
+check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 clog, $7 slog, $8 status, $9 args,
+    #           ${10} the job's tc -s output (service cells), ${11} the notes file
+    local P=$1 fw=$2 scen=$3 net=$4 keep_all=$5 clog=$6 slog=$7 status=$8 jargs=${9:-} tcstats=${10:-} notes=${11:-/dev/null}
     local st crc src stop cline sline n role line f v
     st=$(cat "$status" 2>/dev/null)
     [ -n "$st" ] || { echo "the job left no status (it did not finish)" >>"$P"; return; }
@@ -315,7 +339,29 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
     done
     [ -n "$cline" ] || return
     local sent recv lost ws wr wf
-    if [ "$scen" = reliable_latency ]; then
+    if [ "$scen" = service_call ]; then
+        # The rig's own reading (service_cell_verdict.py, whose header is the rule), on the same two lines, with the
+        # shaping's drop counters this job read. A VOID is a harness fault here. DEFECT (a call answered twice) is the
+        # cell's finding about the code, not a harness fault: it is reported as a NOTE and does not fail the preflight,
+        # or a defect already on main would refuse every rig job that carries the cell.
+        local eg ig sv
+        eg=$(sed -n '/^--- ingress filters/q; p' "$tcstats" 2>/dev/null | awk 'index($0, "netem") { s = 1 }
+            s && match($0, /dropped [0-9]+/) { print substr($0, RSTART + 8, RLENGTH - 8); f = 1; exit } END { if (!f) print 0 }')
+        ig=$(sed -n '/^--- ingress filters/,$p' "$tcstats" 2>/dev/null | awk 'index($0, "gact") { s = 1 }
+            s && match($0, /dropped [0-9]+/) { print substr($0, RSTART + 8, RLENGTH - 8); f = 1; exit } END { if (!f) print 0 }')
+        sv=$(printf '%s\n%s\n' "$cline" "$sline" |
+            python3 "$HERE/service_cell_verdict.py" --net "$net" --args "$jargs" --tc "egress_dropped=$eg ingress_dropped=$ig" 2>&1)
+        case "$sv" in
+        ok) ;;
+        DEFECT\(*) echo "$sv (egress_dropped=$eg ingress_dropped=$ig)" >>"$notes" ;;
+        *) echo "service_cell_verdict: $sv (egress_dropped=$eg ingress_dropped=$ig)" >>"$P" ;;
+        esac
+        [ "$(field "$cline" drained)" = answered ] || echo "client drained=$(field "$cline" drained), want answered" >>"$P"
+        # A lossless veth loses nothing: a call that timed out there is a harness or bench fault to fix before the rig.
+        if [ "$net" = N0 ] && [ "$(field "$cline" timeouts)" != 0 ]; then
+            echo "client timeouts=$(field "$cline" timeouts) on a lossless link" >>"$P"
+        fi
+    elif [ "$scen" = reliable_latency ]; then
         sent=$(field "$cline" sent); recv=$(field "$cline" recv)
         local meas msent want
         meas=$(field "$cline" measured); msent=$(field "$cline" measured_sent)
@@ -376,7 +422,7 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
 # ------------------------------------------------------------------------------------------------ running jobs
 netem_for() {
     case "$1" in
-    N0) echo "" ;; N1) echo "loss 5%" ;; N2) echo "delay 10ms 2ms" ;; N3) echo "delay 1ms reorder 5% 50%" ;;
+    N0) echo "" ;; N1 | N4) echo "loss 5%" ;; N2) echo "delay 10ms 2ms" ;; N3) echo "delay 1ms reorder 5% 50%" ;;
     esac
 }
 run_job() { # $1 id, $2 fw, $3 spec
@@ -390,6 +436,10 @@ run_job() { # $1 id, $2 fw, $3 spec
     if [ "$scen" = reliable_latency ]; then
         window="-W $PF_LAT_EDGE -C $PF_LAT_EDGE -I 0.001 -T $PF_LAT_EDGE_MAX_S"
         args="$common -i $PF_LAT_I -d $PF_LAT_D $window"
+    elif [ "$scen" = service_call ]; then
+        # After the cell's own -r/-d (prepended below), so this -d is the one the client takes.
+        window="--warmup-s $PF_EDGE_S --cooldown-s $PF_EDGE_S"
+        args="$common -d $PF_SVC_D $window"
     else
         window="--warmup-s $PF_EDGE_S --cooldown-s $PF_EDGE_S"
         args="$common -d $PF_DUR $window"
@@ -427,8 +477,9 @@ run_job() { # $1 id, $2 fw, $3 spec
         ciface=$va; siface=$va
     fi
     # netem only between two namespaces: a same-host pair has no link of its own to shape.
-    local netem=""
+    local netem="" ingress=0
     [ "$TOPO" = veth ] && netem=$(netem_for "$net")
+    [ "$TOPO" = veth ] && [ "$net" = N4 ] && ingress=1
     local dir="$PH/$fw/${scen}_${payload}" uri_c="" uri_s="" ldp="" wait_s=1
     if [ "$fw" = cyclonedds ]; then
         # As the rig's run_scenario.sh, with the namespace's own link named instead of eth0.
@@ -449,10 +500,11 @@ run_job() { # $1 id, $2 fw, $3 spec
     sudo -n ip netns exec "$nsa" env J_STATUS="$jd/status" J_CLOG="$jd/client.log" J_SLOG="$jd/server.log" \
         J_DIR="$dir" J_SNS="$sns" J_CIFACE="$ciface" J_NETEM="$netem" J_ARGS="$args" J_CBENCH="$cbench" \
         J_SBENCH="$sbench" J_CURI="$uri_c" J_SURI="$uri_s" J_LDP="$ldp" J_START_WAIT="$wait_s" J_CTIMEOUT="$ct" \
-        bash "$SELF" --job \
+        J_INGRESS_DROP="$ingress" J_TCSTATS="$jd/tc_stats.txt" bash "$SELF" --job \
         >"$jd/job.log" 2>&1
     : >"$jd/problems"
-    check_job "$jd/problems" "$fw" "$scen" "$net" "$keep_all" "$jd/client.log" "$jd/server.log" "$jd/status"
+    check_job "$jd/problems" "$fw" "$scen" "$net" "$keep_all" "$jd/client.log" "$jd/server.log" "$jd/status" \
+        "$args" "$jd/tc_stats.txt" "$jd/notes"
     sudo -n ip netns del "$nsa" 2>/dev/null
     [ "$TOPO" = veth ] && sudo -n ip netns del "$nsb" 2>/dev/null
 }
@@ -461,6 +513,7 @@ id=0
 for spec in "${SPECS[@]}"; do
     for fw in $FWS; do
         [ "${FW_OK[$fw]:-0}" = 1 ] || continue
+        tickle_only "${spec%%:*}" && [ "$fw" != tickle ] && continue
         id=$((id + 1))
         while [ "$(jobs -rp | wc -l)" -ge "$PF_JOBS" ]; do wait -n; done
         run_job "$id" "$fw" "$spec" &
@@ -483,7 +536,11 @@ for jd in "$OUTD"/jobs/*/; do
         sed 's/^/        /' "$jd/problems" | tee -a "$SUMMARY"
         say "        logs: $jd"
     else
-        say "ok    $desc  | $(grep -h '^RESULT:' "$jd/client.log" | grep -oE ' (sent|recv|win_send_mbps|measured|rtt_avg_ms|drained)=[^ ]*' | tr -d '\n')"
+        say "ok    $desc  | $(grep -h '^RESULT:' "$jd/client.log" | grep -oE ' (sent|recv|win_send_mbps|measured|calls_per_s|rtt_avg_ms|drained)=[^ ]*' | tr -d '\n')"
+    fi
+    if [ -s "$jd/notes" ]; then
+        NOTES+=("$desc: $(paste -sd';' "$jd/notes")")
+        say "NOTE  $desc: $(paste -sd';' "$jd/notes") - a finding about the code, not a harness fault (logs: $jd)"
     fi
 done
 [ "$njobs" -gt 0 ] || [ "${#FAILS[@]}" -gt 0 ] || FAILS+=("no job ran at all - nothing was checked")

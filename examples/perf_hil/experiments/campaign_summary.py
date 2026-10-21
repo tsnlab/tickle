@@ -66,6 +66,9 @@ DIRECTION = {
     "peak_rss_kb": False,
     "wire_bytes_per_sample": False,
     "loss_pct": False,
+    # The service cells' rate (shape S, tickle/service_call, 2026-10-21): calls answered per second of the measured
+    # window. Added, not changed: no earlier cell carries it, so no earlier A/B reads differently.
+    "calls_per_s": True,
 }
 # utime_s and stime_s are deliberately NOT verdict metrics, and this is a rule CHANGED AFTER SEEING
 # DATA, which is worth stating plainly rather than burying. They were in DIRECTION when the campaign
@@ -150,13 +153,14 @@ BOUNDARY = {
 }
 
 LINE = re.compile(
-    r"^c(?P<num>\d+)\s+(?P<shape>[TL])\s+(?P<payload>p\d)\s+(?P<qos>Q\d)\s+"
+    r"^c(?P<num>\d+)\s+(?P<shape>[TLS])\s+(?P<payload>p\d)\s+(?P<qos>Q\d)\s+"
     r"(?P<net>.+?)\s+(?P<fw>tickle|cyclonedds|fastdds)\s+rep(?P<rep>\d+)\s+\|\s+"
     r"(?P<verdict>[^|]+?)\s+\|\s*(?P<fields>.*)$"
 )
 # The verdict may contain spaces (VOID(no RESULT line)); before 2026-10-06 it was \S+, so such a row did not match
 # and vanished instead of counting as VOID. A row of this shape that still does not match is reported, not dropped.
-ROW_START = re.compile(r"^c\d+\s+[TL]\s+p\d\s+Q\d\s")
+# S: the service cells (campaign_sweep.sh c18-c21, TickLE only), read like a latency cell - a round trip per call.
+ROW_START = re.compile(r"^c\d+\s+[TLS]\s+p\d\s+Q\d\s")
 DIAG_FIELD = re.compile(r"(?<![\w])diag_\w+=")
 
 
@@ -368,6 +372,10 @@ def delivery_verdict(shape, qos, per_fw):
     """
     if qos == BEST_EFFORT_QOS:
         return None                       # samples are meant to be droppable here
+    if shape == "S":
+        # A service call that ended unanswered is reported by the bench itself (timeouts=, loss_pct=) and read by
+        # service_cell_verdict.py; there is no vendor to exclude and no sample stream to truncate.
+        return None
     if qos == KEEP_LAST_QOS:
         # KEEP_LAST lets a writer replace unacknowledged samples once its history is full, so
         # sent != recv is what the QoS promises, not a fault - the same reasoning as BEST_EFFORT.

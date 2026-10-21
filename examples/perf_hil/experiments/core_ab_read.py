@@ -19,13 +19,25 @@ VOID (nothing is judged; exit 3), any of:
     comparison without the placement arm P), or printed no verdict line at all;
   - the gate v2 header's k does not equal the number of PRIMARY + WITNESS rows parsed here (a row this reader cannot
     parse must not pass by being skipped);
-  - a requested cell has no CPU witness row, or a latency cell (L) has no rtt row: the rule could not look there.
+  - a requested cell has no CPU witness row, or a latency cell (L) or service cell (S) has no rtt row: the rule could
+    not look there;
+  - service cells (S) were read but the arm files were not given (--arm-a/--arm-b/--arm-p) or one is missing: the
+    duplicate-execution falsifier below could not look.
+SERVICE CELLS (S, campaign_sweep.sh c18-c21; added 2026-10-21, before any rig run of them): a row whose verdict is
+DEFECT(dup_exec:...) - the server's callback answered some call twice (service_cell_verdict.py) - never reaches the
+compare file (only ok rows are compared), so the arm files themselves are read:
+  FAIL  any DEFECT row in arm B, whatever else is VOID: a duplicate execution is the cells' falsifier ("exactly one
+        execution per call"), a finding about B's code, and must never read as "could not look". It fails B even
+        when A has DEFECT rows too: the criterion is B's own, not B against A.
+  REPORTED  DEFECT rows in A or P (and how many): the control runs a callback twice. Not a VOID - those rows are left
+        out of A's statistics like any non-ok row, and the comparison of the rest stands - but listed, because then
+        main itself fails the criterion.
 REPORTED, never deciding: gate v2's own verdict line; cells with void rows; PLACEMENT P vs A "beyond" rows and gate v2's
 NOTE lines (A and P drifting apart: the run-to-run spread the floor absorbs); PRIMARY user-instruction rows with
 B - A above +0.1% and above their floor (the rx-gap3 queues' "core regression" line, kept as a report).
 Last line: "CORE AB VERDICT: PASS|FAIL|VOID (...)". Exit status 0 PASS, 1 FAIL, 3 VOID, 2 usage.
 
-  core_ab_read.py --compare F --done F --cells "1 2 ..." [--a SHA] [--b SHA]
+  core_ab_read.py --compare F --done F --cells "1 2 ..." [--a SHA] [--b SHA] [--arm-a F --arm-b F --arm-p F]
   core_ab_read.py --selftest
 """
 import io
@@ -34,12 +46,29 @@ import re
 import sys
 from contextlib import redirect_stdout
 
+# The cell label is "cN <shape> <payload> <qos> <network>", and the network may hold spaces ("loss 5% each way", the
+# service cells' N4): the label ends where the metric begins, and a metric is always <role>.<name>.
 ROW = re.compile(
-    r"^(?P<fam>PRIMARY|WITNESS)\s+(?P<verdict>\S+)\s+(?P<cell>c(?P<num>\d+) (?P<shape>[A-Z]) \S+ \S+ \S+)\s+"
-    r"(?P<metric>\S+)\s+A\s+(?P<a>\S+) \(se \S+, n\d+\)\s+B\s+(?P<b>\S+) \(se \S+, n\d+\)\s+(?P<pct>[+-]?[\d.na]+)%"
+    r"^(?P<fam>PRIMARY|WITNESS)\s+(?P<verdict>\S+)\s+(?P<cell>c(?P<num>\d+) (?P<shape>[A-Z]) \S+ \S+ .+?)\s+"
+    r"(?P<metric>[a-z]+\.[A-Za-z_]\w*)\s+A\s+(?P<a>\S+) \(se \S+, n\d+\)\s+B\s+(?P<b>\S+) \(se \S+, n\d+\)\s+(?P<pct>[+-]?[\d.na]+)%"
     r"\s+t \S+ \(> \S+\)(?:\s+floor (?P<floor>\S+) \(\S+%\))?\s*$")
 HEADER = re.compile(r"^--- gate v2: (\d+) primary \(instructions\) \+ (\d+) witness comparison\(s\), k = (\d+);")
 USER_INSN_PCT = 0.1
+# A campaign_sweep.sh row of a TickLE run whose verdict is DEFECT(...) (service_cell_verdict.py).
+DEFECT_ROW = re.compile(r"^c(?P<num>\d+)\s+[A-Z]\s+p\d\s+Q\d\s+.+?\s+tickle\s+rep(?P<rep>\d+)\s+\|\s+"
+                        r"(?P<verdict>DEFECT\(\S*?\))\s+\|")
+
+
+def arm_defects(path):
+    """The DEFECT rows of one arm file as "cN repR DEFECT(...)", or None when the file cannot be read or is empty."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    return [f"c{m['num']} rep{m['rep']} {m['verdict']}" for m in map(DEFECT_ROW.match, text.splitlines()) if m]
 
 
 def blocking(metric):
@@ -48,8 +77,9 @@ def blocking(metric):
     return name == "cpu_s_per_Msample" or name.startswith("rtt_")
 
 
-def read(compare, done, cells):
-    """Returns (verdict, reason, lines). verdict: PASS | FAIL | VOID."""
+def read(compare, done, cells, arms=None):
+    """Returns (verdict, reason, lines). verdict: PASS | FAIL | VOID. arms: {"A": path, "B": path, "P": path}, the
+    chain's arm files, read for service-cell DEFECT rows; None when not given."""
     lines, void = [], []
     texts = {}
     for what, path in (("compare", compare), ("done", done)):
@@ -104,8 +134,26 @@ def read(compare, done, cells):
             continue
         if not any(r["metric"].endswith(".cpu_s_per_Msample") for r in mine):
             void.append(f"cell c{c} has no CPU witness row")
-        if mine[0]["shape"] == "L" and not any(r["metric"].split(".", 1)[-1].startswith("rtt_") for r in mine):
-            void.append(f"latency cell c{c} has no rtt row")
+        if mine[0]["shape"] in ("L", "S") and not any(r["metric"].split(".", 1)[-1].startswith("rtt_") for r in mine):
+            void.append(f"{'latency' if mine[0]['shape'] == 'L' else 'service'} cell c{c} has no rtt row")
+    # Service cells: the duplicate-execution falsifier, read from the arm files (a DEFECT row is not an ok row, so the
+    # compare file never shows it).
+    b_defects, ctl_defects = [], []
+    if any(r["shape"] == "S" for r in rows) or arms:
+        if not arms:
+            void.append("service cells read without the arm files (--arm-a/--arm-b/--arm-p): duplicates not looked for")
+        else:
+            for arm in ("A", "P", "B"):
+                found = arm_defects(arms[arm]) if arms.get(arm) else None
+                if found is None:
+                    void.append(f"arm {arm} file {arms.get(arm) or '(not given)'} not read: duplicates not looked for")
+                    continue
+                for d in found:
+                    lines.append(f"  DEFECT arm {arm}: {d}")
+                (b_defects if arm == "B" else ctl_defects).extend(f"{arm} {d}" for d in found)
+            if ctl_defects:
+                lines.append(f"  REPORTED the control ran a service callback twice: {len(ctl_defects)} DEFECT row(s) "
+                             f"in A/P ({', '.join(ctl_defects[:4])}) - main itself fails the one-execution criterion")
     worse = [r for r in rows if r["verdict"] == "WORSE"]
     block = [r for r in worse if blocking(r["metric"])]
     other = [r for r in worse if not blocking(r["metric"])]
@@ -128,6 +176,11 @@ def read(compare, done, cells):
             lines.append(f"  REPORTED user insn > +{USER_INSN_PCT}% and floor: {r['line']}")
     kk = k if k is not None else len(rows)
     lines.append(f"  {len(worse)}/{kk} WORSE ({len(block)} CPU/latency, blocking; {len(other)} other, listed)")
+    if b_defects:
+        why = f"B ran a service callback twice for one call: {len(b_defects)} DEFECT row(s), " + ", ".join(b_defects[:4])
+        if void:
+            why += f"; also VOID otherwise ({'; '.join(void)[:200]})"
+        return "FAIL", why, lines
     if void:
         return "VOID", "; ".join(void), lines
     if block:
@@ -139,7 +192,8 @@ def read(compare, done, cells):
 def main(argv):
     if argv[1:] == ["--selftest"]:
         return selftest()
-    opt = {"--compare": None, "--done": None, "--cells": None, "--a": "", "--b": ""}
+    opt = {"--compare": None, "--done": None, "--cells": None, "--a": "", "--b": "", "--arm-a": None, "--arm-b": None,
+           "--arm-p": None}
     args = argv[1:]
     while args:
         if args[0] not in opt or len(args) < 2:
@@ -157,7 +211,8 @@ def main(argv):
         return 2
     print(f"=== core A/B landing rule: A {opt['--a'] or '?'} vs B {opt['--b'] or '?'}, cells [{opt['--cells']}],"
           f" {opt['--compare']}")
-    verdict, reason, lines = read(opt["--compare"], opt["--done"], cells)
+    arms = {arm: opt[f"--arm-{arm.lower()}"] for arm in "ABP" if opt[f"--arm-{arm.lower()}"]} or None
+    verdict, reason, lines = read(opt["--compare"], opt["--done"], cells, arms)
     for ln in lines:
         print(ln)
     print(f"CORE AB VERDICT: {verdict} ({reason})")
@@ -225,20 +280,70 @@ def selftest():
     with redirect_stdout(buf):
         gate_v2.report(rows)
     cases.append(("CPU +10% inside a 20% placement floor (held) -> PASS", buf.getvalue(), done_ok, [1], "PASS"))
+
+    # Service cells (S): a network label with spaces, the rtt rule, and the arm files' DEFECT rows.
+    def svc_table(**over):
+        spec = [("c18 S p1 Q0 none", "client.cpu_s_per_Msample", "witness"),
+                ("c18 S p1 Q0 none", "client.rtt_avg_ms", "witness"),
+                ("c18 S p1 Q0 none", "server.insn_u_per_sample", "primary"),
+                ("c21 S p1 Q0 loss 5% each way", "server.cpu_s_per_Msample", "witness"),
+                ("c21 S p1 Q0 loss 5% each way", "client.rtt_avg_ms", "witness"),
+                ("c21 S p1 Q0 loss 5% each way", "client.calls_per_s", "witness")]
+        rows = []
+        for cell, metric, fam in spec:
+            r = row(cell, metric, fam, over.get(cell.split()[0] + ":" + metric, same))
+            r["hi_better"] = metric.endswith("calls_per_s")
+            rows.append(r)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            gate_v2.report(rows, title="A a.txt  B b.txt  P p.txt")
+        return buf.getvalue()
+
+    arm_ok = ("c21 S p1 Q0 loss 5% each way   tickle     rep1 | ok | role=client sent=9000 rtt_avg_ms=0.04\n"
+              "c18 S p1 Q0 none                   tickle     rep1 | ok | role=client sent=9000\n")
+    arm_defect = arm_ok + ("c21 S p1 Q0 loss 5% each way   tickle     rep2 | DEFECT(dup_exec:1_first_k:64) | "
+                           "role=client sent=9000\n")
+    clean = {"A": arm_ok, "P": arm_ok, "B": arm_ok}
+    cases += [
+        ("service cells, clean arms -> PASS", svc_table(), done_ok, [18, 21], "PASS", clean),
+        ("service rtt WORSE -> FAIL", svc_table(**{"c21:client.rtt_avg_ms": up}), done_ok, [18, 21], "FAIL", clean),
+        ("service rate WORSE only -> PASS, listed", svc_table(**{"c21:client.calls_per_s": down}), done_ok, [18, 21],
+         "PASS", clean),
+        ("service DEFECT in B -> FAIL", svc_table(), done_ok, [18, 21], "FAIL", {**clean, "B": arm_defect}),
+        ("service DEFECT in B wins over a VOID -> FAIL", svc_table(), done_ok, [18, 21, 4], "FAIL",
+         {**clean, "B": arm_defect}),
+        ("service DEFECT in A only -> PASS, reported", svc_table(), done_ok, [18, 21], "PASS",
+         {**clean, "A": arm_defect}),
+        ("service DEFECT in A and B -> FAIL (B's own criterion)", svc_table(), done_ok, [18, 21], "FAIL",
+         {**clean, "A": arm_defect, "B": arm_defect}),
+        ("service cells without arm files -> VOID", svc_table(), done_ok, [18, 21], "VOID", None),
+        ("service cells, arm B file empty -> VOID", svc_table(), done_ok, [18, 21], "VOID", {**clean, "B": ""}),
+    ]
     bad = 0
     with tempfile.TemporaryDirectory() as d:
-        for name, compare, done, cells, want in cases:
+        for name, compare, done, cells, want, *extra in cases:
             cp, dp = os.path.join(d, "c.txt"), os.path.join(d, "d.txt")
             with open(cp, "w", encoding="utf-8") as fh:
                 fh.write(compare)
             with open(dp, "w", encoding="utf-8") as fh:
                 fh.write(done)
-            got, reason, lines = read(cp, dp, cells)
+            arms = None
+            if extra and extra[0] is not None:
+                arms = {}
+                for arm, text in extra[0].items():
+                    arms[arm] = os.path.join(d, f"arm_{arm}.txt")
+                    with open(arms[arm], "w", encoding="utf-8") as fh:
+                        fh.write(text)
+            got, reason, lines = read(cp, dp, cells, arms)
             ok = got == want
             if want == "PASS" and "listed" in name:
                 ok = ok and any(ln.startswith("  OTHER ") for ln in lines) and " 1/" in lines[-1]
-            if want == "FAIL":
+            if want == "FAIL" and "DEFECT" in name:
+                ok = ok and any(ln.startswith("  DEFECT arm B: c21 rep2 DEFECT(") for ln in lines)
+            elif want == "FAIL":
                 ok = ok and any(ln.startswith("  BLOCKING ") for ln in lines)
+            if "reported" in name:
+                ok = ok and any(ln.startswith("  REPORTED the control ran a service callback twice") for ln in lines)
             bad += not ok
             print(f"{'ok  ' if ok else 'BAD '} {name}: {got} ({reason[:110]})")
         missing = read(os.path.join(d, "absent.txt"), os.path.join(d, "absent.done"), [1])[0]

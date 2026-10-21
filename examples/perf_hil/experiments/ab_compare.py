@@ -31,7 +31,8 @@ never contributes to the verdict. Without --primary the whole table is printed a
 GATE V2 (the user, 2026-10-11; rules in gate_v2.py's header, implemented there): with --placement P.txt, the output of
 the placement arm A' (A rebuilt with TICKLE_PLACEMENT_CFLAGS, in the same chain), the campaign is read by gate v2:
   --primary defaults to "insn_u_per_sample,insn_k_per_sample" (executed instructions per sample, every role and cell);
-  --witness defaults to "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms" (CPU, rate, latency: they still decide);
+  --witness defaults to "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms,calls_per_s" (CPU, rate, latency: they still
+  decide; calls_per_s, added 2026-10-21, is the service cells' rate and selects nothing in a chain without them);
   one Bonferroni threshold over primary + witness; a comparison is WORSE only beyond it AND beyond |P - A|.
 Without --placement the reading is the one above (gate v1), kept so older chains still read as they were read.
 
@@ -52,7 +53,7 @@ from campaign_summary import AB_ONLY, DIRECTION, INSN_METRICS, parse  # noqa: E4
 import gate_v2  # noqa: E402
 
 GATE_V2_PRIMARY = ",".join(INSN_METRICS)
-GATE_V2_WITNESS = "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms"
+GATE_V2_WITNESS = "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms,calls_per_s"
 
 # Every metric a campaign A/B can judge, with its direction (True: higher is better): the vendor verdict's own, and the
 # latency tails kept for A/B use only. Gate v2 mode keeps its own set (DIRECTION and the instruction counts).
