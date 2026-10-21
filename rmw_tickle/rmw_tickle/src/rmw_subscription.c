@@ -763,7 +763,10 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
-    if (rmw_tickle_validate_qos_profile(qos_profile, RMW_TICKLE_ENTITY_SUBSCRIPTION) != RMW_RET_OK) {
+    const rmw_tickle_node_t* owner = (const rmw_tickle_node_t*)node->data;
+    if (rmw_tickle_validate_qos_profile_for(qos_profile, RMW_TICKLE_ENTITY_SUBSCRIPTION,
+                                            NULL != owner ? &owner->context_impl->tickle_context : NULL) !=
+        RMW_RET_OK) {
         return NULL; // error message already set
     }
 

@@ -829,6 +829,7 @@ static bool publisher_profile(rmw_tickle_publisher_t* pub_impl, const rmw_qos_pr
     ext.history_bytes =
         keep_all ? resolve_keep_all_budget_bytes(pub_impl, durable) : resolve_keep_last_budget_bytes(pub_impl);
     ext.max_blocking_ns = 0; // the context's qos.max_blocking_ns: RMW_TICKLE_MAX_BLOCKING_MS, read at rmw_init()
+    ext.manual_default_lease_ns = rmw_tickle_node_silence_ns(&pub_impl->node->context_impl->tickle_context);
     rmw_qos_profile_t sized = *qos;
     sized.depth = depth;
     rmw_tickle_qos_to_tt(&sized, RMW_TICKLE_ENTITY_PUBLISHER, &ext, profile);
@@ -999,7 +1000,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
-    if (rmw_tickle_validate_qos_profile(qos_profile, RMW_TICKLE_ENTITY_PUBLISHER) != RMW_RET_OK) {
+    const rmw_tickle_node_t* owner = (const rmw_tickle_node_t*)node->data;
+    if (rmw_tickle_validate_qos_profile_for(qos_profile, RMW_TICKLE_ENTITY_PUBLISHER,
+                                            NULL != owner ? &owner->context_impl->tickle_context : NULL) !=
+        RMW_RET_OK) {
         return NULL; // error message already set
     }
 

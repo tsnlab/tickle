@@ -13,8 +13,12 @@
 // (no node/network needed - the function is a pure predicate over an rmw_qos_profile_t).
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <tickle/config.h> // tt_CONTEXT_TX_INTERVAL, tt_CONTEXT_UPDATE_INTERVAL, tt_LIVELINESS_MISS_THRESHOLD
+#include <tickle/tickle.h> // struct tt_Context, tt_InitOptions_default(), struct tt_QosProfile
 
 #include "rmw/ret_types.h"
 #include "rmw/types.h"
@@ -119,6 +123,42 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
+
+    // tt_InitOptions bundle 2: the floor and the node silence are the core context's (its tt_InitOptions.discovery),
+    // and NULL is the default's. A context with a longer tx interval refuses the 6 ms the default accepts, and one with
+    // a smaller divisor accepts the 1 ms the default refuses.
+    static struct tt_Context context;
+    memset(&context, 0, sizeof(context));
+    tt_InitOptions_default(&context.opts);
+    const uint64_t default_floor_ns = rmw_tickle_lease_floor_ns(NULL);
+    assert(rmw_tickle_lease_floor_ns(&context) == default_floor_ns);
+    assert(rmw_tickle_node_silence_ns(&context) == (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL);
+    qos = valid_profile();
+    qos.liveliness_lease_duration.nsec = default_floor_ns;
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile_for(&qos, RMW_TICKLE_ENTITY_PUBLISHER, &context));
+    context.opts.discovery.tx_interval_ns = 2U * tt_CONTEXT_TX_INTERVAL;
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile_for(&qos, RMW_TICKLE_ENTITY_PUBLISHER, &context));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    tt_InitOptions_default(&context.opts);
+    context.opts.discovery.lease_divisor = 1;
+    qos.liveliness_lease_duration.nsec = tt_CONTEXT_TX_INTERVAL;
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile_for(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION, &context));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    context.opts.discovery.update_interval_ns = 2U * tt_CONTEXT_UPDATE_INTERVAL;
+    context.opts.discovery.miss_threshold = 4;
+    const uint64_t silence_ns = tt_CONTEXT_UPDATE_INTERVAL * 2U * 4U; // miss_threshold 4 x 2 s
+    assert(rmw_tickle_node_silence_ns(&context) == silence_ns);
+    // A MANUAL_BY_TOPIC Publisher that names no lease gets the context's silence.
+    qos = valid_profile();
+    qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
+    rmw_tickle_qos_extensions_t ext;
+    memset(&ext, 0, sizeof(ext));
+    struct tt_QosProfile profile;
+    rmw_tickle_qos_to_tt(&qos, RMW_TICKLE_ENTITY_PUBLISHER, &ext, &profile);
+    assert(profile.liveliness.lease_ns == rmw_tickle_node_silence_ns(NULL));
+    ext.manual_default_lease_ns = rmw_tickle_node_silence_ns(&context);
+    rmw_tickle_qos_to_tt(&qos, RMW_TICKLE_ENTITY_PUBLISHER, &ext, &profile);
+    assert(profile.liveliness.lease_ns == silence_ns);
 
     printf("rmw_tickle_validate_qos_profile: PASS\n");
     return 0;

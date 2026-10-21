@@ -209,6 +209,17 @@ typedef enum rmw_tickle_entity_kind_t {
 // table (PLAN.md) hasn't implemented yet, rather than silently ignoring it the way every create
 // function did through Milestone 6.
 rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind);
+// The same, with the liveliness lease floor of `context` (its tt_InitOptions.discovery, as created) rather than the
+// default's; a NULL context is the default's, which rmw_tickle_validate_qos_profile() uses.
+rmw_ret_t rmw_tickle_validate_qos_profile_for(const rmw_qos_profile_t* qos_profile,
+                                              rmw_tickle_entity_kind_t entity_kind, const struct tt_Context* context);
+
+// A core context's liveliness timings, from its resolved tt_InitOptions.discovery; a NULL context gives the defaults
+// (config.h). The lease floor: lease_divisor x tx_interval_ns, the shortest finite lease core keeps. The node silence:
+// miss_threshold x update_interval_ns - the lease rmw_tickle gives a MANUAL_BY_TOPIC Publisher that names none, and
+// how long the poll thread may go without returning before the watchdog calls it a hang.
+uint64_t rmw_tickle_lease_floor_ns(const struct tt_Context* context);
+uint64_t rmw_tickle_node_silence_ns(const struct tt_Context* context);
 
 // The liveliness lease an endpoint announces on the wire (tt_Publisher/tt_Subscriber.
 // liveliness_lease_duration_ns), of either liveliness kind: 0 - no lease - for DEFAULT and INFINITE, the
@@ -234,12 +245,14 @@ typedef struct rmw_tickle_qos_extensions_t {
     uint64_t max_blocking_ns; // reliability.max_blocking_ns (Publisher); 0 = the context's; 1 ns = never block
     uint16_t tracking_words;  // reliability.tracking_words (Subscription)
     uint16_t reorder_slots;   // reliability.reorder_slots (RELIABLE Subscription)
+    // A MANUAL_BY_TOPIC Publisher's lease when its profile names none; 0 = rmw_tickle_node_silence_ns(NULL)
+    uint64_t manual_default_lease_ns;
 } rmw_tickle_qos_extensions_t;
 
 // `kind` is the endpoint's, and the profile has passed rmw_tickle_validate_qos_profile(). Durations:
 // unspecified ({0, 0}) and RMW_DURATION_INFINITE are infinite, the BEST_AVAILABLE sentinels
 // tt_QOS_DURATION_BEST_AVAILABLE. A MANUAL_BY_TOPIC Publisher given no lease keeps the one rmw_tickle
-// has always enforced and announced for it (tt_LIVELINESS_MISS_THRESHOLD update intervals). A
+// has always enforced and announced for it (miss_threshold update intervals, ext->manual_default_lease_ns). A
 // subscription or service depth above UINT16_MAX is carried as UINT16_MAX (core counts in 16 bits; the
 // rmw queue keeps the full depth). `ext` may be NULL.
 void rmw_tickle_qos_to_tt(const rmw_qos_profile_t* qos, rmw_tickle_entity_kind_t kind,
@@ -426,7 +439,7 @@ struct rmw_tickle_context_impl_t {
     // enough to run it - so this needs a genuinely independent second thread instead: poll_thread_
     // main() (rmw_node.c) stores tt_get_ns() here every time tt_Context_poll() actually returns;
     // watchdog_thread_main() (rmw_node.c), running on its own schedule, compares this against
-    // RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS and marks every live Publisher across every logical
+    // watchdog_stale_threshold_ns() (rmw_node.c) and marks every live Publisher across every logical
     // node sharing this context RMW_EVENT_LIVELINESS_LOST if it's gone stale (poll_thread health is
     // a context-wide fact now, same as the tt_Context it's polling). Atomic: the only field the two
     // threads share directly (poll_thread writes, watchdog_thread reads) - everything else the

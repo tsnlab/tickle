@@ -21,7 +21,7 @@
 #include <stdio.h>  // vsnprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
 #include <string.h> // memset() - rmw_tickle_qos_to_tt()
 
-#include <tickle/config.h> // tt_CONTEXT_TX_INTERVAL - see Milestone
+#include <tickle/config.h> // the tt_DiscoveryOptions defaults - rmw_tickle_lease_floor_ns(NULL)
                            // 18's own note on why this needs a direct include, not just tickle.h
 #include <tickle/tickle.h> // struct tt_QosProfile - rmw_tickle_qos_to_tt() / _from_tt()
 
@@ -34,7 +34,26 @@
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
+uint64_t rmw_tickle_lease_floor_ns(const struct tt_Context* context) {
+    if (NULL == context) {
+        return (uint64_t)tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL;
+    }
+    return (uint64_t)context->opts.discovery.lease_divisor * context->opts.discovery.tx_interval_ns;
+}
+
+uint64_t rmw_tickle_node_silence_ns(const struct tt_Context* context) {
+    if (NULL == context) {
+        return (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    }
+    return (uint64_t)context->opts.discovery.miss_threshold * context->opts.discovery.update_interval_ns;
+}
+
 rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind) {
+    return rmw_tickle_validate_qos_profile_for(qos_profile, entity_kind, NULL);
+}
+
+rmw_ret_t rmw_tickle_validate_qos_profile_for(const rmw_qos_profile_t* qos_profile,
+                                              rmw_tickle_entity_kind_t entity_kind, const struct tt_Context* context) {
     // QoS roadmap #5 (RELIABILITY) - done. A service/client's RELIABLE was already backed by tt_
     // Client_call()'s own pre-existing bounded retry (tt_CALL_RETRY_COUNT); a topic Publisher/
     // Subscriber's RELIABLE is now backed by TickLE core's own ACKNACK + retransmission (struct
@@ -114,14 +133,14 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
-    // A custom lease_duration is accepted down to tt_LIVELINESS_LEASE_DIVISOR (6) tt_CONTEXT_TX_INTERVALs, 6 ms
-    // by default. The core honours any lease above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of
-    // life, is checked by a timer at the expiry, and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a
-    // lease, which cannot go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD *
-    // tt_CONTEXT_UPDATE_INTERVAL (3 s), when the core checked once a second and cut every lease at its node-level
-    // limit. Rejected below the floor rather than silently rounded up - same "reject, don't silently downgrade"
-    // philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT (unspecified, {0,0}) and
-    // an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
+    // A custom lease_duration is accepted down to the context's lease_divisor (6) tx intervals (1 ms), 6 ms by default
+    // (rmw_tickle_lease_floor_ns(), from the core context's tt_InitOptions.discovery). The core honours any lease above
+    // that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of life, is checked by a timer at the expiry,
+    // and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a lease, which cannot go below one tx tick. The
+    // floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL (3 s), when the core checked once a
+    // second and cut every lease at its node-level limit. Rejected below the floor rather than silently rounded up -
+    // same "reject, don't silently downgrade" philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT
+    // (unspecified, {0,0}) and an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
     // RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE ({9223372036, 854775806}, one ns short of
     // RMW_DURATION_INFINITE) already clears this floor numerically without needing a special case -
     // resolved to a real value at creation (tt_QosProfile_resolve()) before anything reads it.
@@ -129,10 +148,10 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                         (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
         !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
         rmw_time_total_nsec(qos_profile->liveliness_lease_duration) <
-            (rmw_duration_t)(tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL)) {
-        RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is "
-                          "tt_LIVELINESS_LEASE_DIVISOR * tt_CONTEXT_TX_INTERVAL (a node's summary goes out "
-                          "tt_LIVELINESS_LEASE_DIVISOR times its "
+            (rmw_duration_t)rmw_tickle_lease_floor_ns(context)) {
+        RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is the context's "
+                          "lease_divisor * tx interval (6 ms by default: a node's summary goes out "
+                          "lease_divisor times its "
                           "shortest lease) - see rmw_tickle/LIVELINESS_PLAN.md");
         return RMW_RET_UNSUPPORTED;
     }
@@ -167,9 +186,6 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 }
 
 // ---- QoS redesign step 3: rmw_qos_profile_t <-> struct tt_QosProfile (rmw_tickle.h says what each side owns).
-
-// The lease rmw_tickle has always enforced, and announced, for a MANUAL_BY_TOPIC Publisher that gave none.
-#define RMW_TICKLE_MANUAL_DEFAULT_LEASE_NS ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL)
 
 // A duration for core: unspecified and infinite are infinite, `best_available` (the policy's sentinel, when it has
 // one) core's tt_QOS_DURATION_BEST_AVAILABLE.
@@ -265,7 +281,9 @@ void rmw_tickle_qos_to_tt(const rmw_qos_profile_t* qos, rmw_tickle_entity_kind_t
                                               (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE);
     if (RMW_TICKLE_ENTITY_PUBLISHER == kind && tt_QOS_LIVELINESS_MANUAL_BY_TOPIC == out->liveliness.kind &&
         rmw_time_equal(qos->liveliness_lease_duration, (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT)) {
-        out->liveliness.lease_ns = RMW_TICKLE_MANUAL_DEFAULT_LEASE_NS;
+        // The lease rmw_tickle has always enforced, and announced, for a MANUAL_BY_TOPIC Publisher that gave none.
+        out->liveliness.lease_ns = 0 != extensions->manual_default_lease_ns ? extensions->manual_default_lease_ns
+                                                                            : rmw_tickle_node_silence_ns(NULL);
     }
 }
 
