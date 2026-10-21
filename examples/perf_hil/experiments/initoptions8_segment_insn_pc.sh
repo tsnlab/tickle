@@ -40,6 +40,12 @@
 #          else VOID. The sample counts (n per arm, and the samples per run) print before the values.
 #   Also printed, never deciding: B - A and P - A in percent, A's own min-max spread, and instructions:k per sample.
 #
+# Learned from its first runs (2026-10-22; the rule above unchanged): on this PC the throughput servers (be_p1, be_p3,
+# rt_p3) count in two modes a run - a reader that keeps catching the writer mid-copy polls the claimed head, at 0.13-0.34
+# segment_head_stalls a sample against 0.03-0.04, and counts ~1.6-2x the instructions. Which mode a run lands in moves
+# with speed and placement, not with code cost: the placement arm alone moved +16% to +68% there. Such a FAIL is read
+# from the runs' head stalls before anything else; the latency cells and every client are deterministic to ~0.1%.
+#
 # Usage: A=<commit|@dir> B=<commit|@dir> [REPS=3] [DUR=5] [DUR_L=5] [CELLS="be_p1 be_p3 be_p4 rt_p3 lat_p1 lat_p3"]
 #        [CPU_C=12] [CPU_S=13] [RECORD=0] [OUT=prefix] initoptions8_segment_insn_pc.sh
 #   RECORD=1 also runs each process under `perf record -e instructions:u` and writes a per-symbol report next to it
