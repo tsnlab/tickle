@@ -59,6 +59,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- rmw_tickle: a process could hang at `rclcpp::shutdown()` after its last node was destroyed (the action check's
+  client, 3 of 100 runs on the PC). The context was destroyed while an `rmw_wait()` holding the executor poll role -
+  rclcpp's graph listener - still polled it, and a poll that re-entered `epoll_wait()` while the descriptors were being
+  closed was never woken. The role is now taken back before the destroy (`retire_poll_role()`), and a wake of a closed
+  context is refused without touching a descriptor (it wrote to the closed eventfd's number: "Cannot send wake signal:
+  Bad file descriptor", or into whatever the process had opened under it since)
+  (`rmw_tickle/rmw_tickle/test/test_teardown_wait.c`).
 - A core service call on the auto retry schedule could run its callback twice: the server kept an answer for the
   client's seed schedule (75 ms), while the client's srtt-relative retries come up to its 1 s deadline. Under 5% loss
   each way at 1 kHz (rig cell c21, on the PC) 1-2 calls in 3,000-7,000 ran twice. The server now keeps an answer for
