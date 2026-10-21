@@ -49,6 +49,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   first wait went from 0.4 ms to 290-600 ms within ~120 calls, and c21 made 130-430 calls/s of 1,000. Only calls never
   resent are sampled now (Karn); a resent call's doublings carry to the next call's first wait until a clean answer
   (RFC 6298 5.5-5.7, `tt_CALL_BACKOFF_MAX`).
+- A server whose `tt_MAX_SERVER_CACHE_COUNT` slots all held live answers evicted the one sent longest ago to keep a new
+  one, and a retry for the evicted call ran its callback again. The new request is now turned away before its
+  callback runs (the client retries; a slot frees within one answer lifetime), unless its Client already holds
+  `tt_CLIENT_CALL_WINDOW` answers, whose oldest is provably finished. Under more callers than slots within a lifetime
+  this trades waiting for a second execution.
 - An rmw_tickle service request whose answer was lost was served twice. The server's `tt_Service` left the client's
   retry schedule at 0, so core kept the answer 75 ms (the auto schedule) while the client retries after 100 ms; the
   retry found nothing kept and ran the callback again. The server now carries the client's 100 ms x 50, and keeps an
