@@ -3522,9 +3522,13 @@ static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool 
     }
 }
 
-// A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate.
-static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t size, bool lost,
-                          const struct tt_HybridOptions* opts) {
+// A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate. These
+// two take the context, not its state and options apart: both are offsets from it, so the options cost no argument of
+// their own on a path taken per received run (examples/perf_hil/experiments/hybrid_options_insn.sh).
+__attribute__((always_inline)) static inline void
+hybrid_rx_run(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t size, bool lost) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    const struct tt_HybridOptions* opts = &node->opts.hybrid_transport;
     run_window_observe(&hybrid->window, size, lost, opts);
     run_window_observe(&writer->runs, size, lost, opts);
     loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U, opts);
@@ -3533,8 +3537,10 @@ static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWrite
 }
 
 // `units` MTU units of `writer`'s, `lost` of them lost: p and p_mtu.
-static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_t lost,
-                          const struct tt_HybridOptions* opts) {
+__attribute__((always_inline)) static inline void hybrid_rx_mtu(struct tt_Context* node, uint32_t units,
+                                                                uint32_t lost) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    const struct tt_HybridOptions* opts = &node->opts.hybrid_transport;
     loss_estimate_observe(&hybrid->rx_loss, units, lost, opts);
     loss_estimate_observe(&hybrid->mtu_loss, units, lost, opts);
 }
@@ -3602,7 +3608,7 @@ static void hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter
         if (hybrid_rx_receiver_lost(node, 1) != 0) {
             continue;
         }
-        hybrid_rx_run(&node->hybrid, writer, size, true, &node->opts.hybrid_transport);
+        hybrid_rx_run(node, writer, size, true);
         uint32_t first = start > from ? start : from;
         uint32_t last = start + size < body_end ? start + size : body_end;
         writer->body_lost += last - first;
@@ -3623,7 +3629,7 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
         } else if (layout == 1U) {
             uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);
             if (lost != 0) {
-                hybrid_rx_mtu(hybrid, lost, lost, &node->opts.hybrid_transport);
+                hybrid_rx_mtu(node, lost, lost);
             }
         } else if (hybrid_rx_receiver_lost(node, 1) == 0) {
             // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
@@ -3632,7 +3638,7 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
         }
     }
     if (end > tail && from <= tail && hybrid_rx_receiver_lost(node, 1) == 0) {
-        hybrid_rx_mtu(hybrid, 1, 1, &node->opts.hybrid_transport); // the tail, always an MTU unit
+        hybrid_rx_mtu(node, 1, 1); // the tail, always an MTU unit
     }
 }
 
@@ -3840,10 +3846,10 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
-        hybrid_rx_run(hybrid, writer, units, false, &node->opts.hybrid_transport);
+        hybrid_rx_run(node, writer, units, false);
         writer->run_tick = hybrid->ticks + 1U; // a run of this writer's got through (0: none yet)
     } else {
-        hybrid_rx_mtu(hybrid, 1, 0, &node->opts.hybrid_transport);
+        hybrid_rx_mtu(node, 1, 0);
     }
     writer->next = (uint16_t)(index + units);
     if (!run && index == tail) {
