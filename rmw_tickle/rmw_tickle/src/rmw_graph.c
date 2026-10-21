@@ -478,7 +478,7 @@ static bool publisher_has_peer(const struct tt_Publisher* pub, uint8_t context_i
         }
         peers += pub->peers[i].context_id != tt_CONTEXT_ID_INVALID;
     }
-    return peers >= tt_MAX_PEER_COUNT;
+    return peers >= pub->node->opts.capacity.peers; // full: the core broadcasts (tt_Capacity.peers)
 }
 
 static struct match_counts count_matches_locked(rmw_tickle_context_impl_t* context_impl,

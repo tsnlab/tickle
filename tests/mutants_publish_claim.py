@@ -51,10 +51,9 @@ MUTANTS = [
     (
         "the claim limit",
         "src/tickle.c",
-        "    if (claim == NULL) {\n        return tt_RET_ILLEGAL_STATUS;\n    }\n    struct tt_Context* node = pub->node;\n"
-        "    if (!keep_all_writable(pub)) {\n        // As publisher_publish_locked() refuses",
-        "    if (claim == NULL) {\n        claim = &pub->claims[0];\n    }\n    struct tt_Context* node = pub->node;\n"
-        "    if (!keep_all_writable(pub)) {\n        // As publisher_publish_locked() refuses",
+        "    if (pub->claims_out >= node->opts.capacity.publisher_claims) {\n        return tt_RET_ILLEGAL_STATUS;\n"
+        "    }\n    struct tt_PublisherClaim* claim = &pub->claims[0];\n",
+        "    struct tt_PublisherClaim* claim = &pub->claims[0];\n",
         "test_several_claims_and_publishes_meanwhile",
     ),
     (

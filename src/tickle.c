@@ -806,8 +806,26 @@ static void resolve_segment_options(struct tt_SegmentOptions* segment) {
     }
 }
 
+// Each zero replaced by the compiled size of its table, so every reader takes node->opts.capacity as it is.
+static_assert(tt_MAX_ACK_ENTRIES >= 1 && tt_MAX_ACK_ENTRIES <= UINT16_MAX, "capacity.ack_entries is a uint16_t");
+static_assert(tt_MAX_PEER_COUNT >= 1 && tt_MAX_PEER_COUNT <= UINT8_MAX, "capacity.peers is a uint8_t");
+static_assert(tt_PUBLISHER_CLAIMS >= 1 && tt_PUBLISHER_CLAIMS <= UINT8_MAX, "capacity.publisher_claims is a uint8_t");
 static void resolve_capacity_options(struct tt_Capacity* capacity) {
-    (void)capacity;
+    if (capacity->ack_entries == 0) {
+        capacity->ack_entries = tt_MAX_ACK_ENTRIES;
+    }
+    if (capacity->peers == 0) {
+        capacity->peers = tt_MAX_PEER_COUNT;
+    }
+    if (capacity->request_history == 0) {
+        capacity->request_history = tt_RELIABLE_REQUEST_HISTORY;
+    }
+    if (capacity->publisher_claims == 0) {
+        capacity->publisher_claims = tt_PUBLISHER_CLAIMS;
+    }
+    if (capacity->large_retained == 0) {
+        capacity->large_retained = tt_LARGE_RETAINED;
+    }
 }
 
 static void resolve_init_options(struct tt_InitOptions* opts) {
@@ -1256,9 +1274,32 @@ static tt_ret_t validate_segment_options(const struct tt_SegmentOptions* segment
     return tt_RET_OK;
 }
 
-static tt_ret_t validate_capacity_options(const struct tt_Capacity* capacity) {
-    if (capacity->reserved != 0) {
-        return reject_option("capacity.reserved", "is not 0");
+// A table cannot be used past its compiled size. And a peers[] table full at capacity.peers must mean that its endpoint
+// broadcasts - more peers than a link's unicast threshold - or the peer it leaves out is never sent anything
+// (upsert_endpoint_peer()); with the compiled size, validate_link_options() makes the same check.
+static tt_ret_t validate_capacity_options(const struct tt_Capacity* capacity, const struct tt_NetOptions* net) {
+    if (capacity->ack_entries > tt_MAX_ACK_ENTRIES) {
+        return reject_option("capacity.ack_entries", "exceeds tt_MAX_ACK_ENTRIES");
+    }
+    if (capacity->peers > tt_MAX_PEER_COUNT) {
+        return reject_option("capacity.peers", "exceeds tt_MAX_PEER_COUNT");
+    }
+    uint8_t threshold = net->link_count == 0 ? link_threshold(0) : 0;
+    for (uint8_t i = 0; i < net->link_count; i++) {
+        uint8_t link = link_threshold(net->links[i].unicast_threshold);
+        threshold = link > threshold ? link : threshold;
+    }
+    if (capacity->peers <= threshold) {
+        return reject_option("capacity.peers", "is not above a link's unicast_threshold");
+    }
+    if (capacity->request_history > tt_RELIABLE_REQUEST_HISTORY) {
+        return reject_option("capacity.request_history", "exceeds tt_RELIABLE_REQUEST_HISTORY");
+    }
+    if (capacity->publisher_claims > tt_PUBLISHER_CLAIMS) {
+        return reject_option("capacity.publisher_claims", "exceeds tt_PUBLISHER_CLAIMS");
+    }
+    if (capacity->large_retained > tt_LARGE_RETAINED) {
+        return reject_option("capacity.large_retained", "exceeds tt_LARGE_RETAINED");
     }
     return tt_RET_OK;
 }
@@ -1290,7 +1331,7 @@ static tt_ret_t validate_init_options(const struct tt_InitOptions* opts) {
         ret = validate_segment_options(&opts->segment, &opts->discovery);
     }
     if (ret == tt_RET_OK) {
-        ret = validate_capacity_options(&opts->capacity);
+        ret = validate_capacity_options(&opts->capacity, &opts->net);
     }
     return ret;
 }
@@ -5038,6 +5079,25 @@ static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
     return false;
 }
 
+// upsert_peer() into an endpoint's peers[] used up to the context's capacity.peers. The table is dense, so it is full
+// at that limit exactly when the slot before the limit is taken; then a node already in it is refreshed and a new one
+// dropped, as upsert_peer() drops one at the compiled size. Taken per announce, never per sample: the walks over
+// peers[] stay bounded by tt_MAX_PEER_COUNT, the slots past the limit empty.
+static bool upsert_endpoint_peer(const struct tt_Context* node, struct tt_Peer* peers, uint8_t node_id, uint32_t ip,
+                                 uint16_t port) {
+    uint8_t limit = node->opts.capacity.peers;
+    if (peers[limit - 1U].context_id != tt_CONTEXT_ID_INVALID) {
+        for (uint8_t i = 0; i < limit; i++) {
+            if (peers[i].context_id == node_id) {
+                return upsert_peer(peers, node_id, ip, port);
+            }
+        }
+        TT_LOG_WARNING("Peer table full (%u, capacity.peers), dropping newly seen peer node %u", limit, node_id);
+        return false;
+    }
+    return upsert_peer(peers, node_id, ip, port);
+}
+
 static uint8_t count_peers(const struct tt_Peer* peers) {
     uint8_t count = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -5105,7 +5165,10 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
     if (ack != NULL) {
         return ack;
     }
-    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+    // Up to the context's capacity.ack_entries: an entry is only ever taken here, so the ones past it stay empty and
+    // the walks over peer_acks[] keep their compiled bound.
+    int limit = (int)pub->node->opts.capacity.ack_entries;
+    for (int i = 0; i < limit; i++) {
         if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             pub->peer_acks[i].context_id = node_id;
             pub->peer_acks[i].entity_id = entity_id;
@@ -6738,13 +6801,13 @@ static void wall_offset_refresh(struct tt_Context* node) {
 // zeroed inbox state array only happens to mean "empty".
 static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
-    // when this changes nothing) or built by hand in a whitebox test (the service, reliable, poll, hybrid and segment
-    // groups still zero). The call path reads the service options, the repair path the reliable ones, the receive loop
-    // the poll options, the hybrid transport its own and the segment's drain and send paths theirs
-    // (service_call_retry_interval(), resend_suppressed(), drain_rx_more(), node_poll(), drain_own_segment() and the
-    // rest), with no fallback for a zero; reset_node_state() after this starts the hybrid reader on them. The segment's
-    // dead-reader time is derived from the discovery group (a whitebox context's zero discovery fields are the
-    // defaults).
+    // when this changes nothing) or built by hand in a whitebox test (the service, reliable, poll, hybrid, segment and
+    // capacity groups still zero). The call path reads the service options, the repair path the reliable ones, the
+    // receive loop the poll options, the hybrid transport its own, the segment's drain and send paths theirs and every
+    // table its capacity (service_call_retry_interval(), resend_suppressed(), drain_rx_more(), node_poll(),
+    // drain_own_segment(), claim_peer_ack() and the rest), with no fallback for a zero; reset_node_state() after this
+    // starts the hybrid reader on them. The segment's dead-reader time is derived from the discovery group (a whitebox
+    // context's zero discovery fields are the defaults).
     resolve_service_options(&node->opts.service);
     resolve_reliable_options(&node->opts.reliable);
     resolve_poll_options(&node->opts.poll);
@@ -6753,6 +6816,7 @@ static void node_init_locks(struct tt_Context* node) {
 #if tt_SEGMENT_ENABLED
     node->opts.segment.dead_reader_ns = segment_dead_reader_of(&node->opts.segment, &node->opts.discovery);
 #endif
+    resolve_capacity_options(&node->opts.capacity);
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -11396,9 +11460,10 @@ static void large_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 
 static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord sample);
 
-// How many large records this Publisher keeps: tt_LARGE_RETAINED, or its KEEP_LAST depth in samples when smaller.
+// How many large records this Publisher keeps: its context's capacity.large_retained (tt_LARGE_RETAINED), or its
+// KEEP_LAST depth in samples when smaller.
 static uint32_t large_ring_limit(const struct tt_Publisher* pub) {
-    uint32_t limit = tt_LARGE_RETAINED;
+    uint32_t limit = pub->node->opts.capacity.large_retained;
     const struct tt_ReliableCache* cache = pub->reliable_cache;
     if (!pub->keep_all && cache != NULL && cache->sample_depth != 0 && cache->sample_depth < limit) {
         limit = cache->sample_depth;
@@ -11705,7 +11770,7 @@ static tt_ret_t large_keep_all_admits(const struct tt_Publisher* pub, uint32_t c
     if (pub->seq_no + count - acked_through > window) {
         return tt_RET_WOULD_BLOCK;
     }
-    if (pub->large_count >= tt_LARGE_RETAINED) {
+    if (pub->large_count >= pub->node->opts.capacity.large_retained) {
         const struct tt_LargeRecord* oldest = &pub->large[pub->large_head];
         if (seq_delta(acked_through, oldest->seq_no + oldest->count - 1U) < 0) {
             return tt_RET_WOULD_BLOCK;
@@ -12258,14 +12323,17 @@ static bool claim_publish_in_place(const struct tt_PublisherClaim* claim, uint32
 }
 
 static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload) {
-    struct tt_PublisherClaim* claim = NULL;
-    for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS && claim == NULL; k++) {
-        claim = pub->claims[k].slot == NULL ? &pub->claims[k] : NULL;
-    }
-    if (claim == NULL) {
+    struct tt_Context* node = pub->node;
+    // The claim limit: at most the context's capacity.publisher_claims out at once (tt_PUBLISHER_CLAIMS, claims[]'s
+    // size, by default). claims_out counts the entries holding a slot, so with fewer out than claims[] holds the walk
+    // below ends on a free one.
+    if (pub->claims_out >= node->opts.capacity.publisher_claims) {
         return tt_RET_ILLEGAL_STATUS;
     }
-    struct tt_Context* node = pub->node;
+    struct tt_PublisherClaim* claim = &pub->claims[0];
+    for (uint32_t k = 1; k < tt_PUBLISHER_CLAIMS && claim->slot != NULL; k++) {
+        claim = &pub->claims[k];
+    }
     if (!keep_all_writable(pub)) {
         // As publisher_publish_locked() refuses, so a caller waiting on writable_callback is woken the same way.
         pub->writable_pending = true;
@@ -14433,7 +14501,10 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
         return proxy;
     }
 
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+    // Up to the context's capacity.peers (a test's bare Subscriber, with no context, the compiled size): a proxy is
+    // only ever taken here, so the slots past it stay empty and find_writer_proxy() keeps its compiled bound.
+    int limit = sub->node != NULL ? (int)sub->node->opts.capacity.peers : tt_MAX_PEER_COUNT;
+    for (int i = 0; i < limit; i++) {
         if (sub->writers[i].context_id == tt_CONTEXT_ID_INVALID) {
             proxy = &sub->writers[i];
             proxy->context_id = node_id;
@@ -14563,12 +14634,16 @@ static uint64_t repair_in_flight_ns(const struct tt_Context* node, const struct 
 }
 
 // An ACKNACK just went out naming seq_nos first..last (and possibly fewer in between). See tt_WriterProxy.requests.
-static void note_requested(struct tt_WriterProxy* proxy, uint32_t first_seq_no, uint32_t last_seq_no, uint64_t now) {
+// The ring wraps at the context's capacity.request_history - a compare, not the modulo by a constant it was - so the
+// slots past it stay empty and the walks over requests[] keep their compiled bound.
+static void note_requested(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t first_seq_no,
+                           uint32_t last_seq_no, uint64_t now) {
     struct tt_RepairRequest* request = &proxy->requests[proxy->request_next];
     request->sent_ns = now != 0 ? now : 1U;
     request->first_seq_no = first_seq_no;
     request->last_seq_no = last_seq_no;
-    proxy->request_next = (uint8_t)((proxy->request_next + 1U) % tt_RELIABLE_REQUEST_HISTORY);
+    uint8_t next = (uint8_t)(proxy->request_next + 1U);
+    proxy->request_next = next < node->opts.capacity.request_history ? next : 0U;
 }
 
 // A repair of seq_no (a copy addressed to this node, tt_Context.rx_targeted) arrived, at or above ack_seq_no; if
@@ -14742,7 +14817,7 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
         note_watermark_requested(proxy, tt_get_ns());
     }
     if (first_named >= 0) {
-        note_requested(proxy, proxy->ack_seq_no + (uint32_t)first_named, proxy->ack_seq_no + (uint32_t)last_named,
+        note_requested(node, proxy, proxy->ack_seq_no + (uint32_t)first_named, proxy->ack_seq_no + (uint32_t)last_named,
                        tt_get_ns());
     }
 #ifdef tt_RELIABLE_STATS
@@ -17129,7 +17204,7 @@ static void claim_from_acknack(struct tt_Context* node, struct tt_Publisher* pub
     if (claim_peer_ack(pub, source, sender_entity_id) == NULL) {
         return; // a full table: the same refusal register_subscriber_peer_on_publisher() makes
     }
-    (void)upsert_peer(pub->peers, source, sender_ip, sender_port);
+    (void)upsert_endpoint_peer(node, pub->peers, source, sender_ip, sender_port);
     TT_LOG_INFO("Publisher peer claimed from its ACKNACK: node %u entity %08x for endpoint %u (its announce has not "
                 "arrived)",
                 source, sender_entity_id, endpoint_id);
@@ -17172,13 +17247,12 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
         bool newly_matched = find_peer_ack(pub, ctx->header->source, ctx->entity_id) == NULL;
         struct tt_PeerAck* ack = claim_peer_ack(pub, ctx->header->source, ctx->entity_id);
         if (ack == NULL) {
-            // The limit is a build setting (config.h's tt_MAX_ACK_ENTRIES; rmw_tickle's
-            // RMW_TICKLE_MAX_RELIABLE_READERS), so the line names it: a reader that never connects is otherwise silent
-            // about why.
-            TT_LOG_WARNING(
-                "Ack table full (%d readers per publisher, tt_MAX_ACK_ENTRIES / RMW_TICKLE_MAX_RELIABLE_READERS "
-                "at build) - not matching Subscriber %08x on node %d",
-                tt_MAX_ACK_ENTRIES, ctx->entity_id, ctx->header->source);
+            // The limit is the context's capacity.ack_entries, at most the build's (config.h's tt_MAX_ACK_ENTRIES;
+            // rmw_tickle's RMW_TICKLE_MAX_RELIABLE_READERS), so the line names them: a reader that never connects is
+            // otherwise silent about why.
+            TT_LOG_WARNING("Ack table full (%u readers per publisher: capacity.ack_entries, at most tt_MAX_ACK_ENTRIES "
+                           "/ RMW_TICKLE_MAX_RELIABLE_READERS at build) - not matching Subscriber %08x on node %d",
+                           (unsigned)node->opts.capacity.ack_entries, ctx->entity_id, ctx->header->source);
             return;
         }
         if (newly_matched && requested_reliable && !requested_durable) {
@@ -17206,7 +17280,7 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
         }
     }
 
-    if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
+    if (upsert_endpoint_peer(node, pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
         struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
         // The Publisher's half of the same question the writer-proxy log above answers from the
         // Subscriber's side: did the two ever actually find each other? Once per newly-claimed
@@ -17238,10 +17312,9 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
 // just the first. No QoS compatibility gate here (Clients/Servers have no RELIABLE/DURABLE
 // policy to negotiate the way topics do), matching the original inline code this was lifted from.
 static void register_server_peer_on_client(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
-    UNUSED(node);
     struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
     struct tt_Client* client = (struct tt_Client*)endpoint;
-    upsert_peer(client->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port);
+    (void)upsert_endpoint_peer(node, client->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port);
 }
 
 static bool decode_update_entities(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
