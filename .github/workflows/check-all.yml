@@ -152,7 +152,7 @@ jobs:
             bear --output compile_commands.json -- bash -c '
               for s in best_effort_latency best_effort_throughput deadline_miss_detection \
                        durability_late_join history_depth_burst_loss lifespan_expiry \
-                       liveliness_loss_detection reliable_latency reliable_throughput; do
+                       liveliness_loss_detection reliable_latency reliable_throughput service_call; do
                 ./build.sh "$s"
               done
               ./build.sh reliable_throughput p2'
@@ -255,6 +255,7 @@ jobs:
             "examples/freertos/set_bool/main_server.c:../../examples/set_bool"
             "examples/freertos/perf/main_perf_client.c:../../examples/perf"
             "examples/freertos/perf/main_perf_server.c:../../examples/perf"
+            "platform/freertos/main_segment.c:../../examples/uint64"
           )
 
           for entry in "${entries[@]}"; do
