@@ -88,7 +88,7 @@ replace "read: node_poll() ignores receive_timeout" \
     "time - poll_start >= node->opts.poll.receive_timeout" "time - poll_start >= tt_RECEIVE_TIMEOUT"
 replace "init: a context built by hand keeps a zero poll group" \
     "    resolve_poll_options(&node->opts.poll);
-    tt_lock_init" "    tt_lock_init"
+    resolve_hybrid_options" "    resolve_hybrid_options"
 replace "resolve: a zero rx_lock_chunk is not the default" \
     "poll->rx_lock_chunk = tt_RX_LOCK_CHUNK;" "poll->rx_lock_chunk = 1;"
 
