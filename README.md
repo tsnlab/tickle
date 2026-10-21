@@ -46,6 +46,25 @@ make runpublisher     # terminal 2
 Also `runserver`/`runclient`, `runpong`/`runping`, `runperf_server`/`runperf_client`. Flags: `-b` broadcast, `-a`
 bind address, `-p` port, `-I` context id, `-n` name, `-l` log level.
 
+## Configure a context
+
+Every setting a context reads at run time is in `struct tt_InitOptions` (`include/tickle/tickle.h`): one group each
+for `net`, `discovery`, `reliable`, `service`, `qos` (defaults for new endpoints), `poll`, `socket`,
+`hybrid_transport` and `segment`. A zero field means the default, the `config.h` constant of the same name, so a
+zeroed struct gives the context `tt_Context_create()` gives.
+
+```c
+struct tt_InitOptions opts = {0};
+opts.net.port = 9000;
+opts.socket.buffer_size = 4U << 20; // SO_SNDBUF and SO_RCVBUF
+tt_Context_create_with(&ctx, &opts); // tt_RET_INVALID_ARGUMENT, with a log line naming the field, if refused
+```
+
+What each field does and its limits: the comments in `tickle.h` and DESIGN.md section 2. Peers judge a context's
+silence by their own discovery timing, so a non-default update interval or miss threshold logs a WARNING. The Linux
+HAL's environment switches (`TT_UDP_OFFLOAD`, `TT_RX_DIRECT`, ...) still decide over `socket` when set. rmw_tickle
+keeps its `RMW_TICKLE_*` environment variables.
+
 ## Test
 
 ```sh
