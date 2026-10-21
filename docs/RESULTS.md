@@ -177,6 +177,9 @@ apex `perf_test`; 3 reps. Every row is a WIN.
   -12%); poll RTT within 2%; delivered msg/s +57..+82% and CPU per sample -25..-44% (against `06dd78d8`, so the
   hold-over plus later changes); R13 RSS +536 kB. CycloneDDS moved -7..+6%, FastDDS RTT -2..+4%; FastDDS BEST_EFFORT
   msg/s spans 3,383-17,457 across reps (R14 median 5,040, was 17,547). No verdict flipped.
+- **R13's +536 kB** is no single commit: the DDS arms' idle RSS rose +150..260 kB on the rig too; rmw_tickle's code grew
+  +124 kB (large samples, hybrid, QoS) with an equal storage saving; the rest is reorder slots touched by the hold-over's
+  higher rate (PC: ~+420 kB in runs that hold). R13 reads `ru_maxrss` at exit, not a true peak (+-200..400 kB).
 - **Earlier:** 2026-10-18 `29826912` gave R1c 45.1 us, after the 1 ns timer slack (`119d14bd`) halved it from 94.9.
 
 ### Loaned messages (PC)
