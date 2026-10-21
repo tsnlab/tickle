@@ -20,7 +20,7 @@
 #include "test_mock.h"
 
 // Whitebox: set_server_cache()/get_server_cache() are static, and this exercises the fixed
-// cache_buf[][]/clean_config[]/clean_scheduled[] slots directly.
+// cache_buf[][]/cache_expires_at[] slots directly.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
 // A server always has its service (tt_Context_create_server() refuses one without); the cache's lifetime reads the

@@ -1919,9 +1919,9 @@ typedef struct tt_RequestId {
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
                                      tt_RequestId request_id);
 
-// Identifies which server/slot a scheduled timer (server_cache_clean, or Milestone 17's own
-// pending-response timeout) belongs to. Embedded (one per slot) in struct tt_Server so scheduling
-// either timer never needs a malloc.
+// Identifies which server/slot a scheduled timer (Milestone 17's pending-response timeout) belongs
+// to. Embedded (one per slot) in struct tt_Server so scheduling it never needs a malloc. (A kept
+// answer's expiry used it too, until 2026-10-21: it is now a time in its slot, cache_expires_at.)
 struct server_cache_clean_config {
     struct tt_Server* server;
     int slot;
@@ -1943,8 +1943,11 @@ struct tt_Server { // extends endpoint
     uint8_t* cache_storage;
     uint32_t cache_entry_length;
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT]; // NULL when slot i is unused
-    struct server_cache_clean_config clean_config[tt_MAX_SERVER_CACHE_COUNT];
-    bool clean_scheduled[tt_MAX_SERVER_CACHE_COUNT]; // Whether clean_config[i]'s timer is pending
+    // When slot i's answer expires: it is live while cache[i] is set and the clock is before this. Checked where the
+    // slot is looked up or reused (server_cache_live(), tickle.c), which then clears cache[i] as the expiry did; until
+    // 2026-10-21 each kept answer held a scheduler entry that fired at this time instead, and with answers kept for a
+    // client's whole retry horizon (5.1 s for rmw_tickle) those entries could fill the context's scheduler.
+    uint64_t cache_expires_at[tt_MAX_SERVER_CACHE_COUNT];
     // When slot i's response last went out (cached, or resent to a retry); 0 when the slot holds nothing. An expired
     // entry keeps it: cache[i] is NULL but the slot still names (client, seq_no), so a retry arriving after the
     // expiry measures how much longer that client waits than this server kept its answer (server_cache_lifetime()).

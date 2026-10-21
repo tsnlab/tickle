@@ -30,8 +30,9 @@
 // - the fixed rmw shape, the server's tt_Service carrying the client's 100 ms x 50: one run, for the first retry
 //   delivered, for the last retry before the call gives up (49 of 50 lost), synchronous and deferred
 //   (tt_CALL_DEFERRED + tt_Server_send_response(), the way rmw_tickle answers).
-// - no loss, fixed shape: one run, one answer, and the normal path's cost - how many scheduler entries the answered
-//   response holds - which must stay at one per cached answer (what it was with a 75 ms lifetime).
+// - no loss, fixed shape: one run, one answer, and the normal path's cost: the answer is kept, and holds no scheduler
+//   entry. Until 2026-10-21 each kept answer held one (its expiry timer), and this pinned it at one per answer; its
+//   expiry is now a time in its slot, checked when the slot is looked up (server_cache_live()).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -256,17 +257,18 @@ static void serve_requests(void) {
     capturing = NULL;
 }
 
-// Scheduler entries the server's answered responses hold.
-static int cache_timers(void) {
-    int held = 0;
-    for (int32_t k = 0; k < server_context.scheduler_tail; k++) {
-        held += server_context.scheduler[k].function == server_cache_clean ? 1 : 0;
+// Answers the server keeps live now.
+static int kept_answers(void) {
+    int kept = 0;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        kept += server_cache_live(&server, i, test_mock_now) ? 1 : 0;
     }
-    return held;
+    return kept;
 }
 
 static void run_arm(const struct arm* arm) {
     setup(arm);
+    int32_t idle_entries = server_context.scheduler_tail; // what the server context schedules with no call
     requests.count = 0;
     capturing = &requests;
     struct message request = {0};
@@ -277,7 +279,8 @@ static void run_arm(const struct arm* arm) {
     EXPECT_EQ_INT(1, responses.count);
     if (!arm->lose_response) {
         carry_all(&responses, &client_context, SERVER_IP);
-        EXPECT_EQ_INT(1, cache_timers()); // the normal path: one entry per kept answer, as with a 75 ms lifetime
+        EXPECT_EQ_INT(1, kept_answers());                           // the answer is kept for retries
+        EXPECT_TRUE(server_context.scheduler_tail <= idle_entries); // and holds no scheduler entry
     }
     for (uint32_t retry = 1; retry <= arm->delivered; retry++) {
         EXPECT_TRUE(run_next_retry());
@@ -295,13 +298,15 @@ static void run_arm(const struct arm* arm) {
     test_mock_send_hook = NULL;
 }
 
-// The cost on the normal path: answers kept, and the scheduler entries they hold, under a steady CALLS calls 100 ms
-// apart, every one answered. A client's answers are bounded by tt_CLIENT_CALL_WINDOW (set_server_cache()) however long
-// each is kept, so the 5.1 s lifetime holds at most that many per calling client, where 75 ms held one.
+// The cost on the normal path: answers kept, and the scheduler entries they hold (none since 2026-10-21), under a
+// steady CALLS calls 100 ms apart, every one answered. A client's answers are bounded by tt_CLIENT_CALL_WINDOW
+// (set_server_cache()) however long each is kept, so the 5.1 s lifetime holds at most that many per calling client,
+// where 75 ms held one.
 #define CALLS 20
 static void test_kept_answers(const char* name, uint32_t server_interval, uint32_t server_count, int expected) {
     const struct arm shape = {name, server_interval, server_count, RMW_INTERVAL, RMW_COUNT, false, false, 0, 1, 1};
     setup(&shape);
+    int32_t idle_entries = server_context.scheduler_tail;
     for (uint32_t k = 0; k < CALLS; k++) {
         test_mock_now = CLOCK_NS + (k * (uint64_t)RMW_INTERVAL);
         run_due(&server_context);
@@ -314,10 +319,12 @@ static void test_kept_answers(const char* name, uint32_t server_interval, uint32
         serve_requests();
         carry_all(&responses, &client_context, SERVER_IP);
     }
-    printf("  %-58s %d calls, answers %d, kept %d (expected %d)\n", name, CALLS, answers, cache_timers(), expected);
+    printf("  %-58s %d calls, answers %d, kept %d (expected %d), scheduler entries %d (idle %d)\n", name, CALLS,
+           answers, kept_answers(), expected, server_context.scheduler_tail, idle_entries);
     EXPECT_EQ_INT(CALLS, runs);
     EXPECT_EQ_INT(CALLS, answers);
-    EXPECT_EQ_INT(expected, cache_timers());
+    EXPECT_EQ_INT(expected, kept_answers());
+    EXPECT_TRUE(server_context.scheduler_tail <= idle_entries); // no more than before any call: kept answers hold none
     test_mock_send_hook = NULL;
 }
 
