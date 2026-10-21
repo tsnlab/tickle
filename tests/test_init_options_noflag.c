@@ -11,7 +11,7 @@
 // struct tt_InitOptions in a build without tt_DISCOVERY_OPTIONS (core's default): a discovery range other than SUBNET
 // and a peer link are options this build cannot honour, so tt_Context_create_with() refuses them rather than running
 // without them - a setting silently ignored reads like one that had no effect. tests/test_init_options.c is the build
-// that has them.
+// that has them. Nor the hybrid transport: its options set are refused too (test_init_options_hybrid.c has it).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -31,6 +31,9 @@
 
 #if tt_DISCOVERY_OPTIONS
 #error "this test is about a build without tt_DISCOVERY_OPTIONS"
+#endif
+#if tt_HYBRID_TRANSPORT
+#error "this test is about a build without the hybrid transport"
 #endif
 
 static struct tt_Context ctx;
@@ -66,6 +69,15 @@ int main(void) {
     opts.net.link_count = 2;
     EXPECT_EQ_INT(tt_RET_OK, create_with(&opts)); // the control: the same links, neither a peer
     opts.net.links[1].peer = true;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, create_with(&opts));
+
+    // Nor has it the hybrid transport (no fragmentation): its options, all 0 by default, are refused when set.
+    tt_InitOptions_default(&opts);
+    EXPECT_EQ_INT(0, opts.hybrid_transport.n_max);
+    opts.hybrid_transport.n_max = 1;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, create_with(&opts));
+    tt_InitOptions_default(&opts);
+    opts.hybrid_transport.path_alpha = 1e-3;
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, create_with(&opts));
 
     if (test_result() != 0) {
