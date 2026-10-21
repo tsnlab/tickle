@@ -57,9 +57,10 @@ MUTANTS = [
      "    callrequest_header->client_tag = client->client_tag;",
      "    callrequest_header->client_tag = 0;"),
     ("answer_per_source", "tests-one-call/test_two_clients_one_service",
-     "            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&\n"
+     # set_server_cache()'s one-call replacement; server_cache_live() replaced the NULL test in 6133f98a.
+     "            if (server_cache_live(server, i, now) && server->cache[i]->receiver == receiver &&\n"
      "                server->cache_client_tag[i] == client_tag) {\n",
-     "            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {\n"),
+     "            if (server_cache_live(server, i, now) && server->cache[i]->receiver == receiver) {\n"),
     ("lookup_without_tag", "test_two_clients_one_service",
      "    return submessage_header->receiver == receiver && server->cache_client_tag[slot] == client_tag &&\n",
      "    return submessage_header->receiver == receiver &&\n"),
@@ -74,8 +75,10 @@ MUTANTS = [
      "    call->cache_time = sent_at;\n",
      "    call->cache_time = tt_get_ns();\n"),
     ("ceiling_of_srtt", "test_call_retry_adaptive",
-     "    uint64_t unit = srtt > granularity ? srtt : granularity;\n    *ceiling = unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;\n",
-     "    uint64_t unit = srtt;\n    *ceiling = unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;\n"),
+     # The multiple is the service's since 30a33823 (tt_ServiceOptions, bundle 4), no longer the compiled constant.
+     "    uint64_t unit = srtt > granularity ? srtt : granularity;\n"
+     "    *ceiling = unit * service_call_retry_max_srtt_multiple(client->node);\n",
+     "    uint64_t unit = srtt;\n    *ceiling = unit * service_call_retry_max_srtt_multiple(client->node);\n"),
 ]
 
 
@@ -86,7 +89,7 @@ def binary_of(name):
 def run_test(name, control=None):
     """Builds and runs one test binary: PASS, FAIL, HANG, BUILD_FAILED, or NOT_COMPILED if it is the control's."""
     target = os.path.relpath(binary_of(name), LINUX)
-    build = run_capped(["make", "-s", "-j4", target], timeout=900, cwd=LINUX)
+    build = run_capped(["make", "-s", "-j2", target], timeout=900, cwd=LINUX)
     if build.returncode != 0:
         # Not a kill: a mutant that does not compile is wrongly written, and says nothing about the test.
         print(f"  build of {name} failed:\n{build.output[-2000:]}")
