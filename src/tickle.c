@@ -24393,14 +24393,17 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
     bool did_work = false; // a scheduler entry has run during this call
+    // The bounds on running more of it (opts.poll), read when the call's first entry has run: a poll that runs none -
+    // most of a latency cell's - reads no option, and one that runs many compares registers (bundle 6). Until then
+    // the count is 0, below any interleave, and the slice is not asked.
+    uint32_t interleave = 0;
+    uint64_t busy_slice = 0;
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
-        // opts.poll.scheduler_io_interleave is read only once an entry has run: a poll that runs none - most of them -
-        // tests the count against 0 and reads no option (bundle 6).
-        if (consecutive_scheduler_runs == 0 || consecutive_scheduler_runs < poll_scheduler_io_interleave(node)) {
+        if (consecutive_scheduler_runs == 0 || consecutive_scheduler_runs < interleave) {
             ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
         } else {
             has_next = sched_next_time(node, &next);
@@ -24409,7 +24412,11 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         if (ran) {
             // Run scheduler first
             consecutive_scheduler_runs++;
-            did_work = true;
+            if (!did_work) {
+                did_work = true;
+                interleave = poll_scheduler_io_interleave(node);
+                busy_slice = poll_receive_timeout(node);
+            }
         } else if (has_next && next <= time) {
             // A scheduler entry is still due, but opts.poll.scheduler_io_interleave consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
@@ -24434,7 +24441,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
         time = new_time;
         node->rx_clock_ns = time;
-        if (until_next_event && did_work && time - poll_start >= poll_receive_timeout(node)) {
+        if (until_next_event && did_work && time - poll_start >= busy_slice) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }
     }
