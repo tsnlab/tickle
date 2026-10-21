@@ -13,10 +13,11 @@
 #   FAIL   otherwise: the per-sample cost rose, by the amount printed. The rx path is per received run, so the rise
 #          per run is the per-sample figure over 18 datagrams.
 #
-# Measured 2026-10-21, A ed1d3a2a (origin/main) vs B (this bundle's two core commits on it), 7 rounds, spread 0,
-# control 797 both: rx +16.74 per clean sample (2,501.89 -> 2,518.63, +0.67%) and +20.71 at 1% (+0.77%), tx +6.00
-# (+0.18%). VERDICT=FAIL by the rule above: one load of window_frames per received run where the halving compared with
-# an immediate, and n_max per peer.
+# Measured 2026-10-21, A ed1d3a2a (origin/main) vs B 04b85348, 7 rounds, spread 0, control 797 both: rx -0.07 per
+# clean sample (2,501.89 -> 2,501.82) and -0.33 at 1% (2,706.83 -> 2,706.50), tx -6.00 (3,400.18 -> 3,394.18).
+# VERDICT=PASS. The bundle's first version measured rx +16.74 / +20.71 and tx +6.00 (FAIL): window_frames loaded per
+# received run, the stale floor computed in double per tail, n_max clamped where the compiler lost the result's range;
+# 04b85348 copies window_frames and the floor into the estimates and reorders the clamp.
 #
 # Usage: examples/perf_hil/experiments/hybrid_options_insn.sh [A] [B] [ROUNDS]
 #   A default origin/main; B a commit, default the working tree; ROUNDS 7.

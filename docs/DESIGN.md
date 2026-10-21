@@ -79,8 +79,9 @@ A default context sends the same bytes at the same instants on a lossy exchange 
 bound under it; a reader below it advertises that many units. The slow start is a runtime `min()`
 (`tt_HYBRID_SLOW_START_OFF`); `path_clean_ns` scales with `queue_lifetime_ns`. `tt_HYBRID_COLLAPSE_Z` stays compiled
 (the 99.9% table assumes it) and the stale exposure is derived, `-ln(stale_false_forget)`. A build without the hybrid
-transport refuses the group set, compared byte by byte (no soft-float on RV32). Cost: one load per received run, +0.7%
-instructions per 1 MB sample (`hybrid_options_insn.sh`); default behaviour is trace-identical
+transport refuses the group set, compared byte by byte (no soft-float on RV32). Cost: none measurable, 0 instructions per 1 MB
+sample within spread, VERDICT=PASS at 04b85348 (`hybrid_options_insn.sh`: the halving threshold and the stale floor
+are copied into each estimate); default behaviour is trace-identical
 (`tests/wire_identity_hybrid_estimator.sh`).
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
