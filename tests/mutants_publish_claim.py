@@ -30,8 +30,8 @@ MUTANTS = [
     (
         "the dead-reader rule keeping a claimed mapping",
         "src/tickle.c",
-        "        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS && entry->claims == 0) {",
-        "        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS) {",
+        "        if (now - entry->last_progress_ns >= node->opts.segment.dead_reader_ns && entry->claims == 0) {",
+        "        if (now - entry->last_progress_ns >= node->opts.segment.dead_reader_ns) {",
         "test_a_claimed_mapping_outlives_the_dead_reader_rule",
     ),
     (

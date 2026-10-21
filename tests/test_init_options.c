@@ -93,8 +93,8 @@ static void two_links(struct tt_InitOptions* opts, uint8_t threshold) {
 static bool same_net(const struct tt_NetOptions* a, const struct tt_NetOptions* b) {
     if (strcmp(a->addr, b->addr) != 0 || strcmp(a->broadcast, b->broadcast) != 0 || a->port != b->port ||
         a->context_id != b->context_id || a->link_count != b->link_count || a->discovery_range != b->discovery_range ||
-        a->segment_slot_bytes != b->segment_slot_bytes || a->large_fragmentation != b->large_fragmentation ||
-        a->ip_reassembly_max != b->ip_reassembly_max || a->reassembly_cap_off != b->reassembly_cap_off) {
+        a->large_fragmentation != b->large_fragmentation || a->ip_reassembly_max != b->ip_reassembly_max ||
+        a->reassembly_cap_off != b->reassembly_cap_off) {
         return false;
     }
     for (uint8_t i = 0; i < a->link_count; i++) {
@@ -114,7 +114,7 @@ static void test_defaults_are_the_compiled_settings(void) {
     EXPECT_EQ_INT(tt_CONTEXT_ID_INVALID, opts.net.context_id);
     EXPECT_EQ_U32(0, opts.net.link_count);
     EXPECT_EQ_U32(tt_DISCOVERY_RANGE_SUBNET, opts.net.discovery_range);
-    EXPECT_EQ_U32(0, opts.net.segment_slot_bytes);
+    EXPECT_EQ_U32(0, opts.segment.slot_bytes);
     EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_AUTO, opts.net.large_fragmentation);
     EXPECT_EQ_U32(tt_IPV4_UDP_MAX_PAYLOAD, opts.net.ip_reassembly_max); // Linux's _tt_IP_REASSEMBLY_MAX
     EXPECT_EQ_U32(0, opts.net.reassembly_cap_off);
@@ -268,12 +268,12 @@ static void test_discovery_range_limits_the_link(void) {
 }
 
 #if tt_SEGMENT_ENABLED
-// segment_slot_bytes: the slot size of the segment the context builds.
+// segment.slot_bytes: the slot size of the segment the context builds.
 static void test_segment_slot_bytes_is_the_ring_built(void) {
     const uint32_t configured = (uint32_t)tt_SEGMENT_SLOT_BYTES / 2U;
     reset_mock();
     struct tt_InitOptions opts = defaults();
-    opts.net.segment_slot_bytes = configured;
+    opts.segment.slot_bytes = configured;
     EXPECT_EQ_INT(tt_RET_OK, create_with(&ctx, &opts));
     ctx.hal.own_ip = LINK_ADDR;
     ctx.hal.own_port = 40000;
@@ -410,10 +410,10 @@ static void test_validation(void) {
 
 #if tt_SEGMENT_ENABLED
     opts = defaults();
-    opts.net.segment_slot_bytes = 1;
-    expect_refused(&opts, "net.segment_slot_bytes below a header");
-    opts.net.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
-    expect_accepted(&opts, "net.segment_slot_bytes = one datagram");
+    opts.segment.slot_bytes = 1;
+    expect_refused(&opts, "segment.slot_bytes below a header");
+    opts.segment.slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
+    expect_accepted(&opts, "segment.slot_bytes = one datagram");
 #endif
 
     opts = defaults();
