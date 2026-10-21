@@ -6416,6 +6416,7 @@ static tt_ret_t client_reset(struct tt_Context* node, struct tt_Client* client, 
     client->latency_var = 0;
     client->latency_backed_off = false;
     client->latency_backed_off_at = 0;
+    client->call_backoff = 0;
     client->client_tag = free_client_tag(node, endpoint->id);
     client->call_retry_own = false; // the service's settings, until tt_Node_create_client() sets its own
     client->call_retry_interval = 0;
@@ -7138,7 +7139,8 @@ static uint32_t client_retry_count_setting(const struct tt_Client* client) {
 }
 
 // The wait after a call's `retry`-th send (0: the call itself). An explicit call_retry_interval is used as given, every
-// time. The auto path (0) doubles the first wait at each retry, up to the ceiling (call_retry_bounds()).
+// time. The auto path (0) doubles the first wait at each retry, up to the ceiling (call_retry_bounds()), starting from
+// the backoff earlier calls left (struct tt_Client.call_backoff).
 static uint64_t compute_retry_interval(const struct tt_Client* client, uint32_t retry) {
     if (client_retry_interval(client) != 0) {
         return client_retry_interval(client);
@@ -7147,7 +7149,8 @@ static uint64_t compute_retry_interval(const struct tt_Client* client, uint32_t 
     uint64_t ceiling = 0;
     call_retry_bounds(client, &first, &ceiling);
     uint64_t wait = first < ceiling ? first : ceiling;
-    for (uint32_t k = 0; k < retry && wait < ceiling; k++) {
+    uint32_t doublings = retry + client->call_backoff;
+    for (uint32_t k = 0; k < doublings && wait < ceiling; k++) {
         wait = wait > ceiling / 2 ? ceiling : wait * 2;
     }
     return wait;
@@ -18314,6 +18317,8 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
         response = (struct tt_Response*)response_buffer;
     }
 
+    uint8_t resent =
+        ((const struct tt_CallRequestHeader*)((const uint8_t*)call->cache + sizeof(struct tt_SubmessageHeader)))->retry;
     call->cache = NULL;
     // The call is done; drop its still-pending retry timer so it doesn't occupy a scheduler slot
     // until it fires and no-ops (call_retry() already guards on cache == NULL).
@@ -18323,12 +18328,23 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     // since a backoff, see back_off_retry_interval() - sets srtt = R and rttvar = R / 2; each later one moves rttvar a
     // quarter of the way to |srtt - R| and srtt an eighth of the way to R. R is at least 1 ns, so an answer can never
     // leave srtt at the 0 that means "none yet".
+    //
+    // Only from a call never resent (Karn's algorithm). An answer after a resend may be to either send, and R from the
+    // first is the lost send's wait plus the round trip: each loss raised the next first wait (srtt + 4 rttvar), so the
+    // next loss's sample was larger still. At 5% loss each way the first wait went from 0.4 ms to 290-600 ms within
+    // ~120 calls (the rig's service cell c21 on the PC, 2026-10-21), retries came later than the server kept answers,
+    // and calls per second fell to 130-430 of 1,000. The wait such a call needed is kept instead (call_backoff).
     latency = latency == 0 ? 1 : latency;
-    if (client->latency == 0 || client->latency_backed_off) {
+    if (resent != 0) {
+        uint32_t backoff = (uint32_t)client->call_backoff + resent;
+        client->call_backoff = (uint8_t)(backoff < tt_CALL_BACKOFF_MAX ? backoff : tt_CALL_BACKOFF_MAX);
+    } else if (client->latency == 0 || client->latency_backed_off) {
+        client->call_backoff = 0;
         client->latency = latency;
         client->latency_var = latency / 2;
         client->latency_backed_off = false;
     } else {
+        client->call_backoff = 0;
         uint32_t deviation = client->latency > latency ? client->latency - latency : latency - client->latency;
         client->latency_var =
             (uint32_t)((((uint64_t)RECOVERY_RTTVAR_KEEP * client->latency_var) + deviation) / RECOVERY_RTTVAR_DIV);
