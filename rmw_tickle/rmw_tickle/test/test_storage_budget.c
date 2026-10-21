@@ -138,6 +138,34 @@ static rmw_qos_profile_t qos(enum rmw_qos_reliability_policy_e reliability, size
 }
 
 static rmw_node_t* node;
+static rmw_init_options_t options;
+static rmw_context_t context;
+
+static void start_context(void) {
+    context = rmw_get_zero_initialized_context();
+    assert(RMW_RET_OK == rmw_init(&options, &context));
+    node = rmw_create_node(&context, "test_storage_budget", "/");
+    assert(NULL != node);
+}
+
+static void stop_context(void) {
+    assert(RMW_RET_OK == rmw_destroy_node(node));
+    assert(RMW_RET_OK == rmw_shutdown(&context));
+    assert(RMW_RET_OK == rmw_context_fini(&context));
+}
+
+// RMW_TICKLE_CACHE_BYTES and RMW_TICKLE_KEEP_ALL_BYTES are the context's QoS defaults, read at rmw_init()
+// (tt_InitOptions bundle 5): setting one (NULL: unsetting it) takes a new context. The other variables here are read
+// per endpoint.
+static void env_restart(const char* name, const char* value) {
+    if (NULL != value) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+    stop_context();
+    start_context();
+}
 
 // The arena a publisher of this type gets, with `payload` attached to its options (NULL for none).
 static uint32_t keep_last_arena_with(size_t depth, rmw_tickle_publisher_payload_t* payload) {
@@ -170,7 +198,7 @@ static uint32_t keep_all_record_with(rmw_tickle_publisher_payload_t* payload) {
     if (NULL != saved) {
         snprintf(saved_copy, sizeof(saved_copy), "%s", saved);
     }
-    setenv("RMW_TICKLE_KEEP_ALL_BYTES", "4294967295", 1);
+    env_restart("RMW_TICKLE_KEEP_ALL_BYTES", "4294967295");
     rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 1);
     q.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
     rmw_publisher_options_t opts = rmw_get_default_publisher_options();
@@ -185,11 +213,7 @@ static uint32_t keep_all_record_with(rmw_tickle_publisher_payload_t* payload) {
     assert(tt_RET_OK == tt_Publisher_get_actual_qos(&pub_impl->tickle_publisher, &actual));
     uint32_t record = pub_impl->reliable_cache->arena_limit / (actual.history.depth + 1U);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
-    if (NULL != saved) {
-        setenv("RMW_TICKLE_KEEP_ALL_BYTES", saved_copy, 1);
-    } else {
-        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
-    }
+    env_restart("RMW_TICKLE_KEEP_ALL_BYTES", NULL != saved ? saved_copy : NULL);
     return record;
 }
 
@@ -236,13 +260,10 @@ int main(void) {
     unsetenv("RMW_TICKLE_REORDER_SLOTS");
 
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
-    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
     options.enclave = rcutils_strdup("/", allocator);
-    rmw_context_t context = rmw_get_zero_initialized_context();
-    assert(RMW_RET_OK == rmw_init(&options, &context));
-    node = rmw_create_node(&context, "test_storage_budget", "/");
-    assert(NULL != node);
+    start_context();
 
     const unsigned long long buf_len = MESSAGE_RECORD(LARGEST_MESSAGE); // an unbounded type's record
 
@@ -251,17 +272,17 @@ int main(void) {
     assert(keep_last_arena(10) == min_ull(11 * buf_len, MIB)); // a typical depth: unchanged by the cap
     assert(keep_last_arena(ROSOUT_DEPTH) ==
            min_ull((ROSOUT_DEPTH + 1) * buf_len, MIB)); // /rosout's depth: the cap binds
-    setenv("RMW_TICKLE_CACHE_BYTES", "5000", 1);        // SMALL_BUDGET
+    env_restart("RMW_TICKLE_CACHE_BYTES", "5000");      // SMALL_BUDGET
     unsigned long long floor_or_budget = buf_len;       // the budget, but never below one record
     if (floor_or_budget < SMALL_BUDGET) {
         floor_or_budget = SMALL_BUDGET;
     }
     assert(keep_last_arena(10) == min_ull(11 * buf_len, floor_or_budget));
-    setenv("RMW_TICKLE_CACHE_BYTES", "100", 1); // below one record: one record, so a sample still fits
+    env_restart("RMW_TICKLE_CACHE_BYTES", "100"); // below one record: one record, so a sample still fits
     assert(keep_last_arena(10) == buf_len);
-    setenv("RMW_TICKLE_CACHE_BYTES", "nonsense", 1); // malformed: the default, not a failure
+    env_restart("RMW_TICKLE_CACHE_BYTES", "nonsense"); // malformed: the default, not a failure
     assert(keep_last_arena(ROSOUT_DEPTH) == min_ull((ROSOUT_DEPTH + 1) * buf_len, MIB));
-    unsetenv("RMW_TICKLE_CACHE_BYTES");
+    env_restart("RMW_TICKLE_CACHE_BYTES", NULL);
 
     // --- KEEP_LAST cache, bounded type: records of the type's own size -----------------------------
     callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
@@ -289,7 +310,7 @@ int main(void) {
         // A budget smaller than that slice is allocated whole - there is nothing to defer. A bounded type,
         // so that one record - the floor under any budget - is smaller than the slice too.
         callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
-        setenv("RMW_TICKLE_CACHE_BYTES", "5000", 1);
+        env_restart("RMW_TICKLE_CACHE_BYTES", "5000");
         rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 10);
         rmw_publisher_options_t opts = rmw_get_default_publisher_options();
         rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/lazy_small", &q, &opts);
@@ -297,7 +318,7 @@ int main(void) {
         const struct tt_ReliableCache* cache = ((rmw_tickle_publisher_t*)pub->data)->reliable_cache;
         assert(cache->arena_size == cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
-        unsetenv("RMW_TICKLE_CACHE_BYTES");
+        env_restart("RMW_TICKLE_CACHE_BYTES", NULL);
         callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     }
 
@@ -370,7 +391,7 @@ int main(void) {
     // 512 KiB by default - reached by blocking the writer, never by dropping. Small samples must be
     // untouched by it, a TRANSIENT_LOCAL publisher's replay history must be untouched by it, and it
     // never drops below one record.
-    unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
+    env_restart("RMW_TICKLE_KEEP_ALL_BYTES", NULL);
     unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     {
         uint32_t depth = 0;
@@ -387,13 +408,13 @@ int main(void) {
         assert(durable_arena == ((unsigned long long)durable_depth + 1ULL) * record);
         assert(durable_arena > KEEP_ALL_BUDGET);
 
-        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "1000000", 1); // the environment moves it
+        env_restart("RMW_TICKLE_KEEP_ALL_BYTES", "1000000"); // the environment moves it
         assert(keep_all_arena_with(NULL, false, &depth) == min_ull(full, 1000000ULL));
-        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "100", 1); // below one record: one record, never zero
+        env_restart("RMW_TICKLE_KEEP_ALL_BYTES", "100"); // below one record: one record, never zero
         assert(keep_all_arena_with(NULL, false, &depth) == record);
-        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "nonsense", 1); // malformed: the default, not a failure
+        env_restart("RMW_TICKLE_KEEP_ALL_BYTES", "nonsense"); // malformed: the default, not a failure
         assert(keep_all_arena_with(NULL, false, &depth) == KEEP_ALL_BUDGET);
-        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
+        env_restart("RMW_TICKLE_KEEP_ALL_BYTES", NULL);
 
         rmw_tickle_publisher_payload_t roomy = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
         roomy.cache_bytes = 2U * (uint32_t)MIB; // the payload overrides the environment
@@ -413,7 +434,7 @@ int main(void) {
     // --- per-publisher payload (rmw_tickle_c/publisher_payload.h) ----------------------------------
     // It is the process-wide environment variables that these override, for this publisher only.
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
-    setenv("RMW_TICKLE_CACHE_BYTES", "5000", 1); // the process default, deliberately small
+    env_restart("RMW_TICKLE_CACHE_BYTES", "5000"); // the process default, deliberately small
     rmw_tickle_publisher_payload_t payload = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
     payload.cache_bytes = 4U * (uint32_t)MIB;
     assert(keep_last_arena_with(ROSOUT_DEPTH, &payload) ==
@@ -423,7 +444,7 @@ int main(void) {
 
     payload.cache_bytes = 0; // 0 means "leave this knob to the environment", not "no budget"
     assert(keep_last_arena_with(ROSOUT_DEPTH, &payload) == keep_last_arena(ROSOUT_DEPTH));
-    unsetenv("RMW_TICKLE_CACHE_BYTES");
+    env_restart("RMW_TICKLE_CACHE_BYTES", NULL);
 
     // A payload from another rmw implementation, or built against another version of the header:
     // ignored with a warning, never obeyed and never a failure.
@@ -511,9 +532,7 @@ int main(void) {
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(!has_storage && 0 == slots);
 
-    assert(RMW_RET_OK == rmw_destroy_node(node));
-    assert(RMW_RET_OK == rmw_shutdown(&context));
-    assert(RMW_RET_OK == rmw_context_fini(&context));
+    stop_context();
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
     printf("test_storage_budget: PASS\n");
     return 0;

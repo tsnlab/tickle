@@ -14,6 +14,9 @@
 #include <stdlib.h> // getenv()/strtoull() - env_bytes_or()
 #include <string.h>
 
+#include <tickle/config.h> // tt_MILLISECOND
+#include <tickle/tickle.h> // struct tt_QosDefaults
+
 #include "rcutils/allocator.h"
 #include "rmw/error_handling.h"
 #include "rmw_tickle_c/rmw_tickle.h"
@@ -169,6 +172,26 @@ unsigned long long rmw_tickle_cache_budget_bytes(void) {
 
 unsigned long long rmw_tickle_keep_all_budget_bytes(void) {
     return env_bytes_or("RMW_TICKLE_KEEP_ALL_BYTES", RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT);
+}
+
+uint64_t rmw_tickle_max_blocking_env_ns(void) {
+    const char* env = getenv("RMW_TICKLE_MAX_BLOCKING_MS");
+    uint64_t fallback = (uint64_t)RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT * (uint64_t)tt_MILLISECOND;
+    if (NULL == env || '\0' == env[0]) {
+        return fallback;
+    }
+    char* end = NULL;
+    unsigned long long blocking_ms = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || blocking_ms > RMW_TICKLE_MAX_BLOCKING_MS_LIMIT) {
+        return fallback;
+    }
+    return 0 != blocking_ms ? (uint64_t)blocking_ms * (uint64_t)tt_MILLISECOND : 1U; // 1 ns: never block
+}
+
+void rmw_tickle_qos_defaults_from_env(struct tt_QosDefaults* qos) {
+    qos->history_bytes = (uint32_t)rmw_tickle_cache_budget_bytes(); // env_bytes_or() caps it at UINT32_MAX
+    qos->keep_all_bytes = (uint32_t)rmw_tickle_keep_all_budget_bytes();
+    qos->max_blocking_ns = rmw_tickle_max_blocking_env_ns();
 }
 
 unsigned long long rmw_tickle_reader_keep_all_budget_bytes(void) {

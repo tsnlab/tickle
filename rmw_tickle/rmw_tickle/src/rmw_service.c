@@ -295,7 +295,9 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     // A deferred response needs no storage: tt_Server_send_response() encodes it from the caller's struct.
     const size_t response_framing = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader);
     uint32_t cache_entry = rmw_tickle_message_slot_bytes(svc->response_callbacks, response_framing);
-    unsigned long long share = rmw_tickle_cache_budget_bytes() / tt_MAX_SERVER_CACHE_COUNT;
+    // RMW_TICKLE_CACHE_BYTES as the context read it at rmw_init() (its qos.history_bytes).
+    unsigned long long share =
+        (unsigned long long)svc->node->context_impl->tickle_context.opts.qos.history_bytes / tt_MAX_SERVER_CACHE_COUNT;
     share -= share % RMW_TICKLE_ROUND_UP_8(1U); // whole 8-byte units
     unsigned long long smallest = RMW_TICKLE_ROUND_UP_8(response_framing);
     if (share < smallest) {

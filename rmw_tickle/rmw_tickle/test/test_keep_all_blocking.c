@@ -223,19 +223,39 @@ static void* unblocker_main(void* param) {
     return NULL;
 }
 
+static rmw_init_options_t options;
+static rmw_context_t context;
+
+// RMW_TICKLE_MAX_BLOCKING_MS and RMW_TICKLE_KEEP_ALL_BYTES are the context's QoS defaults, read at rmw_init()
+// (tt_InitOptions bundle 5), so a case that changes them starts a context of its own.
+static rmw_node_t* start_context(void) {
+    context = rmw_get_zero_initialized_context();
+    assert(RMW_RET_OK == rmw_init(&options, &context));
+    rmw_node_t* node = rmw_create_node(&context, "test_keep_all_blocking", "/");
+    assert(NULL != node);
+    return node;
+}
+
+static void stop_context(rmw_node_t* node) {
+    assert(RMW_RET_OK == rmw_destroy_node(node));
+    assert(RMW_RET_OK == rmw_shutdown(&context));
+    assert(RMW_RET_OK == rmw_context_fini(&context));
+}
+
+static rmw_node_t* restart_context(rmw_node_t* node) {
+    stop_context(node);
+    return start_context();
+}
+
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
 
-    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
     options.enclave = rcutils_strdup("/", allocator);
     assert(NULL != options.enclave);
 
-    rmw_context_t context = rmw_get_zero_initialized_context();
-    assert(RMW_RET_OK == rmw_init(&options, &context));
-
-    rmw_node_t* node = rmw_create_node(&context, "test_keep_all_blocking", "/");
-    assert(NULL != node);
+    rmw_node_t* node = start_context();
 
     const rosidl_message_type_support_t* type_support = fake_type_support();
     rmw_publisher_options_t pub_opts = rmw_get_default_publisher_options();
@@ -248,6 +268,7 @@ int main(void) {
         char env[8];
         snprintf(env, sizeof(env), "%d", TEST_MAX_BLOCKING_MS);
         setenv("RMW_TICKLE_MAX_BLOCKING_MS", env, 1);
+        node = restart_context(node);
         rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_unmatched", &qos, &pub_opts);
         assert(NULL != pub);
 
@@ -291,6 +312,7 @@ int main(void) {
     // path, never from the deadline expiring and the retry happening to find room.
     {
         setenv("RMW_TICKLE_MAX_BLOCKING_MS", RECOVERING_MAX_BLOCKING_MS, 1);
+        node = restart_context(node);
         rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_recovering", &qos, &pub_opts);
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
@@ -321,6 +343,7 @@ int main(void) {
     // without waiting at all.
     {
         setenv("RMW_TICKLE_MAX_BLOCKING_MS", "0", 1);
+        node = restart_context(node);
         rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_nonblocking", &qos, &pub_opts);
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
@@ -346,6 +369,7 @@ int main(void) {
     {
         setenv("RMW_TICKLE_MAX_BLOCKING_MS", "0", 1); // refuse at once; waiting is Case 2's subject
         setenv("RMW_TICKLE_KEEP_ALL_BYTES", KEEP_ALL_SMALL_BUDGET, 1);
+        node = restart_context(node);
         rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_byte_budget", &qos, &pub_opts);
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
@@ -365,9 +389,7 @@ int main(void) {
     }
 
     unsetenv("RMW_TICKLE_MAX_BLOCKING_MS");
-    assert(RMW_RET_OK == rmw_destroy_node(node));
-    assert(RMW_RET_OK == rmw_shutdown(&context));
-    assert(RMW_RET_OK == rmw_context_fini(&context));
+    stop_context(node);
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
 
     printf("test_keep_all_blocking: PASS\n");

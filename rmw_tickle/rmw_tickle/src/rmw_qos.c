@@ -251,8 +251,8 @@ void rmw_tickle_qos_to_tt(const rmw_qos_profile_t* qos, rmw_tickle_entity_kind_t
     out->history.bytes = extensions->history_bytes;
 
     out->reliability.kind = reliability_to_tt(qos->reliability);
-    if (RMW_TICKLE_ENTITY_PUBLISHER == kind && NULL != ext) {
-        out->reliability.max_blocking_ns = 0 != ext->max_blocking_ns ? ext->max_blocking_ns : 1U;
+    if (RMW_TICKLE_ENTITY_PUBLISHER == kind) {
+        out->reliability.max_blocking_ns = extensions->max_blocking_ns; // 0: the context's
     }
     out->reliability.tracking_words = extensions->tracking_words;
     out->reliability.reorder_slots = extensions->reorder_slots;

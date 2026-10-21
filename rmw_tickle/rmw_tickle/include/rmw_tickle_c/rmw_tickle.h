@@ -115,6 +115,18 @@ unsigned long long rmw_tickle_cache_budget_bytes(void);
 // Reached by blocking the writer, never by dropping - see resolve_keep_all_arena_bytes().
 unsigned long long rmw_tickle_keep_all_budget_bytes(void);
 
+// RMW_TICKLE_MAX_BLOCKING_MS in nanoseconds, as core's reliability.max_blocking_ns: "0" is meaningful (never block,
+// fail immediately with RMW_RET_TIMEOUT) and is carried as 1 ns, since a 0 there is "the default". Unset, empty,
+// unparseable or past RMW_TICKLE_MAX_BLOCKING_MS_LIMIT is RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT: a malformed tuning knob
+// must not stop a node starting, and the value only ever costs latency, never correctness.
+uint64_t rmw_tickle_max_blocking_env_ns(void);
+
+// The core context's QoS defaults (struct tt_QosDefaults, tickle.h) from the environment, read once by rmw_init():
+// history_bytes from RMW_TICKLE_CACHE_BYTES, keep_all_bytes from RMW_TICKLE_KEEP_ALL_BYTES and max_blocking_ns from
+// RMW_TICKLE_MAX_BLOCKING_MS. The rest stay core's. Every endpoint of the context whose profile leaves the field 0
+// takes them; a publisher payload's cache_bytes still overrides the bytes for that publisher.
+void rmw_tickle_qos_defaults_from_env(struct tt_QosDefaults* qos);
+
 // RMW_TICKLE_READER_KEEP_ALL_BYTES: the byte budget for what one KEEP_ALL subscription may hold for
 // an application that has not taken it (2026-09-29). Default 512 KiB; unset, malformed or out of
 // range falls back to it. Reached by declining the arriving sample, never by overwriting an unread
@@ -201,14 +213,15 @@ uint64_t rmw_tickle_wire_lease_ns(rmw_time_t lease);
 // rmw_tickle_resolve_best_available() did here until then; test_qos_profile.c checks the two agree.
 //
 // The TickLE extension fields, and the depths rmw_tickle has always used where a profile gives
-// none, computed by each endpoint from its type and the environment (RMW_TICKLE_MAX_BLOCKING_MS,
-// RMW_TICKLE_CACHE_BYTES, RMW_TICKLE_KEEP_ALL_BYTES, RMW_TICKLE_READER_KEEP_ALL_BYTES,
+// none, computed by each endpoint from its type and the environment (RMW_TICKLE_READER_KEEP_ALL_BYTES,
 // RMW_TICKLE_TRACKING_WORDS, RMW_TICKLE_REORDER_SLOTS / _BYTES, the publisher payload): the
-// environment's settings become the profile's defaults. A field left 0 takes core's default.
+// environment's settings become the profile's defaults. A field left 0 takes the core context's default - which for
+// history_bytes and max_blocking_ns is RMW_TICKLE_CACHE_BYTES / RMW_TICKLE_KEEP_ALL_BYTES and
+// RMW_TICKLE_MAX_BLOCKING_MS, read once at rmw_init() into the context's options (rmw_tickle_qos_defaults_from_env()).
 typedef struct rmw_tickle_qos_extensions_t {
     uint32_t depth;           // used where the profile's depth is 0 (KEEP_LAST), and for KEEP_ALL
     uint32_t history_bytes;   // history.bytes
-    uint64_t max_blocking_ns; // reliability.max_blocking_ns (Publisher); 0 = never block, carried as 1 ns
+    uint64_t max_blocking_ns; // reliability.max_blocking_ns (Publisher); 0 = the context's; 1 ns = never block
     uint16_t tracking_words;  // reliability.tracking_words (Subscription)
     uint16_t reorder_slots;   // reliability.reorder_slots (RELIABLE Subscription)
 } rmw_tickle_qos_extensions_t;
@@ -829,9 +842,9 @@ typedef struct rmw_tickle_publisher_t {
     // than once across a single wait.
     uint64_t writable_generation;
 
-    // How long rmw_publish() may block on the above before giving up with RMW_RET_TIMEOUT, resolved
-    // once at rmw_create_publisher() time from RMW_TICKLE_MAX_BLOCKING_MS (see
-    // resolve_max_blocking_ns(), rmw_publisher.c) and RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT otherwise.
+    // How long rmw_publish() may block on the above before giving up with RMW_RET_TIMEOUT: the
+    // publisher's actual max_blocking_ns, the context's default - RMW_TICKLE_MAX_BLOCKING_MS read at
+    // rmw_init() (rmw_tickle_max_blocking_env_ns()), RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT otherwise.
     // Zero means "never block": refuse immediately, which is what a real-time caller that would
     // rather drop than stall should set. Only consulted for a KEEP_ALL Publisher - no other kind
     // can be refused in the first place.
@@ -868,7 +881,7 @@ typedef struct rmw_tickle_publisher_t {
 // Phase 3 step 3 (rmw_tickle/PLAN.md) - how long rmw_publish() blocks, by default, when a KEEP_ALL
 // Publisher refuses a write because the slowest matched Subscriber hasn't acknowledged enough for a
 // new sample to be retained without dropping an old one. Overridable per process by setting
-// RMW_TICKLE_MAX_BLOCKING_MS (see resolve_max_blocking_ns(), rmw_publisher.c); "0" is a meaningful
+// RMW_TICKLE_MAX_BLOCKING_MS (see rmw_tickle_max_blocking_env_ns()); "0" is a meaningful
 // setting, not "unset", and means never block - refuse immediately, for a caller that would rather
 // drop a sample than stall. On expiry rmw_publish() returns RMW_RET_TIMEOUT, matching rmw_
 // publisher_wait_for_all_acked()'s own existing use of it in this package.

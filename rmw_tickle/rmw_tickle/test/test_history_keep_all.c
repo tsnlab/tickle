@@ -272,7 +272,15 @@ int main(void) {
     // assertion below into a statement about the budget. This block is about the reservation per
     // sample; the budget has its own tests in test_storage_budget.c and test_keep_all_blocking.c.
     {
+        // The budget is the context's QoS default, read at rmw_init() (tt_InitOptions bundle 5): a context of its own.
         setenv("RMW_TICKLE_KEEP_ALL_BYTES", "4294967295", 1);
+        assert(RMW_RET_OK == rmw_destroy_node(node));
+        assert(RMW_RET_OK == rmw_shutdown(&context));
+        assert(RMW_RET_OK == rmw_context_fini(&context));
+        context = rmw_get_zero_initialized_context();
+        assert(RMW_RET_OK == rmw_init(&options, &context));
+        node = rmw_create_node(&context, "test_history_keep_all", "/");
+        assert(NULL != node);
         rmw_qos_profile_t qos = base_qos();
         qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
         qos.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;

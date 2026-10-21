@@ -19,7 +19,7 @@
 #include <stddef.h> // offsetof - grow_on_need() (g10)
 #include <stdint.h>
 #include <stdio.h>  // fprintf() - the loan line at rmw_destroy_publisher()
-#include <stdlib.h> // getenv()/strtoull() - resolve_max_blocking_ns()
+#include <stdlib.h> // getenv()/strtoull() - resolve_large_block_ns()
 #include <string.h>
 #include <time.h> // clock_gettime()/struct timespec/nanosleep() - rmw_publisher_wait_for_all_acked()
 
@@ -122,25 +122,6 @@ static void publisher_writable_callback(struct tt_Publisher* pub, void* param) {
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
     rmw_tickle_poke_polling_executor(context_impl);
-}
-
-// How long rmw_publish() may block when a KEEP_ALL Publisher refuses a write, in nanoseconds.
-// RMW_TICKLE_MAX_BLOCKING_MS overrides RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT; "0" is meaningful (never
-// block, fail immediately with RMW_RET_TIMEOUT), which is why this can't use a 0-as-unset sentinel
-// and checks the string itself instead. Anything unparseable or out of range falls back to the
-// default rather than failing publisher creation: a malformed tuning knob shouldn't stop a node
-// from starting, and the value only ever costs latency, never correctness.
-static uint64_t resolve_max_blocking_ns(void) {
-    const char* env = getenv("RMW_TICKLE_MAX_BLOCKING_MS");
-    if (NULL == env || '\0' == env[0]) {
-        return (uint64_t)RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT * (uint64_t)tt_MILLISECOND;
-    }
-    char* end = NULL;
-    unsigned long long blocking_ms = strtoull(env, &end, 10);
-    if (end == env || (end != NULL && '\0' != *end) || blocking_ms > RMW_TICKLE_MAX_BLOCKING_MS_LIMIT) {
-        return (uint64_t)RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT * (uint64_t)tt_MILLISECOND;
-    }
-    return (uint64_t)blocking_ms * (uint64_t)tt_MILLISECOND;
 }
 
 // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Runtime environment"), in nanoseconds: how long a KEEP_LAST publish
@@ -340,7 +321,7 @@ static const char* type_name_of(const rmw_tickle_publisher_t* pub_impl) {
 // can arrive here: the magic is what tells them apart, and the size marker catches a payload built
 // against a different version of the header. Either mismatch is a warning and a fall back to the
 // environment, not a failure - the same "a malformed tuning knob must not stop a node starting"
-// rule resolve_max_blocking_ns() follows, and a node that refuses to start is worse than one that
+// rule rmw_tickle_max_blocking_env_ns() follows, and a node that refuses to start is worse than one that
 // ignores a knob it cannot read.
 static const rmw_tickle_publisher_payload_t* publisher_payload(const rmw_tickle_publisher_t* pub_impl,
                                                                const char* type_name) {
@@ -424,7 +405,7 @@ static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
     unsigned long long env_bytes = strtoull(env, &end, 10);
     if (end == env || (end != NULL && '\0' != *end) || env_bytes == 0) {
         // Unparseable or zero: fall back rather than fail publisher creation, same reasoning as
-        // resolve_max_blocking_ns() - a malformed tuning knob should not stop a node starting, and
+        // rmw_tickle_max_blocking_env_ns() - a malformed tuning knob should not stop a node starting, and
         // this one can only cost retention. To the same default as unset, not to something else.
         return keep_all_unbounded_default();
     }
@@ -461,13 +442,12 @@ static uint32_t keep_last_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
 
 //
 // Since QoS redesign step 3 this is history.bytes, the budget alone: core takes the arena as (depth + 1) records capped
-// at it and never below one record, with the record as core sizes it (tt_Publisher_storage_size()).
+// at it and never below one record, with the record as core sizes it (tt_Publisher_storage_size_for()). Since the
+// context options (tt_InitOptions bundle 5) the environment's budget is the context's qos.history_bytes, read once
+// at rmw_init() (rmw_tickle_qos_defaults_from_env()); a publisher without a payload leaves history.bytes 0 for it.
 static uint32_t resolve_keep_last_budget_bytes(const rmw_tickle_publisher_t* pub_impl) {
     const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
-    unsigned long long budget = NULL != payload && 0 != payload->cache_bytes
-                                    ? (unsigned long long)payload->cache_bytes
-                                    : rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
-    return budget < UINT32_MAX ? (uint32_t)budget : UINT32_MAX;
+    return NULL != payload ? payload->cache_bytes : 0U; // 0: the context's
 }
 
 // Byte budget for a KEEP_ALL publisher's unacknowledged samples (2026-09-25, the user's decision to
@@ -499,15 +479,14 @@ static uint32_t resolve_keep_last_budget_bytes(const rmw_tickle_publisher_t* pub
 // one record, so any single legal sample can still be admitted.
 //
 // As history.bytes (QoS redesign step 3): the budget alone, UINT32_MAX - none - for TRANSIENT_LOCAL; core caps the
-// arena at it and keeps it at least one record.
+// arena at it and keeps it at least one record. The environment's budget is the context's qos.keep_all_bytes (read
+// at rmw_init()), which a 0 here takes.
 static uint32_t resolve_keep_all_budget_bytes(const rmw_tickle_publisher_t* pub_impl, bool durable) {
     if (durable) {
         return UINT32_MAX;
     }
     const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
-    unsigned long long budget = NULL != payload && 0 != payload->cache_bytes ? (unsigned long long)payload->cache_bytes
-                                                                             : rmw_tickle_keep_all_budget_bytes();
-    return budget < UINT32_MAX ? (uint32_t)budget : UINT32_MAX;
+    return NULL != payload ? payload->cache_bytes : 0U; // 0: the context's
 }
 
 // Periodic Heartbeat for a RELIABLE publisher, off unless RMW_TICKLE_HEARTBEAT_PERIOD_NS is set.
@@ -849,7 +828,7 @@ static bool publisher_profile(rmw_tickle_publisher_t* pub_impl, const rmw_qos_pr
     ext.depth = (uint32_t)depth;
     ext.history_bytes =
         keep_all ? resolve_keep_all_budget_bytes(pub_impl, durable) : resolve_keep_last_budget_bytes(pub_impl);
-    ext.max_blocking_ns = resolve_max_blocking_ns();
+    ext.max_blocking_ns = 0; // the context's qos.max_blocking_ns: RMW_TICKLE_MAX_BLOCKING_MS, read at rmw_init()
     rmw_qos_profile_t sized = *qos;
     sized.depth = depth;
     rmw_tickle_qos_to_tt(&sized, RMW_TICKLE_ENTITY_PUBLISHER, &ext, profile);
@@ -1112,7 +1091,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     }
     struct tt_PublisherOptions options;
     unsigned run_units = publisher_creation_options(pub_impl, qos_profile, &options);
-    size_t storage_size = tt_Publisher_storage_size(&pub_impl->topic, &profile);
+    // The context's size: a zero history.bytes takes its qos defaults, which the environment can raise past config.h's.
+    size_t storage_size =
+        tt_Publisher_storage_size_for(&node_impl->context_impl->tickle_context, &pub_impl->topic, &profile);
     if (0 != storage_size) {
         // Not zeroed: core initialises the cache and its index, and the arena is only ever written before it is read -
         // so the pages of it a publisher never reaches are never made resident.

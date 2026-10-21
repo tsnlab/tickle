@@ -195,12 +195,22 @@ int main(void) {
     assert(RMW_RET_OK == rmw_destroy_publisher(talker, pub));
     assert(RMW_RET_OK == rmw_destroy_subscription(listener, sub));
 
-    // (g10) A budget too small for the depth: fewer are kept, and it is counted, never silent.
+    // (g10) A budget too small for the depth: fewer are kept, and it is counted, never silent. The budget is the
+    // context's QoS default, read at rmw_init() (tt_InitOptions bundle 5), so it takes a context of its own.
+    assert(RMW_RET_OK == rmw_destroy_node(listener));
+    assert(RMW_RET_OK == rmw_destroy_node(talker));
+    assert(RMW_RET_OK == rmw_shutdown(&context));
+    assert(RMW_RET_OK == rmw_context_fini(&context));
+    assert(0 == setenv("RMW_TICKLE_CACHE_BYTES", SMALL_BUDGET, 1));
+    context = rmw_get_zero_initialized_context();
+    assert(RMW_RET_OK == rmw_init(&options, &context));
+    assert(0 == unsetenv("RMW_TICKLE_CACHE_BYTES"));
+    talker = rmw_create_node(&context, "g9_talker", "/");
+    listener = rmw_create_node(&context, "g9_listener", "/");
+    assert(NULL != talker && NULL != listener);
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)talker->data)->context_impl;
     uint64_t shortfalls_before = atomic_load(&context_impl->cache_depth_shortfalls);
-    assert(0 == setenv("RMW_TICKLE_CACHE_BYTES", SMALL_BUDGET, 1));
     pub = publisher(talker, "/g9_small_budget", durable);
-    assert(0 == unsetenv("RMW_TICKLE_CACHE_BYTES"));
     for (uint32_t i = 0; i < BACKLOG; i++) {
         fill(&outgoing, FIRST_DURABLE_ID + i);
         assert(RMW_RET_OK == rmw_publish(pub, &outgoing, NULL));
