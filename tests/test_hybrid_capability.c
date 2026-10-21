@@ -319,7 +319,7 @@ static void test_the_capped_reader_advertises_its_cap(void) {
     reset_node_state(&receiver);
     EXPECT_EQ_U32(45, receiver.hybrid.cap);
     EXPECT_EQ_U32(65507, receiver.hybrid.advertised);
-    EXPECT_EQ_U32(45, hybrid_units_within(receiver.hybrid.advertised, true));
+    EXPECT_EQ_U32(45, hybrid_units_within(&receiver, receiver.hybrid.advertised, true));
     receiver.opts.net.ip_reassembly_max = 1472;
     reset_node_state(&receiver);
     EXPECT_TRUE(!receiver.hybrid.rx_capable);

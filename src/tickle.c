@@ -449,8 +449,113 @@ static void resolve_socket_options(struct tt_SocketOptions* socket) {
     (void)socket;
 }
 
+#if tt_HYBRID_TRANSPORT
+static_assert(tt_HYBRID_N_MAX >= 1 && tt_HYBRID_N_MAX < tt_HYBRID_SLOW_START_OFF,
+              "tt_HybridOptions.n_max is a uint8_t, as a run's unit count is on the wire");
+static_assert(tt_HYBRID_SLOW_START < tt_HYBRID_SLOW_START_OFF, "tt_HybridOptions.slow_start is a uint8_t");
+static_assert(tt_HYBRID_PROBE_BACKOFF_MAX <= UINT8_MAX && tt_HYBRID_SCALE_TICKS <= UINT8_MAX,
+              "tt_HybridOptions.probe_backoff_max and scale_ticks are uint8_t");
+static_assert(tt_HYBRID_WINDOW_FRAMES <= UINT32_MAX, "tt_HybridOptions.window_frames is a uint32_t");
+
+// A double field's 0 is its default.
+static double hybrid_option_or(double value, double fallback) {
+    return value != 0.0 ? value : fallback;
+}
+
+// The natural logarithm of a value in (0, 1), for the stale rule's exposure at a stale_false_forget other than the
+// build's (core links no libm): doubled into [1/2, 1), then 2 atanh((x - 1) / (x + 1)) by its series, which converges
+// there to double precision well within 30 terms.
+#define HYBRID_LN2 0.69314718055994530942
+#define HYBRID_LN_FLOOR 0.5 // the range the series is summed over: [1/2, 1)
+#define HYBRID_LN_TERMS 30
+#define HYBRID_LN_DOUBLINGS_MAX 1100U // past the smallest double: a 0 (never a validated value) ends too
+static double hybrid_ln(double value) {
+    double scaled = value;
+    uint32_t doublings = 0;
+    while (scaled < HYBRID_LN_FLOOR && doublings < HYBRID_LN_DOUBLINGS_MAX) {
+        scaled += scaled;
+        doublings++;
+    }
+    double ratio = (scaled - 1.0) / (scaled + 1.0);
+    double square = ratio * ratio;
+    double term = ratio;
+    double sum = 0.0;
+    for (int i = 0; i < HYBRID_LN_TERMS; i++) {
+        sum += term / (double)((2 * i) + 1);
+        term *= square;
+    }
+    return (sum + sum) - ((double)doublings * HYBRID_LN2);
+}
+
+// The stale rule's exposure, -ln(stale_false_forget) (loss_estimate_forget_stale()): one option, so the two cannot
+// disagree. tt_HYBRID_STALE_EXPOSURE as config.h states it at the build's own rate - its 9.21, not the 9.2103 the
+// logarithm gives, so a context at the defaults forgets at the very frame it did - and derived at any other.
+static double hybrid_stale_exposure(const struct tt_HybridOptions* hybrid) {
+    if (hybrid->stale_false_forget == tt_HYBRID_STALE_FALSE_FORGET) {
+        return tt_HYBRID_STALE_EXPOSURE;
+    }
+    return -hybrid_ln(hybrid->stale_false_forget);
+}
+#endif
+
+// Where the hybrid transport is not built nothing reads these, and a value set is refused (validate_hybrid_options()).
 static void resolve_hybrid_options(struct tt_HybridOptions* hybrid) {
+#if tt_HYBRID_TRANSPORT
+    hybrid->collapse_ratio = hybrid_option_or(hybrid->collapse_ratio, tt_HYBRID_COLLAPSE_RATIO);
+    hybrid->drop = hybrid_option_or(hybrid->drop, tt_HYBRID_DROP);
+    hybrid->stale_false_forget = hybrid_option_or(hybrid->stale_false_forget, tt_HYBRID_STALE_FALSE_FORGET);
+    hybrid->stale_p_min = hybrid_option_or(hybrid->stale_p_min, tt_HYBRID_STALE_P_MIN);
+    hybrid->probe_step = hybrid_option_or(hybrid->probe_step, tt_HYBRID_PROBE_STEP);
+    hybrid->scale_at = hybrid_option_or(hybrid->scale_at, tt_HYBRID_SCALE_AT);
+    hybrid->scale_max = hybrid_option_or(hybrid->scale_max, tt_HYBRID_SCALE_MAX);
+    hybrid->path_alpha = hybrid_option_or(hybrid->path_alpha, tt_HYBRID_PATH_ALPHA);
+    if (hybrid->queue_lifetime_ns == 0) {
+        hybrid->queue_lifetime_ns = (uint64_t)tt_HYBRID_QUEUE_LIFETIME_NS;
+    }
+    if (hybrid->path_clean_ns == 0) {
+        // The compiled one at the compiled lifetime, in proportion at any other (2 tau at the defaults).
+        hybrid->path_clean_ns =
+            hybrid->queue_lifetime_ns == (uint64_t)tt_HYBRID_QUEUE_LIFETIME_NS
+                ? (uint64_t)tt_HYBRID_PATH_CLEAN_NS
+                : (uint64_t)((double)tt_HYBRID_PATH_CLEAN_NS *
+                             ((double)hybrid->queue_lifetime_ns / (double)tt_HYBRID_QUEUE_LIFETIME_NS));
+    }
+    if (hybrid->window_frames == 0) {
+        hybrid->window_frames = (uint32_t)tt_HYBRID_WINDOW_FRAMES;
+    }
+    if (hybrid->collapse_min_runs == 0) {
+        hybrid->collapse_min_runs = (uint32_t)tt_HYBRID_COLLAPSE_MIN_RUNS;
+    }
+    if (hybrid->collapse_min_lost == 0) {
+        hybrid->collapse_min_lost = (uint32_t)tt_HYBRID_COLLAPSE_MIN_LOST;
+    }
+    if (hybrid->window_max_runs == 0) {
+        hybrid->window_max_runs = (uint32_t)tt_HYBRID_WINDOW_MAX_RUNS;
+    }
+    if (hybrid->none_seen_frames == 0) {
+        hybrid->none_seen_frames = (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES;
+    }
+    if (hybrid->stale_events == 0) {
+        hybrid->stale_events = (uint32_t)tt_HYBRID_STALE_EVENTS;
+    }
+    if (hybrid->scale_min_events == 0) {
+        hybrid->scale_min_events = (uint32_t)tt_HYBRID_SCALE_MIN_EVENTS;
+    }
+    if (hybrid->n_max == 0) {
+        hybrid->n_max = (uint8_t)tt_HYBRID_N_MAX;
+    }
+    if (hybrid->slow_start == 0) {
+        hybrid->slow_start = tt_HYBRID_SLOW_START != 0 ? (uint8_t)tt_HYBRID_SLOW_START : tt_HYBRID_SLOW_START_OFF;
+    }
+    if (hybrid->probe_backoff_max == 0) {
+        hybrid->probe_backoff_max = (uint8_t)tt_HYBRID_PROBE_BACKOFF_MAX;
+    }
+    if (hybrid->scale_ticks == 0) {
+        hybrid->scale_ticks = (uint8_t)tt_HYBRID_SCALE_TICKS;
+    }
+#else
     (void)hybrid;
+#endif
 }
 
 static void resolve_segment_options(struct tt_SegmentOptions* segment) {
@@ -672,12 +777,79 @@ static tt_ret_t validate_socket_options(const struct tt_SocketOptions* socket) {
     return tt_RET_OK;
 }
 
+#if tt_HYBRID_TRANSPORT
+// A share strictly between 0 and 1. Written so that NaN fails it.
+static bool hybrid_option_share(double value) {
+    return value > 0.0 && value < 1.0;
+}
+
+// The longest queue lifetime taken, an hour, and the most doublings of a probe's wait: 2 tau x 2^16 stays below 2^59
+// ns, added to a clock far from 2^63.
+#define HYBRID_QUEUE_LIFETIME_MAX (3600ULL * tt_SECOND)
+#define HYBRID_PROBE_BACKOFF_LIMIT 16U
+
+// The checks read the resolved values, so a compiled default that breaks one is refused at creation as an option
+// would be. Each guards a rule that could never fire, a shift that would overflow, or a share that is no share.
 static tt_ret_t validate_hybrid_options(const struct tt_HybridOptions* hybrid) {
-    if (hybrid->reserved != 0) {
-        return reject_option("hybrid_transport.reserved", "is not 0");
+    if (hybrid->n_max > tt_HYBRID_N_MAX) {
+        return reject_option("hybrid_transport.n_max", "exceeds tt_HYBRID_N_MAX, the build's largest run");
+    }
+    if (hybrid->none_seen_frames >= hybrid->window_frames) {
+        return reject_option("hybrid_transport.window_frames",
+                             "is not above hybrid_transport.none_seen_frames: a halved window never reaches it");
+    }
+    if (!(hybrid->collapse_ratio >= 1.0)) {
+        return reject_option("hybrid_transport.collapse_ratio", "is below 1: a collapse loses more than frame loss");
+    }
+    if (hybrid->collapse_min_lost > hybrid->collapse_min_runs) {
+        return reject_option("hybrid_transport.collapse_min_lost", "exceeds hybrid_transport.collapse_min_runs");
+    }
+    if (hybrid->window_max_runs < hybrid->collapse_min_runs) {
+        return reject_option("hybrid_transport.window_max_runs",
+                             "is below hybrid_transport.collapse_min_runs: no window could be decided");
+    }
+    if (!hybrid_option_share(hybrid->drop)) {
+        return reject_option("hybrid_transport.drop", "is not in (0, 1): a collapse lowers the cap");
+    }
+    if (!hybrid_option_share(hybrid->stale_false_forget)) {
+        return reject_option("hybrid_transport.stale_false_forget", "is not in (0, 1)");
+    }
+    if (!hybrid_option_share(hybrid->stale_p_min)) {
+        return reject_option("hybrid_transport.stale_p_min", "is not in (0, 1)");
+    }
+    if (!hybrid_option_share(hybrid->path_alpha)) {
+        return reject_option("hybrid_transport.path_alpha", "is not in (0, 1)");
+    }
+    if (!(hybrid->probe_step > 1.0)) {
+        return reject_option("hybrid_transport.probe_step", "is not above 1: a probe goes above the ceiling");
+    }
+    if (!(hybrid->scale_at > 1.0)) {
+        return reject_option("hybrid_transport.scale_at", "is not above 1: R p moved by a factor of 1 has not moved");
+    }
+    if (!(hybrid->scale_max >= 1.0)) {
+        return reject_option("hybrid_transport.scale_max", "is below 1");
+    }
+    if (hybrid->queue_lifetime_ns > HYBRID_QUEUE_LIFETIME_MAX) {
+        return reject_option("hybrid_transport.queue_lifetime_ns", "exceeds an hour");
+    }
+    if (hybrid->probe_backoff_max > HYBRID_PROBE_BACKOFF_LIMIT) {
+        return reject_option("hybrid_transport.probe_backoff_max", "exceeds 16: a probe's wait would overflow");
     }
     return tt_RET_OK;
 }
+#else
+// Nothing reads them in this build, so a value set would run as nothing at all: refused. Read byte by byte, with no
+// double compared - on RV32 FreeRTOS that would link soft-float for it.
+static tt_ret_t validate_hybrid_options(const struct tt_HybridOptions* hybrid) {
+    const uint8_t* bytes = (const uint8_t*)hybrid;
+    for (size_t i = 0; i < sizeof(*hybrid); i++) {
+        if (bytes[i] != 0) {
+            return reject_option("hybrid_transport", "is set, and this build has no hybrid transport");
+        }
+    }
+    return tt_RET_OK;
+}
+#endif
 
 static tt_ret_t validate_segment_options(const struct tt_SegmentOptions* segment) {
     if (segment->reserved != 0) {
@@ -2846,15 +3018,16 @@ static uint8_t count_peers(const struct tt_Peer* peers);
 #define HYBRID_MAX_RUNS ((tt_FRAG_MAX_COUNT / 2) + 1)
 
 // How many units of one type pair a datagram of at most `ceiling` bytes holds as a run - n_max: at least 1, at most
-// tt_HYBRID_N_MAX.
-static uint32_t hybrid_units_within(uint32_t ceiling, bool large) {
+// the context's hybrid_transport.n_max (tt_HYBRID_N_MAX at most).
+static uint32_t hybrid_units_within(const struct tt_Context* node, uint32_t ceiling, bool large) {
     uint32_t framing = large ? HYBRID_RUN_L_WIRE_FRAMING : HYBRID_RUN_WIRE_FRAMING;
     uint32_t unit = large ? HYBRID_UNIT_L : HYBRID_UNIT;
     uint32_t units = ceiling > framing ? (ceiling - framing) / unit : 0U;
     if (units < 1U) {
         return 1U;
     }
-    return units > (uint32_t)tt_HYBRID_N_MAX ? (uint32_t)tt_HYBRID_N_MAX : units;
+    uint32_t limit = node->opts.hybrid_transport.n_max;
+    return units > limit ? limit : units;
 }
 
 // Whether this context keeps the reader's side of the hybrid transport at all (tt_HybridState.rx_capable). Never in a
@@ -2867,8 +3040,8 @@ static inline bool hybrid_rx_capable(const struct tt_Context* node) {
 }
 
 // The bucket of tt_HybridState.n_hist that n falls in: 1, 2-3, 4-7, 8-15, 16-31, 32 up to n_max - 1, n_max.
-static uint32_t hybrid_bucket(uint32_t run_n) {
-    if (run_n >= (uint32_t)tt_HYBRID_N_MAX) {
+static uint32_t hybrid_bucket(uint32_t run_n, uint32_t n_max) {
+    if (run_n >= n_max) {
         return tt_HYBRID_N_BUCKETS - 1U;
     }
     uint32_t bucket = 0;
@@ -2897,7 +3070,7 @@ static uint32_t hybrid_peer_n_max(struct tt_Context* node, const struct tt_Publi
     if (pub->ip_datagram_max != 0 && pub->ip_datagram_max < ceiling) {
         ceiling = pub->ip_datagram_max;
     }
-    uint32_t n_max = hybrid_units_within(ceiling, large);
+    uint32_t n_max = hybrid_units_within(node, ceiling, large);
 #if tt_SEGMENT_ENABLED
     if (n_max > 1U && peer_segment(node, context_id, ip, port) != NULL) {
         return 1U; // a run is no record for a ring slot; the segment takes MTU units
@@ -3011,7 +3184,7 @@ static uint32_t hybrid_run_until(uint32_t run_n, uint32_t count, bool one_run) {
 static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n,
                              uint32_t count, uint32_t base, uint32_t run_until) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    hybrid->n_hist[hybrid_bucket(run_n)]++;
+    hybrid->n_hist[hybrid_bucket(run_n, node->opts.hybrid_transport.n_max)]++;
     if (run_until != 0) {
         hybrid->runs += ((run_until - 1U) / run_n) + 1U; // units [0, run_until) in runs of n, the last one shorter
         hybrid->run_units += run_until;
@@ -3097,13 +3270,14 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
 static double hybrid_test_forced_p = -1.0;
 #endif
 
-static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events) {
+static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events,
+                                  const struct tt_HybridOptions* opts) {
     estimate->frames += frames;
     estimate->events += events;
     if (events != 0) {
         estimate->frames_at_event = estimate->frames;
     }
-    if (estimate->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {
+    if (estimate->frames >= opts->window_frames) {
         estimate->frames /= 2U;
         estimate->events /= 2U;
         estimate->frames_at_event /= 2U;
@@ -3153,27 +3327,26 @@ static bool hybrid_test_stale_off = false;
 // p_min it forgets a steady path's few events often (40% per k at 1e-4), and n goes to n_max until they come back: at
 // such p n_max is close to the best n (DESIGN 8, Cost(n): at 0.01% Cost(45) 1.0050 u against Cost(n*) 1.0027 u, at
 // 0.1% 1.0452 u against 1.0085 u), so a wrong forget costs little where it is likely. Returns whether it forgot.
-static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
+static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate, const struct tt_HybridOptions* opts) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_stale_off) {
         return false;
     }
 #endif
-    if (estimate->events == 0 || estimate->events > (uint32_t)tt_HYBRID_STALE_EVENTS ||
-        estimate->frames_at_event == 0) {
+    if (estimate->events == 0 || estimate->events > opts->stale_events || estimate->frames_at_event == 0) {
         return false;
     }
     // The stretch starts at the last event or the last doubtful gap, whichever is later, and F ends there too.
     uint32_t anchor =
         estimate->frames_at_doubt > estimate->frames_at_event ? estimate->frames_at_doubt : estimate->frames_at_event;
     uint32_t clean = estimate->frames - anchor;
-    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames
+    if ((double)clean < hybrid_stale_exposure(opts) / opts->stale_p_min) { // the floor: 9,210 frames by default
         double stretch = 1.0 + ((double)clean / (double)anchor);
         double chance = 1.0; // of a stretch this long after this many events, on a steady path
         for (uint32_t i = 0; i < estimate->events; i++) {
             chance /= stretch;
         }
-        if (chance > tt_HYBRID_STALE_FALSE_FORGET) {
+        if (chance > opts->stale_false_forget) {
             return false;
         }
     }
@@ -3300,14 +3473,14 @@ static double loss_estimate_mean(const struct tt_LossEstimate* estimate) {
 // tt_HYBRID_NONE_SEEN_FRAMES frames came with no event among them, else the posterior mean above. At no events the mean
 // is 1 / N, which held a writer below n_max for the first ~100,000 frames of every reader at 0% loss - a 4 MB sample's
 // ~2,900 frames a time, ~5 s at 15 Hz (2026-10-13: "at 0% loss start at the learned n immediately").
-static uint16_t hybrid_rx_loss_code(const struct tt_LossEstimate* estimate) {
+static uint16_t hybrid_rx_loss_code(const struct tt_LossEstimate* estimate, const struct tt_HybridOptions* opts) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_forced_p >= 0.0) {
         return hybrid_loss_code(hybrid_test_forced_p);
     }
 #endif
     if (estimate->events == 0 &&
-        estimate->frames - estimate->frames_at_doubt >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt
+        estimate->frames - estimate->frames_at_doubt >= opts->none_seen_frames) { // seen, since a doubt
         return HYBRID_LOSS_NONE_SEEN;
     }
     return hybrid_loss_code(loss_estimate_mean(estimate));
@@ -3317,12 +3490,11 @@ static uint16_t hybrid_rx_loss_code(const struct tt_LossEstimate* estimate) {
 // a gap has been put down to a receiver drop, waits for tt_HYBRID_NONE_SEEN_FRAMES frames after the last such gap: each
 // one restarts the estimate until then (hybrid_rx_receiver_lost()), so the first p rests on frames the reader saw, and
 // the writer, hearing nothing, sends this reader MTU units meanwhile (hybrid_peer_unmeasured()) - right at any p.
-static uint16_t hybrid_rx_announce_code(const struct tt_HybridState* hybrid) {
-    if (hybrid->advertised_loss == 0 && hybrid->receiver_lost != 0 &&
-        hybrid->rx_loss.frames < (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {
+static uint16_t hybrid_rx_announce_code(const struct tt_HybridState* hybrid, const struct tt_HybridOptions* opts) {
+    if (hybrid->advertised_loss == 0 && hybrid->receiver_lost != 0 && hybrid->rx_loss.frames < opts->none_seen_frames) {
         return 0;
     }
-    return hybrid_rx_loss_code(&hybrid->rx_loss);
+    return hybrid_rx_loss_code(&hybrid->rx_loss, opts);
 }
 
 // ---- The reader's side: what it measures of its own reception (DESIGN.md section 8, "What the reader measures")
@@ -3338,11 +3510,12 @@ static uint16_t hybrid_rx_announce_code(const struct tt_HybridState* hybrid) {
 // second) and each writer's runs a second (for the queue lifetime) are counted with them.
 
 // One run of `size` units sent, lost or not.
-static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool lost) {
+static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool lost,
+                               const struct tt_HybridOptions* opts) {
     window->sent++;
     window->lost += lost ? 1U : 0U;
     window->frames += size;
-    if (window->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {
+    if (window->frames >= opts->window_frames) {
         window->sent /= 2U;
         window->lost /= 2U;
         window->frames /= 2U;
@@ -3350,18 +3523,20 @@ static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool 
 }
 
 // A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate.
-static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t size, bool lost) {
-    run_window_observe(&hybrid->window, size, lost);
-    run_window_observe(&writer->runs, size, lost);
-    loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U);
+static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t size, bool lost,
+                          const struct tt_HybridOptions* opts) {
+    run_window_observe(&hybrid->window, size, lost, opts);
+    run_window_observe(&writer->runs, size, lost, opts);
+    loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U, opts);
     writer->tick_runs++;
     hybrid->window_n = size > hybrid->window_n ? size : hybrid->window_n;
 }
 
 // `units` MTU units of `writer`'s, `lost` of them lost: p and p_mtu.
-static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_t lost) {
-    loss_estimate_observe(&hybrid->rx_loss, units, lost);
-    loss_estimate_observe(&hybrid->mtu_loss, units, lost);
+static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_t lost,
+                          const struct tt_HybridOptions* opts) {
+    loss_estimate_observe(&hybrid->rx_loss, units, lost, opts);
+    loss_estimate_observe(&hybrid->mtu_loss, units, lost, opts);
 }
 
 // Receiver drops are not path loss. A datagram the receiving host took off the wire and then dropped - its socket's
@@ -3427,7 +3602,7 @@ static void hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter
         if (hybrid_rx_receiver_lost(node, 1) != 0) {
             continue;
         }
-        hybrid_rx_run(&node->hybrid, writer, size, true);
+        hybrid_rx_run(&node->hybrid, writer, size, true, &node->opts.hybrid_transport);
         uint32_t first = start > from ? start : from;
         uint32_t last = start + size < body_end ? start + size : body_end;
         writer->body_lost += last - first;
@@ -3448,16 +3623,16 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
         } else if (layout == 1U) {
             uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);
             if (lost != 0) {
-                hybrid_rx_mtu(hybrid, lost, lost);
+                hybrid_rx_mtu(hybrid, lost, lost, &node->opts.hybrid_transport);
             }
         } else if (hybrid_rx_receiver_lost(node, 1) == 0) {
             // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
-            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);
+            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1, &node->opts.hybrid_transport);
             writer->body_lost += body_end - from;
         }
     }
     if (end > tail && from <= tail && hybrid_rx_receiver_lost(node, 1) == 0) {
-        hybrid_rx_mtu(hybrid, 1, 1); // the tail, always an MTU unit
+        hybrid_rx_mtu(hybrid, 1, 1, &node->opts.hybrid_transport); // the tail, always an MTU unit
     }
 }
 
@@ -3466,9 +3641,10 @@ static void hybrid_announce(struct tt_Context* node, uint64_t now);
 // The reader's p forgets a few events its clean frames have outlived (loss_estimate_forget_stale()), counted on the
 // hybrid line (stale_forgets=, stale_events=). At each tail and each announce: a stretch long enough shows at a tail,
 // so "none seen" goes at once (below), not at the next interval.
-static void hybrid_rx_forget_stale(struct tt_HybridState* hybrid) {
+static void hybrid_rx_forget_stale(struct tt_Context* node) {
+    struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t events = hybrid->rx_loss.events;
-    if (loss_estimate_forget_stale(&hybrid->rx_loss)) {
+    if (loss_estimate_forget_stale(&hybrid->rx_loss, &node->opts.hybrid_transport)) {
         hybrid->stale_forgets++;
         hybrid->stale_events += events;
     }
@@ -3484,8 +3660,9 @@ static void hybrid_rx_forget_stale(struct tt_HybridState* hybrid) {
 // (2026-10-15): until a writer hears one it sends this reader its MTU units one a send call (hybrid_peer_unmeasured()),
 // and on a lossy path that was up to a whole interval of samples (the rig's 1 MB cell at 5%: ~30).
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
-    hybrid_rx_forget_stale(&node->hybrid);
-    uint16_t measured = hybrid_rx_loss_code(&node->hybrid.rx_loss); // hybrid_announce() holds a first p
+    hybrid_rx_forget_stale(node);
+    uint16_t measured =
+        hybrid_rx_loss_code(&node->hybrid.rx_loss, &node->opts.hybrid_transport); // hybrid_announce() holds a first p
     if ((node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN && measured == HYBRID_LOSS_NONE_SEEN) ||
         (node->hybrid.advertised_loss == 0 && measured != 0)) {
         hybrid_announce(node, tt_get_ns());
@@ -3526,17 +3703,17 @@ static void hybrid_rx_judge_path(struct tt_Context* node, struct tt_HybridRxWrit
     for (uint32_t i = 0; i < layout; i++) {
         clean *= 1.0 - p_hi;
     }
-    for (uint32_t i = 0; i < runs && writer->path_odds >= tt_HYBRID_PATH_ALPHA; i++) {
+    for (uint32_t i = 0; i < runs && writer->path_odds >= node->opts.hybrid_transport.path_alpha; i++) {
         writer->path_odds *= 1.0 - clean;
     }
-    if (writer->path_odds >= tt_HYBRID_PATH_ALPHA) {
+    if (writer->path_odds >= node->opts.hybrid_transport.path_alpha) {
         return;
     }
     writer->path_odds = 1.0;
     if (hybrid->path_probe) {
-        hybrid->path_backoff = hybrid->path_backoff < tt_HYBRID_PROBE_BACKOFF_MAX
+        hybrid->path_backoff = hybrid->path_backoff < node->opts.hybrid_transport.probe_backoff_max
                                    ? (uint8_t)(hybrid->path_backoff + 1U)
-                                   : (uint8_t)tt_HYBRID_PROBE_BACKOFF_MAX;
+                                   : node->opts.hybrid_transport.probe_backoff_max;
     } else {
         hybrid->path_cap = hybrid->cap;
     }
@@ -3663,10 +3840,10 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
-        hybrid_rx_run(hybrid, writer, units, false);
+        hybrid_rx_run(hybrid, writer, units, false, &node->opts.hybrid_transport);
         writer->run_tick = hybrid->ticks + 1U; // a run of this writer's got through (0: none yet)
     } else {
-        hybrid_rx_mtu(hybrid, 1, 0);
+        hybrid_rx_mtu(hybrid, 1, 0, &node->opts.hybrid_transport);
     }
     writer->next = (uint16_t)(index + units);
     if (!run && index == tail) {
@@ -3751,7 +3928,7 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
         const struct tt_PeerWatch* watch = &pub->peer_watch[i];
         if (watch->path_failed_ns != 0) { // its fragment path failed (hybrid_note_nacks()): MTU, or a re-probe
             now = now != 0 ? now : tt_get_ns();
-            if (now - watch->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {
+            if (now - watch->path_failed_ns < node->opts.hybrid_transport.path_clean_ns) {
                 return 1U;
             }
             *one_run = true;
@@ -3805,9 +3982,10 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
 // run is one event on n frames, so p would read near 1/n, and n would fall 45, 17, 11, 8 ... 2 over 25 samples, every
 // one repaired whole. So it is judged on its own: a watched sample all of whose runs were first-NACKed while its tail
 // was not - two runs or more, or a second sample in a row, or a re-probe - marks the reader's path failed. Its n is
-// then 1 until tt_HYBRID_PATH_CLEAN_NS have passed, when the next sample re-probes with one run and the rest as MTU
-// units: through, and the path is clear; lost, and it is failed again. Under real frame loss at the n the cost model
-// picks, L(n) is small and every run of a sample lost with its tail through is L(n)^runs - not a frame-loss reading.
+// then 1 until hybrid_transport.path_clean_ns have passed, when the next sample re-probes with one run and the rest as
+// MTU units: through, and the path is clear; lost, and it is failed again. Under real frame loss at the n the cost
+// model picks, L(n) is small and every run of a sample lost with its tail through is L(n)^runs - not a frame-loss
+// reading.
 static void hybrid_watch_nack(struct tt_PeerWatch* watch, uint32_t seq_no) {
     if (watch->watch_count == 0 || seq_no - watch->watch_base >= watch->watch_count) {
         return;
@@ -3819,7 +3997,7 @@ static void hybrid_watch_nack(struct tt_PeerWatch* watch, uint32_t seq_no) {
     }
 }
 
-static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id) {
+static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id, uint64_t path_clean_ns) {
     if (watch->watch_count == 0 || watch->watch_all_lost || watch->watch_tail_nacked ||
         watch->watch_nacked != watch->watch_run_units) {
         return;
@@ -3830,7 +4008,7 @@ static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id) {
         if (watch->path_failed_ns == 0) {
             TT_LOG_WARNING("Hybrid transport: every run to node %u lost whole while its MTU units arrived - its path "
                            "drops IP fragments; MTU units only, re-probed in %u s",
-                           context_id, (unsigned)(tt_HYBRID_PATH_CLEAN_NS / tt_SECOND));
+                           context_id, (unsigned)(path_clean_ns / tt_SECOND));
         }
         uint64_t now = tt_get_ns();
         watch->path_failed_ns = now != 0 ? now : 1U; // 0 means "not failed"
@@ -3843,8 +4021,9 @@ static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id) {
 // first one. A re-NACK is not: repairs queued behind a large sample's runs are NACKed again while still in flight. The
 // loss n is chosen by is the reader's own (its announce), not counted here. Not inlined into process_acknack(), which
 // calls it only for a Publisher that has sent runs (tt_Publisher.watching).
-__attribute__((noinline)) static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id,
-                                                        uint32_t base, const uint64_t* bitmap, uint16_t words) {
+__attribute__((noinline)) static void hybrid_note_nacks(const struct tt_Context* node, struct tt_Publisher* pub,
+                                                        uint8_t node_id, uint32_t entity_id, uint32_t base,
+                                                        const uint64_t* bitmap, uint16_t words) {
     const struct tt_PeerAck* found = find_peer_ack(pub, node_id, entity_id);
     if (found == NULL) {
         return;
@@ -3868,7 +4047,7 @@ __attribute__((noinline)) static void hybrid_note_nacks(struct tt_Publisher* pub
         }
     }
     watch->nack_high = high;
-    hybrid_watch_judge(watch, node_id);
+    hybrid_watch_judge(watch, node_id, node->opts.hybrid_transport.path_clean_ns);
     if (watch->watch_count != 0 && !watch->watch_all_lost &&
         seq_delta(base, watch->watch_base + watch->watch_count) >= 0) {
         // The reader holds the whole watched sample, and not every run of it was lost: the streak ends, and a
@@ -6106,8 +6285,10 @@ static void wall_offset_refresh(struct tt_Context* node) {
 static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
     // when this changes nothing) or built by hand in a whitebox test (the service group still zero). The call path
-    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest).
+    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest), and the
+    // hybrid transport its options likewise (reset_node_state() after this starts the reader on them).
     resolve_service_options(&node->opts.service);
+    resolve_hybrid_options(&node->opts.hybrid_transport);
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -15374,9 +15555,10 @@ static bool every_peer_reached(struct tt_Context* node) {
 #define HYBRID_IP_ID_SPACE 65536.0 // an incomplete reassembly ends when its writer's IP ID comes round again
 
 // How many units of either type pair `cap` units are, as the announce's ceiling: the configured one when the cap is
-// n_max, else framing plus `cap` units of 8/9, which reads back as `cap` units of either pair.
+// n_max, else framing plus `cap` units of 8/9, which reads back as `cap` units of either pair. A context whose
+// hybrid_transport.n_max is below the build's says so the same way, as that many units: a writer bounds n by its own.
 static uint16_t hybrid_cap_bytes(const struct tt_Context* node, uint32_t cap, uint32_t n_max) {
-    if (cap >= n_max) {
+    if (cap >= n_max && node->opts.hybrid_transport.n_max >= (uint8_t)tt_HYBRID_N_MAX) {
         return node->ip_reassembly_max;
     }
     uint32_t bytes = HYBRID_RUN_L_WIRE_FRAMING + (cap * HYBRID_UNIT);
@@ -15389,9 +15571,9 @@ static uint32_t hybrid_ceil(double value) {
     return (double)whole < value ? whole + 1U : whole;
 }
 
-// The drop on a collapse at n: to 0.7 n at once, rounded - which for n up to 5 is n - 1.
-static uint32_t hybrid_drop(uint32_t n_fail) {
-    uint32_t dropped = (uint32_t)(((double)n_fail * tt_HYBRID_DROP) + HYBRID_HALF);
+// The drop on a collapse at n: to `drop` x n at once (0.7 by default), rounded - which there for n up to 5 is n - 1.
+static uint32_t hybrid_drop(uint32_t n_fail, double drop) {
+    uint32_t dropped = (uint32_t)(((double)n_fail * drop) + HYBRID_HALF);
     return dropped > 1U ? dropped : 1U;
 }
 
@@ -15409,18 +15591,19 @@ static double hybrid_baseline_run_loss(const struct tt_RunWindow* window, double
 }
 
 // The collapse test, pre-defined (DESIGN.md section 8, "The collapse test"): of R runs in the window X were lost. A
-// collapse is X far beyond what frame loss allows, in significance and in size, at least tt_HYBRID_COLLAPSE_MIN_LOST
-// runs lost of tt_HYBRID_COLLAPSE_MIN_RUNS:
+// collapse is X far beyond what frame loss allows, in significance and in size, at least collapse_min_lost
+// runs lost of collapse_min_runs:
 // - significant: z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) of at least tt_HYBRID_COLLAPSE_Z (one-sided 0.1%), L0 at
 //   p_mtu's one-sided 99.9% bound - the test's own level, so a baseline resting on few MTU frames reads low no oftener
 //   than the window reads high. At the 95% bound a 1% path whose first 1,599 tails lost 3 put L0 at 5.2% for runs of 11
 //   that lose 10.5%, and called a collapse: 7 seeds of 1,000 of test_frame_loss_never_moves_the_cap (2026-10-17).
-// - far: X / R at least tt_HYBRID_COLLAPSE_RATIO x L0, L0 at the 95% bound - or, where that passes the midpoint to 1, a
-//   survival 1 - X / R at most (1 - L0) / tt_HYBRID_COLLAPSE_RATIO: "q(n) far below (1 - p)^n" read on the side where
+// - far: X / R at least collapse_ratio x L0, L0 at the 95% bound - or, where that passes the midpoint to 1, a
+//   survival 1 - X / R at most (1 - L0) / collapse_ratio: "q(n) far below (1 - p)^n" read on the side where
 //   it can still be met. Twice an L0 past 1/2 is never met, and a squeeze waited for more tails to shrink L0.
 // Without an MTU baseline L0 is 1: no decision.
-static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
-    if (window->sent < tt_HYBRID_COLLAPSE_MIN_RUNS || window->lost < tt_HYBRID_COLLAPSE_MIN_LOST) {
+static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu,
+                             const struct tt_HybridOptions* opts) {
+    if (window->sent < opts->collapse_min_runs || window->lost < opts->collapse_min_lost) {
         return false;
     }
     double runs = (double)window->sent;
@@ -15432,30 +15615,31 @@ static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_
     }
     double score = (lost - (runs * baseline) - HYBRID_HALF) / hybrid_sqrt(variance);
     double allowed = hybrid_baseline_run_loss(window, loss_estimate_p(mtu));
-    double far = tt_HYBRID_COLLAPSE_RATIO * allowed;
-    double far_survival = 1.0 - ((1.0 - allowed) / tt_HYBRID_COLLAPSE_RATIO);
+    double far = opts->collapse_ratio * allowed;
+    double far_survival = 1.0 - ((1.0 - allowed) / opts->collapse_ratio);
     far = far < far_survival ? far : far_survival;
     return score >= tt_HYBRID_COLLAPSE_Z && lost >= far * runs;
 }
 
 // A clean window: enough runs, and no more of them lost than frame loss alone allows (R L0, at p_mtu's 95% bound).
-static bool hybrid_clean(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
-    return window->sent >= tt_HYBRID_COLLAPSE_MIN_RUNS &&
+static bool hybrid_clean(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu,
+                         const struct tt_HybridOptions* opts) {
+    return window->sent >= opts->collapse_min_runs &&
            (double)window->lost <= hybrid_baseline_run_loss(window, loss_estimate_p(mtu)) * (double)window->sent;
 }
 
-// p as the ceiling's scaling reads it: p_mtu's point estimate once it rests on tt_HYBRID_SCALE_MIN_EVENTS events, 0
+// p as the ceiling's scaling reads it: p_mtu's point estimate once it rests on scale_min_events events, 0
 // before (too few events to say where p is, or that it moved).
-static double hybrid_scale_p(const struct tt_HybridState* hybrid) {
-    if (hybrid->mtu_loss.events >= tt_HYBRID_SCALE_MIN_EVENTS) {
+static double hybrid_scale_p(const struct tt_HybridState* hybrid, const struct tt_HybridOptions* opts) {
+    if (hybrid->mtu_loss.events >= opts->scale_min_events) {
         return (double)hybrid->mtu_loss.events / (double)hybrid->mtu_loss.frames;
     }
     return 0.0;
 }
 
-// The queue lifetime tau from the runs a second each writer sent in the last `elapsed_ns`: min(30 s, 65536 / D_s), the
-// longest over the sources that sent runs; unchanged when none did.
-static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elapsed_ns) {
+// The queue lifetime tau from the runs a second each writer sent in the last `elapsed_ns`: min(queue_lifetime_ns, 65536
+// / D_s), the longest over the sources that sent runs; unchanged when none did.
+static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elapsed_ns, uint64_t lifetime_max) {
     uint64_t longest = 0;
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
         struct tt_HybridRxWriter* writer = &hybrid->rx_writers[i];
@@ -15470,8 +15654,7 @@ static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elap
             }
         }
         double wrap_ns = HYBRID_IP_ID_SPACE * (double)elapsed_ns / (double)runs;
-        uint64_t lifetime =
-            wrap_ns < (double)tt_HYBRID_QUEUE_LIFETIME_NS ? (uint64_t)wrap_ns : tt_HYBRID_QUEUE_LIFETIME_NS;
+        uint64_t lifetime = wrap_ns < (double)lifetime_max ? (uint64_t)wrap_ns : lifetime_max;
         longest = lifetime > longest ? lifetime : longest;
     }
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
@@ -15483,7 +15666,8 @@ static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elap
 }
 
 // A collapse in the window: the ceiling it shows, the drop, the hold and the next probe.
-static void hybrid_collapse(struct tt_HybridState* hybrid, uint64_t now, double units_per_s) {
+static void hybrid_collapse(struct tt_HybridState* hybrid, uint64_t now, double units_per_s,
+                            const struct tt_HybridOptions* opts) {
     uint32_t run_n = hybrid->window_n > 1U ? hybrid->window_n : 2U;
     // The kernel admits about the share that keeps its memory at the threshold, and the memory offered grows as n:
     // the survival measured says where the collapse began, n q / q0 - not the cap a fast growth overshot to.
@@ -15502,13 +15686,13 @@ static void hybrid_collapse(struct tt_HybridState* hybrid, uint64_t now, double 
     n_fail = n_fail > 1U ? n_fail : 2U; // a ceiling of 1 would leave nothing to grow back to
     if (hybrid->probe_since_ns != 0) {
         hybrid->probe_failures++;
-        hybrid->backoff = hybrid->backoff < tt_HYBRID_PROBE_BACKOFF_MAX ? (uint8_t)(hybrid->backoff + 1U)
-                                                                        : (uint8_t)tt_HYBRID_PROBE_BACKOFF_MAX;
+        hybrid->backoff =
+            hybrid->backoff < opts->probe_backoff_max ? (uint8_t)(hybrid->backoff + 1U) : opts->probe_backoff_max;
     }
     hybrid->n_fail = n_fail;
-    hybrid->cap = hybrid_drop(n_fail);
+    hybrid->cap = hybrid_drop(n_fail, opts->drop);
     hybrid->anchor_r = units_per_s;
-    hybrid->anchor_p = hybrid_scale_p(hybrid);
+    hybrid->anchor_p = hybrid_scale_p(hybrid, opts);
     hybrid->scale_streak = 0;
     hybrid->hold_until_ns = now + hybrid->lifetime_ns;
     hybrid->probe_at_ns = now + ((2U * hybrid->lifetime_ns) << hybrid->backoff);
@@ -15522,14 +15706,15 @@ static void hybrid_collapse(struct tt_HybridState* hybrid, uint64_t now, double 
 
 // A clean window: grow - doubling before any collapse, then half the way to the plateau n_fail - 1 - or, at the
 // plateau and on time, probe above the ceiling; a probe that has stayed clean for tau moves the ceiling up a step.
-static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_max) {
+static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_max,
+                        const struct tt_HybridOptions* opts) {
     if (hybrid->probe_since_ns != 0) {
         if (now - hybrid->probe_since_ns < hybrid->lifetime_ns) {
             return; // a probe is judged over a whole lifetime: the memory it fills takes that long to show
         }
         hybrid->probe_since_ns = 0;
         hybrid->backoff = 0;
-        uint32_t step = hybrid_ceil((double)hybrid->cap * tt_HYBRID_PROBE_STEP);
+        uint32_t step = hybrid_ceil((double)hybrid->cap * opts->probe_step);
         hybrid->n_fail = step > hybrid->cap ? step : hybrid->cap + 1U;
         hybrid->n_fail = hybrid->n_fail > n_max ? 0U : hybrid->n_fail; // past n_max: no ceiling left
         hybrid->probe_at_ns = now + (2U * hybrid->lifetime_ns);
@@ -15546,7 +15731,7 @@ static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_
         return;
     }
     if (now >= hybrid->probe_at_ns) {
-        uint32_t probe = hybrid_ceil((double)hybrid->n_fail * tt_HYBRID_PROBE_STEP);
+        uint32_t probe = hybrid_ceil((double)hybrid->n_fail * opts->probe_step);
         probe = probe > hybrid->n_fail ? probe : hybrid->n_fail + 1U;
         hybrid->cap = probe < n_max ? probe : n_max;
         hybrid->probe_since_ns = now;
@@ -15557,29 +15742,31 @@ static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_
 }
 
 // The ceiling moves with R p (decision 3c): R p fallen to about half or less of its value at the anchor (by
-// tt_HYBRID_SCALE_AT) for tt_HYBRID_SCALE_TICKS ticks in a row scales n_fail up in proportion (at most
-// tt_HYBRID_SCALE_MAX) and allows a probe at once; risen as much, down, and the cap with it. p enters only where it was
+// scale_at) for scale_ticks ticks in a row scales n_fail up in proportion (at most
+// scale_max) and allows a probe at once; risen as much, down, and the cap with it. p enters only where it was
 // measured both at the anchor and now; otherwise R alone moves it.
-static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max) {
+static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max,
+                         const struct tt_HybridOptions* opts) {
     if (hybrid->n_fail == 0 || hybrid->anchor_r <= 0.0 || units_per_s <= 0.0) {
         hybrid->scale_streak = 0;
         return;
     }
-    double p = hybrid_scale_p(hybrid);
+    double p = hybrid_scale_p(hybrid, opts);
     double factor = hybrid->anchor_r / units_per_s;
     if (p > 0.0 && hybrid->anchor_p > 0.0) {
         factor *= hybrid->anchor_p / p;
     }
-    factor = factor < tt_HYBRID_SCALE_MAX ? factor : tt_HYBRID_SCALE_MAX;
-    factor = factor > 1.0 / tt_HYBRID_SCALE_MAX ? factor : 1.0 / tt_HYBRID_SCALE_MAX;
-    if (factor >= tt_HYBRID_SCALE_AT) {
+    factor = factor < opts->scale_max ? factor : opts->scale_max;
+    factor = factor > 1.0 / opts->scale_max ? factor : 1.0 / opts->scale_max;
+    if (factor >= opts->scale_at) {
         hybrid->scale_streak = hybrid->scale_streak > 0 ? hybrid->scale_streak + 1 : 1;
-    } else if (factor <= 1.0 / tt_HYBRID_SCALE_AT) {
+    } else if (factor <= 1.0 / opts->scale_at) {
         hybrid->scale_streak = hybrid->scale_streak < 0 ? hybrid->scale_streak - 1 : -1;
     } else {
         hybrid->scale_streak = 0;
     }
-    if (hybrid->scale_streak < tt_HYBRID_SCALE_TICKS && hybrid->scale_streak > -tt_HYBRID_SCALE_TICKS) {
+    int32_t ticks = opts->scale_ticks;
+    if (hybrid->scale_streak < ticks && hybrid->scale_streak > -ticks) {
         return;
     }
     uint32_t scaled = (uint32_t)(((double)hybrid->n_fail * factor) + HYBRID_HALF);
@@ -15602,21 +15789,22 @@ static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double uni
 }
 
 // One decision of the control law over the window since the last one.
-static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max) {
+static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max,
+                           const struct tt_HybridOptions* opts) {
     if (now < hybrid->hold_until_ns) {
         hybrid->window = (struct tt_RunWindow) {0}; // the full memory drains: nothing in it is about the cap now
         hybrid->window_n = 0;
         return;
     }
-    hybrid_scale(hybrid, now, units_per_s, n_max);
+    hybrid_scale(hybrid, now, units_per_s, n_max, opts);
     bool decided = true;
-    if (hybrid_collapsed(&hybrid->window, &hybrid->mtu_loss)) {
-        hybrid_collapse(hybrid, now, units_per_s);
-    } else if (hybrid_clean(&hybrid->window, &hybrid->mtu_loss) || hybrid->cap < 2U) {
+    if (hybrid_collapsed(&hybrid->window, &hybrid->mtu_loss, opts)) {
+        hybrid_collapse(hybrid, now, units_per_s, opts);
+    } else if (hybrid_clean(&hybrid->window, &hybrid->mtu_loss, opts) || hybrid->cap < 2U) {
         // A cap of one unit allows no run, so no window can ever be clean there: time alone moves it on - to its probe.
-        hybrid_grow(hybrid, now, n_max);
+        hybrid_grow(hybrid, now, n_max, opts);
     } else {
-        decided = hybrid->window.sent >= tt_HYBRID_WINDOW_MAX_RUNS; // undecided: gather more, up to a bound
+        decided = hybrid->window.sent >= opts->window_max_runs; // undecided: gather more, up to a bound
     }
     if (decided) {
         hybrid->window = (struct tt_RunWindow) {0};
@@ -15624,24 +15812,22 @@ static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double u
     }
 }
 
-// The cap a reader starts at: n_max, or the slow start's (tt_HYBRID_SLOW_START, config.h) where a build sets one.
-static uint32_t hybrid_start_cap(uint32_t n_max) {
-#if tt_HYBRID_SLOW_START > 0
-    return n_max < tt_HYBRID_SLOW_START ? n_max : tt_HYBRID_SLOW_START;
-#else
-    return n_max;
-#endif
+// The cap a reader starts at: n_max, or the slow start's (hybrid_transport.slow_start) where one is set -
+// tt_HYBRID_SLOW_START_OFF, the default, is above every n_max.
+static uint32_t hybrid_start_cap(uint32_t n_max, uint32_t slow_start) {
+    return n_max < slow_start ? n_max : slow_start;
 }
 
 // The reader's starting point: the cap above (or no cap at all for a benchmark arm's reader), tau at its 30 s
-// default until runs say otherwise.
+// default until runs say otherwise. Resolves the options first: a whitebox context reset by hand reads the defaults.
 static void hybrid_reader_start(struct tt_Context* node) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
+    resolve_hybrid_options(&node->opts.hybrid_transport);
+    uint32_t n_max = hybrid_units_within(node, node->ip_reassembly_max, false);
     hybrid->rx_capable = n_max >= 2U;
     hybrid->cap_off = node->opts.net.reassembly_cap_off != 0;
-    hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max);
-    hybrid->lifetime_ns = tt_HYBRID_QUEUE_LIFETIME_NS;
+    hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max, node->opts.hybrid_transport.slow_start);
+    hybrid->lifetime_ns = node->opts.hybrid_transport.queue_lifetime_ns;
     hybrid->advertised = hybrid->rx_capable ? hybrid_cap_bytes(node, hybrid->cap, n_max) : node->ip_reassembly_max;
 }
 
@@ -15671,17 +15857,17 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     }
     uint64_t elapsed = now - hybrid->tick_ns;
     double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed;
-    hybrid_measure_lifetime(hybrid, elapsed);
+    hybrid_measure_lifetime(hybrid, elapsed, node->opts.hybrid_transport.queue_lifetime_ns);
     hybrid_rx_receiver_age(node);
     hybrid->ticks++;
-    uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
+    uint32_t n_max = hybrid_units_within(node, node->ip_reassembly_max, false);
     if (hybrid->path_until_ns != 0 && now >= hybrid->path_until_ns) {
         hybrid->cap = hybrid->path_cap; // rule (e)'s re-probe: the cap it had, judged by the next sample to its tail
         hybrid->path_until_ns = 0;
         hybrid->path_probe = true;
     }
     if (!hybrid->cap_off && hybrid->path_until_ns == 0) {
-        hybrid_control(hybrid, now, units_per_s, n_max);
+        hybrid_control(hybrid, now, units_per_s, n_max, &node->opts.hybrid_transport);
     } else {
         hybrid->window = (struct tt_RunWindow) {0}; // one unit while the path drops fragments: nothing to judge
         hybrid->window_n = 0;
@@ -15694,9 +15880,9 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
 // Announces the cap and p when either changed: a new generation, so writers learn them from the ordinary announce.
 static void hybrid_announce(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node->ip_reassembly_max, false));
-    hybrid_rx_forget_stale(hybrid);
-    uint16_t loss = hybrid_rx_announce_code(hybrid);
+    uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node, node->ip_reassembly_max, false));
+    hybrid_rx_forget_stale(node);
+    uint16_t loss = hybrid_rx_announce_code(hybrid, &node->opts.hybrid_transport);
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {
         return;
@@ -19743,7 +19929,7 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     if (pub->reliable) {
 #if tt_HYBRID_TRANSPORT
         if (pub->watching) { // a Publisher that never sent a run has nothing watched: no peer_acks[] search
-            hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
+            hybrid_note_nacks(node, pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
         }
 #endif
         retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);

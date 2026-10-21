@@ -845,6 +845,10 @@
 #if tt_HYBRID_TRANSPORT && !tt_FRAG_ENABLED
 #error "tt_HYBRID_TRANSPORT needs fragmentation (tt_FRAG_ENABLED)"
 #endif
+// Each tt_HYBRID_* below is the default of the struct tt_HybridOptions field of the same name in lower case (tickle.h,
+// tt_InitOptions.hybrid_transport), set per context and checked at creation (validate_hybrid_options(), tickle.c) -
+// except tt_HYBRID_COLLAPSE_Z, which its 99.9% table in tickle.c assumes, and tt_HYBRID_STALE_EXPOSURE, derived there
+// from stale_false_forget. tt_HYBRID_N_MAX is also the build's largest n_max.
 // The most units one run may carry: 45 MTU units fill a 65,372-byte UDP payload, which IP sends as 45 frames.
 #ifndef tt_HYBRID_N_MAX
 #define tt_HYBRID_N_MAX 45
@@ -862,7 +866,8 @@
 #define tt_HYBRID_QUEUE_LIFETIME_NS (30ULL * tt_SECOND)
 #endif
 // How long a RELIABLE writer sends a reader MTU units only after judging its path to drop IP fragments, before it
-// re-probes with one run: 2 tau at the default lifetime.
+// re-probes with one run: 2 tau at the default lifetime. A context with another queue_lifetime_ns and no path_clean_ns
+// of its own takes this in proportion.
 #ifndef tt_HYBRID_PATH_CLEAN_NS
 #define tt_HYBRID_PATH_CLEAN_NS (2ULL * tt_HYBRID_QUEUE_LIFETIME_NS)
 #endif

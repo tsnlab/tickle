@@ -882,8 +882,42 @@ struct tt_PollOptions {
 struct tt_SocketOptions {
     uint8_t reserved;
 };
+// The hybrid transport's estimator and control law (config.h, "Hybrid transport"; DESIGN.md section 8), each 0 = the
+// compiled tt_HYBRID_* of the same name. Read only where the hybrid transport is built (tt_HYBRID_TRANSPORT): a build
+// without it - FreeRTOS, or one that does not fragment - refuses a context whose fields are not all 0. The collapse
+// test's level stays tt_HYBRID_COLLAPSE_Z, compiled: its 99.9% Poisson table (tickle.c) assumes it. The stale rule's
+// exposure is -ln(stale_false_forget), derived (tt_HYBRID_STALE_EXPOSURE at the compiled stale_false_forget).
+#define tt_HYBRID_SLOW_START_OFF UINT8_MAX // tt_HybridOptions.slow_start: no slow start, the cap starts at n_max
 struct tt_HybridOptions {
-    uint8_t reserved;
+    double collapse_ratio; // a collapse loses at least this x the runs frame loss allows; 0 = tt_HYBRID_COLLAPSE_RATIO
+    double drop;           // a collapse drops the cap to this share of the ceiling, in (0, 1); 0 = tt_HYBRID_DROP
+    // the stale rule forgets wrongly at most this often, in (0, 1); 0 = tt_HYBRID_STALE_FALSE_FORGET
+    double stale_false_forget;
+    // and forgets whatever F after -ln(stale_false_forget) / this clean frames, in (0, 1); 0 = tt_HYBRID_STALE_P_MIN
+    double stale_p_min;
+    double probe_step; // a probe goes this x above the ceiling, above 1; 0 = tt_HYBRID_PROBE_STEP
+    double scale_at;   // the ceiling scales once R p moved by this factor, above 1; 0 = tt_HYBRID_SCALE_AT
+    double scale_max;  // by at most this at a time, at least 1; 0 = tt_HYBRID_SCALE_MAX
+    double path_alpha; // rule (e)'s chance, in (0, 1); 0 = tt_HYBRID_PATH_ALPHA
+    // ns, the reassembly-queue lifetime tau at most (the kernel's ipfrag_time), at most an hour;
+    // 0 = tt_HYBRID_QUEUE_LIFETIME_NS
+    uint64_t queue_lifetime_ns;
+    // ns, a RELIABLE writer's MTU-only time after a failed fragment path; 0 = tt_HYBRID_PATH_CLEAN_NS scaled with
+    // queue_lifetime_ns (2 tau at the defaults)
+    uint64_t path_clean_ns;
+    uint32_t window_frames;     // the estimates halve here, above none_seen_frames; 0 = tt_HYBRID_WINDOW_FRAMES
+    uint32_t collapse_min_runs; // a decision needs this many runs in the window; 0 = tt_HYBRID_COLLAPSE_MIN_RUNS
+    uint32_t collapse_min_lost; // and a collapse this many of them lost; 0 = tt_HYBRID_COLLAPSE_MIN_LOST
+    uint32_t window_max_runs;   // an undecided window gathers up to this many runs; 0 = tt_HYBRID_WINDOW_MAX_RUNS
+    uint32_t none_seen_frames;  // clean frames before "none seen" is announced; 0 = tt_HYBRID_NONE_SEEN_FRAMES
+    uint32_t stale_events;      // the stale rule forgets at most this many events; 0 = tt_HYBRID_STALE_EVENTS
+    uint32_t scale_min_events;  // p moves the ceiling once p_mtu rests on this many; 0 = tt_HYBRID_SCALE_MIN_EVENTS
+    uint8_t n_max;              // the most units one run carries, 1 to tt_HYBRID_N_MAX; 0 = tt_HYBRID_N_MAX
+    // the cap a reader starts at, doubled per clean window until a collapse; 0 = tt_HYBRID_SLOW_START (0 there: off),
+    // tt_HYBRID_SLOW_START_OFF = none
+    uint8_t slow_start;
+    uint8_t probe_backoff_max; // a probe's wait doubles up to 2^this, at most 16; 0 = tt_HYBRID_PROBE_BACKOFF_MAX
+    uint8_t scale_ticks;       // R p moved for this many ticks in a row; 0 = tt_HYBRID_SCALE_TICKS
 };
 struct tt_SegmentOptions {
     uint8_t reserved;
