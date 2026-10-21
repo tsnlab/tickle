@@ -403,6 +403,10 @@ struct rmw_tickle_context_impl_t {
     // slice (10-60 ms), where a released lease ends after exactly 10 ms. holdover_thread is the holding executor's
     // tt_thread_self(), 0 when none; executor_polling stays true throughout a hold-over.
     bool executor_holdover_enabled;
+    // Set when the shared TickLE context is about to be destroyed (rmw_node.c, retire_poll_role()), which then takes
+    // the role for good: a wait polling the context leaves on the interrupt that asks it to, and no wait takes the
+    // role again until the context is started anew. Read only after an interrupted poll, never on the data path.
+    atomic_bool poll_role_retired;
     _Atomic uintptr_t holdover_thread;
     _Atomic uint64_t holdover_since_ns;
     _Atomic uint64_t holdovers;       // rmw_wait() returns that kept the role; printed at shutdown

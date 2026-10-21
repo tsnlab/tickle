@@ -320,8 +320,8 @@ static bool claim_poll_role(rmw_tickle_context_impl_t* context_impl) {
 
 // Executor-driven receive: waits by polling the node on this thread, so a message is received, delivered
 // and found ready here, with no poll thread -> executor wake in between. Returns false without waiting if
-// another rmw_wait() holds the role; the caller then waits on wait_cond as before. deadline_ns is
-// CLOCK_MONOTONIC, UINT64_MAX for no timeout.
+// another rmw_wait() holds the role, or once the role is retired under it (retire_poll_role(), rmw_node.c); the
+// caller then waits on wait_cond as before. deadline_ns is CLOCK_MONOTONIC, UINT64_MAX for no timeout.
 static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscriptions_t* subscriptions,
                             rmw_guard_conditions_t* guard_conditions, rmw_services_t* services, rmw_clients_t* clients,
                             rmw_events_t* events, uint64_t deadline_ns, rmw_ret_t* result) {
@@ -349,6 +349,12 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
                 atomic_fetch_add(&context_impl->executor_handovers, 1);
             }
             wait_for_poll_thread_to_park(context_impl);
+        } else if (tt_RET_INTERRUPTED == polled && atomic_load(&context_impl->poll_role_retired)) {
+            // The context is about to be destroyed (rmw_node.c, retire_poll_role()): polling it again could sleep in
+            // descriptors it is closing, which nothing would wake (2026-10-21). Hand the role over and wait on
+            // wait_cond, as a wait that never had it does.
+            atomic_store(&context_impl->executor_polling, false);
+            return false;
         } else {
             // The node is being polled: what the watchdog wants to know (LIVELINESS_LOST, rmw_node.c).
             atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());

@@ -547,6 +547,11 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
     // enormous).
     atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
 
+    // The poll role starts free: a context stopped before (stop_shared_tickle_node()) left it retired, and taken.
+    atomic_store(&context_impl->executor_polling, false);
+    atomic_store(&context_impl->holdover_thread, 0);
+    atomic_store(&context_impl->executor_left_ns, 0);
+    atomic_store(&context_impl->poll_role_retired, false);
     context_impl->park_timer_fd = -1;
     context_impl->park_wake_fd = -1;
     if (context_impl->executor_poll_enabled) {
@@ -584,6 +589,38 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
     return RMW_RET_OK;
 }
 
+#define RETIRE_RETRY_NS (1000L * 1000L) // retire_poll_role(): 1 ms between interrupts
+
+// Executor-driven receive: takes the poll role for good before the context is destroyed, so no rmw_wait() is inside
+// tt_Context_poll() when tt_Context_destroy() closes its descriptors, and none enters it afterwards (2026-10-21).
+// Before, a wait holding the role - rclcpp's graph listener, blocked with no timeout - was interrupted, found nothing
+// ready and polled again, into the context being destroyed; one that re-entered epoll_wait() after the sockets were
+// closed and before the epoll descriptor was slept with nothing left to wake it, and rclcpp::shutdown() joined it for
+// ever (check_ros2_interfaces.sh -A, 3 of 100 runs). Called with the poll thread and the watchdog joined - the
+// watchdog ends hold-overs, which would hand the role back.
+//
+// A held-over role is taken as it stands: nobody is polling. A free one is taken by the same compare-and-swap a wait
+// claims it with. A role a wait is polling with is asked back: poll_role_retired is set first, and an interrupted
+// poll that reads it releases the role (wait_by_polling()); the interrupt is repeated until the role is ours, so a
+// poll that ends for another reason first, and polls again, is caught by the next one. The role stays taken -
+// executor_polling true - so every later rmw_wait() waits on wait_cond, which guard conditions still broadcast.
+static void retire_poll_role(rmw_tickle_context_impl_t* context_impl) {
+    atomic_store(&context_impl->poll_role_retired, true);
+    while (true) {
+        uintptr_t holder = atomic_load(&context_impl->holdover_thread);
+        if (0 != holder && atomic_compare_exchange_strong(&context_impl->holdover_thread, &holder, 0)) {
+            return;
+        }
+        bool idle = false;
+        if (atomic_compare_exchange_strong(&context_impl->executor_polling, &idle, true)) {
+            return;
+        }
+        (void)tt_Context_interrupt(&context_impl->tickle_context);
+        struct timespec pause = {0, RETIRE_RETRY_NS};
+        (void)nanosleep(&pause, NULL);
+    }
+}
+
 // The exact inverse of start_shared_tickle_node() above - called only when context_impl->
 // node_count is about to drop from 1 to 0 (the caller, rmw_destroy_node() below, already holds
 // registry_mutex).
@@ -601,6 +638,19 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
         }
     }
     pthread_join(context_impl->poll_thread, NULL);
+    // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
+    // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_
+    // interrupt() equivalent needed: watchdog_thread_main() never blocks in tt_Context_poll() or any
+    // other tickle_context call, it just re-checks this flag every RMW_TICKLE_WATCHDOG_SHUTDOWN_
+    // POLL_NS. Joined before the poll role is retired, since it ends hold-overs.
+    if (context_impl->watchdog_thread_running) {
+        context_impl->watchdog_thread_running = false;
+        pthread_join(context_impl->watchdog_thread, NULL);
+    }
+    // Before the park descriptors close too: a wait that releases the role re-arms the park timer.
+    if (context_impl->executor_poll_enabled) {
+        retire_poll_role(context_impl);
+    }
     if (context_impl->park_timer_fd >= 0) {
         close(context_impl->park_timer_fd);
         context_impl->park_timer_fd = -1;
@@ -636,16 +686,6 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
                   (unsigned long long)context_impl->tickle_context.version_mismatch_drops,
                   (unsigned long long)atomic_load(&context_impl->large_block_waits),
                   (unsigned long long)atomic_load(&context_impl->large_block_timeouts));
-
-    // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
-    // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_
-    // interrupt() equivalent needed: watchdog_thread_main() never blocks in tt_Context_poll() or any
-    // other tickle_context call, it just re-checks this flag every RMW_TICKLE_WATCHDOG_SHUTDOWN_
-    // POLL_NS.
-    if (context_impl->watchdog_thread_running) {
-        context_impl->watchdog_thread_running = false;
-        pthread_join(context_impl->watchdog_thread, NULL);
-    }
 
     tt_Context_destroy(&context_impl->tickle_context);
     rmw_tickle_large_detach(context_impl); // after the destroy, which hands every large buffer back to the pool
