@@ -31,7 +31,9 @@
 //   2. the same wait, inside the poll while the last node is destroyed: no poll in flight at the destroy, none
 //      entered after it, and the wait ends on the trigger;
 //   3. a node created again on the same context: a blocking wait polls it again (executor_poll_waits rises), so the
-//      teardown left the poll role free rather than taken for good.
+//      teardown left the poll role free rather than taken for good;
+//   4. tt_Context_interrupt() on the destroyed context - what a guard condition triggered after the destroy calls -
+//      is refused and writes nothing, even to a descriptor opened since under the old wake eventfd's number.
 //
 // Each wait is joined with a deadline, so a defect fails the test instead of hanging the suite.
 
@@ -45,7 +47,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h> // read(), close()
 
+#include <sys/eventfd.h>
 #include <tickle/hal.h>       // tt_get_ns()
 #include <tickle/hal_linux.h> // tt_thread_self()
 #include <tickle/tickle.h>
@@ -65,6 +69,7 @@
 #define INSIDE_WITHIN_MS 2000U // how long a waiter may take to be inside the poll
 #define JOIN_WITHIN_MS 5000U   // how long a triggered wait may take to return
 #define SPIN_LOOK_MS 20U       // part 2: how long after the destroy to watch for polls before triggering
+#define REUSE_TRIES 64         // part 4: descriptors opened at most to get the old wake eventfd's number back
 
 // What the interposers saw.
 static atomic_int polls_in_flight;
@@ -223,6 +228,41 @@ static bool part_3_poll_again(struct waiter* waiter) {
     return true;
 }
 
+// 4. An interrupt of the destroyed context: refused, and it writes to nothing. A wait that held the poll role leaves
+// executor_polling taken, so every guard condition triggered after the destroy calls this. It used to write to the
+// closed eventfd's number - EBADF, logged as "Cannot send wake signal", or, once the process had opened another
+// descriptor under that number, eight bytes into it. That number is taken again here so the second case is what is
+// checked.
+static bool part_4_interrupt_after_destroy(rmw_tickle_context_impl_t* impl, rmw_node_t* node) {
+    const int old_wake_fd = impl->tickle_context.hal.wake_fd;
+    assert(RMW_RET_OK == rmw_destroy_node(node));
+    int opened[REUSE_TRIES];
+    int reused = -1;
+    int count = 0;
+    while (count < REUSE_TRIES && reused < 0) {
+        opened[count] = eventfd(0, EFD_NONBLOCK);
+        assert(opened[count] >= 0);
+        if (opened[count] == old_wake_fd) {
+            reused = opened[count];
+        }
+        count++;
+    }
+    tt_ret_t interrupted = tt_Context_interrupt(&impl->tickle_context);
+    uint64_t counter = 0;
+    bool written = reused >= 0 && read(reused, &counter, sizeof(counter)) == (ssize_t)sizeof(counter);
+    for (int i = 0; i < count; i++) {
+        close(opened[i]);
+    }
+    printf("teardown wait: part 4 - interrupt after the destroy returned %d, old wake fd %d %s, written %d\n",
+           (int)interrupted, old_wake_fd, reused >= 0 ? "reopened" : "NOT reopened", written ? 1 : 0);
+    if (tt_RET_ILLEGAL_STATUS != interrupted || written || reused < 0) {
+        printf("teardown wait: FAIL - part 4: an interrupt of the destroyed context was not refused untouched%s\n",
+               reused < 0 ? " (or its old descriptor could not be reopened to look)" : "");
+        return false;
+    }
+    return true;
+}
+
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
@@ -254,7 +294,9 @@ int main(void) {
     if (!part_3_poll_again(&waiter)) {
         return 1;
     }
-    assert(RMW_RET_OK == rmw_destroy_node(node));
+    if (!part_4_interrupt_after_destroy(impl, node)) {
+        return 1;
+    }
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));
     assert(RMW_RET_OK == rmw_destroy_guard_condition(guard));

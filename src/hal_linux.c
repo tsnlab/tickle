@@ -1532,7 +1532,12 @@ void tt_close(struct tt_Context* node) {
         (void)close(node->hal.timer_fd_plus1 - 1);
         node->hal.timer_fd_plus1 = 0;
     }
-    if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
+    // -1 before the close, so a tt_wake_signal() from another thread after it - rmw waking an executor that held the
+    // poll role after the context's last node went (2026-10-21) - finds no descriptor, rather than a closed one or one
+    // the process has since opened for something else.
+    const int wake_fd = node->hal.wake_fd;
+    __atomic_store_n(&node->hal.wake_fd, -1, __ATOMIC_RELAXED);
+    if (wake_fd >= 0 && close(wake_fd) < 0) {
         TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
     }
 }
@@ -3926,11 +3931,16 @@ bool tt_rx_maybe_ready(struct tt_Context* node) {
 
 tt_ret_t tt_wake_signal(struct tt_Context* node) {
     uint64_t one = 1;
+    // A closed context (tt_close()) has nothing to wake: no receive can be blocked in it, and its eventfd is gone.
+    const int wake_fd = __atomic_load_n(&node->hal.wake_fd, __ATOMIC_RELAXED);
+    if (wake_fd < 0) {
+        return tt_RET_ILLEGAL_STATUS;
+    }
     // eventfd's write() only ever blocks if the counter would overflow (~2^64 unconsumed
     // signals) - never a real concern here, so this is safe to call from any thread, or from
     // within a signal handler, without risking a deadlock against whatever tt_receive() might be
     // doing.
-    if (write(node->hal.wake_fd, &one, sizeof(one)) < 0) {
+    if (write(wake_fd, &one, sizeof(one)) < 0) {
         TT_LOG_ERROR("Cannot send wake signal: %s", strerror(errno));
         return tt_RET_IO_ERROR;
     }

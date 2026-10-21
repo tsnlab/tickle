@@ -4110,6 +4110,7 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout);
 // not silently dropped. A caller driving tt_Context_poll() in a continuous loop (the intended usage)
 // sees no difference either way; one that calls tt_Context_poll() only occasionally should account
 // for an earlier tt_Context_interrupt() still being able to cut its next, unrelated wait short.
+// On a destroyed context it does nothing and returns tt_RET_ILLEGAL_STATUS: nothing can be waiting in it.
 tt_ret_t tt_Context_interrupt(struct tt_Context* node);
 
 // Threading (2026-09-25, the user's decision: core is thread-safe, lock-free where it can be and with

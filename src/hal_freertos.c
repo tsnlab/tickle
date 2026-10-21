@@ -494,9 +494,12 @@ void tt_close(struct tt_Context* node) {
         TT_LOG_ERROR("Cannot close netconn");
     }
     hal->conn = NULL;
-    if (hal->rx_sem != NULL) {
-        vSemaphoreDelete(hal->rx_sem); // after the netconns: no callback can give it any more
-        hal->rx_sem = NULL;
+    // NULL before the delete, so a tt_wake_signal() from another task after it finds no semaphore (as hal_linux.c's
+    // tt_close() does with its eventfd).
+    SemaphoreHandle_t rx_sem = hal->rx_sem;
+    __atomic_store_n(&hal->rx_sem, NULL, __ATOMIC_RELAXED);
+    if (rx_sem != NULL) {
+        vSemaphoreDelete(rx_sem); // after the netconns: no callback can give it any more
     }
 }
 
@@ -696,8 +699,12 @@ bool tt_rx_maybe_ready(struct tt_Context* node) {
 // on its next call - the contract's "waiting for the next one" (hal.h). Neither step blocks, so any task may call
 // this, the poller itself included.
 tt_ret_t tt_wake_signal(struct tt_Context* node) {
+    SemaphoreHandle_t rx_sem = __atomic_load_n(&node->hal.rx_sem, __ATOMIC_RELAXED);
+    if (rx_sem == NULL) {
+        return tt_RET_ILLEGAL_STATUS; // closed (tt_close()): nothing to wake
+    }
     __atomic_store_n(&node->hal.wake_pending, 1U, __ATOMIC_SEQ_CST);
-    xSemaphoreGive(node->hal.rx_sem);
+    xSemaphoreGive(rx_sem);
     return tt_RET_OK;
 }
 
@@ -939,7 +946,10 @@ void tt_close(struct tt_Context* node) {
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
-    if (node->hal.wake_sock >= 0 && close(node->hal.wake_sock) < 0) {
+    // -1 before the close, so a tt_wake_signal() from another task after it finds no socket (as hal_linux.c's).
+    const int wake_sock = node->hal.wake_sock;
+    __atomic_store_n(&node->hal.wake_sock, -1, __ATOMIC_RELAXED);
+    if (wake_sock >= 0 && close(wake_sock) < 0) {
         TT_LOG_ERROR("Cannot close wake socket: %s", strerror(errno));
     }
 }
@@ -1185,10 +1195,14 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 
 tt_ret_t tt_wake_signal(struct tt_Context* node) {
     uint8_t one = 1;
+    const int wake_sock = __atomic_load_n(&node->hal.wake_sock, __ATOMIC_RELAXED);
+    if (wake_sock < 0) {
+        return tt_RET_ILLEGAL_STATUS; // closed (tt_close()): nothing to wake
+    }
     // See hal_linux.c's tt_wake_signal() - identical reasoning (a send to our own loopback
     // address never blocks, so this is safe from any task).
-    if (sendto(node->hal.wake_sock, &one, sizeof(one), 0, (struct sockaddr*)&node->hal.wake_addr,
-               sizeof(node->hal.wake_addr)) < 0) {
+    if (sendto(wake_sock, &one, sizeof(one), 0, (struct sockaddr*)&node->hal.wake_addr, sizeof(node->hal.wake_addr)) <
+        0) {
         TT_LOG_ERROR("Cannot send wake signal: %s", strerror(errno));
         return tt_RET_IO_ERROR;
     }

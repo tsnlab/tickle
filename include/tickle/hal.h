@@ -316,5 +316,6 @@ uint32_t tt_rx_receiver_drops(const struct tt_Context* node);
 // waiting for the next one (see each platform's own tt_bind()/tt_receive() for how - an eventfd
 // on Linux, watched by the same poll() as the real sockets; on FreeRTOS a flag plus the semaphore that
 // tt_receive() waits on, or a loopback UDP socket in its select() with tt_HAL_FREERTOS_NETCONN=0).
-// tt_Context_interrupt() (tickle.h) is the public entry point that calls this.
+// tt_Context_interrupt() (tickle.h) is the public entry point that calls this. After tt_close() it does nothing and
+// returns tt_RET_ILLEGAL_STATUS - never touches the descriptor that was closed (2026-10-21).
 tt_ret_t tt_wake_signal(struct tt_Context* node);
