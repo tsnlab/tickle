@@ -10,19 +10,19 @@ is a failure of the test binary, which is what it should be: it is stopped at TI
 Not covered here: segment_read()'s copy of the check, which only a tt_SAMPLE_LENDING=0 build compiles. Its mutant is
 the same one-line change as segment_take()'s, which is covered.
 
-Run from the repository root. Restores every file it touches, whatever happens.
+Run from the repository root. tests/mutant_guard.py refuses the sweep unless every anchor occurs exactly once, bounds
+every child (2 GB, a deadline, capped output) and restores src/tickle.c whatever happens, SIGINT/SIGTERM included.
 """
 import os
 import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BIN = ROOT / "platform/linux/obj/debug/tests/test_segment_switch"
+LINUX = ROOT / "platform/linux"
+BIN = LINUX / "obj/debug/tests/test_segment_switch"
 TIMEOUT_S = 60
 
 MUTANTS = [
@@ -57,10 +57,14 @@ MUTANTS = [
     (
         "the drain leaves a fence at the head",
         "src/tickle.c",
+        # segment_take()'s copy (the comment line makes it the only match). Since 59a03ee7 the same branch also leaves
+        # a reference record (tt_SEGMENT_SPAN_REF) at the head; the mutant keeps that and drops only the fence.
         "    uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1, a fence stays\n"
-        "    if (span - 1U >= tt_FRAG_MAX_COUNT) {\n        if (span == tt_SEGMENT_SPAN_FENCE) {",
+        "    if (span - 1U >= tt_FRAG_MAX_COUNT) {\n"
+        "        if (span == tt_SEGMENT_SPAN_FENCE || span == tt_SEGMENT_SPAN_REF) {",
         "    uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1, a fence stays\n"
-        "    if (span - 1U >= tt_FRAG_MAX_COUNT) {\n        if (false) {",
+        "    if (span - 1U >= tt_FRAG_MAX_COUNT) {\n"
+        "        if (span == tt_SEGMENT_SPAN_REF) {",
         "test_the_switch_from_udp_loses_nothing",
     ),
     (
@@ -125,39 +129,27 @@ MUTANTS = [
 
 
 def build_and_run(control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True, cwd=ROOT / "platform/linux",
-    )
+    build = run_capped(["make", "-s", str(BIN.relative_to(LINUX))], timeout=900, cwd=LINUX)
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
-    try:
-        run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+    run = run_capped([str(BIN)], timeout=TIMEOUT_S, cwd=LINUX)
+    if run.timed_out:
         return "FAIL", f"(hung: stopped after {TIMEOUT_S} s)"
-    out = "\n".join(line for line in (run.stdout + run.stderr).splitlines() if not line.startswith("["))
+    out = "\n".join(line for line in run.output.splitlines() if not line.startswith("["))
     return ("PASS" if run.returncode == 0 else "FAIL"), out
 
 
 def main():
-    backup = tempfile.mkdtemp(prefix="fence_mutants_")
-    touched = {m[1] for m in MUTANTS}
-    for rel in touched:
-        shutil.copy2(ROOT / rel, pathlib.Path(backup) / rel.replace("/", "_"))
-
-    def restore():
-        for rel in touched:
-            # copy() and touch, not copy2(): a restored file must look newer than the mutant's objects, or make reuses
-            # them and the next build tests the mutant (tests/mutants_liveliness_deferral.py says what that cost).
-            shutil.copy(pathlib.Path(backup) / rel.replace("/", "_"), ROOT / rel)
-            (ROOT / rel).touch()
-
+    be_nice()
+    # Every anchor must occur exactly once before anything runs: one that matches nothing is a mutant that cannot fail
+    # ("the drain leaves a fence at the head" matched nothing from 59a03ee7 until it was re-anchored).
+    check_anchors(ROOT, [(name, rel, old, new) for name, rel, old, new, _test in MUTANTS])
     failures = 0
-    try:
+    with SourceGuard(ROOT, {m[1] for m in MUTANTS}) as guard:
         verdict, output = build_and_run()
-        print(f"[control]  parent, unmutated                                      -> {verdict}")
+        print(f"[control]  parent, unmutated                                      -> {verdict}", flush=True)
         if verdict != "PASS":
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
@@ -168,29 +160,20 @@ def main():
         for name, rel, old, new, test in MUTANTS:
             if only and only not in name:
                 continue
-            path = ROOT / rel
-            text = path.read_text()
-            count = text.count(old)
-            if count != 1:
-                # A substitution that matches nothing is the sweep's own test that cannot fail: an error, not a skip.
-                print(f"[ERROR]    {name:58s} -> anchor matched {count} times, not 1")
-                failures += 1
-                continue
-            path.write_text(text.replace(old, new))
-            assert path.read_text().count(old) == 0 or old in new, "substitution did not apply"
-            verdict, output = build_and_run(control)
-            restore()
+            (ROOT / rel).write_text(guard.original(rel).replace(old, new, 1))
+            try:
+                verdict, output = build_and_run(control)
+            finally:
+                guard.restore()
             ok = verdict == "FAIL"
             failures += 0 if ok else 1
-            print(f"[{label(verdict, ok):8s}] {name:58s} -> {verdict} (wanted FAIL, guard: {test})")
-            if not ok:
+            print(f"[{label(verdict, ok):8s}] {name:58s} -> {verdict} (wanted FAIL, guard: {test})", flush=True)
+            if ok:
+                print(f"  killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}")
+            else:
                 print(output[-1500:])
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
-        subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"),
-                        str(BIN.relative_to(ROOT / "platform/linux"))], capture_output=True)
-
+    run_capped(["make", "-s", str(BIN.relative_to(LINUX))], timeout=900, cwd=LINUX)
+    print(usage_line())
     print("mutant sweep:", "all mutants died" if failures == 0 else f"{failures} problem(s)")
     return 1 if failures else 0
 
