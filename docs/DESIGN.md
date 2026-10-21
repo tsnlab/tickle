@@ -65,6 +65,15 @@ context's at an endpoint's creation; `tt_QosProfile_resolve()` and `tt_*_storage
 the default's. rmw_tickle reads its watchdog period, stall threshold, MANUAL_BY_TOPIC default lease and lease floor
 from its core context.
 
+**Reliable options** (`tt_InitOptions.reliable`, bundle 3): the timing of section 6 - `deadline`, `retry_interval`,
+`retry_initial`, `retry_granularity`, `timer_lateness_initial`, `max_srtt_multiple`, `retry`, `backoff_shift`
+(`tt_RELIABLE_NO_BACKOFF`: none), `stuck_warn_interval`, `idle_heartbeat_period` (for a Publisher whose own option is 0;
+`tt_QOS_DURATION_INFINITE`: off) and `idle_heartbeat_retry_multiple`. Each zero is its section 15 constant. Refused at
+creation: `retry` 255 (the saturating counters never pass it), `backoff_shift` above 16, a fixed or starting interval
+that overflows 64 bits once backed off, a G above 32 bits. `tt_reliable_retry_interval_configured()` takes the context.
+A default context sends the same bytes at the same instants on a lossy exchange that reaches every reader
+(`tests/wire_identity_initoptions_reliable.sh`).
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |
@@ -601,7 +610,9 @@ acceptance path); keystore parsing in rmw.
 
 ## 15. Configuration reference
 
-Compile-time `-D` overrides unless noted; blank rmw column = core default.
+Compile-time `-D` overrides unless noted; blank rmw column = core default. The reliability timing
+(`tt_RELIABLE_DEADLINE` to `tt_IDLE_HEARTBEAT_RETRY_MULTIPLE`, but for the request history) is the default of a
+context's `tt_InitOptions.reliable` (section 2).
 
 | knob | default | rmw | meaning, and why this value |
 |---|---:|---:|---|
