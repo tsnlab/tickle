@@ -299,7 +299,7 @@ static void test_owners_restarting_under_a_writer(void) {
     }
     char path[tt_SEGMENT_PATH_LENGTH];
     owner_path(path, sizeof(path));
-    const size_t bytes = segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes());
+    const size_t bytes = segment_bytes(tt_SEGMENT_SLOTS, (uint32_t)tt_SEGMENT_SLOT_BYTES);
     uint32_t verdicts[tt_SEGMENT_ATTACH_COUNT] = {0};
     int status = 0;
     while (waitpid(spawner, &status, WNOHANG) == 0) {

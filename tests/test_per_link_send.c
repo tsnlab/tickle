@@ -42,8 +42,14 @@
 // asks to flush more than it has written is not a state the real code can reach.
 #define FLUSH_LEN (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader))
 
+// The link table the next init_node() gives its context: per context since tt_InitOptions (node->links).
+static struct _tt_Link configured_links[tt_MAX_LINK_COUNT];
+static uint8_t configured_link_count;
+
 static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
+    memcpy(node->links, configured_links, sizeof(node->links));
+    node->link_count = configured_link_count;
     node_init_locks(node);
     node->id = 1;
     node->tx_tail = FLUSH_LEN;
@@ -54,25 +60,25 @@ static void init_node(struct tt_Context* node) {
 // resolve_links(), because the mock HAL cannot describe two different interfaces - and what is
 // under test is the decision made from a resolved table, not the resolving.
 static void configure_two_links(uint8_t threshold_a, uint8_t threshold_b) {
-    memset(_tt_CONFIG.links, 0, sizeof(_tt_CONFIG.links));
-    _tt_CONFIG.links[0] = (struct _tt_Link) {.broadcast = "192.168.10.255",
+    memset(configured_links, 0, sizeof(configured_links));
+    configured_links[0] = (struct _tt_Link) {.broadcast = "192.168.10.255",
                                              .unicast_threshold = threshold_a,
                                              .resolved_addr = LINK_A_ADDR,
                                              .resolved_netmask = LINK_A_NETMASK,
                                              .resolved_broadcast = LINK_A_BCAST,
                                              .resolved = true};
-    _tt_CONFIG.links[1] = (struct _tt_Link) {.broadcast = "10.1.255.255",
+    configured_links[1] = (struct _tt_Link) {.broadcast = "10.1.255.255",
                                              .unicast_threshold = threshold_b,
                                              .resolved_addr = LINK_B_ADDR,
                                              .resolved_netmask = LINK_B_NETMASK,
                                              .resolved_broadcast = LINK_B_BCAST,
                                              .resolved = true};
-    _tt_CONFIG.link_count = 2;
+    configured_link_count = 2;
 }
 
 static void configure_no_links(void) {
-    memset(_tt_CONFIG.links, 0, sizeof(_tt_CONFIG.links));
-    _tt_CONFIG.link_count = 0;
+    memset(configured_links, 0, sizeof(configured_links));
+    configured_link_count = 0;
 }
 
 static bool sent_to(uint32_t ip) {
@@ -89,17 +95,19 @@ static bool sent_to(uint32_t ip) {
 static void test_peer_is_matched_to_its_own_link(void) {
     test_mock_reset();
     configure_two_links(2, 2);
+    struct tt_Context node;
+    init_node(&node);
 
-    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(0xc0a80a07)); // 192.168.10.7 -> link A
-    EXPECT_EQ_U32(1, (uint32_t)link_of_ip(0x0a010207)); // 10.1.2.7     -> link B
+    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(&node, 0xc0a80a07)); // 192.168.10.7 -> link A
+    EXPECT_EQ_U32(1, (uint32_t)link_of_ip(&node, 0x0a010207)); // 10.1.2.7     -> link B
     // On neither subnet, and no catch-all configured: falls back to link 0 rather than to nothing,
     // so a peer always names a link and no send can silently address zero destinations.
-    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(0x08080808));
+    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(&node, 0x08080808));
 
     // An unresolved link is the catch-all for anything the resolved ones do not claim.
-    _tt_CONFIG.links[1].resolved = false;
-    EXPECT_EQ_U32(1, (uint32_t)link_of_ip(0x08080808));
-    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(0xc0a80a07)); // still claimed by the resolved link
+    node.links[1].resolved = false;
+    EXPECT_EQ_U32(1, (uint32_t)link_of_ip(&node, 0x08080808));
+    EXPECT_EQ_U32(0, (uint32_t)link_of_ip(&node, 0xc0a80a07)); // still claimed by the resolved link
 }
 
 // The case a single global threshold cannot express: the same buffer, unicast on the link whose
@@ -184,8 +192,8 @@ static void test_single_link_node_still_uses_plain_broadcast(void) {
     // And the table was populated on first use rather than left empty: an empty table read a
     // threshold of 0, which made a single known peer fail `on_link <= threshold` and fall through
     // to broadcast. A default that is never written is indistinguishable from a configured zero.
-    EXPECT_EQ_U32(1, (uint32_t)_tt_CONFIG.link_count);
-    EXPECT_EQ_U32((uint32_t)tt_UNICAST_PEER_THRESHOLD, (uint32_t)_tt_CONFIG.links[0].unicast_threshold);
+    EXPECT_EQ_U32(1, (uint32_t)node.link_count);
+    EXPECT_EQ_U32((uint32_t)tt_UNICAST_PEER_THRESHOLD, (uint32_t)node.links[0].unicast_threshold);
 }
 
 // check_link_mtu(): a resolved link narrower than the 1500-byte MTU tt_ETHERNET_UDP_PAYLOAD assumes is

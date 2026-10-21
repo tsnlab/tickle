@@ -294,9 +294,9 @@ uint64_t tt_timer_resolution_ns(void) {
     return resolution_ns != 0 ? resolution_ns : 1;
 }
 
-int32_t tt_get_node_id(void) {
+int32_t tt_get_node_id(const struct tt_Context* node) {
     // Get unique node ID in the network using IP address x.x.x.id
-    uint32_t broadcast_ip = inet_addr(_tt_CONFIG.broadcast);
+    uint32_t broadcast_ip = inet_addr(node->opts.net.broadcast);
 
     struct ifaddrs* ifaddrs;
     if (getifaddrs(&ifaddrs) != 0) {
@@ -557,13 +557,13 @@ void tt_id_registry_release(const char* path, uint8_t id, int32_t pid) {
 
 // One registry per well-known port and link, in /dev/shm: two network namespaces with different addresses share
 // /dev/shm but never an address. TICKLE_ID_REGISTRY names another directory, or "off" for none.
-static const char* registry_path(char* buf, size_t size) {
+static const char* registry_path(const struct tt_Context* node, char* buf, size_t size) {
     const char* dir = getenv("TICKLE_ID_REGISTRY");
     if (dir != NULL && strcmp(dir, "off") == 0) {
         return NULL;
     }
-    int written = snprintf(buf, size, "%s/tickle-context-ids-%d-%s-%s", dir != NULL ? dir : "/dev/shm", _tt_CONFIG.port,
-                           _tt_CONFIG.addr, _tt_CONFIG.broadcast);
+    int written = snprintf(buf, size, "%s/tickle-context-ids-%d-%s-%s", dir != NULL ? dir : "/dev/shm",
+                           (int)node->opts.net.port, node->opts.net.addr, node->opts.net.broadcast);
     return written > 0 && (size_t)written < size ? buf : NULL;
 }
 
@@ -571,7 +571,7 @@ static const char* registry_path(char* buf, size_t size) {
 
 uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt) {
     char path[REGISTRY_PATH_LENGTH];
-    const char* registry = registry_path(path, sizeof(path));
+    const char* registry = registry_path(node, path, sizeof(path));
     int32_t pid = (int32_t)getpid();
     uint8_t id = tt_id_registry_claim(registry, preferred, avoid, salt, pid);
     if (id != tt_CONTEXT_ID_INVALID) {
@@ -595,7 +595,7 @@ static void release_claimed_id(struct tt_Context* node) {
         return;
     }
     char path[REGISTRY_PATH_LENGTH];
-    tt_id_registry_release(registry_path(path, sizeof(path)), node->hal.claimed_id, (int32_t)getpid());
+    tt_id_registry_release(registry_path(node, path, sizeof(path)), node->hal.claimed_id, (int32_t)getpid());
     node->hal.claimed_id = tt_CONTEXT_ID_INVALID;
 }
 
@@ -641,7 +641,7 @@ static void record_own_address(struct tt_Context* node) {
     uint32_t addr = 0;
     uint32_t netmask = 0;
     uint32_t bcast = 0;
-    if (node->hal.own_ip == 0 && tt_resolve_link(_tt_CONFIG.broadcast, &addr, &netmask, &bcast)) {
+    if (node->hal.own_ip == 0 && tt_resolve_link(node->opts.net.broadcast, &addr, &netmask, &bcast)) {
         node->hal.own_ip = addr;
     }
     if (node->hal.own_ip == 0) {
@@ -1298,27 +1298,27 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     }
     report_receive_buffer(node->hal.sock, "Well-known");
 
-    // The well-known socket always binds the wildcard, never _tt_CONFIG.addr. Measured on Linux:
+    // The well-known socket always binds the wildcard, never opts.net.addr. Measured on Linux:
     // a socket bound to a unicast address receives no broadcasts at all, directed or limited - so
     // binding this one to a specific address would stop every announce from arriving while unicast
     // kept working, which is a node that hears nobody and is heard by nobody with every send
-    // reporting success. _tt_CONFIG.addr scopes the data socket instead, below.
+    // reporting success. opts.net.addr scopes the data socket instead, below.
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(_tt_CONFIG.port);
+    addr.sin_port = htons(node->opts.net.port);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", _tt_CONFIG.port, strerror(errno));
+        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", (int)node->opts.net.port, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
-    // Precompute the broadcast destination once instead of re-parsing _tt_CONFIG.broadcast with
+    // Precompute the broadcast destination once instead of re-parsing opts.net.broadcast with
     // inet_addr() on every single tt_send() call.
     node->hal.broadcast_addr.sin_family = AF_INET;
-    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
-    node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
+    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(node->opts.net.broadcast);
+    node->hal.broadcast_addr.sin_port = htons(node->opts.net.port);
 
     // This node's own data port. Everything is sent from here so that every peer records this
     // node at a port that belongs to it alone - see struct tt_hal.data_sock (hal_linux.h) for the
@@ -1352,17 +1352,17 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     }
     report_receive_buffer(node->hal.data_sock, "Data");
 
-    // This one does honour _tt_CONFIG.addr. Left at 0.0.0.0 it behaves as before; set to a local
+    // This one does honour opts.net.addr. Left at 0.0.0.0 it behaves as before; set to a local
     // address it scopes this node's sends to the link that owns that address, which is the
     // unprivileged way to pin a limited broadcast to one interface - SO_BINDTODEVICE is the
     // obvious tool and needs CAP_NET_RAW. Safe here and not on the socket above because this one
     // only ever needs to receive unicast.
     struct sockaddr_in data_addr;
     data_addr.sin_family = AF_INET;
-    data_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    data_addr.sin_addr.s_addr = inet_addr(node->opts.net.addr);
     data_addr.sin_port = 0; // kernel-assigned
     if (bind(node->hal.data_sock, (struct sockaddr*)&data_addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind data socket to %s:0: %s", _tt_CONFIG.addr, strerror(errno));
+        TT_LOG_ERROR("Cannot bind data socket to %s:0: %s", node->opts.net.addr, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -1539,7 +1539,7 @@ void tt_close(struct tt_Context* node) {
 
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)len; // (g6) discovery off, the user's choice: nothing goes to the link
     }
 #endif
@@ -1565,7 +1565,7 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)len; // (g6) discovery off, the user's choice: nothing goes to the link
     }
 #endif
@@ -1594,7 +1594,7 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)(hdr_len + body_len); // (g6) see tt_send()
     }
 #endif
@@ -1784,7 +1784,7 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 
 int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)count; // (g6) see tt_send_batch()
     }
 #endif
@@ -1798,7 +1798,7 @@ int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDa
 
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)count; // (g6) discovery off, the user's choice: nothing goes to the link
     }
 #endif

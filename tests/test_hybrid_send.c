@@ -201,8 +201,12 @@ static struct tt_ReliableCacheIndex cache_index[CACHE_DEPTH];
 static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
 static struct tt_ReliableCache cache;
 
+// The next init_bare_node()'s opts.net.reassembly_cap_off: 1 for a forced arm's reader (a benchmark arm), else 0.
+static uint8_t init_cap_off;
+
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
+    node->opts.net.reassembly_cap_off = init_cap_off;
     node_init_locks(node);
     reset_node_state(node); // as creation does: the hybrid state reads the mock's limits
     node->id = id;
@@ -1737,12 +1741,12 @@ static void tick_readers(uint64_t now) {
     deliver_reader_sends();
 }
 
-// A reader whose cap is switched off (a benchmark arm, _tt_CONFIG.reassembly_cap_off) advertises its configured ceiling
+// A reader whose cap is switched off (a benchmark arm, opts.net.reassembly_cap_off) advertises its configured ceiling
 // whatever its windows show, and the control law never runs on it.
 static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
-    _tt_CONFIG.reassembly_cap_off = 1;
+    init_cap_off = 1;
     init_one(LARGE_LEN, FULL_CEILING, false);
-    _tt_CONFIG.reassembly_cap_off = 0;
+    init_cap_off = 0;
     struct tt_Context* node = &readers[0].ctx;
     EXPECT_TRUE(node->hybrid.cap_off);
     EXPECT_EQ_U32(45, node->hybrid.cap);
@@ -1831,9 +1835,9 @@ struct pmtu_result {
 };
 
 static struct pmtu_result pmtu_stream(const struct pmtu_arm* arm) {
-    _tt_CONFIG.reassembly_cap_off = 1;
+    init_cap_off = 1;
     init_one(arm->len, FULL_CEILING, arm->reliable);
-    _tt_CONFIG.reassembly_cap_off = 0;
+    init_cap_off = 0;
     pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
     if (arm->bound != 0) {
         pub.ip_datagram_max = (uint16_t)(28U + (arm->bound * 1452U));
@@ -2380,9 +2384,9 @@ static void test_steady_loss_is_never_forgotten(void) {
 // given_up()), and every repair is an MTU unit - no run is ever resent, no repair datagram is above one frame. Forced
 // IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small and large samples.
 static void reliable_under_loss(uint32_t len, uint8_t mode, uint32_t loss_ppm, uint8_t samples) {
-    _tt_CONFIG.reassembly_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader, as on the rig
+    init_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader, as on the rig
     init_one(len, FULL_CEILING, true);
-    _tt_CONFIG.reassembly_cap_off = 0;
+    init_cap_off = 0;
 
     pub.large_fragmentation = mode;
     sim_start(loss_ppm);
@@ -2435,9 +2439,9 @@ static void test_nacks_are_read_for_the_watch(void) {
 // gap in that sample not seen), the reader's newer-sample test or the watch's first-NACK mark compared unsigned.
 static void runs_across_the_wrap(uint32_t len, uint32_t first, bool reliable, uint8_t mode, uint32_t loss_ppm) {
     first_seq_no = first;
-    _tt_CONFIG.reassembly_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0;
+    init_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0;
     init_one(len, FULL_CEILING, reliable);
-    _tt_CONFIG.reassembly_cap_off = 0;
+    init_cap_off = 0;
     first_seq_no = 1;
     readers[0].last_seq = (uint16_t)(first - 1U); // on_data's order check: the sample before the first
     pub.large_fragmentation = mode;
@@ -2801,9 +2805,9 @@ static void test_a_sample_published_at_the_match_is_delivered(void) {
     static const uint32_t heartbeats[] = {1, 0, 1, 2};
     for (size_t m = 0; m < 2; m++) {
         for (int arm = 0; arm < 4; arm++) {
-            _tt_CONFIG.reassembly_cap_off = 1;
+            init_cap_off = 1;
             init_one(ONE_MB, FULL_CEILING, true);
-            _tt_CONFIG.reassembly_cap_off = 0;
+            init_cap_off = 0;
             pub.large_fragmentation = modes[m];
             sim_start(0);
             drop_heartbeats = heartbeats[arm];
@@ -3141,9 +3145,9 @@ struct arm {
 
 static struct wire_digest run_arm(const struct arm* arm, bool use_ranges) {
     ranged = use_ranges;
-    _tt_CONFIG.reassembly_cap_off = arm->mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader
+    init_cap_off = arm->mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader
     init_set(arm->len, arm->readers, arm->ceilings, arm->reliable);
-    _tt_CONFIG.reassembly_cap_off = 0;
+    init_cap_off = 0;
     ranged = false;
     pub.large_fragmentation = arm->mode;
     sim_start(arm->loss_ppm);
@@ -3289,9 +3293,9 @@ static void test_a_sample_received_in_runs_is_lent_in_place(void) {
     static const uint8_t modes[] = {tt_LARGE_FRAGMENTATION_IP, tt_LARGE_FRAGMENTATION_MTU};
     for (size_t m = 0; m < 2; m++) {
         for (int reliable = 0; reliable < 2; reliable++) {
-            _tt_CONFIG.reassembly_cap_off = 1;
+            init_cap_off = 1;
             init_one(ONE_MB, FULL_CEILING, reliable != 0);
-            _tt_CONFIG.reassembly_cap_off = 0;
+            init_cap_off = 0;
             pub.large_fragmentation = modes[m];
             sim_start(reliable != 0 ? 10000 : 0);
             struct reader* r = &readers[0];

@@ -27,11 +27,13 @@ bool test_mock_link_resolves = false;
 uint32_t test_mock_link_addr = 0;
 uint32_t test_mock_link_netmask = 0;
 int32_t test_mock_link_mtu = -1;
+const char* test_mock_link_last_broadcast = NULL; // the broadcast address tt_resolve_link() was last asked about
 #else
 extern bool test_mock_link_resolves;
 extern uint32_t test_mock_link_addr;
 extern uint32_t test_mock_link_netmask;
 extern int32_t test_mock_link_mtu;
+extern const char* test_mock_link_last_broadcast;
 #endif
 #ifdef TEST_MOCK_DEFINE_STORAGE
 struct _tt_Config _tt_CONFIG = {
@@ -276,7 +278,8 @@ uint64_t tt_timer_resolution_ns(void) {
     return test_mock_timer_resolution_ns;
 }
 
-int32_t tt_get_node_id(void) {
+int32_t tt_get_node_id(const struct tt_Context* node) {
+    (void)node;
     return test_mock_node_id;
 }
 
@@ -284,7 +287,7 @@ int32_t tt_get_node_id(void) {
 // test_mock_link_* first; everything else gets false, which is the same answer the real HAL gives
 // for a limited broadcast, so an unconfigured test behaves exactly as an unconfigured node does.
 bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast) {
-    (void)broadcast;
+    test_mock_link_last_broadcast = broadcast;
     if (!test_mock_link_resolves) {
         return false;
     }
@@ -367,7 +370,7 @@ void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port)
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)len; // as hal_linux.c: discovery off sends nothing
     }
 #endif
@@ -393,7 +396,7 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
     (void)node;
     (void)buf;
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)len;
     }
 #endif
@@ -453,7 +456,7 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
                     uint32_t ip, uint16_t port) {
     (void)node;
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return (int32_t)(hdr_len + body_len);
     }
 #endif

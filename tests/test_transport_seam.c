@@ -224,6 +224,8 @@ static void test_batch_shape_is_counted_per_datagram(void) {
 static void test_reset_zeroes_the_per_transport_counters(void) {
     struct tt_Context node;
     memset(&node, 0xAA, sizeof(node));
+    tt_InitOptions_default(&node.opts); // creation writes these before the reset (tt_Context_create_with())
+    build_links(&node);
     node_init_locks(&node);
     reset_node_state(&node);
 
@@ -973,6 +975,8 @@ static void test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwr
     test_mock_segments_free();
     struct tt_Context node;
     memset(&node, 0xAA, sizeof(node));
+    tt_InitOptions_default(&node.opts); // creation writes these before the reset (tt_Context_create_with())
+    build_links(&node);
     node_init_locks(&node);
     reset_node_state(&node);
     node.id = 1;
@@ -1027,6 +1031,8 @@ static void test_a_context_in_unzeroed_memory_attaches_a_same_host_peer(void) {
 
     struct tt_Context node;
     memset(&node, 0xAA, sizeof(node));
+    tt_InitOptions_default(&node.opts); // creation writes these before the reset (tt_Context_create_with())
+    build_links(&node);
     node_init_locks(&node);
     reset_node_state(&node);
     node.id = 1;
@@ -2931,12 +2937,12 @@ static void test_the_limit_reads_only_the_peers_it_was_given(void) {
 static void test_a_configured_slot_size_is_the_one_built(void) {
     const uint32_t configured = (uint32_t)tt_SEGMENT_SLOT_BYTES / 2U;
     struct tt_Context owner;
-    uint32_t saved = _tt_CONFIG.segment_slot_bytes;
+    struct tt_InitOptions opts;
+    tt_InitOptions_default(&opts);
 
     // The control first, and it is not decoration: with nothing configured the header must carry the
     // COMPILED default, or "the configured value appeared" would be indistinguishable from "every segment
     // has that size now".
-    _tt_CONFIG.segment_slot_bytes = 0;
     memset(&owner, 0, sizeof(owner));
     owner.id = OWNER_ID;
     owner.entity_id_base = OWNER_INCARNATION;
@@ -2948,8 +2954,8 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     release_own_segment(&owner);
     test_mock_segments_free();
 
-    _tt_CONFIG.segment_slot_bytes = configured;
     memset(&owner, 0, sizeof(owner));
+    owner.opts.net.segment_slot_bytes = configured;
     owner.id = OWNER_ID;
     owner.entity_id_base = OWNER_INCARNATION;
     owner.hal.own_ip = OWNER_IP;
@@ -2964,9 +2970,14 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
 
     // And a size this build cannot use is refused rather than quietly replaced by the default, because a
     // silently ignored setting is the failure this whole field exists to avoid repeating.
-    _tt_CONFIG.segment_slot_bytes = 1; // below a datagram header
+    opts.net.segment_slot_bytes = 1; // below a datagram header
+    memset(&owner, 0, sizeof(owner));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create_with(&owner, &opts));
+    // And through the legacy path, tt_Context_create() reading _tt_CONFIG, which still refuses it.
+    _tt_CONFIG.segment_slot_bytes = 1;
     memset(&owner, 0, sizeof(owner));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create(&owner));
+    _tt_CONFIG.segment_slot_bytes = 0;
 
     // Above a datagram is refused for the same reason and a different cause: a slot larger than a datagram
     // is only useful for carrying a record whole, and that path is held until SHM_PLAN 6e(b) because it was
@@ -2979,15 +2990,15 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     // than no test, because it reads as cover. This asserts the ceiling in a build that can tell them apart
     // (any frag build, e.g. the p4 harness at tt_MAX_SAMPLE_LENGTH=4096) and says so where it cannot.
 #if tt_MAX_SAMPLE_LENGTH > FRAG_WHOLE_DATA_LIMIT
-    _tt_CONFIG.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT + 1U;
+    opts.net.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT + 1U;
     memset(&owner, 0, sizeof(owner));
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create(&owner));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create_with(&owner, &opts));
 #endif
 
     // The boundary itself is allowed, so the refusal above is the ceiling and not an off-by-one that would
     // also reject every usable size.
-    _tt_CONFIG.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
     memset(&owner, 0, sizeof(owner));
+    owner.opts.net.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
     owner.id = OWNER_ID;
     owner.entity_id_base = OWNER_INCARNATION;
     owner.hal.own_ip = OWNER_IP;
@@ -2997,8 +3008,6 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     EXPECT_EQ_U32((uint32_t)FRAG_WHOLE_DATA_LIMIT, owner.own_segment->slot_bytes);
     release_own_segment(&owner);
     test_mock_segments_free();
-
-    _tt_CONFIG.segment_slot_bytes = saved;
 }
 
 static void test_a_segment_with_another_geometry_is_refused(void) {

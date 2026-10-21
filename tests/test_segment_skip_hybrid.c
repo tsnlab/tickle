@@ -120,7 +120,7 @@ static void rig_up(uint16_t depth) {
     owner->tx_tail = sizeof(struct tt_Header);
     owner->tx_size = sizeof(owner->tx_buffer);
     owner->rx_seq_span = 1;
-    owner->ip_reassembly_max = advertised_ip_reassembly_max(_tt_CONFIG.ip_reassembly_max);
+    owner->ip_reassembly_max = advertised_ip_reassembly_max(net_ip_reassembly_max(owner));
     hybrid_reader_start(owner);
     EXPECT_TRUE(hybrid_rx_capable(owner)); // or nothing below is measured
     create_own_segment(owner);

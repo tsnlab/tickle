@@ -87,7 +87,7 @@ static void init_node(void) {
 // It advertises its receive buffer, one unit: the Linux setting (65507) capped at 1472.
 static void test_advertises_one_datagram(void) {
     init_node();
-    EXPECT_EQ_U32(65507, _tt_CONFIG.ip_reassembly_max);
+    EXPECT_EQ_U32(65507, net_ip_reassembly_max(&node)); // the Linux default, as the context reads it
     EXPECT_EQ_U32(1472, node.ip_reassembly_max);
 }
 

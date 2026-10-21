@@ -38,6 +38,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # distinction, and it is the right one: "exempt" invites the next person to add a line, "set by X" invites them to
 # check that X still runs.
 SURVIVES_RESET = {
+    # tt_InitOptions (2026-10-21): the context's link table, built from node->opts before the reset reads it.
+    "links": "build_links(), in tt_Context_create_with() after node->opts is copied and before reset_node_state()",
+    "link_count": "build_links(), in tt_Context_create_with() after node->opts is copied and before reset_node_state()",
     "id_explicit": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "id_muted": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "id_muted_drops": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",

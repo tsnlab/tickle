@@ -561,7 +561,7 @@
 
 // Hybrid transport (DESIGN.md section 8, "Hybrid transport for multi-datagram samples", tt_VERSION 13): how a writer
 // puts the units of a multi-datagram sample on the wire - several MTU fragments in one IP-fragmented datagram (a run)
-// or one per datagram. _tt_CONFIG.large_fragmentation holds the context's choice until tt_InitOptions exists; a
+// or one per datagram. tt_NetOptions.large_fragmentation (tickle.h) holds the context's choice; a
 // Publisher may override it (tt_Publisher.large_fragmentation, INHERIT = take the context's). Plumbing only so far: the
 // sender sends MTU fragments whatever this says.
 #define tt_LARGE_FRAGMENTATION_INHERIT 0 // a Publisher's: the context's setting. A context's 0 reads as AUTO
@@ -1017,7 +1017,7 @@
 #define tt_CONTEXT_ID_INVALID 0x00
 #define tt_CONTEXT_ID_BROADCAST 0xff
 // (g8, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) Several contexts on one host, each with its own id. 0, the default: a
-// context takes the id above - the address's last octet, or _tt_CONFIG.context_id - as it always has, so two
+// context takes the id above - the address's last octet, or opts.net.context_id - as it always has, so two
 // processes on one address share it and drop each other's every packet as their own. 1, rmw_tickle's build:
 // - a context claims its id in a host registry (the HAL's tt_claim_context_id()): the preferred id when no other
 //   live process holds it, else a free one;
@@ -1074,7 +1074,7 @@
 #define tt_RX_POOL_BUFFER_BYTES ((((uint32_t)tt_MAX_BUFFER_LENGTH) + 7U) & ~7U)
 // (g6, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) How far a context may discover and be discovered - ROS 2's
 // ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS. 0, the default: the configured links only, as always. 1,
-// rmw_tickle's build: _tt_CONFIG.discovery_range limits it (tt_DISCOVERY_RANGE_* below), and a link marked `peer` is
+// rmw_tickle's build: tt_NetOptions.discovery_range limits it (tt_DISCOVERY_RANGE_* below), and a link marked `peer` is
 // one remote address rather than an interface - announces and every broadcast-class datagram also go to it.
 #ifndef tt_DISCOVERY_OPTIONS
 #define tt_DISCOVERY_OPTIONS 0
@@ -1377,6 +1377,45 @@
 #define _tt_CONTEXT_BROADCAST "255.255.255.255"
 #endif
 
+// One link this node talks on: where its broadcasts go, which local address it sends them
+// from, and how many peers on *this* link it will unicast to before switching to one
+// broadcast. Per link rather than per node because the answer genuinely differs by medium -
+// five subscribers on a 10Base-T1S segment and one on Ethernet want opposite decisions, and a
+// single count across both loses on whichever it is not sized for.
+//
+// `resolved_*` are filled in at tt_bind() from the operating system, not from the strings:
+// matching a peer to a link needs the link's netmask, which a broadcast address does not
+// carry (x.y.z.255 implies /24 only by convention). The OS already knows every interface's
+// address, netmask and broadcast together, so the link is resolved against the interface
+// whose broadcast is the configured one. A link therefore has to correspond to a real local
+// interface - which is what "per interface" means.
+//
+// At file scope, not inside struct _tt_Config, so that C++ sees the same `struct _tt_Link` C does (a nested struct is
+// _tt_Config::_tt_Link there): struct tt_Context's resolved link table (tickle.h) is an array of it.
+struct _tt_Link {
+    const char* broadcast;
+    const char* addr; // NULL or "0.0.0.0" = any local address
+    // Deliberately still 2, and deliberately still a guess. Making the threshold per-link
+    // does not make its value better-founded than the single global one was - see
+    // tt_UNICAST_PEER_THRESHOLD's own comment. It is now a guess per link.
+    uint8_t unicast_threshold;
+
+    uint32_t resolved_addr;      // host byte order, from the OS at bind time
+    uint32_t resolved_netmask;   // host byte order
+    uint32_t resolved_broadcast; // host byte order
+    bool resolved;
+    // The resolved interface's MTU (tt_link_mtu(), hal.h), -1 when unknown, and whether it is
+    // below the 1500 bytes tt_ETHERNET_UDP_PAYLOAD assumes. Recorded rather than only logged, so
+    // a caller - or a test - can see it.
+    int32_t resolved_mtu;
+    bool mtu_below_assumed;
+#if tt_DISCOVERY_OPTIONS
+    // (g6) One remote peer, not an interface: `broadcast` is its IPv4 address (a unicast one, or a subnet's
+    // directed broadcast), reached on the well-known port. Resolved as a /32 without asking the OS.
+    bool peer;
+#endif
+};
+
 struct _tt_Config {
     // The address the data socket binds to. 0.0.0.0 (the default) means "any local address",
     // which is almost always what is wanted; setting a specific local address scopes this node's
@@ -1402,41 +1441,7 @@ struct _tt_Config {
     // started with a different id, without needing root for network namespaces at all.
     int32_t context_id;
 
-    // One link this node talks on: where its broadcasts go, which local address it sends them
-    // from, and how many peers on *this* link it will unicast to before switching to one
-    // broadcast. Per link rather than per node because the answer genuinely differs by medium -
-    // five subscribers on a 10Base-T1S segment and one on Ethernet want opposite decisions, and a
-    // single count across both loses on whichever it is not sized for.
-    //
-    // `resolved_*` are filled in at tt_bind() from the operating system, not from the strings:
-    // matching a peer to a link needs the link's netmask, which a broadcast address does not
-    // carry (x.y.z.255 implies /24 only by convention). The OS already knows every interface's
-    // address, netmask and broadcast together, so the link is resolved against the interface
-    // whose broadcast is the configured one. A link therefore has to correspond to a real local
-    // interface - which is what "per interface" means.
-    struct _tt_Link {
-        char* broadcast;
-        char* addr; // NULL or "0.0.0.0" = any local address
-        // Deliberately still 2, and deliberately still a guess. Making the threshold per-link
-        // does not make its value better-founded than the single global one was - see
-        // tt_UNICAST_PEER_THRESHOLD's own comment. It is now a guess per link.
-        uint8_t unicast_threshold;
-
-        uint32_t resolved_addr;      // host byte order, from the OS at bind time
-        uint32_t resolved_netmask;   // host byte order
-        uint32_t resolved_broadcast; // host byte order
-        bool resolved;
-        // The resolved interface's MTU (tt_link_mtu(), hal.h), -1 when unknown, and whether it is
-        // below the 1500 bytes tt_ETHERNET_UDP_PAYLOAD assumes. Recorded rather than only logged, so
-        // a caller - or a test - can see it.
-        int32_t resolved_mtu;
-        bool mtu_below_assumed;
-#if tt_DISCOVERY_OPTIONS
-        // (g6) One remote peer, not an interface: `broadcast` is its IPv4 address (a unicast one, or a subnet's
-        // directed broadcast), reached on the well-known port. Resolved as a /32 without asking the OS.
-        bool peer;
-#endif
-    } links[tt_MAX_LINK_COUNT];
+    struct _tt_Link links[tt_MAX_LINK_COUNT]; // see struct _tt_Link above
     // 0 means "no links configured explicitly": tt_bind() then synthesises exactly one from the
     // addr/broadcast/tt_UNICAST_PEER_THRESHOLD fields above, so every existing caller - and every
     // single-link deployment - keeps working without knowing links[] exists at all. The
@@ -1462,7 +1467,7 @@ struct _tt_Config {
     // way would make the alarm unreadable in the case where it matters.
     uint32_t segment_slot_bytes;
     // Hybrid transport (DESIGN.md section 8; config.h's tt_LARGE_FRAGMENTATION_* above). Context settings, read once
-    // by tt_Context_create(); they move to tt_InitOptions with the rest when it exists.
+    // by tt_Context_create(), as tt_NetOptions's fields of the same names (tickle.h).
     // tt_LARGE_FRAGMENTATION_AUTO (the default; 0 reads as AUTO too), _MTU or _IP.
     uint8_t large_fragmentation;
     // The largest datagram accepted from IP reassembly (_tt_IP_REASSEMBLY_MAX: Linux 65507, FreeRTOS 0); 0 = none.
@@ -1475,6 +1480,11 @@ struct _tt_Config {
     uint8_t reassembly_cap_off;
 };
 
+// DEPRECATED (2026-10-21): configure a context with struct tt_InitOptions and tt_Context_create_with() (tickle.h).
+// tt_Context_create() still reads this, once, into the new context's own options (node->opts); nothing else reads it,
+// so a write after creation changes nothing. Removal plan: once every caller (examples, perf_hil, platform checks,
+// tests) creates with tt_Context_create_with(), tt_Context_create() becomes tt_Context_create_with(node, NULL) and this
+// global and struct _tt_Config's settings go; struct _tt_Link stays as the context's resolved link table.
 extern struct _tt_Config _tt_CONFIG;
 
 // Invariants between the settings above.
@@ -1486,9 +1496,9 @@ extern struct _tt_Config _tt_CONFIG;
 // static_assert as a macro in <assert.h>, C++11 as a keyword, so this spelling works in both. These hold for the
 // defaults; they are asserted because the defaults are now overridable and an override that breaks one would otherwise
 // fail at runtime, as a silent misbehaviour, far from the line that caused it.
-static_assert(tt_MAX_PEER_COUNT > tt_UNICAST_PEER_THRESHOLD,
-              "tt_MAX_PEER_COUNT must exceed tt_UNICAST_PEER_THRESHOLD - see tt_MAX_PEER_COUNT's own "
-              "comment: a full peer table is only safe because it already implies broadcasting");
+// tt_MAX_PEER_COUNT > every link's unicast threshold (tt_UNICAST_PEER_THRESHOLD by default) is checked when a context
+// is created (tt_Context_create_with()), where the threshold is now set: a full peer table is only safe because it
+// already implies broadcasting - see tt_MAX_PEER_COUNT's own comment.
 static_assert(tt_RELIABLE_BITMAP_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
               "tt_RELIABLE_BITMAP_BITS must be a whole number of words");
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,

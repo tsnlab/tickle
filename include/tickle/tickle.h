@@ -761,7 +761,7 @@ struct tt_HybridState {
     uint8_t rx_writer_next; // the entry the next new writer replaces
     uint8_t backoff;
     bool rx_capable; // this context's ceiling allows runs at all: only then is any of this kept
-    bool cap_off;    // _tt_CONFIG.reassembly_cap_off as create read it: no cap (a benchmark arm)
+    bool cap_off;    // opts.net.reassembly_cap_off as create read it: no cap (a benchmark arm)
     // Counters, on the traffic line as hybrid_*. runs: run datagrams sent; run_units: units in them; mtu_units: units
     // of multi-unit samples sent alone in their first transmission (tails included); n_hist: n chosen per sample and
     // destination; cap_changes: changes of the advertised ceiling; collapses, probes, probe_failures, rescales: the
@@ -793,6 +793,93 @@ struct tt_HybridState {
     uint64_t missed_samples;
 };
 #endif
+
+// ---- Context options (tt_InitOptions, docs/DESIGN.md "Context options"). What used to be the process-wide _tt_CONFIG
+// is now per context: tt_Context_create_with() takes these, and the context keeps its own resolved copy
+// (struct tt_Context.opts), so two contexts in one process can use different addresses, ports and links.
+//
+// Zero means "the default" in every field, the rule struct tt_QosProfile follows: a zeroed struct, or one from
+// tt_InitOptions_default(), gives the context tt_Context_create() gives. Where zero is itself a meaningful value that
+// differs from the default, the field names a sentinel for it (tt_UNICAST_ALWAYS_BROADCAST, tt_IP_REASSEMBLY_NONE).
+//
+// Strings are not copied: each must stay valid until tt_Context_destroy(), as every other string the library is given.
+//
+// The groups after `net` are placeholders, each filled by a later bundle of ROADMAP "Context options": the member
+// order and names are fixed now so that each bundle edits only its own struct and its own default/validation function.
+
+// One link a context talks on (the successor of struct _tt_Link's settings; see that struct in config.h).
+struct tt_LinkOptions {
+    const char* broadcast; // the link's broadcast address (or, with `peer`, the peer's "a.b.c.d[/nn]"); required
+    const char* addr;      // the local address to send from; NULL (0) = any local address ("0.0.0.0")
+    // Peers on this link it unicasts to before switching to one broadcast. 0 = tt_UNICAST_PEER_THRESHOLD;
+    // tt_UNICAST_ALWAYS_BROADCAST = broadcast as soon as one peer is known. Below tt_MAX_PEER_COUNT.
+    uint8_t unicast_threshold;
+    bool peer; // (g6) one remote address reached on the well-known port, not an interface; needs tt_DISCOVERY_OPTIONS
+};
+#define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
+#define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
+
+struct tt_NetOptions {
+    const char* addr; // the data socket's bind address; NULL = _tt_CONTEXT_ADDRESS ("0.0.0.0", any)
+    const char*
+        broadcast; // where announces and broadcast-mode sends go; NULL = _tt_CONTEXT_BROADCAST - see its comment
+    uint16_t port; // the well-known port; 0 = _tt_CONTEXT_PORT (8282)
+    // This context's id: 0 (tt_CONTEXT_ID_INVALID) = auto-detect from the address (tt_get_node_id(), hal.h)
+    int32_t context_id;
+    // The links; link_count 0 = one link built from addr, broadcast and tt_UNICAST_PEER_THRESHOLD.
+    struct tt_LinkOptions links[tt_MAX_LINK_COUNT];
+    uint8_t link_count;
+    uint8_t discovery_range;     // tt_DISCOVERY_RANGE_*; 0 = SUBNET. Others need tt_DISCOVERY_OPTIONS
+    uint32_t segment_slot_bytes; // payload bytes of one shared-memory slot; 0 = tt_SEGMENT_SLOT_BYTES
+    uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO/_MTU/_IP; 0 = AUTO
+    // The largest datagram accepted from IP reassembly, advertised in announces; 0 = _tt_IP_REASSEMBLY_MAX (Linux
+    // 65507, FreeRTOS none); tt_IP_REASSEMBLY_NONE = none. At most tt_IPV4_UDP_MAX_PAYLOAD.
+    uint16_t ip_reassembly_max;
+    uint8_t reassembly_cap_off; // 1: advertise the ceiling uncapped (a benchmark arm's reader); 0 = capped
+};
+
+// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
+struct tt_DiscoveryOptions {
+    uint8_t reserved;
+};
+struct tt_ReliableOptions {
+    uint8_t reserved;
+};
+struct tt_ServiceOptions {
+    uint8_t reserved;
+};
+struct tt_QosDefaults {
+    uint8_t reserved;
+};
+struct tt_PollOptions {
+    uint8_t reserved;
+};
+struct tt_SocketOptions {
+    uint8_t reserved;
+};
+struct tt_HybridOptions {
+    uint8_t reserved;
+};
+struct tt_SegmentOptions {
+    uint8_t reserved;
+};
+struct tt_Capacity {
+    uint8_t reserved;
+};
+
+struct tt_InitOptions {
+    struct tt_NetOptions net;
+    struct tt_DiscoveryOptions discovery;
+    struct tt_ReliableOptions reliable;
+    struct tt_ServiceOptions service;
+    struct tt_QosDefaults qos;
+    struct tt_PollOptions poll;
+    struct tt_SocketOptions socket;
+    struct tt_HybridOptions
+        hybrid_transport; // not `hybrid`: struct tt_Context.hybrid is its state (check_context_reset.py)
+    struct tt_SegmentOptions segment;
+    struct tt_Capacity capacity;
+};
 
 struct tt_Context {
     uint8_t id;
@@ -1005,7 +1092,7 @@ struct tt_Context {
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
 #if tt_CONTEXT_ID_CLAIM
     // (g8, config.h's tt_CONTEXT_ID_CLAIM) Keeping this context's id its own on the link. id_explicit: set from
-    // _tt_CONFIG.context_id, so it never moves. id_muted: a collision left no free id, so this context sends nothing.
+    // opts.net.context_id, so it never moves. id_muted: a collision left no free id, so this context sends nothing.
     // created_ns starts its startup window, in which it yields on a collision. collision_since_ns / _last_ns bound
     // the current collision (0: none). ids_seen: every source heard on the link, which a move avoids.
     // collision_logged_*: the last foreign holder of an explicit id reported, so each is reported once.
@@ -1021,7 +1108,7 @@ struct tt_Context {
     uint16_t collision_logged_port;
 #endif
 #if tt_DISCOVERY_OPTIONS
-    uint64_t rx_out_of_range; // (g6) datagrams dropped because their sender is outside _tt_CONFIG.discovery_range
+    uint64_t rx_out_of_range; // (g6) datagrams dropped because their sender is outside opts.net.discovery_range
 #endif
     // (g11, RMW_GAPS_PLAN.md) Datagrams dropped because nothing in them could be processed: a wire version this
     // build does not speak, a bad magic, a header or submessage that runs past the datagram. A peer must never be
@@ -1556,8 +1643,8 @@ struct tt_Context {
     // so that no field the steady-state paths read moved: in the middle of the struct these moved every later field
     // and aarch64 reached some with an extra instruction (gate v2 on the rig, 2026-10-12; the segment fence, 8de4100d).
     //
-    // Hybrid transport (DESIGN.md section 8): this context's settings as tt_Context_create() read them from _tt_CONFIG,
-    // and what its announce advertises - the reassembly ceiling capped by the receive buffer.
+    // Hybrid transport (DESIGN.md section 8): this context's settings as tt_Context_create_with() read them from
+    // opts.net, and what its announce advertises - the reassembly ceiling capped by the receive buffer.
     uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO, _MTU or _IP
     uint16_t ip_reassembly_max;  // advertised in tt_AnnounceHeader.ip_reassembly_max
 #if tt_FRAG_ENABLED
@@ -1590,6 +1677,11 @@ struct tt_Context {
     // tt_Context_set_qos_incompatible_callback()'s (QoS plan D2). After every other field, so none of them moves.
     tt_QOS_INCOMPATIBLE_CALLBACK qos_incompatible_callback;
     void* qos_incompatible_callback_param;
+    // The options this context was created with, each zero replaced by its default (tt_Context_create_with()), and its
+    // link table resolved from opts.net.links at creation. After every other field, so none of them moves.
+    struct tt_InitOptions opts;
+    struct _tt_Link links[tt_MAX_LINK_COUNT];
+    uint8_t link_count;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -3622,7 +3714,7 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 //     from one thread. See DESIGN.md, "Concurrency".
 //
 // Returns tt_RET_OK on success. tt_Context_create() can also return tt_RET_IILEGAL_NODE_ID (address
-// auto-detection found no usable id and none was set in _tt_CONFIG), tt_RET_IO_ERROR (socket
+// auto-detection found no usable id and none was set in the options), tt_RET_IO_ERROR (socket
 // bind), tt_RET_NO_SUCH_LINK (a configured link's broadcast address is owned by no local
 // interface - worth retrying, since an interface brought up by DHCP or a network manager may
 // simply not exist yet when a service starts; see that code's own comment in hal.h), or
@@ -3633,6 +3725,20 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 // tt_Node_create_*_legacy(), and QoS set by writing endpoint fields after creation. Use tt_Node_create_publisher() and
 // its siblings, which take the QoS, the options and the storage at creation. Both stay until every caller has moved.
 tt_ret_t tt_Context_create(struct tt_Context* node);
+// The options as tt_Context_create_with() would read a zeroed struct: every field at its default.
+void tt_InitOptions_default(struct tt_InitOptions* opts);
+// tt_Context_create() with this context's own options (struct tt_InitOptions); NULL = the defaults. The options are
+// copied into node->opts, resolved, so the caller's struct may go once this returns (its strings may not). Returns what
+// tt_Context_create() returns, and tt_RET_INVALID_ARGUMENT, with a log line naming the field, for an option this build
+// cannot honour: a link_count above tt_MAX_LINK_COUNT, a link without a broadcast, an address that is not a dotted
+// IPv4 quad, a unicast_threshold not below tt_MAX_PEER_COUNT, an unknown discovery_range or large_fragmentation, a
+// discovery_range or peer link without tt_DISCOVERY_OPTIONS, a segment_slot_bytes that cannot hold a datagram, an
+// ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, or a reserved field not 0.
+//
+// tt_Context_create(node) is tt_Context_create_with() given the process-wide _tt_CONFIG. DEPRECATED (2026-10-21):
+// writing _tt_CONFIG to configure a context. It stays read by tt_Context_create() until every caller has moved to
+// tt_Context_create_with(); nothing else reads it.
+tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOptions* opts);
 tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
                                   const char* endpoint_name, tt_CLIENT_CALLBACK callback);
 tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
@@ -4204,7 +4310,7 @@ struct tt_AnnounceHeader {
     uint8_t entity_count;
     // Since tt_VERSION 13 (hybrid transport, DESIGN.md section 8): the largest datagram this context accepts from IP
     // reassembly, in bytes, as a ceiling on the runs a writer may send it; 0 = none (n = 1). Its setting
-    // (_tt_CONFIG.ip_reassembly_max) capped by its receive buffer (tt_MAX_BUFFER_LENGTH).
+    // (opts.net.ip_reassembly_max) capped by its receive buffer (tt_MAX_BUFFER_LENGTH).
     uint16_t ip_reassembly_max;
     // The frame loss this context measures as a reader, the p a writer's n is chosen with (DESIGN.md section 8): 0 = no
     // estimate, read as 1; else the exponent e in the high byte and the mantissa m in the low, p = (256 + m) / 2^(e +

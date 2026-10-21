@@ -131,7 +131,8 @@ uint64_t tt_get_wall_ns(void);
 // clock's resolution and the wait's own (one RTOS tick on FreeRTOS). The floor of the measured timer lateness that
 // the retry timers use as G (struct tt_Context.timer_lateness_ns). Never 0.
 uint64_t tt_timer_resolution_ns(void);
-int32_t tt_get_node_id(void);
+// The context id auto-detected from the local address on the subnet of node->opts.net.broadcast (its last octet).
+int32_t tt_get_node_id(const struct tt_Context* node);
 tt_ret_t tt_bind(struct tt_Context* node);
 void tt_close(struct tt_Context* node);
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len);

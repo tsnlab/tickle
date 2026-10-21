@@ -183,8 +183,9 @@ static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 
 // `dirty`: both contexts start as 0xAA, as memory a caller hands tt_Context_create() need not be zeroed, and are set up
-// by reset_node_state() as creation does - so a field the reset leaves for first use (segment_peers[], set up by
-// segment_peer() and read only through segment_peer_if_live()) still holds 0xAA when the large path first meets it.
+// by tt_InitOptions_default(), build_links() and reset_node_state() as creation does - so a field the reset leaves for
+// first use (segment_peers[], set up by segment_peer() and read only through segment_peer_if_live()) still holds 0xAA
+// when the large path first meets it.
 static void rig_up_with(bool dirty) {
     test_mock_reset();
     test_mock_now = 100ULL * tt_SECOND;
@@ -196,6 +197,11 @@ static void rig_up_with(bool dirty) {
     memset(&pub, 0, sizeof(pub));
     memset(&sub, 0, sizeof(sub));
     if (dirty) {
+        // Creation writes the options and the link table before the reset (tt_Context_create_with()).
+        tt_InitOptions_default(&owner.opts);
+        build_links(&owner);
+        tt_InitOptions_default(&sender.opts);
+        build_links(&sender);
         node_init_locks(&owner);
         reset_node_state(&owner);
         node_init_locks(&sender);

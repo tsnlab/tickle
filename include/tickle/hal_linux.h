@@ -257,7 +257,7 @@ static inline void tt_thread_yield(void) {
 #endif
 
 struct tt_hal {
-    // The well-known port (_tt_CONFIG.port), shared with every other node on this host via
+    // The well-known port (opts.net.port), shared with every other node on this host via
     // SO_REUSEADDR. Broadcasts are addressed here, so this is how a node is reached before anyone
     // knows anything about it. Receive-only in practice: nothing is ever sent from it.
     int sock;

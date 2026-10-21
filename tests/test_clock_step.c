@@ -112,7 +112,8 @@ uint64_t tt_timer_resolution_ns(void) {
     return 1;
 }
 
-int32_t tt_get_node_id(void) {
+int32_t tt_get_node_id(const struct tt_Context* node) {
+    (void)node;
     return next_node_id++;
 }
 

@@ -92,7 +92,8 @@ uint64_t tt_timer_resolution_ns(void) {
     return tick_ns > CLINT_NS_PER_TICK ? tick_ns : CLINT_NS_PER_TICK;
 }
 
-int32_t tt_get_node_id(void) {
+int32_t tt_get_node_id(const struct tt_Context* node) {
+    (void)node; // one netif: nothing to match the broadcast against
     // Unlike hal_linux.c (which enumerates every interface with getifaddrs() to find the one on
     // the broadcast network), this target has exactly one netif, brought up statically by
     // net_init.c before tt_Context_create() ever runs - so there's nothing to search.
@@ -452,22 +453,22 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_IO_ERROR;
     }
 
-    ip_addr_set_ip4_u32_val(hal->broadcast_ip, ipaddr_addr(_tt_CONFIG.broadcast));
+    ip_addr_set_ip4_u32_val(hal->broadcast_ip, ipaddr_addr(node->opts.net.broadcast));
 
     // The well-known port on the wildcard address, shared through SO_REUSEADDR, and this node's own data port scoped
-    // to _tt_CONFIG.addr with the stack choosing the port - see the socket build's tt_bind() below, and hal_linux.c,
+    // to opts.net.addr with the stack choosing the port - see the socket build's tt_bind() below, and hal_linux.c,
     // for why each is bound the way it is.
-    hal->conn = open_conn(node, tt_HAL_RX_WELL_KNOWN, IP4_ADDR_ANY, _tt_CONFIG.port);
+    hal->conn = open_conn(node, tt_HAL_RX_WELL_KNOWN, IP4_ADDR_ANY, node->opts.net.port);
     if (hal->conn == NULL) {
-        TT_LOG_ERROR("Cannot bind netconn to 0.0.0.0:%d", _tt_CONFIG.port);
+        TT_LOG_ERROR("Cannot bind netconn to 0.0.0.0:%d", (int)node->opts.net.port);
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
     ip_addr_t data_ip;
-    ip_addr_set_ip4_u32_val(data_ip, ipaddr_addr(_tt_CONFIG.addr));
+    ip_addr_set_ip4_u32_val(data_ip, ipaddr_addr(node->opts.net.addr));
     hal->data_conn = open_conn(node, tt_HAL_RX_DATA, &data_ip, 0);
     if (hal->data_conn == NULL) {
-        TT_LOG_ERROR("Cannot bind data netconn to %s:0", _tt_CONFIG.addr);
+        TT_LOG_ERROR("Cannot bind data netconn to %s:0", node->opts.net.addr);
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -538,7 +539,7 @@ static int32_t send_pieces(struct tt_Context* node, const void* const* pieces, c
 // the netif's own address, which lwIP loops back, at each one's data port. The copies' results are not the send's: a
 // sibling closing meanwhile is not this send failing. Returns the broadcast's result.
 static int32_t send_broadcast(struct tt_Context* node, const void* const* pieces, const size_t* lens, uint32_t count) {
-    int32_t sent = send_pieces(node, pieces, lens, count, &node->hal.broadcast_ip, _tt_CONFIG.port);
+    int32_t sent = send_pieces(node, pieces, lens, count, &node->hal.broadcast_ip, node->opts.net.port);
     if (node->hal.own_ip == 0) {
         return sent;
     }
@@ -830,30 +831,30 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     // SO_SNDBUF at all (UDP send never queues), and SO_RCVBUF support is compiled out by default
     // (LWIP_SO_RCVBUF, off in platform/freertos/lwipopts.h) - its rx buffering is sized instead by
     // lwipopts.h's own compile-time knobs (e.g. the UDP recvmbox size). Not an oversight.
-    // The well-known socket always binds the wildcard, never _tt_CONFIG.addr - see hal_linux.c's
+    // The well-known socket always binds the wildcard, never opts.net.addr - see hal_linux.c's
     // own comment on this same bind for the measured reason: a socket bound to a unicast address
     // receives no broadcasts, so binding this one would stop every announce arriving while unicast
-    // kept working. _tt_CONFIG.addr scopes the data socket instead, below.
+    // kept working. opts.net.addr scopes the data socket instead, below.
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     // inet_addr()/htons() come from lwip/sockets.h's LWIP_COMPAT_SOCKETS aliasing.
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(_tt_CONFIG.port);
+    addr.sin_port = htons(node->opts.net.port);
     addr.sin_len = sizeof(addr);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", _tt_CONFIG.port, strerror(errno));
+        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", (int)node->opts.net.port, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
-    // Precompute the broadcast destination once instead of re-parsing _tt_CONFIG.broadcast with
+    // Precompute the broadcast destination once instead of re-parsing opts.net.broadcast with
     // inet_addr() on every single tt_send() call - same reasoning as hal_linux.c.
     memset(&node->hal.broadcast_addr, 0, sizeof(node->hal.broadcast_addr));
     node->hal.broadcast_addr.sin_family = AF_INET;
-    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
-    node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
+    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(node->opts.net.broadcast);
+    node->hal.broadcast_addr.sin_port = htons(node->opts.net.port);
 
     // This node's own data port - mirrors hal_linux.c's own data_sock, for the same measured
     // reason (see struct tt_hal.data_sock, hal_linux.h): everything is sent from here so a peer
@@ -875,13 +876,13 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_IO_ERROR;
     }
 
-    // This one does honour _tt_CONFIG.addr - see hal_linux.c's own comment on the same bind.
+    // This one does honour opts.net.addr - see hal_linux.c's own comment on the same bind.
     struct sockaddr_in data_addr;
     data_addr.sin_family = AF_INET;
-    data_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    data_addr.sin_addr.s_addr = inet_addr(node->opts.net.addr);
     data_addr.sin_port = 0; // stack-assigned
     if (bind(node->hal.data_sock, (struct sockaddr*)&data_addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind data socket to %s:0: %d", _tt_CONFIG.addr, errno);
+        TT_LOG_ERROR("Cannot bind data socket to %s:0: %d", node->opts.net.addr, errno);
         tt_close(node);
         return tt_RET_IO_ERROR;
     }

@@ -80,20 +80,25 @@ static void make_announce(void) {
     EXPECT_TRUE(announce_length > 0);
 }
 
+// The local context's discovery options, as tt_Context_create_with() would take them, and its link table built and
+// resolved from them as creation does.
 static void configure(uint8_t range, bool with_peers) {
-    _tt_CONFIG.discovery_range = range;
-    _tt_CONFIG.link_count = 0;
+    init_context(&local, LOCAL_ID);
+    local.opts.net.discovery_range = range;
     if (with_peers) {
-        _tt_CONFIG.links[0] = (struct _tt_Link) {.broadcast = main_broadcast, .unicast_threshold = 2};
-        _tt_CONFIG.links[1] = (struct _tt_Link) {.broadcast = peer_one, .unicast_threshold = 2, .peer = true};
-        _tt_CONFIG.links[2] = (struct _tt_Link) {.broadcast = peer_subnet, .unicast_threshold = 2, .peer = true};
-        _tt_CONFIG.link_count = 3;
+        local.opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = main_broadcast, .unicast_threshold = 2};
+        local.opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = peer_one, .unicast_threshold = 2, .peer = true};
+        local.opts.net.links[2] =
+            (struct tt_LinkOptions) {.broadcast = peer_subnet, .unicast_threshold = 2, .peer = true};
+        local.opts.net.link_count = 3;
     }
+    resolve_init_options(&local.opts);
+    EXPECT_EQ_INT(tt_RET_OK, validate_init_options(&local.opts));
+    build_links(&local);
     test_mock_link_resolves = true; // the main link is a real interface, 10.0.0.1/24
     test_mock_link_addr = LOCAL_IP;
     test_mock_link_netmask = 0xffffff00U;
-    EXPECT_EQ_INT(tt_RET_OK, resolve_links());
-    init_context(&local, LOCAL_ID);
+    EXPECT_EQ_INT(tt_RET_OK, resolve_links(&local));
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&local, &discovery, NULL, NULL));
 }
@@ -136,13 +141,13 @@ static void test_subnet(void) {
 static void test_peers_are_destinations(void) {
     configure(tt_DISCOVERY_RANGE_SUBNET, true);
     struct tx_destination out[TX_MAX_DESTINATIONS];
-    uint8_t count = broadcast_destinations(out);
+    uint8_t count = broadcast_destinations(&local, out);
     EXPECT_EQ_INT(3, count);
     bool to_peer = false;
     bool to_subnet = false;
     for (uint8_t i = 0; i < count; i++) {
-        to_peer = to_peer || (out[i].ip == PEER_IP && out[i].port == (uint16_t)_tt_CONFIG.port);
-        to_subnet = to_subnet || (out[i].ip == SUBNET_PEER_BROADCAST && out[i].port == (uint16_t)_tt_CONFIG.port);
+        to_peer = to_peer || (out[i].ip == PEER_IP && out[i].port == (uint16_t)_tt_CONTEXT_PORT);
+        to_subnet = to_subnet || (out[i].ip == SUBNET_PEER_BROADCAST && out[i].port == (uint16_t)_tt_CONTEXT_PORT);
     }
     EXPECT_TRUE(to_peer);
     EXPECT_TRUE(to_subnet);
@@ -155,8 +160,6 @@ int main(void) {
     test_off();
     test_subnet();
     test_peers_are_destinations();
-    _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_SUBNET;
-    _tt_CONFIG.link_count = 0;
 
     if (test_result() != 0) {
         return 1;

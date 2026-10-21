@@ -144,11 +144,11 @@ static inline void tt_thread_yield(void) {
 // give the measured reasons the second socket exists; the netconn build keeps the same pair under the same roles.
 struct tt_hal {
 #if tt_HAL_FREERTOS_NETCONN
-    // The well-known port (_tt_CONFIG.port, wildcard address) and this node's own data port - see hal_linux.h's
+    // The well-known port (opts.net.port, wildcard address) and this node's own data port - see hal_linux.h's
     // sock/data_sock. Every send goes out of data_conn.
     struct netconn* conn;
     struct netconn* data_conn;
-    ip_addr_t broadcast_ip; // _tt_CONFIG.broadcast, parsed once in tt_bind()
+    ip_addr_t broadcast_ip; // opts.net.broadcast, parsed once in tt_bind()
     // Datagrams lwIP has queued on each netconn and this HAL has not yet taken, kept by the netconn callback: +1 per
     // NETCONN_EVT_RCVPLUS (posted by the tcpip thread after the datagram is in the receive mailbox), -1 per
     // NETCONN_EVT_RCVMINUS (raised by netconn_recv in the reading task). Zero means nothing has arrived since this HAL
@@ -186,7 +186,7 @@ struct tt_hal {
     uint32_t rx_empty_reads;
     // Checks the arrival count answered "nothing" without entering lwIP (netconn build only):
     uint32_t rx_quiet;
-    // The data port's own address, host order (tt_own_address(), hal.h): the netif's address unless _tt_CONFIG.addr
+    // The data port's own address, host order (tt_own_address(), hal.h): the netif's address unless opts.net.addr
     // names one, and the port lwIP chose. Same-host discovery compares a peer's address with it, the segment is named
     // from it, and a broadcast is copied to every other context in this image at it ("Contexts in one image" below).
     uint32_t own_ip;

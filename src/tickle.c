@@ -278,6 +278,402 @@ static uint8_t* server_cache_entry(struct tt_Server* server, int slot) {
                                          : server->cache_buf[slot];
 }
 
+// ---- Context options (struct tt_InitOptions, tickle.h): the defaults, the legacy _tt_CONFIG path, the checks made at
+// creation, and the readers of the few fields a whitebox context - built by hand, never created - leaves at zero.
+
+// The settings a zero stands for. A created context holds them resolved (resolve_init_options()); these keep a zeroed
+// one reading the same defaults.
+static const char* net_addr(const struct tt_Context* node) {
+    return node->opts.net.addr != NULL ? node->opts.net.addr : _tt_CONTEXT_ADDRESS;
+}
+
+static const char* net_broadcast(const struct tt_Context* node) {
+    return node->opts.net.broadcast != NULL ? node->opts.net.broadcast : _tt_CONTEXT_BROADCAST;
+}
+
+static uint16_t net_port(const struct tt_Context* node) {
+    return node->opts.net.port != 0 ? node->opts.net.port : (uint16_t)_tt_CONTEXT_PORT;
+}
+
+// The reassembly ceiling as a size: tt_IP_REASSEMBLY_NONE is 0, none.
+static uint16_t net_ip_reassembly_max(const struct tt_Context* node) {
+    uint16_t value = node->opts.net.ip_reassembly_max;
+    if (value == 0) {
+        return (uint16_t)_tt_IP_REASSEMBLY_MAX;
+    }
+    return value == tt_IP_REASSEMBLY_NONE ? 0 : value;
+}
+
+// A link's threshold as the send path compares it: tt_UNICAST_ALWAYS_BROADCAST is zero peers.
+static uint8_t link_threshold(uint8_t configured) {
+    if (configured == 0) {
+        return (uint8_t)tt_UNICAST_PEER_THRESHOLD;
+    }
+    return configured == tt_UNICAST_ALWAYS_BROADCAST ? 0 : configured;
+}
+
+// The one link a context gets when none is configured: the scalar addr and broadcast, the default threshold.
+static void default_link(struct tt_Context* node) {
+    memset(&node->links[0], 0, sizeof(node->links[0]));
+    node->links[0].broadcast = net_broadcast(node);
+    node->links[0].addr = net_addr(node);
+    node->links[0].unicast_threshold = (uint8_t)tt_UNICAST_PEER_THRESHOLD;
+    node->link_count = 1;
+}
+
+// Every zero replaced by what it stands for, so node->opts says what the context uses.
+static void resolve_net_options(struct tt_NetOptions* net) {
+    if (net->addr == NULL) {
+        net->addr = _tt_CONTEXT_ADDRESS;
+    }
+    if (net->broadcast == NULL) {
+        net->broadcast = _tt_CONTEXT_BROADCAST;
+    }
+    if (net->port == 0) {
+        net->port = (uint16_t)_tt_CONTEXT_PORT;
+    }
+    for (uint8_t i = 0; i < net->link_count && i < tt_MAX_LINK_COUNT; i++) {
+        if (net->links[i].unicast_threshold == 0) {
+            net->links[i].unicast_threshold = (uint8_t)tt_UNICAST_PEER_THRESHOLD;
+        }
+    }
+    if (net->large_fragmentation == tt_LARGE_FRAGMENTATION_INHERIT) {
+        net->large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
+    }
+    if (net->ip_reassembly_max == 0) {
+        net->ip_reassembly_max = _tt_IP_REASSEMBLY_MAX != 0 ? (uint16_t)_tt_IP_REASSEMBLY_MAX : tt_IP_REASSEMBLY_NONE;
+    }
+}
+
+// One resolver and one validator per group, each later bundle editing only its own pair (ROADMAP "Context options").
+// A placeholder group resolves nothing, and its reserved byte must be 0.
+static void resolve_discovery_options(struct tt_DiscoveryOptions* discovery) {
+    (void)discovery;
+}
+
+static void resolve_reliable_options(struct tt_ReliableOptions* reliable) {
+    (void)reliable;
+}
+
+static void resolve_service_options(struct tt_ServiceOptions* service) {
+    (void)service;
+}
+
+static void resolve_qos_options(struct tt_QosDefaults* qos) {
+    (void)qos;
+}
+
+static void resolve_poll_options(struct tt_PollOptions* poll) {
+    (void)poll;
+}
+
+static void resolve_socket_options(struct tt_SocketOptions* socket) {
+    (void)socket;
+}
+
+static void resolve_hybrid_options(struct tt_HybridOptions* hybrid) {
+    (void)hybrid;
+}
+
+static void resolve_segment_options(struct tt_SegmentOptions* segment) {
+    (void)segment;
+}
+
+static void resolve_capacity_options(struct tt_Capacity* capacity) {
+    (void)capacity;
+}
+
+static void resolve_init_options(struct tt_InitOptions* opts) {
+    resolve_net_options(&opts->net);
+    resolve_discovery_options(&opts->discovery);
+    resolve_reliable_options(&opts->reliable);
+    resolve_service_options(&opts->service);
+    resolve_qos_options(&opts->qos);
+    resolve_poll_options(&opts->poll);
+    resolve_socket_options(&opts->socket);
+    resolve_hybrid_options(&opts->hybrid_transport);
+    resolve_segment_options(&opts->segment);
+    resolve_capacity_options(&opts->capacity);
+}
+
+void tt_InitOptions_default(struct tt_InitOptions* opts) {
+    if (opts == NULL) {
+        return;
+    }
+    memset(opts, 0, sizeof(*opts));
+    resolve_init_options(opts);
+}
+
+// "a.b.c.d", or with allow_prefix "a.b.c.d/nn": the address (host order) and the prefix length (32 without one). No
+// OS lookup and no other spelling: inet_addr() also takes "127.1" and hex, and answers 255.255.255.255 - the limited
+// broadcast - for anything it cannot read, so a typo in a broadcast address ran as the default that reaches furthest.
+static bool parse_ipv4(const char* text, bool allow_prefix, uint32_t* addr_out, uint32_t* prefix_out) {
+    uint32_t addr = 0;
+    uint32_t prefix = 32;
+    for (int part = 0; part < 4; part++) {
+        if (text == NULL || *text < '0' || *text > '9') {
+            return false;
+        }
+        uint32_t value = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = (value * 10U) + (uint32_t)(*text++ - '0');
+            if (value > 255U) {
+                return false;
+            }
+        }
+        addr = (addr << 8) | value;
+        if (part < 3 && *text++ != '.') {
+            return false;
+        }
+    }
+    if (allow_prefix && *text == '/') {
+        text++;
+        prefix = 0;
+        while (*text >= '0' && *text <= '9' && prefix <= 32U) {
+            prefix = (prefix * 10U) + (uint32_t)(*text++ - '0');
+        }
+    }
+    if (*text != '\0' || prefix > 32U) {
+        return false;
+    }
+    *addr_out = addr;
+    *prefix_out = prefix;
+    return true;
+}
+
+static tt_ret_t reject_option(const char* field, const char* why) {
+    TT_LOG_ERROR("tt_InitOptions.%s %s - not creating the context", field, why);
+    return tt_RET_INVALID_ARGUMENT;
+}
+
+#if tt_SEGMENT_ENABLED
+static bool valid_slot_bytes(uint32_t slot_bytes);
+#endif
+
+// One link's settings (validate_net_options()).
+static tt_ret_t validate_link_options(const struct tt_LinkOptions* link) {
+    uint32_t ip = 0;
+    uint32_t prefix = 0;
+#if !tt_DISCOVERY_OPTIONS
+    if (link->peer) {
+        return reject_option("net.links[].peer", "needs a build with tt_DISCOVERY_OPTIONS");
+    }
+#endif
+    if (!parse_ipv4(link->broadcast, link->peer, &ip, &prefix)) {
+        return reject_option("net.links[].broadcast", "is NULL or not a dotted IPv4 address (a peer's may add /nn)");
+    }
+    if (link->addr != NULL && !parse_ipv4(link->addr, false, &ip, &prefix)) {
+        return reject_option("net.links[].addr", "is not a dotted IPv4 address");
+    }
+    // Was static_assert(tt_MAX_PEER_COUNT > tt_UNICAST_PEER_THRESHOLD): a full peer table is only safe because it
+    // already implies broadcasting (tt_MAX_PEER_COUNT's own comment).
+    if (link->unicast_threshold != tt_UNICAST_ALWAYS_BROADCAST && link->unicast_threshold >= tt_MAX_PEER_COUNT) {
+        return reject_option("net.links[].unicast_threshold", "is not below tt_MAX_PEER_COUNT");
+    }
+    return tt_RET_OK;
+}
+
+// What used to be static_asserts and silent clamps, checked where the values are now set: a value this build cannot
+// honour is the caller's to fix, and refused with the field named, rather than run as something else.
+static tt_ret_t validate_net_options(const struct tt_NetOptions* net) {
+    uint32_t ip = 0;
+    uint32_t prefix = 0;
+    if (!parse_ipv4(net->addr, false, &ip, &prefix)) {
+        return reject_option("net.addr", "is not a dotted IPv4 address");
+    }
+    if (!parse_ipv4(net->broadcast, false, &ip, &prefix)) {
+        return reject_option("net.broadcast", "is not a dotted IPv4 address");
+    }
+    if (net->link_count > tt_MAX_LINK_COUNT) {
+        return reject_option("net.link_count", "exceeds tt_MAX_LINK_COUNT");
+    }
+    for (uint8_t i = 0; i < net->link_count && i < tt_MAX_LINK_COUNT; i++) {
+        tt_ret_t link = validate_link_options(&net->links[i]);
+        if (link != tt_RET_OK) {
+            return link;
+        }
+    }
+    if (net->discovery_range > tt_DISCOVERY_RANGE_OFF) {
+        return reject_option("net.discovery_range", "is not a tt_DISCOVERY_RANGE_* value");
+    }
+#if !tt_DISCOVERY_OPTIONS
+    if (net->discovery_range != tt_DISCOVERY_RANGE_SUBNET) {
+        return reject_option("net.discovery_range", "needs a build with tt_DISCOVERY_OPTIONS");
+    }
+#endif
+#if tt_SEGMENT_ENABLED
+    // A slot size the user set and this build cannot use is their configuration and their error, so it is refused
+    // here rather than quietly replaced by the default - a value silently ignored reads exactly like a value that had
+    // no effect, which is the shape config.h's own #ifndef guards were in until 2026-09-29.
+    if (net->segment_slot_bytes != 0 && !valid_slot_bytes(net->segment_slot_bytes)) {
+        TT_LOG_ERROR("Configured segment slot of %u bytes is outside [%u, %u] and cannot hold a datagram",
+                     net->segment_slot_bytes, (unsigned)sizeof(struct tt_Header), (unsigned)tt_MAX_SAMPLE_LENGTH);
+        return reject_option("net.segment_slot_bytes", "cannot hold a datagram");
+    }
+#endif
+    if (net->large_fragmentation > tt_LARGE_FRAGMENTATION_IP) {
+        return reject_option("net.large_fragmentation", "is not a tt_LARGE_FRAGMENTATION_* value");
+    }
+    if (net->ip_reassembly_max != tt_IP_REASSEMBLY_NONE && net->ip_reassembly_max > tt_IPV4_UDP_MAX_PAYLOAD) {
+        return reject_option("net.ip_reassembly_max", "exceeds tt_IPV4_UDP_MAX_PAYLOAD");
+    }
+    if (net->reassembly_cap_off > 1) {
+        return reject_option("net.reassembly_cap_off", "is neither 0 nor 1");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_discovery_options(const struct tt_DiscoveryOptions* discovery) {
+    if (discovery->reserved != 0) {
+        return reject_option("discovery.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_reliable_options(const struct tt_ReliableOptions* reliable) {
+    if (reliable->reserved != 0) {
+        return reject_option("reliable.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_service_options(const struct tt_ServiceOptions* service) {
+    if (service->reserved != 0) {
+        return reject_option("service.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_qos_options(const struct tt_QosDefaults* qos) {
+    if (qos->reserved != 0) {
+        return reject_option("qos.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_poll_options(const struct tt_PollOptions* poll) {
+    if (poll->reserved != 0) {
+        return reject_option("poll.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_socket_options(const struct tt_SocketOptions* socket) {
+    if (socket->reserved != 0) {
+        return reject_option("socket.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_hybrid_options(const struct tt_HybridOptions* hybrid) {
+    if (hybrid->reserved != 0) {
+        return reject_option("hybrid_transport.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_segment_options(const struct tt_SegmentOptions* segment) {
+    if (segment->reserved != 0) {
+        return reject_option("segment.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_capacity_options(const struct tt_Capacity* capacity) {
+    if (capacity->reserved != 0) {
+        return reject_option("capacity.reserved", "is not 0");
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t validate_init_options(const struct tt_InitOptions* opts) {
+    tt_ret_t ret = validate_net_options(&opts->net);
+    if (ret == tt_RET_OK) {
+        ret = validate_discovery_options(&opts->discovery);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_reliable_options(&opts->reliable);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_service_options(&opts->service);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_qos_options(&opts->qos);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_poll_options(&opts->poll);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_socket_options(&opts->socket);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_hybrid_options(&opts->hybrid_transport);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_segment_options(&opts->segment);
+    }
+    if (ret == tt_RET_OK) {
+        ret = validate_capacity_options(&opts->capacity);
+    }
+    return ret;
+}
+
+// tt_Context_create()'s options: the process-wide _tt_CONFIG, read as it always was. Where a zero there meant zero and
+// in the options means "default", it is carried as the sentinel that keeps its old meaning.
+static tt_ret_t init_options_from_legacy_config(struct tt_InitOptions* opts) {
+    memset(opts, 0, sizeof(*opts));
+    struct tt_NetOptions* net = &opts->net;
+    if (_tt_CONFIG.port < 0 || _tt_CONFIG.port > UINT16_MAX) {
+        return reject_option("net.port (_tt_CONFIG.port)", "is not a UDP port");
+    }
+    net->addr = _tt_CONFIG.addr;
+    net->broadcast = _tt_CONFIG.broadcast;
+    net->port = (uint16_t)_tt_CONFIG.port;
+    net->context_id = _tt_CONFIG.context_id;
+    // Clamped, as link_count() always did; the options refuse what does not fit instead.
+    net->link_count = _tt_CONFIG.link_count < tt_MAX_LINK_COUNT ? _tt_CONFIG.link_count : (uint8_t)tt_MAX_LINK_COUNT;
+    for (uint8_t i = 0; i < net->link_count; i++) {
+        const struct _tt_Link* link = &_tt_CONFIG.links[i];
+        net->links[i].broadcast = link->broadcast;
+        net->links[i].addr = link->addr;
+        net->links[i].unicast_threshold =
+            link->unicast_threshold != 0 ? link->unicast_threshold : (uint8_t)tt_UNICAST_ALWAYS_BROADCAST;
+#if tt_DISCOVERY_OPTIONS
+        net->links[i].peer = link->peer;
+#endif
+    }
+#if tt_DISCOVERY_OPTIONS
+    net->discovery_range = _tt_CONFIG.discovery_range;
+#endif
+    net->segment_slot_bytes = _tt_CONFIG.segment_slot_bytes;
+    net->large_fragmentation = _tt_CONFIG.large_fragmentation;
+    net->ip_reassembly_max = _tt_CONFIG.ip_reassembly_max != 0 ? _tt_CONFIG.ip_reassembly_max : tt_IP_REASSEMBLY_NONE;
+    net->reassembly_cap_off = _tt_CONFIG.reassembly_cap_off != 0 ? 1 : 0;
+    return tt_RET_OK;
+}
+
+// The context's link table from its options: link 0 from the scalar settings when none is configured.
+static void build_links(struct tt_Context* node) {
+    const struct tt_NetOptions* net = &node->opts.net;
+    memset(node->links, 0, sizeof(node->links));
+    node->link_count = 0;
+    if (net->link_count == 0) {
+        default_link(node);
+        return;
+    }
+    uint8_t count = net->link_count < tt_MAX_LINK_COUNT ? net->link_count : (uint8_t)tt_MAX_LINK_COUNT; // validated
+    for (uint8_t i = 0; i < count; i++) {
+        struct _tt_Link* link = &node->links[i];
+        link->broadcast = net->links[i].broadcast;
+        link->addr = net->links[i].addr;
+        link->unicast_threshold = link_threshold(net->links[i].unicast_threshold);
+#if tt_DISCOVERY_OPTIONS
+        link->peer = net->links[i].peer;
+#endif
+    }
+    node->link_count = count;
+}
+
 // peer_count == 0 (peers may be NULL) means "no override, send to the node's usual broadcast
 // address" - the direct successor to the old dest_ip == 0 sentinel. peer_count >= 1 sends the
 // same already-encoded buffer to each peer in turn via tt_send_to() instead - used by
@@ -289,9 +685,9 @@ static uint8_t* server_cache_entry(struct tt_Server* server, int slot) {
 // resolved the table yet - a whitebox test constructs a tt_Context directly without going through
 // tt_Context_create(), so this cannot assume resolve_links() has run, and a zero here would make
 // every send loop iterate zero times and silently send nothing.
-static uint8_t link_count(void) {
-    if (_tt_CONFIG.link_count == 0) {
-        // Populate the default link here rather than only in resolve_links(), because a whitebox
+static uint8_t link_count(struct tt_Context* node) {
+    if (node->link_count == 0) {
+        // Populate the default link here rather than only at creation, because a whitebox
         // test constructs a tt_Context directly and never calls tt_Context_create(). Leaving the table
         // empty was not merely "unconfigured": unicast_threshold read 0, so a single known peer
         // failed the `on_link <= threshold` test and every call fell through to broadcast. A
@@ -300,12 +696,9 @@ static uint8_t link_count(void) {
         // Only the values, not the OS resolution - that needs the HAL and belongs at node
         // creation. An unresolved link is the catch-all, which is the correct reading of "nothing
         // has been configured" anyway.
-        _tt_CONFIG.links[0].broadcast = _tt_CONFIG.broadcast;
-        _tt_CONFIG.links[0].addr = _tt_CONFIG.addr;
-        _tt_CONFIG.links[0].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
-        _tt_CONFIG.link_count = 1;
+        default_link(node);
     }
-    return _tt_CONFIG.link_count < tt_MAX_LINK_COUNT ? _tt_CONFIG.link_count : tt_MAX_LINK_COUNT;
+    return node->link_count;
 }
 
 // Fills in the link table once, at node creation. A node with nothing configured gets exactly one
@@ -336,33 +729,9 @@ static void check_link_mtu(struct _tt_Link* link) {
 // (g6) A peer link's address, "a.b.c.d" or "a.b.c.d/nn", into its address, netmask and the destination it is reached at
 // (the address itself, or the subnet's directed broadcast). No OS lookup: a peer is not a local interface.
 static bool resolve_peer_link(struct _tt_Link* link) {
-    const char* text = link->broadcast;
     uint32_t addr = 0;
     uint32_t prefix = 32;
-    for (int part = 0; part < 4; part++) {
-        if (text == NULL || *text < '0' || *text > '9') {
-            return false;
-        }
-        uint32_t value = 0;
-        while (*text >= '0' && *text <= '9') {
-            value = (value * 10U) + (uint32_t)(*text++ - '0');
-            if (value > 255U) {
-                return false;
-            }
-        }
-        addr = (addr << 8) | value;
-        if (part < 3 && *text++ != '.') {
-            return false;
-        }
-    }
-    if (*text == '/') {
-        text++;
-        prefix = 0;
-        while (*text >= '0' && *text <= '9') {
-            prefix = (prefix * 10U) + (uint32_t)(*text++ - '0');
-        }
-    }
-    if (*text != '\0' || prefix > 32U) {
+    if (!parse_ipv4(link->broadcast, true, &addr, &prefix)) {
         return false;
     }
     uint32_t netmask = prefix == 0 ? 0 : UINT32_MAX << (32U - prefix);
@@ -376,9 +745,9 @@ static bool resolve_peer_link(struct _tt_Link* link) {
 }
 #endif
 
-static tt_ret_t resolve_links(void) {
-    for (uint8_t i = 0; i < link_count(); i++) {
-        struct _tt_Link* link = &_tt_CONFIG.links[i];
+static tt_ret_t resolve_links(struct tt_Context* node) {
+    for (uint8_t i = 0; i < link_count(node); i++) {
+        struct _tt_Link* link = &node->links[i];
 #if tt_DISCOVERY_OPTIONS
         if (link->peer) {
             if (!resolve_peer_link(link)) {
@@ -427,11 +796,11 @@ static tt_ret_t resolve_links(void) {
 // Which configured link a peer address belongs to. A link the OS resolved matches addresses in its
 // subnet; a link it did not resolve is the catch-all for everything else, which is what makes the
 // limited broadcast still work as the default. Falls back to link 0 so this always names a link.
-static uint8_t link_of_ip(uint32_t ip) {
+static uint8_t link_of_ip(struct tt_Context* node, uint32_t ip) {
     uint8_t fallback = 0;
     bool have_fallback = false;
-    for (uint8_t i = 0; i < link_count(); i++) {
-        const struct _tt_Link* link = &_tt_CONFIG.links[i];
+    for (uint8_t i = 0; i < link_count(node); i++) {
+        const struct _tt_Link* link = &node->links[i];
         if (link->resolved) {
             if ((ip & link->resolved_netmask) == (link->resolved_addr & link->resolved_netmask)) {
                 return i;
@@ -671,8 +1040,8 @@ static uint8_t* segment_slot(struct tt_SegmentHeader* header, uint32_t index) {
 // The slot size this context builds its own segment with: the user's if they set one, the compiled default
 // otherwise. One place interprets the sentinel, so "did the user choose this?" is asked where it is answered
 // and not re-derived at each use.
-static uint32_t own_slot_bytes(void) {
-    return _tt_CONFIG.segment_slot_bytes != 0 ? _tt_CONFIG.segment_slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
+static uint32_t own_slot_bytes(const struct tt_Context* node) {
+    return node->opts.net.segment_slot_bytes != 0 ? node->opts.net.segment_slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
 }
 
 // Is a user-set slot size one this context can build a segment from at all? Checked at creation, where the
@@ -1408,7 +1777,7 @@ static void create_own_segment(struct tt_Context* node) {
     if (segment_name(path, sizeof(path), own_ip, own_port, node->id) < 0) {
         return;
     }
-    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes()));
+    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes(node)));
     if (mapping == NULL) {
         return; // no segment: peers reach this context over UDP, counted as unattached on their side
     }
@@ -1428,7 +1797,7 @@ static void create_own_segment(struct tt_Context* node) {
     header->owner_context_id = node->id;
     header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_wall_ns();
     header->slots = tt_SEGMENT_SLOTS;
-    header->slot_bytes = own_slot_bytes();
+    header->slot_bytes = own_slot_bytes(node);
     header->write_index = 0;
     header->read_index = 0;
     // Each slot starts free for the writer of its own index. Zeroed memory would leave slot 0
@@ -1543,7 +1912,7 @@ static void release_segments(struct tt_Context* node) {
     // slot size settable at runtime, what this context BUILT is the only thing that says how much to unmap, and
     // re-deriving it would hand munmap a length that is right only while nothing changed between.
     size_t bytes = node->own_segment != NULL ? segment_bytes(node->own_segment->slots, node->own_segment->slot_bytes)
-                                             : segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes());
+                                             : segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes(node));
 
     // The name is computed FIRST, while the mapping is certainly still there, and the own mapping is
     // taken out of the table before the loop - because a context is routinely attached to its own
@@ -2048,16 +2417,15 @@ struct tx_destination {
 // optimisation: it keeps the single-link case - every deployment that has not configured links[],
 // which is all of them today - on exactly the path it used before per-link existed, rather than on
 // a new one that happens to be equivalent.
-static uint8_t broadcast_destinations(struct tx_destination* out) {
-    if (link_count() <= 1) {
+static uint8_t broadcast_destinations(struct tt_Context* node, struct tx_destination* out) {
+    if (link_count(node) <= 1) {
         out[0] = (struct tx_destination) {0, 0, tt_CONTEXT_ID_INVALID};
         return 1;
     }
-    for (uint8_t i = 0; i < link_count(); i++) {
-        out[i] = (struct tx_destination) {_tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port,
-                                          tt_CONTEXT_ID_INVALID};
+    for (uint8_t i = 0; i < link_count(node); i++) {
+        out[i] = (struct tx_destination) {node->links[i].resolved_broadcast, net_port(node), tt_CONTEXT_ID_INVALID};
     }
-    return link_count();
+    return link_count(node);
 }
 
 // One link's share of an addressed buffer: unicast to its peers while there are few enough of
@@ -2065,11 +2433,11 @@ static uint8_t broadcast_destinations(struct tx_destination* out) {
 // the right answer differs by medium - five subscribers on a 10Base-T1S segment and one on
 // Ethernet want opposite answers, and a single count across both loses on whichever it is not
 // sized for. Appends to out[] after the `written` entries already there and returns the new count.
-static uint8_t link_destinations(const struct tt_Peer* peers, uint8_t peer_count, uint8_t link_index,
-                                 struct tx_destination* out, uint8_t written) {
+static uint8_t link_destinations(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count,
+                                 uint8_t link_index, struct tx_destination* out, uint8_t written) {
     uint8_t on_link = 0;
     for (uint8_t i = 0; i < peer_count; i++) {
-        if (link_of_ip(peers[i].ip) == link_index) {
+        if (link_of_ip(node, peers[i].ip) == link_index) {
             on_link++;
         }
     }
@@ -2077,18 +2445,18 @@ static uint8_t link_destinations(const struct tt_Peer* peers, uint8_t peer_count
         return written; // nobody known on this link, and this buffer is for known peers
     }
 
-    if (on_link > _tt_CONFIG.links[link_index].unicast_threshold) {
-        if (link_count() <= 1) {
+    if (on_link > node->links[link_index].unicast_threshold) {
+        if (link_count(node) <= 1) {
             out[written] = (struct tx_destination) {0, 0, tt_CONTEXT_ID_INVALID};
         } else {
-            out[written] = (struct tx_destination) {_tt_CONFIG.links[link_index].resolved_broadcast,
-                                                    (uint16_t)_tt_CONFIG.port, tt_CONTEXT_ID_INVALID};
+            out[written] = (struct tx_destination) {node->links[link_index].resolved_broadcast, net_port(node),
+                                                    tt_CONTEXT_ID_INVALID};
         }
         return (uint8_t)(written + 1);
     }
 
     for (uint8_t i = 0; i < peer_count && written < TX_MAX_DESTINATIONS; i++) {
-        if (link_of_ip(peers[i].ip) == link_index) {
+        if (link_of_ip(node, peers[i].ip) == link_index) {
             out[written++] = (struct tx_destination) {peers[i].ip, peers[i].port, peers[i].context_id};
         }
     }
@@ -2097,13 +2465,14 @@ static uint8_t link_destinations(const struct tt_Peer* peers, uint8_t peer_count
 
 // Where a flush sends its datagram: broadcast when peer_count is 0, otherwise each link's share of the
 // peers (link_destinations()). Returns how many destinations were written to out[].
-static uint8_t tx_destinations(const struct tt_Peer* peers, uint8_t peer_count, struct tx_destination* out) {
+static uint8_t tx_destinations(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count,
+                               struct tx_destination* out) {
     if (peer_count == 0) {
-        return broadcast_destinations(out);
+        return broadcast_destinations(node, out);
     }
     uint8_t written = 0;
-    for (uint8_t i = 0; i < link_count(); i++) {
-        written = link_destinations(peers, peer_count, i, out, written);
+    for (uint8_t i = 0; i < link_count(node); i++) {
+        written = link_destinations(node, peers, peer_count, i, out, written);
     }
     return written;
 }
@@ -2121,7 +2490,7 @@ static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutData
 static bool send_datagram_unless_full(struct tt_Context* node, const struct tx_datagram* dgram,
                                       const struct tt_Peer* peers, uint8_t peer_count) {
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
-    uint8_t count = tx_destinations(peers, peer_count, destinations);
+    uint8_t count = tx_destinations(node, peers, peer_count, destinations);
     for (uint8_t i = 0; i < count; i++) {
         struct tt_OutDatagram datagram = {dgram->head,     dgram->head_len,    dgram->body,
                                           dgram->body_len, destinations[i].ip, destinations[i].port};
@@ -2149,7 +2518,7 @@ static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgr
     }
 #endif
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
-    uint8_t count = tx_destinations(peers, peer_count, destinations);
+    uint8_t count = tx_destinations(node, peers, peer_count, destinations);
     if (count == 0) {
         return true; // addressed peers, none on any link: nothing to send, as before
     }
@@ -3487,7 +3856,7 @@ __attribute__((always_inline)) static inline bool send_fragments_from(struct tt_
 
     note_reached(node, peers, peer_count);
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
-    uint8_t destination_count = tx_destinations(peers, peer_count, destinations);
+    uint8_t destination_count = tx_destinations(node, peers, peer_count, destinations);
 #if !tt_HYBRID_TRANSPORT
     UNUSED(pub);
 #endif
@@ -5852,10 +6221,10 @@ static void reset_node_state(struct tt_Context* node) {
     // being dropped is suppressed. version_mismatch_drops still counts it, but a counter is what you
     // read once you suspect something and the log line is what tells you to suspect.
     memset(node->version_mismatch_logged, 0, sizeof(node->version_mismatch_logged));
-    node->large_fragmentation = _tt_CONFIG.large_fragmentation == tt_LARGE_FRAGMENTATION_INHERIT
+    node->large_fragmentation = node->opts.net.large_fragmentation == tt_LARGE_FRAGMENTATION_INHERIT
                                     ? (uint8_t)tt_LARGE_FRAGMENTATION_AUTO
-                                    : _tt_CONFIG.large_fragmentation;
-    node->ip_reassembly_max = advertised_ip_reassembly_max(_tt_CONFIG.ip_reassembly_max);
+                                    : node->opts.net.large_fragmentation;
+    node->ip_reassembly_max = advertised_ip_reassembly_max(net_ip_reassembly_max(node));
 #if tt_FRAG_ENABLED
     memset(node->peer_ip_reassembly_max, 0, sizeof(node->peer_ip_reassembly_max));
 #endif
@@ -6003,7 +6372,7 @@ static void set_id_bit(uint8_t* set, uint32_t id) {
 // id - the address's last octet - or, when another context on this host holds it, a free one.
 static bool claim_initial_id(struct tt_Context* node) {
     node->hal.claimed_id = tt_CONTEXT_ID_INVALID;
-    node->id_explicit = _tt_CONFIG.context_id != tt_CONTEXT_ID_INVALID;
+    node->id_explicit = node->opts.net.context_id != tt_CONTEXT_ID_INVALID;
     node->id_muted = false;
     node->id_muted_drops = 0;
     node->created_ns = tt_get_ns();
@@ -6012,7 +6381,7 @@ static bool claim_initial_id(struct tt_Context* node) {
     memset(node->ids_seen, 0, sizeof(node->ids_seen));
     node->collision_logged_ip = 0;
     node->collision_logged_port = 0;
-    int32_t preferred = node->id_explicit ? _tt_CONFIG.context_id : tt_get_node_id();
+    int32_t preferred = node->id_explicit ? node->opts.net.context_id : tt_get_node_id(node);
     if (preferred <= tt_CONTEXT_ID_INVALID || preferred >= tt_CONTEXT_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %d", preferred);
         return false;
@@ -6127,16 +6496,30 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-#if tt_SEGMENT_ENABLED
-    // A slot size the user set and this build cannot use is their configuration and their error, so it is
-    // refused here rather than quietly replaced by the default - a value silently ignored reads exactly like
-    // a value that had no effect, which is the shape config.h's own #ifndef guards were in until 2026-09-29.
-    if (_tt_CONFIG.segment_slot_bytes != 0 && !valid_slot_bytes(_tt_CONFIG.segment_slot_bytes)) {
-        TT_LOG_ERROR("Configured segment slot of %u bytes is outside [%u, %u] and cannot hold a datagram",
-                     _tt_CONFIG.segment_slot_bytes, (unsigned)sizeof(struct tt_Header), (unsigned)tt_MAX_SAMPLE_LENGTH);
+    struct tt_InitOptions opts;
+    tt_ret_t legacy = init_options_from_legacy_config(&opts);
+    if (legacy != tt_RET_OK) {
+        return legacy;
+    }
+    return tt_Context_create_with(node, &opts);
+}
+
+tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOptions* opts) {
+    if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-#endif
+    // Copied, then resolved: what the context reads from here on is its own, whatever the caller does with theirs.
+    if (opts != NULL) {
+        node->opts = *opts;
+        resolve_init_options(&node->opts);
+    } else {
+        tt_InitOptions_default(&node->opts);
+    }
+    tt_ret_t valid = validate_init_options(&node->opts);
+    if (valid != tt_RET_OK) {
+        return valid;
+    }
+    build_links(node);
     reset_node_state(node);
     // Before anything else can reach the node. Not concurrent-safe itself ("Threading", tickle.h): no
     // other thread may hold a node that is being created.
@@ -6149,7 +6532,7 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     // accepts (e.g. tt_hash_id() itself).
     // Before anything can send: flush_tx() addresses every datagram through the link table, so it
     // has to exist first. Idempotent, so a second node in this process costs one getifaddrs.
-    tt_ret_t link_ret = resolve_links();
+    tt_ret_t link_ret = resolve_links(node);
     if (link_ret != tt_RET_OK) {
         return link_ret;
     }
@@ -6161,8 +6544,9 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
         return tt_RET_IILEGAL_NODE_ID;
     }
 #else
-    // _tt_CONFIG.context_id (see its own comment) skips auto-detection when set explicitly.
-    node->id = (uint8_t)(_tt_CONFIG.context_id != tt_CONTEXT_ID_INVALID ? _tt_CONFIG.context_id : tt_get_node_id());
+    // opts.net.context_id (see its own comment) skips auto-detection when set explicitly.
+    node->id = (uint8_t)(node->opts.net.context_id != tt_CONTEXT_ID_INVALID ? node->opts.net.context_id
+                                                                            : tt_get_node_id(node));
     if (node->id == tt_CONTEXT_ID_INVALID || node->id == tt_CONTEXT_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
         return tt_RET_IILEGAL_NODE_ID;
@@ -6177,7 +6561,7 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
         return bound == tt_RET_UNSUPPORTED ? bound : tt_RET_IO_ERROR;
     }
 
-    TT_LOG_INFO("Node open at %d", _tt_CONFIG.port);
+    TT_LOG_INFO("Node open at %d", node->opts.net.port);
 
     // The segment is NOT created here, though this is the first moment its name could be built. It is
     // built when something can use it: when an announce shows a peer at this same address
@@ -7794,7 +8178,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
             }
         }
     } else {
-        if (link_count() <= 1) {
+        if (link_count(node) <= 1) {
             note_reached(node, NULL, 0); // the HAL's one broadcast address; with several links it is not every link
         }
         // Broadcast: no single peer, so tt_CONTEXT_ID_INVALID and therefore UDP.
@@ -9128,7 +9512,7 @@ static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx
     const struct tt_Peer* peers = NULL;
     uint8_t peer_count = unicast_destinations_for(node, pub, old_tx_tail, true, &peers);
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
-    if (tx_destinations(peers, peer_count, destinations) != 1) {
+    if (tx_destinations(node, peers, peer_count, destinations) != 1) {
         return false;
     }
     *out = destinations[0];
@@ -9769,7 +10153,7 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
     }
     bool unicast = count <= tt_UNICAST_PEER_THRESHOLD;
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
-    uint8_t destination_count = tx_destinations(unicast ? pub->peers : NULL, unicast ? count : 0, destinations);
+    uint8_t destination_count = tx_destinations(node, unicast ? pub->peers : NULL, unicast ? count : 0, destinations);
     note_reached(node, unicast ? pub->peers : NULL, unicast ? count : 0);
 #if !tt_HYBRID_TRANSPORT
     UNUSED(record);
@@ -15048,7 +15432,7 @@ static void hybrid_reader_start(struct tt_Context* node) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
     hybrid->rx_capable = n_max >= 2U;
-    hybrid->cap_off = _tt_CONFIG.reassembly_cap_off != 0;
+    hybrid->cap_off = node->opts.net.reassembly_cap_off != 0;
     hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max);
     hybrid->lifetime_ns = tt_HYBRID_QUEUE_LIFETIME_NS;
     hybrid->advertised = hybrid->rx_capable ? hybrid_cap_bytes(node, hybrid->cap, n_max) : node->ip_reassembly_max;
@@ -21264,15 +21648,16 @@ static bool read_single_header(const struct tt_SingleHeader* single, uint32_t bo
 #define LOOPBACK_NET 127U
 // (g6) Whether a datagram from `ip` is inside the discovery range. LOCALHOST: this host - loopback, or this context's
 // own link address - or a static peer (a peer link's address or subnet). OFF: nothing.
-static bool sender_in_range(uint32_t ip) {
-    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+static bool sender_in_range(const struct tt_Context* node, uint32_t ip) {
+    if (node->opts.net.discovery_range == tt_DISCOVERY_RANGE_OFF) {
         return false;
     }
     if ((ip >> 24) == LOOPBACK_NET) {
         return true;
     }
-    for (uint8_t i = 0; i < link_count(); i++) {
-        const struct _tt_Link* link = &_tt_CONFIG.links[i];
+    // The table as built, not link_count()'s default: a default link is unresolved, so it would match nothing here.
+    for (uint8_t i = 0; i < node->link_count; i++) {
+        const struct _tt_Link* link = &node->links[i];
         if (!link->resolved) {
             continue;
         }
@@ -21337,7 +21722,7 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
     // CALLREQUEST/ CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole packet up
     // front.
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(sender_ip)) {
+    if (node->opts.net.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(node, sender_ip)) {
         node->rx_out_of_range++;
         return true; // (g6) from outside the discovery range: not processed, as if never received
     }
@@ -22311,7 +22696,7 @@ static void segment_peek_record(const struct tt_Context* node, struct tt_Segment
         return;
     }
 #if tt_DISCOVERY_OPTIONS
-    if (_tt_CONFIG.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(slot_header->sender_ip)) {
+    if (node->opts.net.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(node, slot_header->sender_ip)) {
         return;
     }
 #endif

@@ -61,18 +61,21 @@ static struct tt_Context linux_node;
 static struct tt_Context freertos_node;
 static struct tt_Context receiver;
 
-// A context as tt_Context_create() leaves its state - reset_node_state() reads _tt_CONFIG - without a socket.
+// The next init_node()'s opts.net.large_fragmentation: 0, the default (AUTO), unless a test sets it.
+static uint8_t init_large_fragmentation;
+
+// A context as tt_Context_create_with() leaves its state - reset_node_state() reads node->opts - without a socket.
 // The reader's cap is switched off (as a forced arm's reader) so that what a node advertises is its configured ceiling,
 // which is what these tests carry from end to end; test_the_capped_reader_advertises_its_cap is the default.
+// ip_reassembly_max 0 is none (tt_IP_REASSEMBLY_NONE), as FreeRTOS advertises.
 static void init_node(struct tt_Context* node, uint8_t id, uint16_t ip_reassembly_max) {
-    uint16_t saved = _tt_CONFIG.ip_reassembly_max;
-    _tt_CONFIG.ip_reassembly_max = ip_reassembly_max;
-    _tt_CONFIG.reassembly_cap_off = 1;
     memset(node, 0, sizeof(*node));
+    node->opts.net.ip_reassembly_max = ip_reassembly_max != 0 ? ip_reassembly_max : tt_IP_REASSEMBLY_NONE;
+    node->opts.net.reassembly_cap_off = 1;
+    node->opts.net.large_fragmentation = init_large_fragmentation;
     node_init_locks(node);
     reset_node_state(node);
-    _tt_CONFIG.reassembly_cap_off = 0;
-    _tt_CONFIG.ip_reassembly_max = saved;
+    node->opts.net.reassembly_cap_off = 0;
     node->id = id;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = sizeof(node->tx_buffer);
@@ -146,9 +149,11 @@ static void add_publishers(struct tt_Context* node, uint32_t count) {
 // The settings, as tt_Context_create() reads them: Linux's default, the cap by the receive buffer, FreeRTOS's 0.
 static void test_settings_and_defaults(void) {
     test_mock_reset();
-    EXPECT_EQ_U32(tt_IPV4_UDP_MAX_PAYLOAD, _tt_CONFIG.ip_reassembly_max); // the Linux default (_tt_IP_REASSEMBLY_MAX)
-    EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_AUTO, _tt_CONFIG.large_fragmentation);
-    init_node(&linux_node, LINUX_ID, _tt_CONFIG.ip_reassembly_max);
+    struct tt_InitOptions defaults;
+    tt_InitOptions_default(&defaults);
+    EXPECT_EQ_U32(tt_IPV4_UDP_MAX_PAYLOAD, defaults.net.ip_reassembly_max); // the Linux default (_tt_IP_REASSEMBLY_MAX)
+    EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_AUTO, defaults.net.large_fragmentation);
+    init_node(&linux_node, LINUX_ID, defaults.net.ip_reassembly_max);
     EXPECT_EQ_U32(65507, linux_node.ip_reassembly_max);
     EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_AUTO, linux_node.large_fragmentation);
     init_node(&freertos_node, FREERTOS_ID, 0);
@@ -157,14 +162,13 @@ static void test_settings_and_defaults(void) {
     EXPECT_EQ_U32(tt_MAX_BUFFER_LENGTH, advertised_ip_reassembly_max(100000U));
     EXPECT_EQ_U32(9000, advertised_ip_reassembly_max(9000U));
     // A context's 0 (INHERIT) reads as AUTO; MTU and IP are kept.
-    uint8_t saved = _tt_CONFIG.large_fragmentation;
-    _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT;
+    init_large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT;
     init_node(&receiver, RECEIVER_ID, 65507);
     EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_AUTO, receiver.large_fragmentation);
-    _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+    init_large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
     init_node(&receiver, RECEIVER_ID, 65507);
     EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_MTU, receiver.large_fragmentation);
-    _tt_CONFIG.large_fragmentation = saved;
+    init_large_fragmentation = 0;
     // A Publisher inherits both by default.
     add_publishers(&linux_node, 1);
     EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_INHERIT, pubs[0].large_fragmentation);
@@ -309,19 +313,17 @@ static void test_version_mismatch(void) {
 // keeps no cap and advertises its ceiling as it is.
 static void test_the_capped_reader_advertises_its_cap(void) {
     test_mock_reset();
-    uint16_t saved = _tt_CONFIG.ip_reassembly_max;
-    _tt_CONFIG.ip_reassembly_max = 65507;
     memset(&receiver, 0, sizeof(receiver));
+    receiver.opts.net.ip_reassembly_max = 65507;
     node_init_locks(&receiver);
     reset_node_state(&receiver);
     EXPECT_EQ_U32(45, receiver.hybrid.cap);
     EXPECT_EQ_U32(65507, receiver.hybrid.advertised);
     EXPECT_EQ_U32(45, hybrid_units_within(receiver.hybrid.advertised, true));
-    _tt_CONFIG.ip_reassembly_max = 1472;
+    receiver.opts.net.ip_reassembly_max = 1472;
     reset_node_state(&receiver);
     EXPECT_TRUE(!receiver.hybrid.rx_capable);
     EXPECT_EQ_U32(1472, receiver.hybrid.advertised);
-    _tt_CONFIG.ip_reassembly_max = saved;
 }
 
 int main(void) {

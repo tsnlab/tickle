@@ -54,19 +54,26 @@
 #define FOREIGN_IP 0xCB007107U  // 203.0.113.7, TEST-NET-3: documentation only, never a local address
 #define LOOPBACK_IP 0x7F000001U // 127.0.0.1
 
-// A context as tt_bind() leaves it for this purpose: a data socket bound to _tt_CONFIG.addr on a kernel-chosen port,
+// The context options open_context() gives its context (struct tt_NetOptions addr and broadcast).
+static const char* test_addr = "0.0.0.0";
+static const char* test_broadcast = "255.255.255.255";
+
+// A context as tt_bind() leaves it for this purpose: a data socket bound to test_addr on a kernel-chosen port,
 // the broadcast it sends to, and the address recorded from both. No well-known socket, so nothing is received either.
 static bool open_context(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
     node->id = id;
+    node->opts.net.addr = test_addr;
+    node->opts.net.broadcast = test_broadcast;
+    node->opts.net.port = (uint16_t)_tt_CONTEXT_PORT;
     node->hal.sock = -1;
     node->hal.wake_fd = -1;
     node->hal.broadcast_addr.sin_family = AF_INET;
-    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
-    node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
+    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(test_broadcast);
+    node->hal.broadcast_addr.sin_port = htons(_tt_CONTEXT_PORT);
     node->hal.data_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     struct sockaddr_in local = {.sin_family = AF_INET, .sin_port = 0};
-    local.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    local.sin_addr.s_addr = inet_addr(test_addr);
     if (node->hal.data_sock < 0 || bind(node->hal.data_sock, (struct sockaddr*)&local, sizeof(local)) != 0) {
         return false;
     }
@@ -97,8 +104,8 @@ static bool is_interface_address(uint32_t ip) {
 }
 
 static void use_default_config(void) {
-    _tt_CONFIG.addr = "0.0.0.0";
-    _tt_CONFIG.broadcast = "255.255.255.255";
+    test_addr = "0.0.0.0";
+    test_broadcast = "255.255.255.255";
 }
 
 static void test_the_limited_broadcast_still_gives_an_address(void) {
@@ -175,8 +182,8 @@ static void test_a_foreign_peer_is_neither_same_host_nor_own(void) {
 // A context bound to one address (rmw_tickle's LOCALHOST range binds 127.0.0.1) keeps it, even on the limited
 // broadcast whose route leaves by another interface.
 static void test_a_bound_address_is_kept(void) {
-    _tt_CONFIG.addr = "127.0.0.1";
-    _tt_CONFIG.broadcast = "255.255.255.255";
+    test_addr = "127.0.0.1";
+    test_broadcast = "255.255.255.255";
     struct tt_Context node;
     EXPECT_TRUE(open_context(&node, OWNER_ID));
     uint32_t ip = 0;
@@ -189,8 +196,8 @@ static void test_a_bound_address_is_kept(void) {
 // The explicit path, unchanged: a directed broadcast an interface owns names that interface's address. Loopback owns
 // 127.255.255.255 on every Linux host.
 static void test_an_owned_broadcast_names_its_interface(void) {
-    _tt_CONFIG.addr = "0.0.0.0";
-    _tt_CONFIG.broadcast = "127.255.255.255";
+    test_addr = "0.0.0.0";
+    test_broadcast = "127.255.255.255";
     struct tt_Context node;
     EXPECT_TRUE(open_context(&node, OWNER_ID));
     uint32_t ip = 0;
