@@ -47,6 +47,13 @@ can differ. `tt_Context_create(ctx)` is `tt_Context_create_with()` given the dep
 once; writing `_tt_CONFIG` is deprecated and goes when the last caller has moved. A default context is byte-identical on
 the wire to one created before the options existed (`tests/wire_identity_initoptions.sh`).
 
+**Service options** (`tt_InitOptions.service`, bundle 4): the call retry seed, count, granularity, ceiling multiple and
+deadline per send, the kept-answer gap multiple and the deferred-response timeout, each 0 = its `config.h` default. A
+Client's own `call_retry_*` still override seed and count. The old `static_assert`s between them are creation checks.
+The client's schedule is interop-semantic (a server reckons it from its own options), so a non-default one is accepted
+with a warning. rmw_tickle's client retry count is the context's deferred timeout / 100 ms. Default behaviour is
+trace-identical (`tests/wire_identity_service.sh`).
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |

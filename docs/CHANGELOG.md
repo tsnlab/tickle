@@ -39,6 +39,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   defaults; `tt_Publisher_storage_size_for()` / `tt_Subscriber_storage_size_for()` size for a context, and storage short
   of what a raised default needs is refused with the field named. rmw_tickle reads `RMW_TICKLE_CACHE_BYTES`,
   `RMW_TICKLE_KEEP_ALL_BYTES` and `RMW_TICKLE_MAX_BLOCKING_MS` once, at `rmw_init()`, into these.
+- **Service options** (`tt_InitOptions.service`, bundle 4): `tt_CALL_RETRY_*`, `tt_CALL_DEADLINE_PER_SEND`,
+  `tt_SERVER_CACHE_GAP_MULTIPLE` and `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` are per-context defaults; their
+  static_asserts are creation checks; a non-default client schedule warns (a peer's server assumes the build's).
+  `RMW_TICKLE_CLIENT_RETRY_COUNT` is replaced by `rmw_tickle_client_retry_count(ctx)`.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
