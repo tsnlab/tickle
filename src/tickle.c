@@ -18502,7 +18502,9 @@ static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, 
 // not being sent at all, which is what a full cache used to mean: the one sent longest ago, unless this Client already
 // holds a full depth (tt_CLIENT_MAX_OUTSTANDING) of answers - then its own, so a Client calling at full depth does not
 // push out the answer a slower one is still retrying. With one call per Client it holds none here, so the rule is the
-// old one.
+// old one. A synchronous answer no longer gets that far: process_callrequest() turns its request away before the
+// callback (server_cache_can_keep()), since the evicted answer's client may still retry it. A deferred request's
+// answer, kept when tt_Server_send_response() sends it, still can.
 static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header, uint8_t receiver,
                              uint8_t client_tag) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
@@ -18560,6 +18562,62 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     server->cache_client_tag[free_slot] = client_tag;
     server->cache[free_slot] = cache;
 
+    return true;
+}
+
+// Whether the answer about to be computed for the call (receiver, client_tag, seq_no) can be kept without pushing out
+// an answer some client may still be retrying for: a slot holds nothing live (never used, or expired - an expired
+// answer's client has stopped retrying, server_cache_lifetime()), or this Client already holds answers its call window
+// proves finished (set_server_cache() replaces its own oldest; built with one call per Client, its previous answer).
+// Asked before the callback runs. Stops at the first empty slot, so a cache with room costs a few compares; the clock
+// is read only when every slot holds an answer, and each one's liveness is then decided at that one `now`
+// (server_cache_live(), which clears the expired ones, so the own-answer counts after it read cache[] as live).
+//
+// With every slot live for other calls, set_server_cache() could only evict the answer sent longest ago, and nothing
+// says its client has it: a retry for it would run that callback a second time. Such a request is turned away
+// unexecuted instead, as tt_CALL_IGNORED is - its client's retry asks again, and a slot frees within one answer
+// lifetime. The cost is liveness under overload: more callers than tt_MAX_SERVER_CACHE_COUNT answers within a
+// lifetime, each holding fewer than tt_CLIENT_CALL_WINDOW of its own, wait for slots instead of being served.
+static bool server_cache_can_keep(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no) {
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] == NULL) {
+            return true;
+        }
+    }
+    uint64_t now = tt_get_ns();
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (!server_cache_live(server, i, now)) {
+            return true; // expired: its client has stopped retrying
+        }
+    }
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+            if (server_cache_slot_is_own(server, i, receiver, client_tag)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    struct server_cache_pick pick;
+    pick_server_cache_slots(server, receiver, client_tag, seq_no, now, &pick);
+    return pick.own_live >= tt_CLIENT_CALL_WINDOW;
+}
+
+// Whether a request with no kept answer may run its callback now. Room in the scheduler first: holding the request
+// deferred, or keeping its answer for the client's retries, takes an entry, and with none the request was dropped after
+// its callback ran - a deferred one after the application had been handed it, a synchronous answer computed and never
+// sent, and the retry ran the callback again (2026-10-16, tests/test_scheduler_headroom.c). Then room to keep the
+// answer (server_cache_can_keep()). False turns the request away unexecuted; the client's retry asks again.
+static bool server_can_take_request(struct tt_Context* node, struct tt_Server* server, uint8_t receiver,
+                                    uint8_t client_tag, uint16_t seq_no) {
+    if (!sched_has_room(node)) {
+        sched_note_full(node);
+        return false;
+    }
+    if (!server_cache_can_keep(server, receiver, client_tag, seq_no)) {
+        TT_LOG_DEBUG("Every kept answer may still be wanted - CallRequest turned away until one expires");
+        return false;
+    }
     return true;
 }
 
@@ -18876,14 +18934,8 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
             return false;
         }
     } else {
-        // Room in the scheduler first: holding the request deferred, or keeping its answer for the client's retries,
-        // takes an entry, and with none the request was dropped after its callback ran - a deferred one after the
-        // application had been handed it, a synchronous answer computed and never sent, and the retry ran the callback
-        // again (2026-10-16, tests/test_scheduler_headroom.c). Turned away before the callback instead, as
-        // tt_CALL_IGNORED is: the client's retry asks again.
-        if (!sched_has_room(node)) {
-            sched_note_full(node);
-            return true;
+        if (!server_can_take_request(node, server, header->source, client_tag, seq_no)) {
+            return true; // turned away before the callback, as tt_CALL_IGNORED is: the client's retry asks again
         }
         struct tt_Service* service = server->service;
 

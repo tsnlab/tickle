@@ -725,9 +725,12 @@ static void test_a_farewell_drops_the_sources_responses(void) {
     EXPECT_EQ_U32(2, (uint32_t)callback_count);
 }
 
-// With every slot holding a live response, a new client's answer evicts the one sent longest ago instead of not
-// being sent at all ("Out of server cache slots" used to roll the response back). Killed by: the eviction removed.
-static void test_full_slots_evict_the_oldest_response(void) {
+// With every slot holding a live response, a new client's request is turned away before its callback runs: the only
+// room set_server_cache() could make is the answer sent longest ago, and its client may still retry it - a retry that
+// would run that callback a second time. Once the answers expire, the newcomer's retry is served. (Until 2026-10-21 the
+// newcomer evicted the oldest answer; before that, "Out of server cache slots" rolled the computed response back.)
+// Killed by: the check removed (the newcomer runs at once and client 10's retry runs its callback again).
+static void test_full_slots_turn_a_new_request_away(void) {
     struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
@@ -738,10 +741,42 @@ static void test_full_slots_evict_the_oldest_response(void) {
     }
     uint8_t newcomer = (uint8_t)(10 + tt_MAX_SERVER_CACHE_COUNT);
     ask(&node, newcomer, 1, 0, t0 + MS);
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT, (uint32_t)callback_count); // not run
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT, (uint32_t)test_mock_send_call_count);
+    EXPECT_TRUE(get_server_cache(&server, newcomer, 0, 1) == NULL);
+    ask(&node, 10, 1, 1, t0 + (2 * MS)); // the oldest's client retries: still served from its kept answer
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT, (uint32_t)callback_count);
     EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT + 1, (uint32_t)test_mock_send_call_count);
+    uint64_t later = t0 + (2 * MS) + server_cache_lifetime(&server) + MS; // every answer has expired
+    ask(&node, newcomer, 1, 1, later);
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT + 1, (uint32_t)callback_count);
     EXPECT_TRUE(get_server_cache(&server, newcomer, 0, 1) != NULL);
-    EXPECT_TRUE(get_server_cache(&server, 10, 0, 1) == NULL); // the oldest went
-    EXPECT_TRUE(get_server_cache(&server, 11, 0, 1) != NULL); // and only it
+}
+
+// A Client already holding tt_CLIENT_CALL_WINDOW answers is not turned away by a full cache: its own oldest answer is
+// one its call window proves finished (set_server_cache()), so that one goes. Killed by: the check ignoring a Client's
+// own answers (the call would be refused for as long as the cache stays full).
+static void test_full_slots_still_serve_a_client_at_its_window(void) {
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        return; // one call per Client: covered by the window of one, its previous answer (set_server_cache())
+    }
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    int others = tt_MAX_SERVER_CACHE_COUNT - tt_CLIENT_CALL_WINDOW;
+    for (int i = 0; i < others; i++) {
+        ask(&node, (uint8_t)(10 + i), 1, 0, t0 + ((uint64_t)i * US));
+    }
+    for (int k = 0; k < tt_CLIENT_CALL_WINDOW; k++) {
+        ask(&node, REMOTE_NODE_ID, (uint16_t)(100 + k), 0, t0 + MS + ((uint64_t)k * US));
+    }
+    ask(&node, REMOTE_NODE_ID, (uint16_t)(100 + tt_CLIENT_CALL_WINDOW), 0, t0 + (2 * MS)); // full, its 9th call
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT + 1, (uint32_t)callback_count);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, (uint16_t)(100 + tt_CLIENT_CALL_WINDOW)) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, 100) == NULL); // its own oldest went
+    EXPECT_TRUE(get_server_cache(&server, 10, 0, 1) != NULL);               // and no one else's
 }
 
 int main(void) {
@@ -765,7 +800,8 @@ int main(void) {
     test_a_restarted_client_does_not_get_its_predecessors_answer();
     test_an_announce_without_the_client_drops_its_responses();
     test_a_farewell_drops_the_sources_responses();
-    test_full_slots_evict_the_oldest_response();
+    test_full_slots_turn_a_new_request_away();
+    test_full_slots_still_serve_a_client_at_its_window();
 
     if (test_result() != 0) {
         return 1;
