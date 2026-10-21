@@ -54,6 +54,17 @@ The client's schedule is interop-semantic (a server reckons it from its own opti
 with a warning. rmw_tickle's client retry count is the context's deferred timeout / 100 ms. Default behaviour is
 trace-identical (`tests/wire_identity_service.sh`).
 
+**Discovery options** (`tt_InitOptions.discovery`, bundle 2). The discovery and liveliness timings of sections 5 and 9
+are the context's own: cycle, update interval, tx interval, lease divisor, longest lease, list-request retry and
+attempts, liveliness deferral and its cap, miss threshold (the silence is derived per context), the full-scheduler
+warning interval. The config.h constants are their defaults. Checked at creation: every duration at most a day, the tx
+interval at most the update interval, and the silence above `tt_SEGMENT_DEAD_READER_NS` (was a `static_assert`). The
+peers judge a context's silence by their own update interval and miss threshold, which no announce carries, so a context
+created with either different from the default logs a WARNING. The lease floor (`lease_divisor` x tx interval) is the
+context's at an endpoint's creation; `tt_QosProfile_resolve()` and `tt_*_storage_size()`, which have no context, keep
+the default's. rmw_tickle reads its watchdog period, stall threshold, MANUAL_BY_TOPIC default lease and lease floor
+from its core context.
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |

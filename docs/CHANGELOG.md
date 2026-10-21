@@ -43,6 +43,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `tt_SERVER_CACHE_GAP_MULTIPLE` and `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` are per-context defaults; their
   static_asserts are creation checks; a non-default client schedule warns (a peer's server assumes the build's).
   `RMW_TICKLE_CLIENT_RETRY_COUNT` is replaced by `rmw_tickle_client_retry_count(ctx)`.
+- **Discovery options** (`tt_InitOptions.discovery`, bundle 2): the discovery and liveliness timings (`tt_CONTEXT_CYCLE`,
+  `_UPDATE_INTERVAL`, `_TX_INTERVAL`, `_MAX_LEASE_NS`, `tt_LIVELINESS_LEASE_DIVISOR`, `_DEFER_NS`, `_MAX_DEFERRALS`,
+  `_MISS_THRESHOLD`, `tt_DISCOVERY_REQUEST_RETRY`, `_ATTEMPTS`, `tt_SCHED_FULL_WARN_INTERVAL`) are per context, the
+  constants their defaults; `tt_SEGMENT_DEAD_READER_NS < silence` checked at creation. A non-default update interval or
+  miss threshold logs a WARNING (peers judge silence by their own). rmw_tickle reads them from its core context.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
