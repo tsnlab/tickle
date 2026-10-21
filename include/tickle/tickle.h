@@ -927,10 +927,24 @@ struct tt_QosDefaults {
     uint32_t keep_all_bytes;  // KEEP_ALL history.bytes; 0 = tt_QOS_KEEP_ALL_BYTES_DEFAULT
     uint64_t max_blocking_ns; // a Publisher's reliability.max_blocking_ns; 0 = tt_QOS_MAX_BLOCKING_DEFAULT_NS
 };
-// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
+// How tt_Context_poll() paces its receive loop (bundle 6). Each 0 = the build's constant of the same name in config.h.
+// Counts are at most tt_POLL_COUNT_MAX, the slice at most tt_POLL_RECEIVE_TIMEOUT_MAX.
+#define tt_POLL_COUNT_MAX 1024U
+#define tt_POLL_RECEIVE_TIMEOUT_MAX tt_SECOND
 struct tt_PollOptions {
-    uint8_t reserved;
+    // Datagrams of one drain stamped with one reading of the clock, and the drain's "this pass is long" point, where
+    // it looks at the shared-memory ring (tt_RX_CLOCK_REFRESH). Larger: fewer clock reads, staler stamps.
+    uint32_t rx_clock_refresh;
+    // Datagrams the HAL already holds processed under one taking of the state lock; a thread publishing meanwhile
+    // waits at most this many (tt_RX_LOCK_CHUNK). 1 is the behaviour before the chunking.
+    uint32_t rx_lock_chunk;
+    // Nanoseconds: the most back-to-back scheduler work a negative-timeout poll runs before it returns, and how long
+    // the Linux HAL goes on reading one busy socket while the other is skipped as idle (tt_RECEIVE_TIMEOUT).
+    uint64_t receive_timeout;
+    // Scheduler entries a poll runs back to back before it squeezes in a receive check (tt_SCHEDULER_IO_INTERLEAVE).
+    uint32_t scheduler_io_interleave;
 };
+// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
 struct tt_SocketOptions {
     uint8_t reserved;
 };
