@@ -94,9 +94,19 @@ constant. `bytes` sets the slot count (largest power of two that fits, 4 to the 
 the reader's per-slot state); 0 keeps `tt_SEGMENT_SLOTS` slots at any slot size, as before. `dead_reader_ns` 0 is derived
 at creation from the context's discovery timing (one update interval; `tt_SEGMENT_DEAD_READER_NS` at the defaults).
 Checked: slot holds a datagram, 4 to `tt_SEGMENT_SLOTS` slots, fence hold < dead reader < silence, `probe_every_max` a
-power of two (the window is a mask; no 64-bit modulo on rv32). Per-record and per-send cost unchanged: the drain bound
-is read once a poll, the send counts only when a countdown is reset. `tt_PUBLISHER_CLAIMS` and `tt_SEGMENT_FENCES_SEEN`
-stay compile-time.
+power of two (the window is a mask; no 64-bit modulo on rv32). `tt_PUBLISHER_CLAIMS` and `tt_SEGMENT_FENCES_SEEN` stay
+compile-time. The send counts are read only when a countdown is reset. Cost, corrected: this paragraph said "per-record
+cost unchanged" for the first build, and the rig's same-host gate v2 A/B (A fab14fd9, B that build before its rebase,
+`ab_samehost_initoptions8_segment_20261022-003748`, placement control held) read +0.6% to +1.7% server and +0.6%
+client user instructions a sample on BE p1/p3, reliable p3 and latency p1/p3. The drain compared every record against the runtime bound, one live value too many on aarch64: drain_own_segment +7.8
+instructions a call, the only function that moved (`aarch64_insn/samehost_qemu.sh`, exact counts). Each lock chunk now
+folds the bound into its own count, one compare a record: -15 a round trip against main there, and on the PC
+(`initoptions8_segment_insn_pc.sh`, A 05118219, B a9f0566a, n 6/6/6 a cell) latency p1/p3 -0.17% client and -0.36%
+server, BE p1/p3 and reliable p3 clients -0.04% to -0.30%. Its pre-registered verdict is FAIL all the same, on the
+BE p1/p3 and reliable p3 servers only: their count on this PC is bimodal - a reader that catches the writer mid-copy
+polls the claimed head, 0.13-0.34 head stalls a sample against 0.03-0.04 - and the placement arm itself moved +16% to
++68% there; within one mode B is at or below A. The unfixed build failed on the latency cells (+5 a round trip, server),
+which the earlier PC run (user plus kernel instructions, other cells) could not see. Rig same-host A/B pending.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
