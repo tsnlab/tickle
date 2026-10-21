@@ -39,6 +39,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- A core service call on the auto retry schedule could run its callback twice: the server kept an answer for the
+  client's seed schedule (75 ms), while the client's srtt-relative retries come up to its 1 s deadline. Under 5% loss
+  each way at 1 kHz (rig cell c21, on the PC) 1-2 calls in 3,000-7,000 ran twice. The server now keeps an answer for
+  the auto client's deadline plus one `tt_CALL_DEADLINE_PER_SEND` (1.25 s), still at most `tt_CLIENT_CALL_WINDOW` per
+  calling client (`tests/test_service_exactly_once.c`).
 - An rmw_tickle service request whose answer was lost was served twice. The server's `tt_Service` left the client's
   retry schedule at 0, so core kept the answer 75 ms (the auto schedule) while the client retries after 100 ms; the
   retry found nothing kept and ran the callback again. The server now carries the client's 100 ms x 50, and keeps an

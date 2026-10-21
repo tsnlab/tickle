@@ -487,9 +487,9 @@ static void test_many_answered_calls_do_not_fill_the_scheduler(void) {
 // --- How long an answered response is kept (ROADMAP "Now" 5a, 2026-10-05) ---------------------------------------
 // It used to be a fixed tt_SERVER_CACHE_TIMEOUT (100 ms), fitted to the rig and already shorter than the 250 ms the
 // client's own retry interval could reach. The server cannot see the client's srtt, so it keeps a response for the
-// longest of what it can know: the client's retry schedule before any answer (the seed, from the shared defaults or
-// this service's explicit call_retry_*), and a multiple of the gaps it has actually seen between a response going
-// out and the same client asking again. Each pin names the mutant it kills.
+// longest of what it can know: how long the client may retry (on the auto path its deadline, since 2026-10-21 - the
+// seed schedule before; with this service's explicit call_retry_*, those), and a multiple of the gaps it has actually
+// seen between a response going out and the same client asking again. Each pin names the mutant it kills.
 
 #define US 1000ULL
 #define MS 1000000ULL
@@ -528,18 +528,20 @@ static void setup_lifetime(struct tt_Context* node, struct tt_Service* service, 
     init_node_service_server(node, service, server);
 }
 
-// Before it has seen any client retry, the server keeps a response for the default client's whole seed schedule:
-// 5 + 10 + 20 + 40 ms, the waits of a client with no answer yet. A retry at the end of it is served from the cache.
-static void test_the_seed_lifetime_is_the_default_clients_schedule(void) {
+// Before it has seen any client retry, the server keeps a response for the auto client's whole horizon: its deadline,
+// (count + 1) x tt_CALL_DEADLINE_PER_SEND, after which it sends nothing, and one more for that last retry's way. A
+// retry just before the deadline is served from the cache. Killed by: the lifetime of the client's seed schedule
+// (5 + 10 + 20 + 40 = 75 ms, until 2026-10-21), whose waits are srtt-relative and not bounded by it.
+static void test_the_auto_lifetime_is_the_clients_deadline(void) {
     struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     setup_lifetime(&node, &service, &server);
-    uint64_t window = ((2ULL << tt_CALL_RETRY_COUNT) - 1) * tt_CALL_RETRY_INTERVAL;
-    EXPECT_EQ_U64(window, server_cache_lifetime(&server));
+    uint64_t deadline = ((uint64_t)tt_CALL_RETRY_COUNT + 1) * tt_CALL_DEADLINE_PER_SEND;
+    EXPECT_EQ_U64(deadline + tt_CALL_DEADLINE_PER_SEND, server_cache_lifetime(&server));
     uint64_t t0 = test_mock_now;
     ask(&node, REMOTE_NODE_ID, 1, 0, t0);
-    ask(&node, REMOTE_NODE_ID, 1, tt_CALL_RETRY_COUNT, t0 + window - US); // retries 1..count-1 were lost
+    ask(&node, REMOTE_NODE_ID, 1, tt_CALL_RETRY_COUNT, t0 + deadline - US); // retries 1..count-1 were lost
     EXPECT_EQ_U32(1, (uint32_t)callback_count);
 }
 
@@ -559,10 +561,11 @@ static void test_an_explicit_interval_sets_the_lifetime(void) {
     EXPECT_EQ_U32(1, (uint32_t)callback_count);
 }
 
-// A client whose retries are 60, 120 and 240 ms apart (60 ms first interval, doubled per retry) finds its response
-// every time: each hit re-arms the entry, for a multiple of the gap it just measured. Killed by: the fixed 100 ms
-// (the 180 ms retry misses), the re-arm removed (the entry dies at 75 ms), and the re-arm without the measured gap
-// (it dies 75 ms after the first hit, before the second).
+// A client whose retries are 700, 1400 and 2800 ms apart (a client slower than the auto horizon - one whose own
+// explicit schedule its service does not state) finds its response every time: each hit re-arms the entry, for a
+// multiple of the gap it just measured. Killed by: the fixed 100 ms, the re-arm removed (the entry dies at 1.25 s,
+// before the 2.1 s retry), and the re-arm without the measured gap (it dies 1.25 s after the first hit, before the
+// second).
 static void test_a_retrying_client_keeps_its_response(void) {
     struct tt_Context node;
     struct tt_Service service;
@@ -570,9 +573,9 @@ static void test_a_retrying_client_keeps_its_response(void) {
     setup_lifetime(&node, &service, &server);
     uint64_t t0 = test_mock_now;
     ask(&node, REMOTE_NODE_ID, 1, 0, t0);
-    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (60 * MS));
-    ask(&node, REMOTE_NODE_ID, 1, 2, t0 + (180 * MS));
-    ask(&node, REMOTE_NODE_ID, 1, 3, t0 + (420 * MS));
+    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (700 * MS));
+    ask(&node, REMOTE_NODE_ID, 1, 2, t0 + (2100 * MS));
+    ask(&node, REMOTE_NODE_ID, 1, 3, t0 + (4900 * MS));
     EXPECT_EQ_U32(1, (uint32_t)callback_count);
     EXPECT_EQ_U32(4, (uint32_t)test_mock_send_call_count); // the answer and three resends
 }
@@ -588,10 +591,10 @@ static void test_a_slow_client_is_learnt_from_one_miss(void) {
     setup_lifetime(&node, &service, &server);
     uint64_t t0 = test_mock_now;
     ask(&node, REMOTE_NODE_ID, 1, 0, t0);
-    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (200 * MS)); // after the 75 ms seed: a miss, the callback runs again
+    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (1500 * MS)); // after the 1.25 s horizon: a miss, the callback runs again
     EXPECT_EQ_U32(2, (uint32_t)callback_count);
-    ask(&node, REMOTE_NODE_ID, 2, 0, t0 + (300 * MS));
-    ask(&node, REMOTE_NODE_ID, 2, 1, t0 + (500 * MS)); // the same 200 ms gap: now a hit
+    ask(&node, REMOTE_NODE_ID, 2, 0, t0 + (1600 * MS));
+    ask(&node, REMOTE_NODE_ID, 2, 1, t0 + (3100 * MS)); // the same 1.5 s gap: now a hit
     EXPECT_EQ_U32(3, (uint32_t)callback_count);
 }
 
@@ -752,7 +755,7 @@ int main(void) {
     test_retry_while_deferred_does_not_recall_callback();
     test_deferred_response_is_sent_as_it_was_at_send_response();
     test_many_answered_calls_do_not_fill_the_scheduler();
-    test_the_seed_lifetime_is_the_default_clients_schedule();
+    test_the_auto_lifetime_is_the_clients_deadline();
     test_an_explicit_interval_sets_the_lifetime();
     test_a_retrying_client_keeps_its_response();
     test_a_slow_client_is_learnt_from_one_miss();

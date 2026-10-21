@@ -23,10 +23,12 @@
 // request, and answers the client gets.
 //
 // Arms, each with the reading written into its expectation:
-// - control: a client retrying every 50 ms - inside 75 ms - against the 0, 0 server: one run. Shows a retry the
-//   server still holds the answer for is counted as no re-run, so a 2 below is the expiry and not the harness.
-// - the pre-fix rmw shape, client 100 ms x 50 against a 0, 0 server: two runs. The defect, kept as an arm: it shows
-//   the scenario can produce a duplicate, so the fixed arms' 1 is not a scenario that cannot fail.
+// - control: a client retrying every 50 ms against the 0, 0 server: one run. Shows a retry the server still holds the
+//   answer for is counted as no re-run, so a 2 below is the expiry and not the harness.
+// - the pre-fix rmw shape, client 100 ms x 50 against a 0, 0 server: two runs, for retry 13 (1.3 s): past what a 0, 0
+//   server keeps, the auto client's horizon - 1.25 s since 2026-10-21 (test_service_exactly_once.c), 75 ms before,
+//   when retry 1 already ran the callback again. The defect, kept as an arm: it shows the scenario can produce a
+//   duplicate, so the fixed arms' 1 is not a scenario that cannot fail.
 // - the fixed rmw shape, the server's tt_Service carrying the client's 100 ms x 50: one run, for the first retry
 //   delivered, for the last retry before the call gives up (49 of 50 lost), synchronous and deferred
 //   (tt_CALL_DEFERRED + tt_Server_send_response(), the way rmw_tickle answers).
@@ -300,8 +302,8 @@ static void run_arm(const struct arm* arm) {
 
 // The cost on the normal path: answers kept, and the scheduler entries they hold (none since 2026-10-21), under a
 // steady CALLS calls 100 ms apart, every one answered. A client's answers are bounded by tt_CLIENT_CALL_WINDOW
-// (set_server_cache()) however long each is kept, so the 5.1 s lifetime holds at most that many per calling client,
-// where 75 ms held one.
+// (set_server_cache()) however long each is kept, so a 5.1 s or 1.25 s lifetime holds at most that many per calling
+// client, where 75 ms held one.
 #define CALLS 20
 static void test_kept_answers(const char* name, uint32_t server_interval, uint32_t server_count, int expected) {
     const struct arm shape = {name, server_interval, server_count, RMW_INTERVAL, RMW_COUNT, false, false, 0, 1, 1};
@@ -332,8 +334,8 @@ int main(void) {
     const uint32_t control_interval = 50U * 1000U * 1000U;
     const struct arm arms[] = {
         {"control: client 50 ms vs server 0,0, retry 1", 0, 0, control_interval, 100, false, true, 1, 1, 1},
-        {"pre-fix rmw: client 100 ms vs server 0,0, retry 1", 0, 0, RMW_INTERVAL, RMW_COUNT, false, true, 1, 2, 1},
-        {"pre-fix rmw, deferred", 0, 0, RMW_INTERVAL, RMW_COUNT, true, true, 1, 2, 1},
+        {"pre-fix rmw: client 100 ms vs server 0,0, retry 13", 0, 0, RMW_INTERVAL, RMW_COUNT, false, true, 13, 2, 1},
+        {"pre-fix rmw, deferred, retry 13", 0, 0, RMW_INTERVAL, RMW_COUNT, true, true, 13, 2, 1},
         {"fixed rmw: server 100 ms x 50, retry 1", RMW_INTERVAL, RMW_COUNT, RMW_INTERVAL, RMW_COUNT, false, true, 1, 1,
          1},
         {"fixed rmw, deferred, retry 1", RMW_INTERVAL, RMW_COUNT, RMW_INTERVAL, RMW_COUNT, true, true, 1, 1, 1},
@@ -345,7 +347,8 @@ int main(void) {
         run_arm(&arms[i]);
     }
 
-    test_kept_answers("kept answers, pre-fix rmw (75 ms)", 0, 0, 1);
+    test_kept_answers("kept answers, pre-fix rmw (1.25 s)", 0, 0,
+                      tt_CLIENT_MAX_OUTSTANDING == 1 ? 1 : tt_CLIENT_CALL_WINDOW);
     test_kept_answers("kept answers, fixed rmw (5.1 s)", RMW_INTERVAL, RMW_COUNT,
                       tt_CLIENT_MAX_OUTSTANDING == 1 ? 1 : tt_CLIENT_CALL_WINDOW);
 

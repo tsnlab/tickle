@@ -17571,9 +17571,16 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
     return slot >= 0 ? server->cache[slot] : NULL;
 }
 
-// How long the client of this service may go on retrying one call before it has any answer to estimate from: its
-// seed schedule (call_retry_window() over tt_CALL_RETRY_INTERVAL), or, when the service sets call_retry_interval
-// explicitly, (count + 1) waits of exactly that - what both ends of a service share without anything on the wire.
+// How long the client of this service may go on retrying one call, from what both ends of a service share without
+// anything on the wire: when the service sets call_retry_interval explicitly, (count + 1) waits of exactly that; on
+// the auto path, the call's deadline, (count + 1) x tt_CALL_DEADLINE_PER_SEND (call_deadline()), after which the client
+// sends nothing more, and one tt_CALL_DEADLINE_PER_SEND beyond it for the retry sent just before it to arrive.
+//
+// The auto path used to be the client's SEED schedule, 5 + 10 + 20 + 40 = 75 ms. But the client's waits are relative to
+// its measured srtt, and its retries come as late as its deadline: a server whose answers take 100 ms gives its client
+// a first wait of ~300 ms (srtt + 4 rttvar), so a lost answer's retry came ~200 ms after the server stopped keeping it,
+// and the callback ran a second time for one call (test_service_exactly_once.c, the rig's service cell c21,
+// 2026-10-21).
 static uint64_t server_client_window(const struct tt_Server* server) {
     const struct tt_Service* service = server->service;
     uint32_t count = service->call_retry_count != 0 ? service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
@@ -17581,12 +17588,13 @@ static uint64_t server_client_window(const struct tt_Server* server) {
     if (service->call_retry_interval != 0) {
         return call_retry_window(service->call_retry_interval, service->call_retry_interval, waits);
     }
-    return call_retry_window((uint64_t)tt_CALL_RETRY_INTERVAL,
-                             (uint64_t)tt_CALL_RETRY_INTERVAL * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, waits);
+    uint64_t sends = (uint64_t)waits + 1U; // the deadline's (count + 1), and one for the last retry's way here
+    return sends > UINT64_MAX / (uint64_t)tt_CALL_DEADLINE_PER_SEND ? UINT64_MAX
+                                                                    : sends * (uint64_t)tt_CALL_DEADLINE_PER_SEND;
 }
 
-// How long an answered response is kept for a retrying client: the client's seed schedule, or
-// tt_SERVER_CACHE_GAP_MULTIPLE x the longest recent retry gap this server has seen, whichever is longer. See
+// How long an answered response is kept for a retrying client: how long the client may retry (server_client_window()),
+// or tt_SERVER_CACHE_GAP_MULTIPLE x the longest recent retry gap this server has seen, whichever is longer. See
 // config.h for why the server derives it from these and not from the client's srtt.
 static uint64_t server_cache_lifetime(const struct tt_Server* server) {
     uint64_t window = server_client_window(server);

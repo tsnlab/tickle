@@ -436,14 +436,19 @@
 // How long a Server keeps an answered response for a retrying client (server_cache_lifetime(), tickle.c). It used to
 // be a fixed 100 ms whose comment gave the formula - client latency x (count + 1) - that nothing computed, and which
 // was already shorter than the 250 ms a client's retry interval could reach. The server cannot see the client's
-// srtt (nothing on the wire carries it), so it keeps a response for the longest of what it can know: the client's
-// retry schedule before any answer (the seed above, or this service's own explicit call_retry_interval x (count +
-// 1)), and GAP_MULTIPLE x the longest recent gap between a response going out and the same client asking again. Each
-// retry served re-arms the entry. 4 is the client's own doubling (the next gap is twice the last) times a margin of
-// 2. A client slower than anything seen misses once, and its retry - matched against the expired entry, which still
-// names it - teaches the server its gap. A response is never answered to a new incarnation of its client (a
-// restarted process reusing the context id, seq_no back at 0): discovery's entity_id for the client, drawn per
-// launch, is recorded with the response and compared, and a farewell announce drops the source's responses.
+// srtt (nothing on the wire carries it), so it keeps a response for the longest of what it can know: how long the
+// client may go on retrying - on the auto path its deadline, (count + 1) x DEADLINE_PER_SEND, after which it sends
+// nothing, plus one DEADLINE_PER_SEND for that last retry's way (1.25 s by default); with this service's own explicit
+// call_retry_interval, that x (count + 1) - and GAP_MULTIPLE x the longest recent gap between a response going out and
+// the same client asking again. Each retry served re-arms the entry. 4 is the client's own doubling (the next gap is
+// twice the last) times a margin of 2. A client slower than its service says (an explicit schedule of its own) misses
+// once, and its retry - matched against the expired entry, which still names it - teaches the server its gap. The
+// auto path kept the client's seed schedule (5 + 10 + 20 + 40 = 75 ms) until 2026-10-21; a client's srtt-relative
+// waits go past it, and a callback ran twice for one call (test_service_exactly_once.c). A Client's kept answers are
+// bounded by tt_CLIENT_CALL_WINDOW however long each is kept (set_server_cache()). A response is never answered to a
+// new incarnation of its client (a restarted process reusing the context id, seq_no back at 0): discovery's entity_id
+// for the client, drawn per launch, is recorded with the response and compared, and a farewell announce drops the
+// source's responses.
 #ifndef tt_SERVER_CACHE_GAP_MULTIPLE
 #define tt_SERVER_CACHE_GAP_MULTIPLE 4
 #endif
