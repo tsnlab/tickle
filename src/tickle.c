@@ -24165,11 +24165,16 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
     uint32_t delivered = 0;
     uint32_t drained = 0;
     bool hand_back = false;
-    // Read once a poll, not per record: the record loop below compares against this local as it did the constant.
+    // Read once a poll, not per record, and at least 1 (resolve_segment_options()), so the first chunk runs untested -
+    // as it did when the bound was the constant, which the compiler knew to be above 0. The bound is not compared per
+    // record either: each chunk folds it into its own count (`bound` below), so a record pays one compare, not the
+    // lock chunk's and the poll's. Compared per record, the runtime bound was one register too many for the drain on
+    // aarch64 - spills and an entry test, +7.8 instructions a call (aarch64_insn/samehost_qemu.sh, 2026-10-22) and
+    // +0.6% to +1.7% user instructions a sample on the rig's same-host cells (ab_samehost_initoptions8_segment).
     const uint32_t drain_per_poll = node->opts.segment.drain_per_poll;
     node->segment_plan_mark = node->rx_keep_last_delivered; // read by segment_skip_head() between plans
     const uint32_t chunk = node->opts.poll.rx_lock_chunk;   // once per drain
-    while (drained < drain_per_poll) {
+    do {
         // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
         // process_datagram_locked() says so in its name and every field a datagram touches is under
         // it. This drain called it **unlocked from the day the segment landed** (1c69658a) and
@@ -24181,9 +24186,12 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         // Chunked rather than one lock for the whole drain so a publishing thread waits at most
         // opts.poll.rx_lock_chunk records, which is the bound drain_rx() already chose for the same reason.
         state_lock(node);
+        // This chunk's records at most: the lock chunk, or what the poll's bound leaves (drained is below it here).
+        const uint32_t left = drain_per_poll - drained;
+        const uint32_t bound = chunk < left ? chunk : left;
         uint32_t taken = 0;
         bool ran_dry = false;
-        while (taken < chunk && drained + taken < drain_per_poll && !ran_dry) {
+        while (taken < bound && !ran_dry) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
@@ -24247,7 +24255,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             *emptied = ran_dry || !segment_has_records(node);
             return delivered;
         }
-    }
+    } while (drained < drain_per_poll);
     // The bound was reached with records still there. Bounded rather than unbounded so one busy peer
     // cannot hold the caller inside this function; `emptied` is how the caller learns not to read the
     // socket yet.

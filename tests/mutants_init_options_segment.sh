@@ -81,6 +81,8 @@ mutant "the context keeping its derived dead_reader_ns" \
     "    node->opts.segment.dead_reader_ns = segment_dead_reader_of(&node->opts.segment, &node->opts.discovery);" ""
 mutant "reading drain_per_poll" "const uint32_t drain_per_poll = node->opts.segment.drain_per_poll;" \
     "const uint32_t drain_per_poll = tt_SEGMENT_DRAIN_PER_POLL;"
+mutant "a chunk's bound ignoring the poll's" "const uint32_t bound = chunk < left ? chunk : left;" \
+    "const uint32_t bound = chunk;"
 mutant "reading probe_every_max" "node->segment_probe_every < node->opts.segment.probe_every_max" \
     "node->segment_probe_every < tt_SEGMENT_PROBE_EVERY_MAX"
 mutant "reading stall_passes" "node->segment_head_stall_passes == node->opts.segment.stall_passes" \
