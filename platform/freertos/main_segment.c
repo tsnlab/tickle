@@ -69,12 +69,16 @@
 
 #define CONTEXT_A_ID 11
 #define CONTEXT_B_ID 12
-#define WINDOW_SAMPLES 200U                   // N, per topic
-#define WARMUP_FLAG (1ULL << 40)              // warm-up samples' values; the window's are 0..N-1
-#define BEST_EFFORT_UDP_LOSS_DIV 20U          // arms 3-4: BEST_EFFORT may lose up to N/20 over lwIP
-#define WARMUP_SAMPLES_UDP 20U                // arms 3-4: warm-up samples per topic (1-2 warm up until attached)
-#define MATCH_WAIT_MS 10000U                  // both publishers matched, from the first announce
-#define ATTACH_WAIT_MS 5000U                  // arms 1-2: both directions attached, publishing warm-up samples
+#define WINDOW_SAMPLES 200U          // N, per topic
+#define WARMUP_FLAG (1ULL << 40)     // warm-up samples' values; the window's are 0..N-1
+#define BEST_EFFORT_UDP_LOSS_DIV 20U // arms 3-4: BEST_EFFORT may lose up to N/20 over lwIP
+#define WARMUP_SAMPLES_UDP 20U       // arms 3-4: warm-up samples per topic (1-2 warm up until attached)
+#define MATCH_WAIT_MS 10000U         // both publishers matched, from the first announce
+#define ATTACH_WAIT_MS 5000U         // arms 1-2: both directions attached, publishing warm-up samples
+#define WARMUP_BURST 20U             // arms 1-2: warm-up samples per topic per burst, one a tick
+// Arms 1-2: the pause after each warm-up burst - two idle HEARTBEAT periods, so that A's writer asks B for an answer
+// and B's ACKNACK, the only thing B sends A, takes B's direction (both_attached()).
+#define WARMUP_IDLE_MS ((uint32_t)(2U * tt_IDLE_HEARTBEAT_PERIOD / tt_MILLISECOND))
 #define DELIVERY_WAIT_MS 10000U               // the window's N + N delivered
 #define SETTLE_MS 300U                        // after delivery, so that late acknowledgements land in the window
 #define POLL_SLICE_NS (20LL * tt_MILLISECOND) // a poll task's longest wait, so that it sees `stop`
@@ -285,12 +289,41 @@ static bool publish(struct tt_Publisher* pub, uint64_t value) {
 // Arms 1-2: whether each context has the other's segment attached, read from its peer table - the state the window's
 // claim is about. A first send to a peer whose segment is not built yet goes over UDP and is not asked again for a
 // while (tt_SEGMENT_ATTACH_RETRY_SENDS), so the window starts only once both directions are on the ring.
-static bool both_attached(void) {
+//
+// A context attaches a peer's segment on its first send to that peer, never at discovery. A sends B every sample; B
+// sends A only ACKNACKs, and a stream of samples a tick apart asks for none (each publish pushes the idle HEARTBEAT
+// back, config.h). So B's direction cannot be waited for under a steady stream. On this PC an ACKNACK about a second
+// into the stream took it; on CI's runner none came (57f46f16, 2026-10-21: B sent A 4 unicasts in the whole run, 2 over
+// UDP before A's segment existed and 2 over the ring after the warm-up, none in its 5 s), so the check failed while the
+// window itself went over the ring. The warm-up is therefore bursts, each followed by a pause long enough for A's idle
+// HEARTBEAT and B's answer - which is what attaches B when its entry for A is cleared before the warm-up (measured,
+// 3 of 3 attached 240-260 ms in, against 980 ms by the leftover ACKNACK with the pause at 0).
+static bool attached(const struct tt_Context* ctx, uint8_t peer) {
 #if tt_SEGMENT_ENABLED
-    return ctx_a.segment_peer_live[CONTEXT_B_ID] != 0 && ctx_a.segment_peers[CONTEXT_B_ID].mapping != NULL &&
-           ctx_b.segment_peer_live[CONTEXT_A_ID] != 0 && ctx_b.segment_peers[CONTEXT_A_ID].mapping != NULL;
+    return ctx->segment_peer_live[peer] != 0 && ctx->segment_peers[peer].mapping != NULL;
 #else
+    (void)ctx;
+    (void)peer;
     return false;
+#endif
+}
+
+static bool both_attached(void) {
+    return attached(&ctx_a, CONTEXT_B_ID) && attached(&ctx_b, CONTEXT_A_ID);
+}
+
+// Which direction is missing, and what its entry holds, when the warm-up ends without both: so a failure names the
+// side and the state (never set up, cached "absent" with its countdown) instead of only saying that one is missing.
+static void print_attach(const char* who, const struct tt_Context* ctx, uint8_t peer) {
+#if tt_SEGMENT_ENABLED
+    const struct tt_SegmentPeer* entry = &ctx->segment_peers[peer];
+    const bool live = ctx->segment_peer_live[peer] != 0;
+    printf("segment: %s: set up %d, mapped %d, cached absent %d, asked again in %lu sends\n", who, live,
+           live && entry->mapping != NULL, live && entry->missing, live ? (unsigned long)entry->recheck_in : 0UL);
+#else
+    (void)who;
+    (void)ctx;
+    (void)peer;
 #endif
 }
 
@@ -367,7 +400,8 @@ static void control_task(void* param) {
     printf("segment: matched after %lu ms\n", (unsigned long)waited);
     check(waited < MATCH_WAIT_MS, "both publishers matched B over UDP discovery");
 
-    // Warm-up: a sample a tick on each topic, until both directions are attached (arms 1-2) or for a fixed 20.
+    // Warm-up: a sample a tick on each topic - for a fixed 20 (arms 3-4), or in bursts of WARMUP_BURST, each followed
+    // by WARMUP_IDLE_MS of quiet, until both directions are attached (arms 1-2; both_attached() says why the quiet).
     uint64_t warm = 0;
     waited = 0;
     do {
@@ -376,9 +410,18 @@ static void control_task(void* param) {
         warm++;
         vTaskDelay(pdMS_TO_TICKS(1));
         waited++;
+#if SEGMENT_ARM
+        for (uint32_t idle = 0; warm % WARMUP_BURST == 0 && idle < WARMUP_IDLE_MS && !both_attached(); idle += 10) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            waited += 10;
+        }
+#endif
     } while (SEGMENT_ARM ? (!both_attached() && waited < ATTACH_WAIT_MS) : warm < WARMUP_SAMPLES_UDP);
 #if SEGMENT_ARM
-    printf("segment: both directions attached after %lu warm-up samples\n", (unsigned long)warm);
+    printf("segment: both directions attached after %lu warm-up samples, %lu ms\n", (unsigned long)warm,
+           (unsigned long)waited);
+    print_attach("A to B", &ctx_a, CONTEXT_B_ID);
+    print_attach("B to A", &ctx_b, CONTEXT_A_ID);
     check(both_attached(), "both contexts attached the other's segment");
 #endif
     vTaskDelay(pdMS_TO_TICKS(SETTLE_MS));
