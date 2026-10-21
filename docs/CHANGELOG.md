@@ -28,6 +28,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Context options** (`struct tt_InitOptions`, ROADMAP "Context options" bundle 1; [DESIGN.md](DESIGN.md) section 2):
+  `tt_InitOptions_default()` and `tt_Context_create_with(ctx, opts)` (NULL = defaults). The `net` group holds what
+  `_tt_CONFIG` held, per context; HALs read the context's copy; bad values are refused at creation with the field named
+  (the `tt_MAX_PEER_COUNT > threshold` static_assert moved there). `tt_Context_create()` reads `_tt_CONFIG` once, as
+  before; writing it is deprecated. rmw_tickle builds its options from the same environment variables and keeps them
+  per rmw context. Wire bytes of a default context unchanged. HAL: `tt_get_node_id()` takes the context.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,

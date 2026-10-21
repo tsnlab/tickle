@@ -25,6 +25,17 @@ Landed 2026-10-18/19 (`e4fc0683` to `47eb05e8`): per-policy `struct tt_QosProfil
 API, wire `tt_VERSION` 14. Rows 43-44 re-scored by freshness (`014343f9`), L4 latency by round trip (`01addd79`).
 Cross-host latency is a round trip on one clock (the user, 2026-10-18).
 
+### Context options
+
+Static configuration moves into `struct tt_InitOptions` (the user, 2026-10-21; DESIGN.md section 2), before the
+per-network profiles. Bundles, one branch each: 1 the API and `net` (`_tt_CONFIG`) - done on `feat/initoptions-1`;
+2 discovery and liveliness timings; 3 reliability timings; 4 service timings; 5 QoS defaults; 6 poll, socket and HAL
+settings; 7 hybrid estimators; 8 segment settings (2-8 in parallel, each in its own placeholder group); 9 runtime
+capacities up to the compiled maxima; 10 large tables into caller storage. Rules for every bundle: the default
+context byte-identical on the wire, each check refused with a test and a mutant, each field shown to change
+behaviour, no hot-path cost (rig A/B for 3, 6, 7, 9, 10). `tt_*_storage_size()` keeps its signature; interop
+timings stay identical by default and warn on a mismatch; rmw_tickle keeps its environment variables.
+
 ### Wired work
 
 The user's order (2026-09-29): wired, then Security, then wireless.

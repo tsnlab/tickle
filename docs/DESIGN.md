@@ -36,6 +36,17 @@ TickLE targets controlled links (10BASE-T1S, TSN, one trusted L2 segment), on Fr
 
 `tt_Node_destroy()` refuses while an endpoint lives on the node.
 
+**Context options** (`struct tt_InitOptions`, bundle 1 of ROADMAP "Context options", 2026-10-21). `tt_Context_create_with(ctx, &opts)`
+copies the options into the context (`ctx->opts`, each zero resolved to its default, as in `tt_QosProfile`) and checks
+them: a value this build cannot honour is `tt_RET_INVALID_ARGUMENT` with the field named in the log, where it used to be a
+`static_assert` or a silent clamp. Grouped by subject; only `net` is filled so far - address, broadcast, port, context
+id, the links (each with its unicast threshold), discovery range, segment slot size, hybrid mode, reassembly ceiling.
+The other groups (discovery, reliable, service, qos, poll, socket, hybrid_transport, segment, capacity) are one-byte placeholders
+each later bundle replaces. Every reader - core and both HALs - reads the context's copy, so two contexts in one process
+can differ. `tt_Context_create(ctx)` is `tt_Context_create_with()` given the deprecated process-wide `_tt_CONFIG`, read
+once; writing `_tt_CONFIG` is deprecated and goes when the last caller has moved. A default context is byte-identical on
+the wire to one created before the options existed (`tests/wire_identity_initoptions.sh`).
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |
@@ -345,7 +356,7 @@ keeps its seq_no. `n_max = min(45, peer's reassembly bytes / unit)`.
 | rule (e), writer | all runs first-NACKed but not the tail: MTU units for `tt_HYBRID_PATH_CLEAN_NS`, then one re-probe |
 | `tau` | `min(tt_HYBRID_QUEUE_LIFETIME_NS, 65536 / D_s)`: reassembly lifetime, or the IP ID wrap |
 
-**Settings** (not QoS; in `_tt_CONFIG` until `tt_InitOptions`, ROADMAP "QoS reshaped like rmw"):
+**Settings** (not QoS; `tt_InitOptions.net`, section 2):
 
 | setting | values | default |
 |---|---|---|
@@ -548,7 +559,7 @@ default), the same samples over UDP. The `freertos link` gate links an RV32 imag
 
 Per-peer tables are indexed by the 8-bit context id, unique per link.
 
-- Without claiming: the address's last octet, or `_tt_CONFIG.context_id`.
+- Without claiming: the address's last octet, or `tt_InitOptions.net.context_id`.
 - **`tt_CONTEXT_ID_CLAIM`** (Linux): claimed in a registry under `/dev/shm` per network; a datagram is our own only from
   our data socket; our id from elsewhere is a collision and the newer context moves (an explicit id never does).
 
