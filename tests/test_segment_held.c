@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <tickle/tickle.h>
 
@@ -461,8 +462,16 @@ static void test_a_small_ring_keeps_the_old_rule(void) {
 // ---- Several writers, one reader that keeps some records and releases them from another thread.
 
 #define STRESS_WRITERS 2U
-#define STRESS_RECORDS 100000U
 #define STRESS_KEEP_MAX 3U
+// What a try aims for: as many records as the run made before (100000 per writer) and many holds. On an idle PC both
+// come in about 0.2 s. Under load the releaser thread can sit unscheduled for most of that, so the holds come slowly
+// (2026-10-21: fewer than 1000 in a check-gates sanitize row at load 12-20); the try then runs on until the targets or
+// the time budget, and is judged on whatever it reached.
+#define STRESS_RECORDS_TARGET 200000U
+#define STRESS_KEPT_TARGET 1000U
+#define STRESS_BUDGET_NS 10000000000LL
+#define STRESS_TRIES 3U
+#define STRESS_VALUE_MAX 0xFFFFFFU // a record carries its writer in the top byte and its number below it
 
 struct stress_kept {
     uint32_t index;
@@ -476,20 +485,30 @@ static struct {
     struct stress_kept kept[STRESS_KEEP_MAX];
     uint32_t kept_count;
     uint32_t done_writers;
+    uint32_t written[STRESS_WRITERS];
     uint32_t corrupt;
     uint32_t released;
+    bool stop_writers;
     bool reader_done;
 } stress;
 
+static long long stress_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return ((long long)now.tv_sec * 1000000000LL) + now.tv_nsec;
+}
+
 static void* stress_writer(void* arg) {
     uint32_t writer = *(const uint32_t*)arg;
-    for (uint32_t n = 0; n < STRESS_RECORDS;) {
+    uint32_t n = 0;
+    while (n < STRESS_VALUE_MAX && !__atomic_load_n(&stress.stop_writers, __ATOMIC_ACQUIRE)) {
         if (ring_write(stress.ring, (writer << 24) | n)) {
             n++;
         } else {
             sched_yield();
         }
     }
+    __atomic_store_n(&stress.written[writer], n, __ATOMIC_RELAXED);
     __atomic_add_fetch(&stress.done_writers, 1U, __ATOMIC_ACQ_REL);
     return NULL;
 }
@@ -515,7 +534,80 @@ static void* stress_releaser(void* arg) {
     }
 }
 
-static void test_writers_reader_and_releaser_together(void) {
+// One try. The correctness checks are made on every try, whatever it reached: every record read once and in each
+// writer's order, no held or read bytes changed, every hold released, the ring a full lap again afterwards. The try is
+// VOID (returns false) only when it did not exercise the skip at all: no index passed over by a writer was seen by
+// the reader, or no slot was released while the reader was still reading, or no slot was held again after one was
+// released.
+// What the reader saw in one try.
+struct stress_reader {
+    uint32_t next[STRESS_WRITERS];
+    uint32_t out_of_order;
+    uint32_t read;
+    uint32_t kept_total;
+    uint32_t corrupt;
+    uint32_t passed_seen; // indices the reader moved past: each one a slot a writer passed over
+    uint32_t last_index;
+    uint32_t released_while_reading;
+    uint32_t state;
+};
+
+// Takes one record, checks it, and keeps it (marks its slot held) or releases it. False when none was there.
+static bool stress_read_one(struct stress_reader* reader) {
+    uint32_t got = 0;
+    uint32_t index = 0;
+    uint8_t* record = NULL;
+    if (!ring_take(stress.ring, &got, &index, &record)) {
+        return false;
+    }
+    reader->passed_seen += index - (reader->read == 0 ? 0U : reader->last_index + 1U);
+    reader->last_index = index;
+    reader->read++;
+    uint32_t writer = got >> 24;
+    if (writer >= STRESS_WRITERS || (got & 0xFFFFFFU) != reader->next[writer]) {
+        reader->out_of_order++;
+    } else {
+        reader->next[writer]++;
+    }
+    reader->corrupt += record_is(record, got) ? 0U : 1U; // the releaser counts its own, under the lock
+    reader->state = (reader->state * 1103515245U) + 12345U;
+    bool keep = false;
+    if (((reader->state >> 16) % 7U) == 0) {
+        pthread_mutex_lock(&stress.lock);
+        if (stress.kept_count < STRESS_KEEP_MAX) {
+            stress.kept[stress.kept_count++] = (struct stress_kept) {index, got, record};
+            // Marked under the lock the releaser takes: it cannot release a slot before it is marked held.
+            segment_hold(stress.ring, index);
+            keep = true;
+            reader->kept_total++;
+        }
+        reader->released_while_reading = stress.released;
+        pthread_mutex_unlock(&stress.lock);
+    }
+    if (!keep) {
+        ring_done(stress.ring, index);
+    }
+    return true;
+}
+
+// Once every writer has stopped: how many records they wrote between them. UINT32_MAX while one is still writing.
+static uint32_t stress_total_written(void) {
+    if (__atomic_load_n(&stress.done_writers, __ATOMIC_ACQUIRE) != STRESS_WRITERS) {
+        return UINT32_MAX;
+    }
+    uint32_t total = 0;
+    for (uint32_t w = 0; w < STRESS_WRITERS; w++) {
+        total += __atomic_load_n(&stress.written[w], __ATOMIC_RELAXED);
+    }
+    return total;
+}
+
+// One try. The correctness checks are made on every try, whatever it reached: every record read once and in each
+// writer's order, no held or read bytes changed, every hold released, the ring a full lap again afterwards. The try is
+// VOID (returns false) only when it did not exercise the skip at all: no index passed over by a writer was seen by
+// the reader, or no slot was released while the reader was still reading, or no slot was held again after one was
+// released.
+static bool stress_try(uint32_t attempt) {
     memset(&stress, 0, sizeof(stress));
     stress.ring = ring_make(SLOTS);
     pthread_mutex_init(&stress.lock, NULL);
@@ -529,43 +621,24 @@ static void test_writers_reader_and_releaser_together(void) {
         EXPECT_EQ_INT(0, pthread_create(&writers[w], NULL, stress_writer, &writer_ids[w]));
     }
     EXPECT_EQ_INT(0, pthread_create(&releaser, NULL, stress_releaser, NULL));
-    uint32_t next[STRESS_WRITERS] = {0};
-    uint32_t out_of_order = 0;
-    uint32_t read = 0;
-    uint32_t kept_total = 0;
-    uint32_t reader_corrupt = 0;
-    uint32_t state = 777U;
-    while (read < STRESS_WRITERS * STRESS_RECORDS) {
-        uint32_t got = 0;
-        uint32_t index = 0;
-        uint8_t* record = NULL;
-        if (!ring_take(stress.ring, &got, &index, &record)) {
+    const long long started = stress_now_ns();
+    struct stress_reader reader = {.state = 777U + attempt};
+    bool budget_ran_out = false;
+    // Until the targets or the budget, then until everything the writers wrote is read.
+    while (!(reader.read >= STRESS_RECORDS_TARGET && reader.kept_total >= STRESS_KEPT_TARGET)) {
+        if (stress_now_ns() - started >= STRESS_BUDGET_NS) {
+            budget_ran_out = true;
+            break;
+        }
+        if (!stress_read_one(&reader)) {
             sched_yield();
-            continue;
         }
-        read++;
-        uint32_t writer = got >> 24;
-        if (writer >= STRESS_WRITERS || (got & 0xFFFFFFU) != next[writer]) {
-            out_of_order++;
-        } else {
-            next[writer]++;
-        }
-        reader_corrupt += record_is(record, got) ? 0U : 1U; // the releaser counts its own, under the lock
-        state = (state * 1103515245U) + 12345U;
-        bool keep = false;
-        if (((state >> 16) % 7U) == 0) {
-            pthread_mutex_lock(&stress.lock);
-            if (stress.kept_count < STRESS_KEEP_MAX) {
-                stress.kept[stress.kept_count++] = (struct stress_kept) {index, got, record};
-                // Marked under the lock the releaser takes: it cannot release a slot before it is marked held.
-                segment_hold(stress.ring, index);
-                keep = true;
-                kept_total++;
-            }
-            pthread_mutex_unlock(&stress.lock);
-        }
-        if (!keep) {
-            ring_done(stress.ring, index);
+    }
+    __atomic_store_n(&stress.stop_writers, true, __ATOMIC_RELEASE);
+    uint32_t total_written = 0;
+    while ((total_written = stress_total_written()) == UINT32_MAX || reader.read < total_written) {
+        if (!stress_read_one(&reader)) {
+            sched_yield();
         }
     }
     pthread_mutex_lock(&stress.lock);
@@ -575,14 +648,20 @@ static void test_writers_reader_and_releaser_together(void) {
         pthread_join(writers[w], NULL);
     }
     pthread_join(releaser, NULL);
-    EXPECT_EQ_U32(0, out_of_order);
+    EXPECT_EQ_U32(0, reader.out_of_order);
     EXPECT_EQ_U32(0, stress.corrupt);
-    EXPECT_EQ_U32(0, reader_corrupt);
+    EXPECT_EQ_U32(0, reader.corrupt);
+    EXPECT_EQ_U32(total_written, reader.read);
     for (uint32_t w = 0; w < STRESS_WRITERS; w++) {
-        EXPECT_EQ_U32(STRESS_RECORDS, next[w]);
+        EXPECT_EQ_U32(stress.written[w], reader.next[w]);
     }
-    EXPECT_TRUE(kept_total > 1000U); // the run did hold slots, many times
-    EXPECT_EQ_U32(kept_total, stress.released);
+    EXPECT_EQ_U32(reader.kept_total, stress.released);
+    // A writer stopped between passing a held slot and claiming the next can leave passed indices behind the last
+    // record: the reader moves past them, and finds no record there.
+    uint32_t got = 0;
+    uint32_t index = 0;
+    uint8_t* record = NULL;
+    EXPECT_TRUE(!ring_take(stress.ring, &got, &index, &record));
     // Everything released and read: the ring takes a full lap again.
     uint32_t written = 0;
     while (ring_write(stress.ring, written)) {
@@ -591,6 +670,22 @@ static void test_writers_reader_and_releaser_together(void) {
     EXPECT_EQ_U32(SLOTS, written);
     pthread_mutex_destroy(&stress.lock);
     free(stress.ring);
+    const bool exercised =
+        reader.passed_seen > 0 && reader.released_while_reading > 0 && reader.kept_total > STRESS_KEEP_MAX;
+    printf("  stress try %u: %.2f s, read %u, kept %u, released while reading %u, passed over %u%s -> %s\n",
+           attempt + 1U, (double)(stress_now_ns() - started) / 1e9, reader.read, reader.kept_total,
+           reader.released_while_reading, reader.passed_seen, budget_ran_out ? " (time budget reached first)" : "",
+           exercised ? "decided" : "VOID: the skip was not exercised");
+    return exercised;
+}
+
+static void test_writers_reader_and_releaser_together(void) {
+    for (uint32_t attempt = 0; attempt < STRESS_TRIES; attempt++) {
+        if (stress_try(attempt)) {
+            return;
+        }
+    }
+    EXPECT_TRUE(!"stress: no try exercised the skip, nothing was decided");
 }
 
 int main(void) {
