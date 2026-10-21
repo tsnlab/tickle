@@ -1027,12 +1027,26 @@ struct tt_HybridOptions {
     uint8_t probe_backoff_max; // a probe's wait doubles up to 2^this, at most 16; 0 = tt_HYBRID_PROBE_BACKOFF_MAX
     uint8_t scale_ticks;       // R p moved for this many ticks in a row; 0 = tt_HYBRID_SCALE_TICKS
 };
-// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
+// A placeholder, replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
 struct tt_SegmentOptions {
     uint8_t reserved;
 };
+// How much of a fixed table this context uses (bundle 9). Each table keeps its compiled size - the config.h constant
+// named beside each field, the most the field may be and what its 0 stands for - so no struct layout and no
+// tt_*_storage_size() changes; a smaller value makes the table full sooner, with the refusal it already made when full.
+// The walks over a table stay bounded by the compiled size (the entries past the limit are always empty), so a limit
+// costs nothing where a table is walked, only where an entry is taken.
 struct tt_Capacity {
-    uint8_t reserved;
+    // RELIABLE readers one Publisher tracks acknowledgements for (its peer_acks[]); the next is not matched, "Ack table
+    // full". tt_MAX_ACK_ENTRIES, which a build may set above 255 (rmw_tickle: RMW_TICKLE_MAX_RELIABLE_READERS).
+    uint16_t ack_entries;
+    // Remote contexts one Publisher or Client unicasts to (its peers[]), and remote writers one Subscriber tracks (its
+    // writers[]); a new one past it is not added. tt_MAX_PEER_COUNT. Above every link's unicast_threshold, so that a
+    // full table means the endpoint broadcasts, which reaches the peer it did not add.
+    uint8_t peers;
+    uint8_t request_history;  // ACKNACK requests a reader remembers per writer; tt_RELIABLE_REQUEST_HISTORY
+    uint8_t publisher_claims; // ring slots one Publisher may hold claimed at once; tt_PUBLISHER_CLAIMS
+    uint8_t large_retained;   // large samples one Publisher keeps by reference at once; tt_LARGE_RETAINED
 };
 
 struct tt_InitOptions {
@@ -3909,7 +3923,8 @@ void tt_InitOptions_default(struct tt_InitOptions* opts);
 // cannot honour: a link_count above tt_MAX_LINK_COUNT, a link without a broadcast, an address that is not a dotted
 // IPv4 quad, a unicast_threshold not below tt_MAX_PEER_COUNT, an unknown discovery_range or large_fragmentation, a
 // discovery_range or peer link without tt_DISCOVERY_OPTIONS, a segment_slot_bytes that cannot hold a datagram, an
-// ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, or a reserved field not 0.
+// ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, a capacity above its
+// compiled maximum or a capacity.peers not above a link's unicast_threshold, or a reserved field not 0.
 //
 // tt_Context_create(node) is tt_Context_create_with() given the process-wide _tt_CONFIG. DEPRECATED (2026-10-21):
 // writing _tt_CONFIG to configure a context. It stays read by tt_Context_create() until every caller has moved to

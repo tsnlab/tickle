@@ -848,7 +848,7 @@ static void test_repair_requests_name_seq_no_across_the_wrap(void) {
         proxy->transit_srtt_ns = 0;
         proxy->transit_rttvar_ns = 0;
         uint64_t asked = test_mock_now;
-        note_requested(proxy, base - 2U, base + 3U, asked);
+        note_requested(&receiver, proxy, base - 2U, base + 3U, asked);
         // A Heartbeat asking for an answer now: everything open was named a moment ago, so a pure acknowledgement.
         test_mock_send_hook = sim_capture;
         uint32_t before = sim_tail;
@@ -878,7 +878,7 @@ static void test_repair_requests_name_seq_no_across_the_wrap(void) {
         // A copy declined, past 2^32 and then before it: either way the request that named it is forgotten.
         const uint32_t declined[] = {base + 2U, base - 1U};
         for (size_t d = 0; d < sizeof(declined) / sizeof(declined[0]); d++) {
-            note_requested(proxy, base - 2U, base + 3U, asked);
+            note_requested(&receiver, proxy, base - 2U, base + 3U, asked);
             forget_requests_answered_by(&sub, SENDER_ID, pub.endpoint.entity_id, declined[d]);
             uint32_t remembered = 0;
             for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {

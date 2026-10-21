@@ -191,6 +191,7 @@
 // duplicate fragments, 32 sent 3007-3021 with 21-25k, the same as the build without the answer (3009-3019, 19-23k).
 // 8 on FreeRTOS, where a writer proxy's 128 bytes is the cost that matters and the rates that overflow it are not
 // reached; a shorter history only re-requests some repairs early, it never loses one.
+// The compiled size; a context may use fewer, struct tt_Capacity.request_history (tickle.h).
 #ifndef tt_RELIABLE_REQUEST_HISTORY
 #if defined(TT_PLATFORM_FREERTOS)
 #define tt_RELIABLE_REQUEST_HISTORY 8
@@ -699,6 +700,7 @@
 #endif
 // Ring slots one Publisher may hold claimed at once (tt_Publisher_claim()): each is held out of ring order and handed
 // over by reference at its publish, so several can be out without stopping any ring. Each costs 32 B of tt_Publisher.
+// The compiled size; a context may use fewer, struct tt_Capacity.publisher_claims (tickle.h).
 #ifndef tt_PUBLISHER_CLAIMS
 #define tt_PUBLISHER_CLAIMS 4
 #endif
@@ -981,6 +983,7 @@
 // Large samples a Publisher keeps by reference at once - being sent, or retained for resends and late joiners. Its
 // KEEP_LAST depth bounds it further in samples (tt_ReliableCache.sample_depth); a KEEP_ALL Publisher whose every record
 // is unacknowledged refuses the next large publish (tt_RET_WOULD_BLOCK).
+// The compiled size; a context may use fewer, struct tt_Capacity.large_retained (tickle.h).
 #ifndef tt_LARGE_RETAINED
 #define tt_LARGE_RETAINED 16
 #endif
@@ -1213,6 +1216,7 @@
 // peer is silently dropped rather than tracked (see upsert_peer() in tickle.c) - safe only
 // because a full table already implies "more than the threshold", i.e. already broadcasting,
 // which still reaches that dropped peer too.
+// The compiled size; a context may use fewer, struct tt_Capacity.peers (tickle.h).
 #ifndef tt_MAX_PEER_COUNT
 #define tt_MAX_PEER_COUNT 8
 #endif
@@ -1240,6 +1244,7 @@
 // (tt_PeerAck), and with the hybrid transport 40 more (tt_PeerWatch), in every Publisher. The ack scans (the lowest
 // acknowledgement a KEEP_ALL writer reads per publish, the idle HEARTBEAT's per run) walk the whole array, so a larger
 // value costs a few instructions an entry there as well.
+// The compiled size; a context may use fewer, struct tt_Capacity.ack_entries (tickle.h).
 #ifndef tt_MAX_ACK_ENTRIES
 #define tt_MAX_ACK_ENTRIES 16
 #endif

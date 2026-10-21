@@ -433,8 +433,8 @@ static void test_validation(void) {
     expect_refused(&opts, "net.reassembly_cap_off 2");
 
     opts = defaults();
-    opts.capacity.reserved = 1;
-    expect_refused(&opts, "a placeholder group's reserved field");
+    opts.segment.reserved = 1;
+    expect_refused(&opts, "the placeholder group's reserved field");
 }
 
 // ---- Two contexts, two sets of options.
