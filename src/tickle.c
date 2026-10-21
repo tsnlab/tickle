@@ -360,7 +360,21 @@ static void resolve_service_options(struct tt_ServiceOptions* service) {
 }
 
 static void resolve_qos_options(struct tt_QosDefaults* qos) {
-    (void)qos;
+    if (qos->depth == 0) {
+        qos->depth = (uint32_t)tt_QOS_DEPTH_DEFAULT;
+    }
+    if (qos->keep_all_depth == 0) {
+        qos->keep_all_depth = (uint32_t)tt_QOS_KEEP_ALL_DEPTH_DEFAULT;
+    }
+    if (qos->history_bytes == 0) {
+        qos->history_bytes = (uint32_t)tt_QOS_HISTORY_BYTES_DEFAULT;
+    }
+    if (qos->keep_all_bytes == 0) {
+        qos->keep_all_bytes = (uint32_t)tt_QOS_KEEP_ALL_BYTES_DEFAULT;
+    }
+    if (qos->max_blocking_ns == 0) {
+        qos->max_blocking_ns = (uint64_t)tt_QOS_MAX_BLOCKING_DEFAULT_NS;
+    }
 }
 
 static void resolve_poll_options(struct tt_PollOptions* poll) {
@@ -544,9 +558,14 @@ static tt_ret_t validate_service_options(const struct tt_ServiceOptions* service
     return tt_RET_OK;
 }
 
+// A default depth is a profile's depth, so it has a profile's limit (tt_QosProfile_resolve()): the retained-sample ring
+// and keep_last_depth count in 16 bits. The byte caps and max_blocking_ns take any value a profile takes.
 static tt_ret_t validate_qos_options(const struct tt_QosDefaults* qos) {
-    if (qos->reserved != 0) {
-        return reject_option("qos.reserved", "is not 0");
+    if (qos->depth > UINT16_MAX) {
+        return reject_option("qos.depth", "exceeds UINT16_MAX, a profile's history.depth limit");
+    }
+    if (qos->keep_all_depth > UINT16_MAX) {
+        return reject_option("qos.keep_all_depth", "exceeds UINT16_MAX, a profile's history.depth limit");
     }
     return tt_RET_OK;
 }
@@ -6624,7 +6643,25 @@ static uint64_t qos_or_default64(uint64_t requested, uint64_t fallback) {
     return requested != 0 ? requested : fallback;
 }
 
-static tt_ret_t qos_resolve_history(const struct tt_QosHistory* requested, struct tt_QosHistory* out) {
+// The defaults a zero field resolves to: tt_QosProfile_resolve()'s and the storage-size functions' (config.h), and a
+// context's own (tt_InitOptions.qos) for what is created on it.
+static const struct tt_QosDefaults qos_compiled_defaults = {
+    .depth = (uint32_t)tt_QOS_DEPTH_DEFAULT,
+    .keep_all_depth = (uint32_t)tt_QOS_KEEP_ALL_DEPTH_DEFAULT,
+    .history_bytes = (uint32_t)tt_QOS_HISTORY_BYTES_DEFAULT,
+    .keep_all_bytes = (uint32_t)tt_QOS_KEEP_ALL_BYTES_DEFAULT,
+    .max_blocking_ns = (uint64_t)tt_QOS_MAX_BLOCKING_DEFAULT_NS,
+};
+
+// A context's defaults, resolved: a created context holds them so, and a whitebox one built by hand reads its zeros as
+// the config.h defaults. NULL is the config.h defaults.
+static void context_qos_defaults(const struct tt_Context* node, struct tt_QosDefaults* out) {
+    *out = node != NULL ? node->opts.qos : qos_compiled_defaults;
+    resolve_qos_options(out);
+}
+
+static tt_ret_t qos_resolve_history(const struct tt_QosHistory* requested, const struct tt_QosDefaults* defaults,
+                                    struct tt_QosHistory* out) {
     switch (requested->kind) {
     case tt_QOS_HISTORY_SYSTEM_DEFAULT:
     case tt_QOS_HISTORY_KEEP_LAST:
@@ -6640,9 +6677,8 @@ static tt_ret_t qos_resolve_history(const struct tt_QosHistory* requested, struc
     if (requested->depth > UINT16_MAX) {
         return tt_RET_INVALID_ARGUMENT; // the retained-sample ring and keep_last_depth count in 16 bits
     }
-    uint32_t depth_default = keep_all ? (uint32_t)tt_QOS_KEEP_ALL_DEPTH_DEFAULT : (uint32_t)tt_QOS_DEPTH_DEFAULT;
-    uint32_t bytes_default =
-        keep_all ? (uint32_t)tt_QOS_KEEP_ALL_BYTES_DEFAULT : (uint32_t)tt_QOS_HISTORY_BYTES_DEFAULT;
+    uint32_t depth_default = keep_all ? defaults->keep_all_depth : defaults->depth;
+    uint32_t bytes_default = keep_all ? defaults->keep_all_bytes : defaults->history_bytes;
     out->depth = qos_or_default(requested->depth, depth_default);
     out->bytes = qos_or_default(requested->bytes, bytes_default);
     return tt_RET_OK;
@@ -6666,7 +6702,8 @@ static bool qos_reorder_too_narrow(uint32_t slots, uint16_t tracking_words) {
 }
 
 static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requested, uint8_t kind,
-                                        const struct tt_QosMatched* matched, struct tt_QosReliability* out) {
+                                        const struct tt_QosMatched* matched, const struct tt_QosDefaults* defaults,
+                                        struct tt_QosReliability* out) {
     bool service = (kind & tt_KIND_SERVICE) != 0;
     switch (requested->kind) {
     case tt_QOS_RELIABILITY_SYSTEM_DEFAULT:
@@ -6709,7 +6746,7 @@ static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requeste
         out->reorder_slots = (uint16_t)slots;
     }
     if (kind == tt_KIND_TOPIC_PUBLISHER) {
-        out->max_blocking_ns = qos_or_default64(requested->max_blocking_ns, tt_QOS_MAX_BLOCKING_DEFAULT_NS);
+        out->max_blocking_ns = qos_or_default64(requested->max_blocking_ns, defaults->max_blocking_ns);
     }
     return tt_RET_OK;
 }
@@ -6783,8 +6820,9 @@ bool tt_QosProfile_equal(const struct tt_QosProfile* a, const struct tt_QosProfi
            a->liveliness.lease_ns == b->liveliness.lease_ns;
 }
 
-tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
-                               struct tt_QosProfile* actual) {
+// tt_QosProfile_resolve() with the given defaults for its zero fields (resolved: none of them 0).
+static tt_ret_t qos_profile_resolve(const struct tt_QosDefaults* defaults, const struct tt_QosProfile* requested,
+                                    uint8_t kind, const struct tt_QosMatched* matched, struct tt_QosProfile* actual) {
     static const struct tt_QosProfile zeroed;
     if (actual == NULL || (kind != tt_KIND_TOPIC_PUBLISHER && kind != tt_KIND_TOPIC_SUBSCRIBER &&
                            kind != tt_KIND_SERVICE_CLIENT && kind != tt_KIND_SERVICE_SERVER)) {
@@ -6793,9 +6831,9 @@ tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t ki
     const struct tt_QosProfile* request = requested != NULL ? requested : &zeroed;
     struct tt_QosProfile out;
     memset(&out, 0, sizeof(out));
-    tt_ret_t result = qos_resolve_history(&request->history, &out.history);
+    tt_ret_t result = qos_resolve_history(&request->history, defaults, &out.history);
     if (result == tt_RET_OK) {
-        result = qos_resolve_reliability(&request->reliability, kind, matched, &out.reliability);
+        result = qos_resolve_reliability(&request->reliability, kind, matched, defaults, &out.reliability);
     }
     if (result == tt_RET_OK) {
         result = qos_resolve_durability(request->durability.kind, kind, matched, &out.durability.kind);
@@ -6812,6 +6850,19 @@ tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t ki
     out.lifespan.duration_ns = qos_duration(request->lifespan.duration_ns);
     *actual = out;
     return tt_RET_OK;
+}
+
+tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
+                               struct tt_QosProfile* actual) {
+    return qos_profile_resolve(&qos_compiled_defaults, requested, kind, matched, actual);
+}
+
+// The resolution an endpoint created on `node` gets: its zeros take the context's defaults.
+static tt_ret_t qos_resolve_for(const struct tt_Context* node, const struct tt_QosProfile* requested, uint8_t kind,
+                                const struct tt_QosMatched* matched, struct tt_QosProfile* actual) {
+    struct tt_QosDefaults defaults;
+    context_qos_defaults(node, &defaults);
+    return qos_profile_resolve(&defaults, requested, kind, matched, actual);
 }
 
 // A message struct sized 0 or larger than one datagram is a misconfiguration: on the receive
@@ -12807,9 +12858,12 @@ static size_t server_entry_of(const struct tt_ServerOptions* options) {
                       (size_t)options->max_response_bytes);
 }
 
-size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+// The storage sizes keep their signatures and the config.h defaults (user decision, 2026-10-21); the _for() variants
+// resolve as creation on that context does.
+size_t tt_Publisher_storage_size_for(const struct tt_Context* context, const struct tt_TypeSupport* type,
+                                     const struct tt_QosProfile* qos) {
     struct tt_QosProfile actual;
-    if (type == NULL || tt_QosProfile_resolve(qos, tt_KIND_TOPIC_PUBLISHER, NULL, &actual) != tt_RET_OK) {
+    if (type == NULL || qos_resolve_for(context, qos, tt_KIND_TOPIC_PUBLISHER, NULL, &actual) != tt_RET_OK) {
         return 0;
     }
     struct publisher_layout layout;
@@ -12817,14 +12871,23 @@ size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct
     return layout.total;
 }
 
-size_t tt_Subscriber_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+size_t tt_Subscriber_storage_size_for(const struct tt_Context* context, const struct tt_TypeSupport* type,
+                                      const struct tt_QosProfile* qos) {
     struct tt_QosProfile actual;
-    if (type == NULL || tt_QosProfile_resolve(qos, tt_KIND_TOPIC_SUBSCRIBER, NULL, &actual) != tt_RET_OK) {
+    if (type == NULL || qos_resolve_for(context, qos, tt_KIND_TOPIC_SUBSCRIBER, NULL, &actual) != tt_RET_OK) {
         return 0;
     }
     struct subscriber_layout layout;
     subscriber_layout_of(type, &actual, &layout);
     return layout.total;
+}
+
+size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+    return tt_Publisher_storage_size_for(NULL, type, qos);
+}
+
+size_t tt_Subscriber_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos) {
+    return tt_Subscriber_storage_size_for(NULL, type, qos);
 }
 
 size_t tt_Client_storage_size(const struct tt_ClientOptions* options) {
@@ -12913,6 +12976,37 @@ static void publisher_assure_depth(struct tt_ReliableCache* cache, const struct 
     cache->depth_assured_len = longest < UINT32_MAX ? (uint32_t)longest : UINT32_MAX;
 }
 
+// Says why a Publisher's storage was refused, and when it is short because a zero field took a context default larger
+// than config.h's - storage sized with tt_Publisher_storage_size() rather than tt_Publisher_storage_size_for() - names
+// that default, so the refusal is not read as a wrong profile.
+static void qos_log_storage_refusal(const char* topic_name, const struct tt_QosProfile* qos,
+                                    const struct tt_QosProfile* actual, const void* storage, size_t storage_size,
+                                    size_t needed) {
+    if (storage != NULL && storage_size >= needed) {
+        TT_LOG_ERROR("Publisher on %s refused: its storage is not 8-byte aligned", topic_name);
+        return;
+    }
+    TT_LOG_ERROR("Publisher on %s refused: storage of %lu bytes, %lu needed (tt_Publisher_storage_size_for())",
+                 topic_name, (unsigned long)(storage != NULL ? storage_size : 0U), (unsigned long)needed);
+    bool keep_all = actual->history.kind == tt_QOS_HISTORY_KEEP_ALL;
+    uint32_t depth = qos != NULL ? qos->history.depth : 0U;
+    uint32_t bytes = qos != NULL ? qos->history.bytes : 0U;
+    uint32_t compiled_depth = keep_all ? qos_compiled_defaults.keep_all_depth : qos_compiled_defaults.depth;
+    uint32_t compiled_bytes = keep_all ? qos_compiled_defaults.keep_all_bytes : qos_compiled_defaults.history_bytes;
+    if (depth == 0 && actual->history.depth > compiled_depth) {
+        TT_LOG_ERROR("Publisher on %s: its zero history.depth took this context's tt_InitOptions.qos.%s, %u, above "
+                     "the %u tt_Publisher_storage_size() assumes",
+                     topic_name, keep_all ? "keep_all_depth" : "depth", (unsigned)actual->history.depth,
+                     (unsigned)compiled_depth);
+    }
+    if (bytes == 0 && actual->history.bytes > compiled_bytes) {
+        TT_LOG_ERROR("Publisher on %s: its zero history.bytes took this context's tt_InitOptions.qos.%s, %u, above "
+                     "the %u tt_Publisher_storage_size() assumes",
+                     topic_name, keep_all ? "keep_all_bytes" : "history_bytes", (unsigned)actual->history.bytes,
+                     (unsigned)compiled_bytes);
+    }
+}
+
 static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct tt_Publisher* pub,
                                                  const struct tt_TypeSupport* type, const char* topic_name,
                                                  const struct tt_QosProfile* qos,
@@ -12927,15 +13021,21 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     struct tt_QosMatched matched;
     qos_gather_matched(node, tt_KIND_TOPIC_PUBLISHER, topic_name, &matched);
     struct tt_QosProfile actual;
-    tt_ret_t result = tt_QosProfile_resolve(qos, tt_KIND_TOPIC_PUBLISHER, &matched, &actual);
+    tt_ret_t result = qos_resolve_for(node, qos, tt_KIND_TOPIC_PUBLISHER, &matched, &actual);
     if (result != tt_RET_OK) {
         return result;
     }
     struct publisher_layout layout;
     publisher_layout_of(type, &actual, &layout);
-    // D7: no silent fall back to BEST_EFFORT. Periodic HEARTBEAT and solicitation need the cache too.
-    if (!qos_storage_fits(storage, storage_size, layout.total) ||
-        (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0))) {
+    // D7: no silent fall back to BEST_EFFORT. Short storage is refused, never used: the layout above is what the
+    // context's defaults resolved, and a zero field takes them whatever storage was given, so the actual QoS never
+    // depends on how much there was.
+    if (!qos_storage_fits(storage, storage_size, layout.total)) {
+        qos_log_storage_refusal(topic_name, qos, &actual, storage, storage_size, layout.total);
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    // Periodic HEARTBEAT and solicitation need the cache too.
+    if (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0)) {
         return tt_RET_INVALID_ARGUMENT;
     }
     if (!publisher_large_options_valid(opts)) {
@@ -13027,15 +13127,15 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
 
 // Says so when a refused Subscriber profile was refused for its reorder buffer alone (qos_reorder_too_narrow()): the
 // one refusal whose fix - more slots, or none - is not obvious from the field that was wrong.
-static void qos_log_reorder_refusal(const struct tt_QosProfile* qos, const struct tt_QosMatched* matched,
-                                    const char* topic_name) {
+static void qos_log_reorder_refusal(const struct tt_Context* node, const struct tt_QosProfile* qos,
+                                    const struct tt_QosMatched* matched, const char* topic_name) {
     if (qos == NULL) {
         return;
     }
     struct tt_QosProfile without = *qos;
     without.reliability.reorder_slots = tt_QOS_REORDER_NONE;
     struct tt_QosProfile actual;
-    if (tt_QosProfile_resolve(&without, tt_KIND_TOPIC_SUBSCRIBER, matched, &actual) != tt_RET_OK) {
+    if (qos_resolve_for(node, &without, tt_KIND_TOPIC_SUBSCRIBER, matched, &actual) != tt_RET_OK) {
         return;
     }
     TT_LOG_ERROR(
@@ -13058,9 +13158,9 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
     struct tt_QosMatched matched;
     qos_gather_matched(node, tt_KIND_TOPIC_SUBSCRIBER, topic_name, &matched);
     struct tt_QosProfile actual;
-    tt_ret_t result = tt_QosProfile_resolve(qos, tt_KIND_TOPIC_SUBSCRIBER, &matched, &actual);
+    tt_ret_t result = qos_resolve_for(node, qos, tt_KIND_TOPIC_SUBSCRIBER, &matched, &actual);
     if (result != tt_RET_OK) {
-        qos_log_reorder_refusal(qos, &matched, topic_name);
+        qos_log_reorder_refusal(node, qos, &matched, topic_name);
         return result;
     }
     struct subscriber_layout layout;
@@ -13128,8 +13228,8 @@ static tt_ret_t node_create_client_qos_locked(struct tt_Node* owner, struct tt_C
         return tt_RET_INVALID_ARGUMENT; // the callback is required
     }
     struct tt_QosProfile actual;
-    tt_ret_t result = tt_QosProfile_resolve(qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
-                                            tt_KIND_SERVICE_CLIENT, NULL, &actual);
+    tt_ret_t result = qos_resolve_for(node, qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
+                                      tt_KIND_SERVICE_CLIENT, NULL, &actual);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -13176,8 +13276,8 @@ static tt_ret_t node_create_server_qos_locked(struct tt_Node* owner, struct tt_S
         return tt_RET_INVALID_ARGUMENT; // the callback is required
     }
     struct tt_QosProfile actual;
-    tt_ret_t result = tt_QosProfile_resolve(qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
-                                            tt_KIND_SERVICE_SERVER, NULL, &actual);
+    tt_ret_t result = qos_resolve_for(node, qos != NULL ? qos : &tt_QOS_PROFILE_SERVICES_DEFAULT,
+                                      tt_KIND_SERVICE_SERVER, NULL, &actual);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -13291,9 +13391,10 @@ tt_ret_t tt_Subscriber_get_actual_qos(const struct tt_Subscriber* sub, struct tt
 
 // A service endpoint's QoS is kept whole, as given resolved; of it only a Client's reliability changes behaviour (a
 // BEST_EFFORT call is not resent, call_retry()). A deprecated create left it zeroed: that is the services default.
-static tt_ret_t service_actual_qos(const struct tt_QosProfile* kept, uint8_t kind, struct tt_QosProfile* out) {
+static tt_ret_t service_actual_qos(const struct tt_Context* node, const struct tt_QosProfile* kept, uint8_t kind,
+                                   struct tt_QosProfile* out) {
     if (kept->history.kind == tt_QOS_HISTORY_SYSTEM_DEFAULT) {
-        return tt_QosProfile_resolve(&tt_QOS_PROFILE_SERVICES_DEFAULT, kind, NULL, out);
+        return qos_resolve_for(node, &tt_QOS_PROFILE_SERVICES_DEFAULT, kind, NULL, out);
     }
     *out = *kept;
     return tt_RET_OK;
@@ -13304,7 +13405,7 @@ tt_ret_t tt_Client_get_actual_qos(const struct tt_Client* client, struct tt_QosP
         return tt_RET_INVALID_ARGUMENT;
     }
     state_lock(client->node);
-    tt_ret_t result = service_actual_qos(&client->qos, tt_KIND_SERVICE_CLIENT, out);
+    tt_ret_t result = service_actual_qos(client->node, &client->qos, tt_KIND_SERVICE_CLIENT, out);
     state_unlock(client->node);
     return result;
 }
@@ -13314,7 +13415,7 @@ tt_ret_t tt_Server_get_actual_qos(const struct tt_Server* server, struct tt_QosP
         return tt_RET_INVALID_ARGUMENT;
     }
     state_lock(server->node);
-    tt_ret_t result = service_actual_qos(&server->qos, tt_KIND_SERVICE_SERVER, out);
+    tt_ret_t result = service_actual_qos(server->node, &server->qos, tt_KIND_SERVICE_SERVER, out);
     state_unlock(server->node);
     return result;
 }

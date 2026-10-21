@@ -848,8 +848,16 @@ struct tt_ReliableOptions {
 struct tt_ServiceOptions {
     uint8_t reserved;
 };
+// What a zero in a struct tt_QosProfile field resolves to when an endpoint is created on this context (each 0 here =
+// the config.h default named). The tt_*_storage_size() functions keep the config.h defaults; an endpoint whose zeroed
+// field takes a larger default here needs the tt_*_storage_size_for() size, and storage short of it is refused
+// (docs/DESIGN.md "Context options"). A profile's own nonzero value always wins.
 struct tt_QosDefaults {
-    uint8_t reserved;
+    uint32_t depth;           // KEEP_LAST history.depth, samples, at most UINT16_MAX; 0 = tt_QOS_DEPTH_DEFAULT
+    uint32_t keep_all_depth;  // KEEP_ALL history.depth, at most UINT16_MAX; 0 = tt_QOS_KEEP_ALL_DEPTH_DEFAULT
+    uint32_t history_bytes;   // KEEP_LAST history.bytes; 0 = tt_QOS_HISTORY_BYTES_DEFAULT
+    uint32_t keep_all_bytes;  // KEEP_ALL history.bytes; 0 = tt_QOS_KEEP_ALL_BYTES_DEFAULT
+    uint64_t max_blocking_ns; // a Publisher's reliability.max_blocking_ns; 0 = tt_QOS_MAX_BLOCKING_DEFAULT_NS
 };
 struct tt_PollOptions {
     uint8_t reserved;
@@ -1835,10 +1843,13 @@ enum tt_QosLivelinessKind {
 
 struct tt_QosHistory {
     enum tt_QosHistoryKind kind;
-    uint32_t depth; // samples; 0 = tt_QOS_DEPTH_DEFAULT (KEEP_LAST) or tt_QOS_KEEP_ALL_DEPTH_DEFAULT (KEEP_ALL)
-    // TickLE: the byte cap on what a Publisher retains; 0 = tt_QOS_HISTORY_BYTES_DEFAULT (KEEP_LAST) or
-    // tt_QOS_KEEP_ALL_BYTES_DEFAULT (KEEP_ALL). When `depth` samples of the type's largest size do not fit, creation
-    // warns and the actual QoS reports the depth that does.
+    // samples; 0 = the context's default (tt_InitOptions.qos.depth / keep_all_depth), unless set
+    // tt_QOS_DEPTH_DEFAULT (KEEP_LAST) or tt_QOS_KEEP_ALL_DEPTH_DEFAULT (KEEP_ALL)
+    uint32_t depth;
+    // TickLE: the byte cap on what a Publisher retains; 0 = the context's default (qos.history_bytes /
+    // keep_all_bytes), unless set tt_QOS_HISTORY_BYTES_DEFAULT (KEEP_LAST) or tt_QOS_KEEP_ALL_BYTES_DEFAULT
+    // (KEEP_ALL). When `depth` samples of the type's largest size do not fit, creation warns and the actual QoS
+    // reports the depth that does.
     uint32_t bytes;
 };
 
@@ -1847,7 +1858,8 @@ struct tt_QosReliability {
     uint16_t tracking_words;  // TickLE, Subscriber: ACK window per writer in 64-bit words; 0 = tt_RELIABLE_BITMAP_WORDS
     uint16_t reorder_slots;   // TickLE, RELIABLE Subscriber: held out-of-order samples, at least the window - 1;
                               // 0 = the window (tracking_words x 64), tt_QOS_REORDER_NONE = none
-    uint64_t max_blocking_ns; // TickLE, KEEP_ALL Publisher: longest a full writer waits; 0 = default (100 ms)
+    uint64_t max_blocking_ns; // TickLE, KEEP_ALL Publisher: longest a full writer waits; 0 = the context's default
+                              // (tt_InitOptions.qos.max_blocking_ns, unless set 100 ms)
 };
 
 struct tt_QosDurability {
@@ -1904,11 +1916,12 @@ struct tt_QosMatched {
 // Publisher's tracking_words and reorder_slots, a BEST_EFFORT Subscriber's reorder_slots, max_blocking_ns on anything
 // but a Publisher). Resolving an actual profile again gives it back. It does not size storage: the depth the history
 // bytes really hold is reported by tt_Publisher_get_actual_qos(). `requested` NULL is the zeroed profile; `actual` may
-// alias it. tt_RET_INVALID_ARGUMENT, `actual` untouched, for: an unknown kind or enum value; a depth above UINT16_MAX;
-// tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; on a RELIABLE Subscriber, reorder_slots other than
-// tt_QOS_REORDER_NONE below its window less one (fewer slots storm with re-requests under loss); a lease,
-// BEST_AVAILABLE ones included, below the floor; and on a Client or Server a BEST_AVAILABLE, TRANSIENT_LOCAL or
-// MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
+// alias it. A zero depth, bytes or max_blocking_ns takes the config.h default here; an endpoint's creation resolves it
+// with its context's (tt_InitOptions.qos). tt_RET_INVALID_ARGUMENT, `actual` untouched, for: an unknown kind or enum
+// value; a depth above UINT16_MAX; tracking_words above tt_RELIABLE_BITMAP_MAX_WORDS; on a RELIABLE Subscriber,
+// reorder_slots other than tt_QOS_REORDER_NONE below its window less one (fewer slots storm with re-requests under
+// loss); a lease, BEST_AVAILABLE ones included, below the floor; and on a Client or Server a BEST_AVAILABLE,
+// TRANSIENT_LOCAL or MANUAL_BY_TOPIC kind (services are VOLATILE and AUTOMATIC).
 tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
                                struct tt_QosProfile* actual);
 // Field by field (the struct has padding, so memcmp() is not a comparison). NULL equals only NULL.
@@ -3815,6 +3828,13 @@ tt_ret_t tt_Node_create_server_legacy(struct tt_Node* node, struct tt_Server* se
 // that retains nothing; otherwise what the deprecated creates return (a full endpoint table, a full scheduler).
 size_t tt_Publisher_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos);
 size_t tt_Subscriber_storage_size(const struct tt_TypeSupport* type, const struct tt_QosProfile* qos);
+// The same for an endpoint created on `context`. Creation resolves a zero field with the context's default
+// (tt_InitOptions.qos), so on a context that raises one, the two functions above - which keep the config.h defaults -
+// can size short, and short storage is refused, never overrun. `context` NULL is the config.h defaults.
+size_t tt_Publisher_storage_size_for(const struct tt_Context* context, const struct tt_TypeSupport* type,
+                                     const struct tt_QosProfile* qos);
+size_t tt_Subscriber_storage_size_for(const struct tt_Context* context, const struct tt_TypeSupport* type,
+                                      const struct tt_QosProfile* qos);
 size_t tt_Client_storage_size(const struct tt_ClientOptions* options); // 0 unless max_request_bytes is set
 size_t tt_Server_storage_size(const struct tt_ServerOptions* options); // 0 unless max_response_bytes is set
 tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_TypeSupport* type,
