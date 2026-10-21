@@ -32,7 +32,10 @@
 #define TEST_COMMON_DEFINE_STORAGE
 #include "test_common.h"
 #define TEST_MOCK_DEFINE_STORAGE
-#include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
+#ifndef TICKLE_C
+#define TICKLE_C "../src/tickle.c"
+#endif
+#include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox; tests/mutants_init_options_capacity.sh passes a mutant
 #include "test_mock.h"
 
 #define SENDER_ID 1
@@ -1677,6 +1680,48 @@ static void test_a_volatile_writer_hands_acknowledged_buffers_back(void) {
     EXPECT_EQ_U32(0, sender_alloc.live); // destroying the Publisher hands every buffer back
 }
 
+// tt_InitOptions bundle 9: a context's capacity.large_retained is the most large records one of its Publishers keeps,
+// large[] keeping its compiled size. The control is each writer at the default, tt_LARGE_RETAINED;
+// tests/mutants_init_options_capacity.sh puts the constant back in each reader.
+//   - A durable KEEP_LAST writer (the pair's cache has no sample depth, so only the capacity bounds it) keeps that
+//     many, the oldest going as the next commits (large_ring_limit()).
+//   - A KEEP_ALL writer holding that many, the oldest unacknowledged, refuses the next large publish
+//     (large_keep_all_admits()) rather than drop an unacknowledged record. Asked directly, for one datagram: in this
+//     pair the cache's 256-datagram bound (keep_all_bound()) refuses any second unacknowledged large sample first, so
+//     only a writer with a deeper cache gets to ask - the limit is 1 here, one sample out and nothing acknowledged.
+#define CAPACITY_LARGE 3U
+static void test_capacity_large_retained_is_the_records_kept(void) {
+    static_assert(CAPACITY_LARGE + 2U <= tt_LARGE_RETAINED, "the default must hold what the limit refuses");
+    for (int limited = 0; limited <= 1; limited++) {
+        init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER, NULL);
+        EXPECT_EQ_U32(tt_LARGE_RETAINED, sender.opts.capacity.large_retained); // resolved by node_init_locks()
+        if (limited) {
+            sender.opts.capacity.large_retained = CAPACITY_LARGE;
+        }
+        sim_start(0);
+        for (uint8_t seed = 1; seed <= CAPACITY_LARGE + 2U; seed++) {
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish(seed, tt_SECOND));
+            sim_settle(seed, tt_SECOND);
+        }
+        EXPECT_EQ_INT((int)CAPACITY_LARGE + 2, delivered_count);
+        EXPECT_EQ_U32(limited ? CAPACITY_LARGE : CAPACITY_LARGE + 2U, pub.large_count);
+
+        // KEEP_ALL: the sample's datagrams all lost, so nothing is acknowledged.
+        init_pair(ONE_MB, RELIABLE_KEEP_ALL);
+        if (limited) {
+            sender.opts.capacity.large_retained = 1;
+        }
+        sim_start(0);
+        sim_acting = SENDER_ID;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+        sim_head = sim_tail;
+        EXPECT_EQ_U32(1, pub.large_count);
+        EXPECT_TRUE(!pub.large_cursor.active);
+        EXPECT_EQ_INT(limited ? tt_RET_WOULD_BLOCK : tt_RET_OK, large_keep_all_admits(&pub, 1));
+    }
+    teardown_pair();
+}
+
 static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(void) {
     init_pair_with(ONE_MB, RELIABLE_KEEP_LAST, PAIR_DURABLE_WRITER | PAIR_DURABLE_READER, NULL);
     sim_start(0);
@@ -2250,6 +2295,7 @@ static void run_path_tests(void) {
     test_large_in_flight_answers_and_wakes_once();
     test_a_retained_large_sample_outlives_the_next_one();
     test_a_volatile_writer_hands_acknowledged_buffers_back();
+    test_capacity_large_retained_is_the_records_kept();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
     test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1();
     test_a_durable_backlog_interleaving_large_and_small_samples();
