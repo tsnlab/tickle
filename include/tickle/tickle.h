@@ -838,10 +838,44 @@ struct tt_NetOptions {
     uint8_t reassembly_cap_off; // 1: advertise the ceiling uncapped (a benchmark arm's reader); 0 = capped
 };
 
-// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
+// Discovery and liveliness timing (bundle 2). Each 0 is the config.h constant named beside it, so a zeroed group is
+// what every build before it compiled in. Durations are in nanoseconds and at most tt_DISCOVERY_MAX_DURATION_NS.
+//
+// update_interval_ns and miss_threshold are judged by the peers too: a peer presumes this context dead after ITS OWN
+// miss_threshold and a half of ITS OWN update interval without a word, and the announce does not carry either value.
+// A context created with either one different from the default therefore logs a WARNING once - peers built with the
+// defaults may presume it dead (a longer interval) or hear from it more often than they need (a shorter one).
 struct tt_DiscoveryOptions {
-    uint8_t reserved;
+    uint64_t cycle_ns;           // the grid the first summary and liveliness check are aligned to; tt_CONTEXT_CYCLE
+    uint64_t update_interval_ns; // the summary period, and the liveliness check's; tt_CONTEXT_UPDATE_INTERVAL
+    // The flush tick a batched send waits for, and the floor of the summary period; tt_CONTEXT_TX_INTERVAL. At most
+    // update_interval_ns.
+    uint64_t tx_interval_ns;
+    // The longest a silent node is kept for a long liveliness lease one of its entities announced;
+    // tt_CONTEXT_MAX_LEASE_NS
+    uint64_t max_lease_ns;
+    uint64_t request_retry_ns; // a list request's retry before a round trip is timed; tt_DISCOVERY_REQUEST_RETRY
+    uint64_t
+        liveliness_defer_ns; // one deferral of a liveliness check while datagrams are unread; tt_LIVELINESS_DEFER_NS
+    uint64_t
+        sched_full_warn_interval_ns; // a full scheduler is warned about at most this often; tt_SCHED_FULL_WARN_INTERVAL
+    // Summaries per shortest own lease, and the shortest finite lease an endpoint of this context may ask for
+    // (lease_divisor x tx_interval_ns: tt_QosProfile_resolve() and tt_*_storage_size() judge the default's);
+    // tt_LIVELINESS_LEASE_DIVISOR
+    uint8_t lease_divisor;
+    uint8_t request_attempts; // list requests sent to one peer before its next summary starts over;
+                              // tt_DISCOVERY_REQUEST_ATTEMPTS
+    // Deferrals of one liveliness check while datagrams are unread; tt_LIVELINESS_MAX_DEFERRALS, and
+    // tt_LIVELINESS_NO_DEFERRALS for none
+    uint8_t liveliness_max_deferrals;
+    // Summary intervals missed, and half of one more, before a silent node is presumed dead (its silence:
+    // (2 x miss_threshold + 1) x update_interval_ns / 2); tt_LIVELINESS_MISS_THRESHOLD
+    uint8_t miss_threshold;
 };
+#define tt_LIVELINESS_NO_DEFERRALS UINT8_MAX // tt_DiscoveryOptions.liveliness_max_deferrals: judge at once
+#define tt_DISCOVERY_MAX_DURATION_NS (86400ULL * tt_SECOND) // the longest tt_DiscoveryOptions duration: one day
+
+// Placeholders, each replaced by its bundle (ROADMAP "Context options"). `reserved` must be 0.
 struct tt_ReliableOptions {
     uint8_t reserved;
 };

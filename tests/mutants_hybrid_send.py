@@ -490,7 +490,7 @@ MUTANTS = [
     (
         "tick: more often than the announce interval",
         "src/tickle.c",
-        "    if (now - hybrid->tick_ns < tt_CONTEXT_UPDATE_INTERVAL) {\n        return;\n    }\n    uint64_t elapsed",
+        "    if (now - hybrid->tick_ns < discovery_update_interval_ns(node)) {\n        return;\n    }\n    uint64_t elapsed",
         "    uint64_t elapsed",
         SEND,
     ),

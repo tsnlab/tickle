@@ -71,6 +71,11 @@
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
+// Since tt_InitOptions bundle 2 these discovery and liveliness timings are each context's own (struct
+// tt_DiscoveryOptions, tickle.h), and the constants here are only their defaults: tt_CONTEXT_CYCLE,
+// tt_CONTEXT_UPDATE_INTERVAL, tt_CONTEXT_TX_INTERVAL, tt_LIVELINESS_LEASE_DIVISOR, tt_CONTEXT_MAX_LEASE_NS,
+// tt_DISCOVERY_REQUEST_RETRY, tt_DISCOVERY_REQUEST_ATTEMPTS, tt_LIVELINESS_DEFER_NS, tt_LIVELINESS_MAX_DEFERRALS,
+// tt_LIVELINESS_MISS_THRESHOLD (and tt_LIVELINESS_SILENCE_NS, derived) and tt_SCHED_FULL_WARN_INTERVAL.
 #ifndef tt_CONTEXT_CYCLE
 #define tt_CONTEXT_CYCLE tt_MILLISECOND // nanosecond
 #endif
@@ -787,7 +792,7 @@
 // wrong is UDP until the next recheck. It was a literal 1 s until 2026-10-06 (ROADMAP.md 5a) - the same
 // value at the default tt_CONTEXT_UPDATE_INTERVAL, but a build with an interval below ~286 ms put the
 // liveliness silence under it, and the rule could no longer fire before the peer was presumed dead.
-// Derived now, and the ordering is a static_assert at the end of this file.
+// Derived now, and the ordering is checked at creation against the context's own silence (tt_DiscoveryOptions).
 #ifndef tt_SEGMENT_DEAD_READER_NS
 #define tt_SEGMENT_DEAD_READER_NS (tt_LIVELINESS_SILENCE_NS * 2U / (((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U))
 #endif
@@ -1530,9 +1535,8 @@ static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint ind
 // that here would break the `ipfrag` diagnostic arm, which legitimately overrides
 // tt_CONTROL_MAX_LENGTH upwards and must still build.
 static_assert(tt_SEGMENT_RAW_SLOTS >= 4, "tt_SEGMENT_BYTES is too small to hold four datagram slots");
-static_assert(tt_SEGMENT_DEAD_READER_NS < tt_LIVELINESS_SILENCE_NS,
-              "a stopped same-host reader must be given up before its node is presumed dead - see "
-              "tt_SEGMENT_DEAD_READER_NS");
+// tt_SEGMENT_DEAD_READER_NS < the liveliness silence is checked when a context is created
+// (validate_discovery_options(), tickle.c): the silence comes from the context's tt_DiscoveryOptions now.
 static_assert(tt_MAX_BUFFER_LENGTH <= tt_IPV4_UDP_MAX_PAYLOAD,
               "tt_MAX_BUFFER_LENGTH above 65507 cannot be one IPv4 UDP datagram, and "
               "the protocol's uint16 lengths could not describe it either");

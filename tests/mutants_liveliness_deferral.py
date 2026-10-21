@@ -31,7 +31,7 @@ from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_liveliness"
 
-GUARD = "    if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {"
+GUARD = "    if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < discovery_liveliness_max_deferrals(node)) {"
 RESET = "    node->liveliness_deferrals = 0;\n    if (node->liveliness_check_scheduled) {"
 
 MUTANTS = [
@@ -60,7 +60,7 @@ MUTANTS = [
         "asking whether anything is buffered at all",
         "src/tickle.c",
         GUARD,
-        "    if (node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {",
+        "    if (node->liveliness_deferrals < discovery_liveliness_max_deferrals(node)) {",
         "test_expires_peer_after_missed_intervals",
     ),
     # The lateness allowance: the window a node spent descheduled is not evidence of anyone's silence.
@@ -69,8 +69,8 @@ MUTANTS = [
     (
         "the allowance at all",
         "src/tickle.c",
-        "    uint64_t limit = tt_LIVELINESS_SILENCE_NS + unobserved_ns;",
-        "    uint64_t limit = tt_LIVELINESS_SILENCE_NS;",
+        "        uint64_t limit = silence + unobserved_ns;",
+        "        uint64_t limit = silence;",
         "test_a_descheduled_node_does_not_blame_its_peers",
     ),
     (

@@ -346,6 +346,83 @@ static uint64_t service_server_deferred_response_timeout(const struct tt_Context
     return node->opts.service.server_deferred_response_timeout;
 }
 
+// The discovery options (tt_DiscoveryOptions) as their readers use them; a zero - a whitebox context's - is the
+// default.
+static uint64_t discovery_cycle_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.cycle_ns;
+    return value != 0 ? value : (uint64_t)tt_CONTEXT_CYCLE;
+}
+
+static uint64_t discovery_update_interval_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.update_interval_ns;
+    return value != 0 ? value : (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+}
+
+static uint64_t discovery_tx_interval_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.tx_interval_ns;
+    return value != 0 ? value : (uint64_t)tt_CONTEXT_TX_INTERVAL;
+}
+
+static uint64_t discovery_max_lease_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.max_lease_ns;
+    return value != 0 ? value : (uint64_t)tt_CONTEXT_MAX_LEASE_NS;
+}
+
+static uint64_t discovery_request_retry_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.request_retry_ns;
+    return value != 0 ? value : (uint64_t)tt_DISCOVERY_REQUEST_RETRY;
+}
+
+static uint64_t discovery_liveliness_defer_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.liveliness_defer_ns;
+    return value != 0 ? value : (uint64_t)tt_LIVELINESS_DEFER_NS;
+}
+
+static uint64_t discovery_sched_full_warn_interval_ns(const struct tt_Context* node) {
+    uint64_t value = node->opts.discovery.sched_full_warn_interval_ns;
+    return value != 0 ? value : (uint64_t)tt_SCHED_FULL_WARN_INTERVAL;
+}
+
+static uint64_t discovery_lease_divisor(const struct tt_Context* node) {
+    uint8_t value = node->opts.discovery.lease_divisor;
+    return value != 0 ? value : (uint64_t)tt_LIVELINESS_LEASE_DIVISOR;
+}
+
+static uint32_t discovery_request_attempts(const struct tt_Context* node) {
+    uint8_t value = node->opts.discovery.request_attempts;
+    return value != 0 ? value : (uint32_t)tt_DISCOVERY_REQUEST_ATTEMPTS;
+}
+
+// tt_LIVELINESS_NO_DEFERRALS is none.
+static uint32_t discovery_liveliness_max_deferrals(const struct tt_Context* node) {
+    uint8_t value = node->opts.discovery.liveliness_max_deferrals;
+    if (value == 0) {
+        return (uint32_t)tt_LIVELINESS_MAX_DEFERRALS;
+    }
+    return value == tt_LIVELINESS_NO_DEFERRALS ? 0 : value;
+}
+
+static uint64_t discovery_miss_threshold(const struct tt_Context* node) {
+    uint8_t value = node->opts.discovery.miss_threshold;
+    return value != 0 ? value : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD;
+}
+
+// How long a node must be silent to be presumed dead: miss_threshold intervals and half of one more (config.h's
+// tt_LIVELINESS_SILENCE_NS, which is this at the defaults). Bounded by validate_discovery_options(): no overflow.
+static uint64_t discovery_silence_of(uint64_t update_interval_ns, uint64_t miss_threshold) {
+    return ((miss_threshold * 2U) + 1U) * update_interval_ns / 2U;
+}
+
+static uint64_t discovery_silence_ns(const struct tt_Context* node) {
+    return discovery_silence_of(discovery_update_interval_ns(node), discovery_miss_threshold(node));
+}
+
+// The shortest finite lease a context can keep: its summary goes out lease_divisor times a lease, at most once a tx
+// tick (DESIGN.md section 9). rmw_tickle refuses the same floor, from the same options.
+static uint64_t discovery_lease_floor_ns(const struct tt_Context* node) {
+    return discovery_lease_divisor(node) * discovery_tx_interval_ns(node);
+}
+
 // The one link a context gets when none is configured: the scalar addr and broadcast, the default threshold.
 static void default_link(struct tt_Context* node) {
     memset(&node->links[0], 0, sizeof(node->links[0]));
@@ -382,7 +459,40 @@ static void resolve_net_options(struct tt_NetOptions* net) {
 // One resolver and one validator per group, each later bundle editing only its own pair (ROADMAP "Context options").
 // A placeholder group resolves nothing, and its reserved byte must be 0.
 static void resolve_discovery_options(struct tt_DiscoveryOptions* discovery) {
-    (void)discovery;
+    if (discovery->cycle_ns == 0) {
+        discovery->cycle_ns = tt_CONTEXT_CYCLE;
+    }
+    if (discovery->update_interval_ns == 0) {
+        discovery->update_interval_ns = tt_CONTEXT_UPDATE_INTERVAL;
+    }
+    if (discovery->tx_interval_ns == 0) {
+        discovery->tx_interval_ns = tt_CONTEXT_TX_INTERVAL;
+    }
+    if (discovery->max_lease_ns == 0) {
+        discovery->max_lease_ns = tt_CONTEXT_MAX_LEASE_NS;
+    }
+    if (discovery->request_retry_ns == 0) {
+        discovery->request_retry_ns = tt_DISCOVERY_REQUEST_RETRY;
+    }
+    if (discovery->liveliness_defer_ns == 0) {
+        discovery->liveliness_defer_ns = tt_LIVELINESS_DEFER_NS;
+    }
+    if (discovery->sched_full_warn_interval_ns == 0) {
+        discovery->sched_full_warn_interval_ns = tt_SCHED_FULL_WARN_INTERVAL;
+    }
+    if (discovery->lease_divisor == 0) {
+        discovery->lease_divisor = (uint8_t)tt_LIVELINESS_LEASE_DIVISOR;
+    }
+    if (discovery->request_attempts == 0) {
+        discovery->request_attempts = (uint8_t)tt_DISCOVERY_REQUEST_ATTEMPTS;
+    }
+    if (discovery->liveliness_max_deferrals == 0) {
+        discovery->liveliness_max_deferrals =
+            tt_LIVELINESS_MAX_DEFERRALS != 0 ? (uint8_t)tt_LIVELINESS_MAX_DEFERRALS : tt_LIVELINESS_NO_DEFERRALS;
+    }
+    if (discovery->miss_threshold == 0) {
+        discovery->miss_threshold = (uint8_t)tt_LIVELINESS_MISS_THRESHOLD;
+    }
 }
 
 static void resolve_reliable_options(struct tt_ReliableOptions* reliable) {
@@ -601,9 +711,47 @@ static tt_ret_t validate_net_options(const struct tt_NetOptions* net) {
     return tt_RET_OK;
 }
 
+// The checks config.h's static_assert made on these when they were compile-time, and the bounds that keep their
+// products (the silence, the lease floor, a due time) from overflowing; then the one interop WARNING.
 static tt_ret_t validate_discovery_options(const struct tt_DiscoveryOptions* discovery) {
-    if (discovery->reserved != 0) {
-        return reject_option("discovery.reserved", "is not 0");
+    const struct {
+        const char* field;
+        uint64_t value;
+    } durations[] = {
+        {"discovery.cycle_ns", discovery->cycle_ns},
+        {"discovery.update_interval_ns", discovery->update_interval_ns},
+        {"discovery.tx_interval_ns", discovery->tx_interval_ns},
+        {"discovery.max_lease_ns", discovery->max_lease_ns},
+        {"discovery.request_retry_ns", discovery->request_retry_ns},
+        {"discovery.liveliness_defer_ns", discovery->liveliness_defer_ns},
+        {"discovery.sched_full_warn_interval_ns", discovery->sched_full_warn_interval_ns},
+    };
+    for (size_t i = 0; i < sizeof(durations) / sizeof(durations[0]); i++) {
+        if (durations[i].value > tt_DISCOVERY_MAX_DURATION_NS) {
+            return reject_option(durations[i].field, "is longer than tt_DISCOVERY_MAX_DURATION_NS (one day)");
+        }
+    }
+    // The summary goes out at least once a tx tick (summary_interval()): a tick longer than the interval stretches the
+    // summary period past what the peers' silence is measured in.
+    if (discovery->tx_interval_ns > discovery->update_interval_ns) {
+        return reject_option("discovery.tx_interval_ns", "is longer than discovery.update_interval_ns");
+    }
+#if tt_SEGMENT_ENABLED
+    uint64_t silence = discovery_silence_of(discovery->update_interval_ns, discovery->miss_threshold);
+    // Was static_assert(tt_SEGMENT_DEAD_READER_NS < tt_LIVELINESS_SILENCE_NS): a stopped same-host reader must be given
+    // up before its node is presumed dead - see tt_SEGMENT_DEAD_READER_NS.
+    if (silence <= (uint64_t)tt_SEGMENT_DEAD_READER_NS) {
+        return reject_option("discovery.update_interval_ns",
+                             "x (miss_threshold + 1/2) is not above tt_SEGMENT_DEAD_READER_NS");
+    }
+#endif
+    if (discovery->update_interval_ns != tt_CONTEXT_UPDATE_INTERVAL ||
+        discovery->miss_threshold != tt_LIVELINESS_MISS_THRESHOLD) {
+        TT_LOG_WARNING(
+            "tt_InitOptions.discovery: update_interval_ns %llu and miss_threshold %u differ from the defaults "
+            "(%llu, %u); peers judge this context's silence by their own and are not told these",
+            (unsigned long long)discovery->update_interval_ns, (unsigned)discovery->miss_threshold,
+            (unsigned long long)tt_CONTEXT_UPDATE_INTERVAL, (unsigned)tt_LIVELINESS_MISS_THRESHOLD);
     }
     return tt_RET_OK;
 }
@@ -3510,7 +3658,7 @@ static void hybrid_rx_judge_path(struct tt_Context* node, struct tt_HybridRxWrit
         }
         return;
     }
-    uint32_t lifetime_ticks = (uint32_t)(hybrid->lifetime_ns / tt_CONTEXT_UPDATE_INTERVAL);
+    uint32_t lifetime_ticks = (uint32_t)(hybrid->lifetime_ns / discovery_update_interval_ns(node));
     bool runs_got_through = writer->run_tick != 0 && hybrid->ticks + 1U - writer->run_tick <= lifetime_ticks;
     if (body < 2U || hybrid->cap < 2U || hybrid->cap_off || hybrid->path_until_ns != 0 || runs_got_through) {
         return;
@@ -4105,7 +4253,9 @@ static void ensure_flush_scheduled(struct tt_Context* node) {
         return;
     }
     uint64_t now = tt_get_ns();
-    uint64_t due = now - (now % tt_CONTEXT_TX_INTERVAL) + tt_CONTEXT_TX_INTERVAL;
+    // A runtime modulo: a libcall on rv32, once per tick - flush_scheduled stops every later call before it.
+    uint64_t tick = discovery_tx_interval_ns(node);
+    uint64_t due = now - (now % tick) + tick;
     if (tt_Context_schedule(node, due, node_flush, NULL)) {
         node->flush_scheduled = true;
     } else {
@@ -5289,7 +5439,7 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
 // is pushed; a peer that misses it pulls the list when the next summary shows the new generation.
 static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
-    uint64_t quiet_at = node->endpoints_changed_ns + tt_CONTEXT_TX_INTERVAL;
+    uint64_t quiet_at = node->endpoints_changed_ns + discovery_tx_interval_ns(node);
     if (time < quiet_at) {
         if (tt_Context_schedule(node, quiet_at, announce_soon, NULL)) {
             return;
@@ -5306,7 +5456,7 @@ static void arm_announce_soon(struct tt_Context* node) {
     if (node->announce_soon_scheduled) {
         return;
     }
-    if (tt_Context_schedule(node, node->endpoints_changed_ns + tt_CONTEXT_TX_INTERVAL, announce_soon, NULL)) {
+    if (tt_Context_schedule(node, node->endpoints_changed_ns + discovery_tx_interval_ns(node), announce_soon, NULL)) {
         node->announce_soon_scheduled = true;
     }
 }
@@ -5730,7 +5880,8 @@ static bool sched_has_room(struct tt_Context* node) {
 static void sched_note_full(struct tt_Context* node) {
     node->sched_full++;
     uint64_t now = tt_get_ns();
-    if (node->sched_full_warned_ns != 0 && now - node->sched_full_warned_ns < tt_SCHED_FULL_WARN_INTERVAL) {
+    if (node->sched_full_warned_ns != 0 &&
+        now - node->sched_full_warned_ns < discovery_sched_full_warn_interval_ns(node)) {
         return;
     }
     node->sched_full_warned_ns = now != 0 ? now : 1;
@@ -6445,8 +6596,9 @@ static void reset_node_state(struct tt_Context* node) {
 // Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_CONTEXT_CYCLE boundary.
 static tt_ret_t schedule_periodic_tasks(struct tt_Context* node) {
     uint64_t basetime = tt_get_ns();
-    uint64_t rem = basetime % tt_CONTEXT_CYCLE;
-    basetime = basetime - rem + tt_CONTEXT_CYCLE;
+    uint64_t cycle = discovery_cycle_ns(node);
+    uint64_t rem = basetime % cycle;
+    basetime = basetime - rem + cycle;
 
     if (!tt_Context_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
@@ -6459,7 +6611,7 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Context* node) {
     // moment something is (ensure_flush_scheduled()).
 
     node->liveliness_check_scheduled = false;
-    arm_liveliness_check(node, basetime + tt_CONTEXT_UPDATE_INTERVAL);
+    arm_liveliness_check(node, basetime + discovery_update_interval_ns(node));
     if (!node->liveliness_check_scheduled) {
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
@@ -6473,7 +6625,9 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Context* node) {
 
 // How long a context counts as new: it yields on a collision within this of its creation, and a collision that
 // outlasts it is between two established contexts.
-#define ID_SETTLE_NS (2 * tt_CONTEXT_UPDATE_INTERVAL)
+static uint64_t id_settle_ns(const struct tt_Context* node) {
+    return 2U * discovery_update_interval_ns(node);
+}
 
 static void set_id_bit(uint8_t* set, uint32_t id) {
     set[id / 8] |= (uint8_t)(1U << (id % 8));
@@ -6580,8 +6734,8 @@ static void handle_id_collision(struct tt_Context* node, uint32_t ip, uint16_t p
         return;
     }
     uint64_t now = tt_get_ns();
-    bool established = now - node->created_ns >= ID_SETTLE_NS;
-    if (node->collision_since_ns == 0 || now - node->collision_last_ns > ID_SETTLE_NS) {
+    bool established = now - node->created_ns >= id_settle_ns(node);
+    if (node->collision_since_ns == 0 || now - node->collision_last_ns > id_settle_ns(node)) {
         node->collision_since_ns = now; // a new collision
         if (established) {
             announce_after_id_change(node);
@@ -6592,7 +6746,7 @@ static void handle_id_collision(struct tt_Context* node, uint32_t ip, uint16_t p
         move_id(node, ip, port);
         return;
     }
-    if (now - node->collision_since_ns >= ID_SETTLE_NS) {
+    if (now - node->collision_since_ns >= id_settle_ns(node)) {
         uint32_t own_ip = 0;
         uint16_t own_port = 0;
         tt_own_address(node, &own_ip, &own_port);
@@ -6713,9 +6867,9 @@ const struct tt_QosProfile tt_QOS_PROFILE_SERVICES_DEFAULT = {
     .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC, .lease_ns = tt_QOS_DURATION_INFINITE},
 };
 
-// The shortest finite lease a context can keep: its summary goes out tt_LIVELINESS_LEASE_DIVISOR times a lease, at
-// most once a tx tick (DESIGN.md section 9). rmw_tickle refuses the same floor.
-#define QOS_LEASE_FLOOR_NS ((uint64_t)tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL)
+// The lease floor (discovery_lease_floor_ns()) at the default options: what tt_QosProfile_resolve() and the storage
+// sizes, which have no context, judge by. A context's endpoints are judged by its own.
+#define QOS_LEASE_FLOOR_DEFAULT_NS ((uint64_t)tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL)
 
 static uint64_t qos_duration(uint64_t requested) {
     return requested == 0 ? tt_QOS_DURATION_INFINITE : requested;
@@ -6865,7 +7019,8 @@ static tt_ret_t qos_resolve_durability(enum tt_QosDurabilityKind requested, uint
 }
 
 static tt_ret_t qos_resolve_liveliness(const struct tt_QosLiveliness* requested, uint8_t kind,
-                                       const struct tt_QosMatched* matched, struct tt_QosLiveliness* out) {
+                                       const struct tt_QosMatched* matched, uint64_t lease_floor_ns,
+                                       struct tt_QosLiveliness* out) {
     bool service = (kind & tt_KIND_SERVICE) != 0;
     switch (requested->kind) {
     case tt_QOS_LIVELINESS_SYSTEM_DEFAULT:
@@ -6892,7 +7047,7 @@ static tt_ret_t qos_resolve_liveliness(const struct tt_QosLiveliness* requested,
     out->lease_ns = requested->lease_ns == tt_QOS_DURATION_BEST_AVAILABLE
                         ? qos_best_available_duration(matched, matched != NULL ? matched->lease_ns : 0)
                         : qos_duration(requested->lease_ns);
-    if (out->lease_ns < QOS_LEASE_FLOOR_NS) {
+    if (out->lease_ns < lease_floor_ns) {
         return tt_RET_INVALID_ARGUMENT; // refused, not raised: a lease the context cannot keep is the caller's to fix
     }
     return tt_RET_OK;
@@ -6912,9 +7067,11 @@ bool tt_QosProfile_equal(const struct tt_QosProfile* a, const struct tt_QosProfi
            a->liveliness.lease_ns == b->liveliness.lease_ns;
 }
 
-// tt_QosProfile_resolve() with the given defaults for its zero fields (resolved: none of them 0).
+// tt_QosProfile_resolve() with the given defaults for its zero fields (resolved: none of them 0) and the given
+// lease floor: the compiled defaults' there, the context's at an endpoint's creation.
 static tt_ret_t qos_profile_resolve(const struct tt_QosDefaults* defaults, const struct tt_QosProfile* requested,
-                                    uint8_t kind, const struct tt_QosMatched* matched, struct tt_QosProfile* actual) {
+                                    uint8_t kind, const struct tt_QosMatched* matched, uint64_t lease_floor_ns,
+                                    struct tt_QosProfile* actual) {
     static const struct tt_QosProfile zeroed;
     if (actual == NULL || (kind != tt_KIND_TOPIC_PUBLISHER && kind != tt_KIND_TOPIC_SUBSCRIBER &&
                            kind != tt_KIND_SERVICE_CLIENT && kind != tt_KIND_SERVICE_SERVER)) {
@@ -6931,7 +7088,7 @@ static tt_ret_t qos_profile_resolve(const struct tt_QosDefaults* defaults, const
         result = qos_resolve_durability(request->durability.kind, kind, matched, &out.durability.kind);
     }
     if (result == tt_RET_OK) {
-        result = qos_resolve_liveliness(&request->liveliness, kind, matched, &out.liveliness);
+        result = qos_resolve_liveliness(&request->liveliness, kind, matched, lease_floor_ns, &out.liveliness);
     }
     if (result != tt_RET_OK) {
         return result;
@@ -6946,15 +7103,17 @@ static tt_ret_t qos_profile_resolve(const struct tt_QosDefaults* defaults, const
 
 tt_ret_t tt_QosProfile_resolve(const struct tt_QosProfile* requested, uint8_t kind, const struct tt_QosMatched* matched,
                                struct tt_QosProfile* actual) {
-    return qos_profile_resolve(&qos_compiled_defaults, requested, kind, matched, actual);
+    return qos_profile_resolve(&qos_compiled_defaults, requested, kind, matched, QOS_LEASE_FLOOR_DEFAULT_NS, actual);
 }
 
-// The resolution an endpoint created on `node` gets: its zeros take the context's defaults.
+// The resolution an endpoint created on `node` gets: its zeros take the context's defaults, and its lease the context's
+// floor. No context (tt_*_storage_size()): the compiled ones.
 static tt_ret_t qos_resolve_for(const struct tt_Context* node, const struct tt_QosProfile* requested, uint8_t kind,
                                 const struct tt_QosMatched* matched, struct tt_QosProfile* actual) {
     struct tt_QosDefaults defaults;
     context_qos_defaults(node, &defaults);
-    return qos_profile_resolve(&defaults, requested, kind, matched, actual);
+    uint64_t lease_floor_ns = node != NULL ? discovery_lease_floor_ns(node) : QOS_LEASE_FLOOR_DEFAULT_NS;
+    return qos_profile_resolve(&defaults, requested, kind, matched, lease_floor_ns, actual);
 }
 
 // A message struct sized 0 or larger than one datagram is a misconfiguration: on the receive
@@ -9487,7 +9646,7 @@ static void keep_all_room_before_match(struct tt_Context* node, struct tt_Publis
     }
     uint64_t now = tt_get_ns();
     if (pub->keep_all_unmatched_until_ns == 0) {
-        pub->keep_all_unmatched_until_ns = now + tt_CONTEXT_UPDATE_INTERVAL;
+        pub->keep_all_unmatched_until_ns = now + discovery_update_interval_ns(node);
     }
     if (now > pub->keep_all_unmatched_until_ns || pub->cache_grow == NULL) {
         return;
@@ -11904,7 +12063,7 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
     uint64_t now = tt_get_ns();
     uint64_t lease = pub->liveliness_lease_duration_ns;
     if (lease != 0 && (pub->liveliness_asserted_ns == 0 ||
-                       now - pub->liveliness_asserted_ns >= lease / tt_LIVELINESS_LEASE_DIVISOR)) {
+                       now - pub->liveliness_asserted_ns >= lease / discovery_lease_divisor(node))) {
         encode_and_send_heartbeat(node, pub, 0, NULL, 0, tt_HEARTBEAT_FLAG_FINAL | tt_HEARTBEAT_FLAG_LIVELINESS);
         pub->liveliness_asserted_ns = now;
     }
@@ -15324,14 +15483,16 @@ static void send_discovery_summary(struct tt_Context* node) {
 // of its own endpoints announces if that is sooner (LIVELINESS_PLAN.md amendment 1) - an idle node's summary
 // is its only sign of life, so it must outpace the leases peers hold it to. At least tt_CONTEXT_TX_INTERVAL.
 static uint64_t summary_interval(const struct tt_Context* node) {
-    uint64_t interval = tt_CONTEXT_UPDATE_INTERVAL;
+    uint64_t interval = discovery_update_interval_ns(node);
+    uint64_t divisor = discovery_lease_divisor(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         uint64_t lease = endpoint_liveliness_lease_duration_ns(node->endpoints[i]);
-        if (lease != 0 && lease / tt_LIVELINESS_LEASE_DIVISOR < interval) {
-            interval = lease / tt_LIVELINESS_LEASE_DIVISOR;
+        if (lease != 0 && lease / divisor < interval) {
+            interval = lease / divisor;
         }
     }
-    return interval < tt_CONTEXT_TX_INTERVAL ? tt_CONTEXT_TX_INTERVAL : interval;
+    uint64_t tick = discovery_tx_interval_ns(node);
+    return interval < tick ? tick : interval;
 }
 
 // Whether every peer this node knows of has had a datagram from it since the last summary tick, and clears
@@ -15666,7 +15827,7 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
         hybrid->tick_ns = now;
         return;
     }
-    if (now - hybrid->tick_ns < tt_CONTEXT_UPDATE_INTERVAL) {
+    if (now - hybrid->tick_ns < discovery_update_interval_ns(node)) {
         return;
     }
     uint64_t elapsed = now - hybrid->tick_ns;
@@ -15735,17 +15896,18 @@ static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     // That summary, when the traffic reaches every peer, rides just ahead of the next send rather than going
     // on its own, so it is not the last datagram before a node that stops.
     uint64_t interval = summary_interval(node);
+    uint64_t update_interval = discovery_update_interval_ns(node);
     bool reached = every_peer_reached(node) && node->summary_skip_armed; // always cleared; unarmed, it recorded nothing
-    node->summary_skip_armed = interval < tt_CONTEXT_UPDATE_INTERVAL;
+    node->summary_skip_armed = interval < update_interval;
     // A rider still waiting found no send since the last tick, so `reached` is false and it goes below.
     node->summary_rides = 0;
-    bool keeps_the_second = interval >= tt_CONTEXT_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
-                            time - node->summary_sent_ns + interval > tt_CONTEXT_UPDATE_INTERVAL;
+    bool keeps_the_second = interval >= update_interval || node->summary_sent_ns == 0 ||
+                            time - node->summary_sent_ns + interval > update_interval;
     if (!reached) {
         send_discovery_summary(node);
         node->summary_sent_ns = time;
     } else if (keeps_the_second) {
-        if (interval < tt_CONTEXT_UPDATE_INTERVAL) {
+        if (interval < update_interval) {
             node->summary_rides = 1;
         } else {
             send_discovery_summary(node);
@@ -16103,6 +16265,8 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
 // lowers *next to the earliest limit still ahead.
 static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t unobserved_ns, uint64_t* next) {
+    uint64_t silence = discovery_silence_ns(node);
+    uint64_t max_lease = discovery_max_lease_ns(node);
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         if (!node->update_seen[i] && !update_parts_any(node, (uint8_t)i)) {
             continue; // never heard from this node id at all - nothing to expire
@@ -16115,12 +16279,12 @@ static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t 
         // silence we observed, and counting it is how a live peer gets declared dead on a loaded
         // machine. Added once per run and not accumulated: the next run is late only by its own
         // lateness, so a peer that really has gone is reported one ordinary interval later at worst.
-        uint64_t limit = tt_LIVELINESS_SILENCE_NS + unobserved_ns;
+        uint64_t limit = silence + unobserved_ns;
         if (time > last && time - last > limit) {
             // Only for a node already that quiet. Capped as a DDS participant lease caps its writers': an
             // entity's lease cannot keep a silent node alive past tt_CONTEXT_MAX_LEASE_NS.
             uint64_t longest = longest_lease_from(node, (uint8_t)i);
-            longest = longest < tt_CONTEXT_MAX_LEASE_NS ? longest : tt_CONTEXT_MAX_LEASE_NS;
+            longest = longest < max_lease ? longest : max_lease;
             limit = longest > limit ? longest : limit;
         }
         if (time > last && time - last > limit) {
@@ -16189,14 +16353,14 @@ static void check_liveliness(struct tt_Context* node, uint64_t time, void* param
     //
     // Capped, because "defer while busy" with no bound would let a saturated socket postpone a real
     // death for ever.
-    if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {
+    if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < discovery_liveliness_max_deferrals(node)) {
         node->liveliness_deferrals++;
         node->liveliness_deferrals_total++;
         if (node->liveliness_check_scheduled) {
             (void)tt_Context_unschedule(node, check_liveliness, NULL);
             node->liveliness_check_scheduled = false;
         }
-        arm_liveliness_check(node, time + tt_LIVELINESS_DEFER_NS);
+        arm_liveliness_check(node, time + discovery_liveliness_defer_ns(node));
         return;
     }
     node->liveliness_deferrals = 0;
@@ -16207,7 +16371,7 @@ static void check_liveliness(struct tt_Context* node, uint64_t time, void* param
         node->liveliness_check_scheduled = false;
     }
     wall_offset_refresh(node); // once a tt_CONTEXT_UPDATE_INTERVAL: a step of the date is followed within it
-    uint64_t next = time + tt_CONTEXT_UPDATE_INTERVAL;
+    uint64_t next = time + discovery_update_interval_ns(node);
     check_node_silence(node, time, unobserved_ns, &next);
     check_entity_leases(node, time, &next);
     arm_liveliness_check(node, next);
@@ -19485,7 +19649,7 @@ static void discovery_request_retry(struct tt_Context* node, uint64_t time, void
 // batched (rule 4); tt_DISCOVERY_REQUEST_RETRY, the seed, until a round trip has been measured.
 static uint64_t discovery_retry_after(const struct tt_Context* node, uint8_t source) {
     uint32_t rtt = node->discovery_rtt_ns[source];
-    return rtt != 0 ? (uint64_t)rtt + tt_CONTEXT_TX_INTERVAL : tt_DISCOVERY_REQUEST_RETRY;
+    return rtt != 0 ? (uint64_t)rtt + discovery_tx_interval_ns(node) : discovery_request_retry_ns(node);
 }
 
 // The list `source` announced as `generation` has just been applied: if it was asked for, that is a round
@@ -19551,7 +19715,7 @@ static void discovery_request_retry(struct tt_Context* node, uint64_t time, void
         }
         uint64_t retry_after = discovery_retry_after(node, request->source);
         if (time - request->sent_ns >= retry_after) {
-            if (request->attempts >= tt_DISCOVERY_REQUEST_ATTEMPTS) {
+            if (request->attempts >= discovery_request_attempts(node)) {
                 request->attempts = 0;
                 continue;
             }
@@ -19613,7 +19777,7 @@ static bool process_discovery_summary(struct tt_Context* node, uint8_t source, u
 // becomes one broadcast instead, and later requests in that tick are covered by it.
 static void answer_discovery_request(struct tt_Context* node, uint8_t source, uint32_t sender_ip,
                                      uint16_t sender_port) {
-    uint64_t tick = tt_get_ns() / tt_CONTEXT_TX_INTERVAL;
+    uint64_t tick = tt_get_ns() / discovery_tx_interval_ns(node);
     if (tick != node->discovery_reply_tick) {
         node->discovery_reply_tick = tick;
         node->discovery_reply_count = 0;
