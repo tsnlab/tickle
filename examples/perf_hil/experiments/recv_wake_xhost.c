@@ -29,6 +29,23 @@
 //                The ring is registered as production's drain registers it: in this process's memory, else the
 //                kernel's own (IOU_PBUF_RING_MMAP); a kernel that refuses both refuses the style
 //   uring_ms_dt  the same on a DEFER_TASKRUN ring
+//   prod         what production does (added 2026-10-22). Traced from rmw_wait() to the bytes in user memory for a
+//                small BEST_EFFORT sample, default build: the executor thread holds the poll role and calls
+//                tt_Context_poll() itself; the wait is one epoll_pwait2() with no timeout on a kept set of five -
+//                well-known socket, wake eventfd, data socket (level), deadline timerfd and the segment's doorbell
+//                FIFO (edge) - then one recvfrom(MSG_DONTWAIT), both raw system calls, sockets O_NONBLOCK; after it
+//                (outside the timed span) the drain's second recvfrom(MSG_DONTWAIT), which finds the socket empty and
+//                is skipped 15 times in 16 once 8 in a row did. Neither io_uring is on that path: the readiness ring
+//                (flags 0) is armed only by a busy poll loop's check and the drain ring (multishot RECVMSG) only while
+//                large samples arrive, so the readiness ring is created here and left idle, and there is no drain
+//                ring. prod against epoll3 says what production's larger set and raw calls cost (diagnostic).
+//   prod_dt      prod with its wait and read replaced by uring_dt's: the same descriptors and drain read, one ring with
+//                IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN holding a never-completing IORING_OP_POLL_ADD
+//                on each of the four idle members and, per datagram, one IORING_OP_RECV on the data socket submitted
+//                and waited for in one io_uring_enter(). Decided against prod (recv_wake_xhost_read.py). Production
+//                could only build it by giving the ring to one thread: `probe`'s ISSUER lines show a SINGLE_ISSUER ring
+//                refusing (EEXIST) every thread but the one that created or enabled it, while production's polling
+//                thread changes at run time (rmw's poll thread, or whichever executor thread holds the poll role).
 // A style whose setup the kernel refuses prints "REFUSED <style> <reason>" and exits 3: not measured, not a failure of
 // the others. `probe` tries every style's setup and prints AVAILABLE or REFUSED for each, then PBUF lines: which
 // IORING_REGISTER_PBUF_RING variants the kernel accepts, against a control it must refuse, and a PBUF_CAUSE line that
@@ -47,7 +64,9 @@
 // NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,7 +83,9 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/utsname.h>
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling (hal_linux.c); the numbers live in an architecture header.
 #include <sys/syscall.h> // NOLINT(misc-include-cleaner)
@@ -98,6 +119,24 @@
 #define IORING_OFF_PBUF_SHIFT 16
 #endif
 #define WHY_BYTES 256
+// prod, prod_dt: what hal_linux.c builds (the names are its own).
+#define PROD_HINT_ENTRIES 4U // the readiness ring's URING_ENTRIES (tt_rx_maybe_ready())
+#define PROD_WAIT_FDS 4      // RX_WAIT_FDS with the segment, epoll_pwait2()'s maxevents
+#define READY_WELL_KNOWN 1U  // RX_READY_*: the tags the wait set registers its members with
+#define READY_WAKE 2U
+#define READY_DATA 4U
+#define READY_BELL 8U
+#define READY_TIMER 32U
+#define LONE_STREAK 8U        // TT_RX_LONE_STREAK
+#define LONE_RECHECK 16U      // TT_RX_LONE_RECHECK
+#define PROD_TIMER_S 3600     // the deadline timer armed this far ahead: it never fires within a run
+#define PROD_TIMER_SLACK_NS 1 // TT_RX_TIMER_SLACK_NS
+#define PROD_IDLE_POLLS 4U    // prod_dt: well-known socket, wake eventfd, bell, deadline timer
+// The system call numbers production calls without the library's wrappers (TT_HAL_RAW_CALLS): the same on x86-64 and
+// aarch64 for epoll_pwait2 (Linux 5.11), for headers older than the kernel.
+#ifndef __NR_epoll_pwait2
+#define __NR_epoll_pwait2 441
+#endif
 #define MAX_ROUNDS 1000000L
 #define MAX_GAP_US 1000000L
 #define MAX_PORT 65535L
@@ -110,18 +149,33 @@ static const clockid_t stamp_clock = CLOCK_REALTIME;        // NOLINT(misc-inclu
 static const clockid_t cpu_clock = CLOCK_THREAD_CPUTIME_ID; // NOLINT(misc-include-cleaner) - <time.h>
 static const clockid_t rtt_clock = CLOCK_MONOTONIC;         // NOLINT(misc-include-cleaner) - <time.h>
 
-enum style { RECVFROM, RECVFROM_AA, RECVMSG, EPOLL3, URING, URING_DT, URING_MS, URING_MS_DT, STYLE_COUNT };
-static const char* const style_names[STYLE_COUNT] = {"recvfrom", "recvfrom_aa", "recvmsg",  "epoll3",
-                                                     "uring",    "uring_dt",    "uring_ms", "uring_ms_dt"};
+enum style {
+    RECVFROM,
+    RECVFROM_AA,
+    RECVMSG,
+    EPOLL3,
+    URING,
+    URING_DT,
+    URING_MS,
+    URING_MS_DT,
+    PROD,
+    PROD_DT,
+    STYLE_COUNT
+};
+static const char* const style_names[STYLE_COUNT] = {"recvfrom", "recvfrom_aa", "recvmsg",     "epoll3", "uring",
+                                                     "uring_dt", "uring_ms",    "uring_ms_dt", "prod",   "prod_dt"};
 
-static int is_uring(enum style style) {
-    return style >= URING;
+static int is_uring(enum style style) { // waits on the style's own ring
+    return (style >= URING && style <= URING_MS_DT) || style == PROD_DT;
 }
 static int is_multishot(enum style style) {
     return style == URING_MS || style == URING_MS_DT;
 }
 static int is_deferred(enum style style) {
-    return style == URING_DT || style == URING_MS_DT;
+    return style == URING_DT || style == URING_MS_DT || style == PROD_DT;
+}
+static int is_prod(enum style style) {
+    return style == PROD || style == PROD_DT;
 }
 
 struct wire { // the first 16 bytes of every datagram, in host order (both ends are the same machine type)
@@ -157,6 +211,17 @@ struct receiver {
     const uint8_t* last; // where the last datagram's bytes are (buf, or a provided buffer)
     long rearms;         // multishot: times the recv had to be armed again (a CQE without F_MORE)
     int pending_bid;     // multishot: the provided buffer last read from, given back at the next receive (-1: none)
+    // prod, prod_dt: production's other descriptors and its read after the wake-up (prod_setup(), prod_drain_read())
+    int prod_epoll_fd;
+    int bell_fd[2];
+    int timer_fd;
+    struct uring hint_ring; // the readiness ring: created, never armed on this path
+    unsigned lone_streak;
+    unsigned lone_skips;
+    long drain_reads; // reads after a wake-up (production's drain), and how many found a datagram
+    long drain_found;
+    ssize_t held_len; // a datagram such a read found, handed out by the next receive (-1: none)
+    uint8_t held[DATAGRAM_BYTES];
 };
 
 static uint64_t clock_ns(clockid_t clock) {
@@ -186,11 +251,11 @@ static uint64_t pct(const uint64_t* sorted, long count, int percent) {
     return sorted[rank < 1 ? 0 : rank - 1];
 }
 
-static int uring_setup(struct uring* ring, unsigned flags) {
+static int uring_setup(struct uring* ring, unsigned entries, unsigned flags) {
     struct io_uring_params params;
     memset(&params, 0, sizeof(params));
     params.flags = flags;
-    ring->fd = (int)syscall(__NR_io_uring_setup, URING_ENTRIES, &params); // NOLINT(misc-include-cleaner) - above
+    ring->fd = (int)syscall(__NR_io_uring_setup, entries, &params); // NOLINT(misc-include-cleaner) - above
     if (ring->fd < 0) {
         return -1;
     }
@@ -296,6 +361,53 @@ static void arm_multishot(struct receiver* rcv) {
     sqe->user_data = URING_DATA_RECV;
 }
 
+static int prod_wait_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
+    struct epoll_event event = {.events = events, .data = {.u32 = tag}};
+    return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, member, &event);
+}
+
+// prod, prod_dt: what a TickLE context on the Linux HAL holds while rmw_tickle waits in rmw_wait() (hal_linux.c, the
+// default build): both sockets O_NONBLOCK (sockets_nonblocking()); the readiness ring, created at tt_bind() with flags
+// 0 and armed only by a busy poll loop's check (tt_rx_maybe_ready()), so idle here; the wait set (wait_set_setup(),
+// bell_join_wait_set()) - well-known socket, wake eventfd, data socket level-triggered, the deadline timerfd and the
+// segment's doorbell FIFO edge-triggered - with the timer armed for the next scheduler entry (here far ahead); and the
+// polling thread's timer slack lowered (rx_timer_slack_once()). The bell is a pipe: the FIFO's own kind of file.
+static int prod_setup(struct receiver* rcv, const char** why) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - PR_SET_TIMERSLACK: <sys/prctl.h>, above
+    (void)prctl(PR_SET_TIMERSLACK, (unsigned long)PROD_TIMER_SLACK_NS, 0, 0, 0);
+    const int sockets[2] = {rcv->socket_fd, rcv->other_fd};
+    for (int i = 0; i < 2; i++) {
+        int flags = fcntl(sockets[i], F_GETFL);
+        if (flags < 0 || fcntl(sockets[i], F_SETFL, flags | O_NONBLOCK) < 0) {
+            *why = "O_NONBLOCK";
+            return -1;
+        }
+    }
+    if (uring_setup(&rcv->hint_ring, PROD_HINT_ENTRIES, 0) != 0) {
+        rcv->hint_ring.fd = -1; // production goes on without it (tt_RX_HINT_AUTO), and so does this
+    }
+    rcv->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h>, above
+    struct itimerspec deadline = {{0, 0}, {now.tv_sec + PROD_TIMER_S, now.tv_nsec}};
+    rcv->prod_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (rcv->timer_fd < 0 || timerfd_settime(rcv->timer_fd, TFD_TIMER_ABSTIME, &deadline, NULL) != 0 ||
+        pipe2(rcv->bell_fd, O_NONBLOCK | O_CLOEXEC) != 0 || rcv->prod_epoll_fd < 0) {
+        *why = "timerfd/pipe/epoll";
+        return -1;
+    }
+    if (prod_wait_add(rcv->prod_epoll_fd, rcv->other_fd, EPOLLIN, READY_WELL_KNOWN) != 0 ||
+        prod_wait_add(rcv->prod_epoll_fd, rcv->event_fd, EPOLLIN, READY_WAKE) != 0 ||
+        prod_wait_add(rcv->prod_epoll_fd, rcv->socket_fd, EPOLLIN, READY_DATA) != 0 ||
+        prod_wait_add(rcv->prod_epoll_fd, rcv->timer_fd, EPOLLIN | EPOLLET, READY_TIMER) != 0 ||
+        prod_wait_add(rcv->prod_epoll_fd, rcv->bell_fd[0], EPOLLIN | EPOLLET, READY_BELL) != 0) {
+        *why = "epoll_ctl (production's wait set)";
+        return -1;
+    }
+    return 0;
+}
+
 // Sets the style's waiting machinery up. 0, or -1 with *why naming what the kernel refused.
 static int receiver_setup(struct receiver* rcv, const char** why) {
     rcv->epoll_fd = epoll_create1(0);
@@ -307,23 +419,29 @@ static int receiver_setup(struct receiver* rcv, const char** why) {
             return -1;
         }
     }
+    if (is_prod(rcv->style) && prod_setup(rcv, why) != 0) {
+        return -1;
+    }
     if (!is_uring(rcv->style)) {
         return 0;
     }
     unsigned flags = is_deferred(rcv->style) ? (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN) : 0U;
-    if (uring_setup(&rcv->ring, flags) != 0) {
+    if (uring_setup(&rcv->ring, URING_ENTRIES, flags) != 0) {
         *why = is_deferred(rcv->style) ? "io_uring_setup(SINGLE_ISSUER|DEFER_TASKRUN)" : "io_uring_setup";
         return -1;
     }
-    const int idle[2] = {rcv->other_fd, rcv->event_fd}; // armed once, never complete
-    for (int i = 0; i < 2; i++) {
+    // Armed once, never complete: the idle socket and eventfd; prod_dt also the bell and the deadline timer, the rest
+    // of production's wait set.
+    const int idle[PROD_IDLE_POLLS] = {rcv->other_fd, rcv->event_fd, rcv->bell_fd[0], rcv->timer_fd};
+    const unsigned idle_count = is_prod(rcv->style) ? PROD_IDLE_POLLS : 2U;
+    for (unsigned i = 0; i < idle_count; i++) {
         struct io_uring_sqe* sqe = uring_sqe(&rcv->ring);
         sqe->opcode = IORING_OP_POLL_ADD;
         sqe->fd = idle[i];
         sqe->poll32_events = POLLIN; // NOLINT(misc-include-cleaner) - <poll.h>
-        sqe->user_data = 2U + (unsigned)i;
+        sqe->user_data = 2U + i;
     }
-    unsigned submit = 2;
+    unsigned submit = idle_count;
     if (is_multishot(rcv->style)) {
         size_t ring_bytes = PBUF_COUNT * sizeof(struct io_uring_buf);
         rcv->ring.pbuf = mmap(NULL, ring_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -340,7 +458,7 @@ static int receiver_setup(struct receiver* rcv, const char** why) {
             pbuf_give(&rcv->ring, bid);
         }
         arm_multishot(rcv);
-        submit = 3;
+        submit++;
     }
     if (uring_enter(&rcv->ring, submit, 0) != (long)submit) {
         *why = "io_uring submission of the idle polls";
@@ -442,9 +560,75 @@ static ssize_t receive_socket(struct receiver* rcv) {
     return recvmsg(rcv->socket_fd, &msg, 0);
 }
 
+// prod: production's wait and read (hal_linux.c tt_receive(), rx_wait(), rx_read_one()) - epoll_pwait2() on the wait
+// set with no timeout (a wait for a scheduler entry more than TT_RX_TIMER_LONG_NS away takes the deadline timer
+// instead, rx_wait_lazy()), the ready members' tags gathered, a fire of the timer alone waited past, then one
+// recvfrom(MSG_DONTWAIT) on the socket the wait reported. Both as raw system calls, as TT_HAL_RAW_CALLS makes them.
+static ssize_t receive_prod(struct receiver* rcv) {
+    for (;;) {
+        struct epoll_event events[PROD_WAIT_FDS];
+        long got = syscall(__NR_epoll_pwait2, rcv->prod_epoll_fd, events, PROD_WAIT_FDS, NULL, NULL, 0);
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        uint32_t ready = 0;
+        for (long i = 0; i < got; i++) {
+            if ((events[i].events & EPOLLIN) != 0) {
+                ready |= events[i].data.u32;
+            }
+        }
+        if ((ready & READY_DATA) != 0) {
+            break;
+        }
+        if (ready != READY_TIMER) {
+            return -1; // an idle member: nothing should have made it ready
+        }
+    }
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    // NOLINTNEXTLINE(misc-include-cleaner) - __NR_recvfrom: <sys/syscall.h>, above
+    return syscall(__NR_recvfrom, rcv->socket_fd, rcv->buf, sizeof(rcv->buf), MSG_DONTWAIT, &from, &from_len);
+}
+
+// prod, prod_dt, after the time is taken and before the echo: production's drain after a wake-up's datagram
+// (tickle.c drain_rx(), hal_linux.c tt_try_receive() and rx_lone_after_wake()) - one more recvfrom(MSG_DONTWAIT) on the
+// socket that woke, skipped 15 wake-ups in 16 once TT_RX_LONE_STREAK of them in a row found it empty. A datagram it
+// finds is handed out by the next receive, without a wait.
+static void prod_drain_read(struct receiver* rcv) {
+    if (!is_prod(rcv->style)) {
+        return;
+    }
+    if (rcv->lone_streak >= LONE_STREAK && ++rcv->lone_skips < LONE_RECHECK) {
+        return;
+    }
+    rcv->lone_skips = 0;
+    rcv->drain_reads++;
+    // NOLINTNEXTLINE(misc-include-cleaner) - __NR_recvfrom: <sys/syscall.h>, above
+    long got = syscall(__NR_recvfrom, rcv->socket_fd, rcv->held, sizeof(rcv->held), MSG_DONTWAIT, NULL, NULL);
+    if (got >= 0) {
+        rcv->held_len = got;
+        rcv->drain_found++;
+        rcv->lone_streak = 0;
+    } else if (rcv->lone_streak < LONE_STREAK) {
+        rcv->lone_streak++;
+    }
+}
+
 // One blocking receive in the receiver's style. The byte count, or -1; rcv->last points at the bytes.
 static ssize_t receive_one(struct receiver* rcv) {
     rcv->last = rcv->buf;
+    if (rcv->held_len >= 0) { // prod, prod_dt: what the drain's read found
+        rcv->last = rcv->held;
+        ssize_t held = rcv->held_len;
+        rcv->held_len = -1;
+        return held;
+    }
+    if (rcv->style == PROD) {
+        return receive_prod(rcv);
+    }
     if (is_multishot(rcv->style)) {
         return receive_uring_multishot(rcv);
     }
@@ -467,6 +651,12 @@ static int open_receiver(struct receiver* rcv, enum style style, int port, const
     memset(rcv, 0, sizeof(*rcv));
     rcv->style = style;
     rcv->pending_bid = -1;
+    rcv->held_len = -1;
+    rcv->prod_epoll_fd = -1;
+    rcv->timer_fd = -1;
+    rcv->bell_fd[0] = -1;
+    rcv->bell_fd[1] = -1;
+    rcv->hint_ring.fd = -1;
     rcv->socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     rcv->other_fd = socket(AF_INET, SOCK_DGRAM, 0);
     rcv->event_fd = eventfd(0, EFD_NONBLOCK);
@@ -490,7 +680,7 @@ static int open_receiver(struct receiver* rcv, enum style style, int port, const
 static int pbuf_variant(uint64_t ring_addr, uint32_t entries, uint16_t group, uint16_t flags, uint64_t resv0) {
     struct uring ring;
     memset(&ring, 0, sizeof(ring));
-    if (uring_setup(&ring, 0) != 0) {
+    if (uring_setup(&ring, URING_ENTRIES, 0) != 0) {
         return errno;
     }
     int err = pbuf_reg(ring.fd, ring_addr, entries, group, flags, resv0);
@@ -503,7 +693,7 @@ static int pbuf_variant(uint64_t ring_addr, uint32_t entries, uint16_t group, ui
 static int pbuf_classic(const uint8_t* memory) {
     struct uring ring;
     memset(&ring, 0, sizeof(ring));
-    if (uring_setup(&ring, 0) != 0) {
+    if (uring_setup(&ring, URING_ENTRIES, 0) != 0) {
         return errno;
     }
     struct io_uring_sqe* sqe = uring_sqe(&ring);
@@ -578,6 +768,74 @@ static void pbuf_diagnose(void) {
     free(memory);
 }
 
+// One IORING_OP_NOP submitted on `ring`: 0, or the errno io_uring_enter() refused it with.
+static int nop_submit(struct uring* ring) {
+    struct io_uring_sqe* sqe = uring_sqe(ring);
+    sqe->opcode = IORING_OP_NOP;
+    if (uring_enter(ring, 1, 0) == 1) {
+        return 0;
+    }
+    int err = errno;
+    __atomic_store_n(ring->sq_tail, *ring->sq_tail - 1U, __ATOMIC_RELEASE); // not taken: withdrawn
+    return err;
+}
+
+struct issuer_try {
+    struct uring* ring;
+    int enable; // IORING_REGISTER_ENABLE_RINGS first, from this thread
+    int err;
+};
+
+static void* issuer_thread(void* arg) {
+    struct issuer_try* try = arg;
+    // NOLINTNEXTLINE(misc-include-cleaner) - __NR_io_uring_register: <sys/syscall.h>, above
+    if (try->enable && syscall(__NR_io_uring_register, try->ring->fd, IORING_REGISTER_ENABLE_RINGS, NULL, 0) != 0) {
+        try->err = errno;
+        return NULL;
+    }
+    try->err = nop_submit(try->ring);
+    return NULL;
+}
+
+// The question SINGLE_ISSUER puts to production (hal_linux.c): its rings are created by the thread that creates the
+// context (tt_bind()), and submitted to by whichever thread polls it - rmw_tickle's poll thread, or the executor thread
+// holding the poll role (rmw_wait_set.c wait_by_polling()), which change hands at run time. So: a ring created by one
+// thread, submitted to by another, with flags 0 and with SINGLE_ISSUER|DEFER_TASKRUN; and created disabled
+// (IORING_SETUP_R_DISABLED) and enabled by the other thread, then submitted to by its creator. ISSUER lines; the
+// creator's own submission on a SINGLE_ISSUER ring is the control.
+static void issuer_check(void) {
+    const unsigned deferred = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
+    const struct {
+        const char* name;
+        unsigned flags;
+        int enable;
+    } cases[] = {
+        {"flags 0, another thread submits", 0U, 0},
+        {"SINGLE_ISSUER|DEFER_TASKRUN, another thread submits", deferred, 0},
+        {"SINGLE_ISSUER|DEFER_TASKRUN|R_DISABLED, another thread enables and submits",
+         deferred | IORING_SETUP_R_DISABLED, 1},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct uring ring;
+        memset(&ring, 0, sizeof(ring));
+        if (uring_setup(&ring, URING_ENTRIES, cases[i].flags) != 0) {
+            printf("ISSUER %s: ring refused (%s)\n", cases[i].name, strerror(errno));
+            continue;
+        }
+        struct issuer_try try = {.ring = &ring, .enable = cases[i].enable, .err = -1};
+        pthread_t other; // NOLINT(misc-include-cleaner) - <pthread.h>, above
+        if (pthread_create(&other, NULL, issuer_thread, &try) != 0 || pthread_join(other, NULL) != 0) {
+            printf("ISSUER %s: no second thread\n", cases[i].name);
+            (void)close(ring.fd);
+            continue;
+        }
+        int own = nop_submit(&ring);
+        printf("ISSUER %s: other thread %s, creating thread %s\n", cases[i].name,
+               try.err == 0 ? "accepted" : strerror(try.err), own == 0 ? "accepted" : strerror(own));
+        (void)close(ring.fd);
+    }
+}
+
 static int run_probe(void) {
     int refused = 0;
     for (int i = 0; i < STYLE_COUNT; i++) {
@@ -592,6 +850,7 @@ static int run_probe(void) {
         // the process exits soon: the descriptors and rings go with it
     }
     pbuf_diagnose();
+    issuer_check();
     return refused == STYLE_COUNT ? 1 : 0;
 }
 
@@ -622,6 +881,7 @@ static enum take_result take_one(struct tally* tally, struct receiver* rcv, int 
     }
     struct timespec stamp = {0, 0};
     int stamped = ioctl(rcv->socket_fd, SIOCGSTAMPNS, &stamp) == 0; // after the time is taken: outside it
+    prod_drain_read(rcv); // outside it too, and before the echo, as production reads before the application answers
     struct wire head;
     memcpy(&head, rcv->last, sizeof(head));
     if (head.magic != MAGIC) {
@@ -658,7 +918,8 @@ static enum take_result take_one(struct tally* tally, struct receiver* rcv, int 
     return TAKE_ON;
 }
 
-static int report_rx(struct tally* tally, enum style style, long rearms, const char* samples_path) {
+static int report_rx(struct tally* tally, const struct receiver* rcv, const char* samples_path) {
+    const enum style style = rcv->style;
     uint64_t cpu_ns = tally->counting ? clock_ns(cpu_clock) - tally->cpu_start : 0;
     FILE* out = fopen(samples_path, "w");
     if (out == NULL) {
@@ -677,12 +938,12 @@ static int report_rx(struct tally* tally, enum style style, long rearms, const c
     uint64_t* sorted = tally->samples;
     qsort(sorted, (size_t)kept, sizeof(sorted[0]), compare_u64);
     printf("RXRESULT style=%s n=%ld expected=%ld missing=%ld bad_stamps=%ld duplicates=%ld foreign=%ld hellos=%ld "
-           "rearms=%ld p10_ns=%llu p50_ns=%llu p99_ns=%llu cpu_ns_per=%llu\n",
+           "rearms=%ld p10_ns=%llu p50_ns=%llu p99_ns=%llu cpu_ns_per=%llu drain_reads=%ld drain_found=%ld\n",
            style_names[style], kept, tally->rounds, missing, tally->bad_stamps, tally->duplicates, tally->foreign,
-           tally->hellos, rearms, kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_10) : 0ULL,
+           tally->hellos, rcv->rearms, kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_10) : 0ULL,
            kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_50) : 0ULL,
            kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_99) : 0ULL,
-           kept > 0 ? (unsigned long long)(cpu_ns / (uint64_t)kept) : 0ULL);
+           kept > 0 ? (unsigned long long)(cpu_ns / (uint64_t)kept) : 0ULL, rcv->drain_reads, rcv->drain_found);
     return 0;
 }
 
@@ -722,7 +983,7 @@ static int run_rx(enum style style, int port, long rounds, long warmup, int cpu,
     if (result == TAKE_FAILED) {
         return 1;
     }
-    return report_rx(&tally, style, rcv.rearms, samples_path);
+    return report_rx(&tally, &rcv, samples_path);
 }
 
 // Sends one datagram and waits for its echo. The round trip in ns, or 0 when no echo came within the timeout.
