@@ -2095,7 +2095,8 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 // starvation on a fast receiver, 64 ms behind a 1 ms callback, and an empty read every 64 datagrams however fast they
 // came (ROADMAP.md 5a). The time is the one the running poll already read (struct tt_Context.rx_clock_ns,
 // refreshed every tt_RX_CLOCK_REFRESH datagrams of a drain), so the bound is tt_RECEIVE_TIMEOUT or tt_RX_CLOCK_REFRESH
-// datagrams, whichever ends later, and the check reads no clock of its own inside a poll.
+// datagrams, whichever ends later, and the check reads no clock of its own inside a poll. A context's own is its
+// opts.poll.receive_timeout (bundle 6); this is the default, and what a context built by hand (opts 0) reads.
 #define TT_RX_IDLE_RECHECK_NS ((uint64_t)tt_RECEIVE_TIMEOUT)
 
 // The read after a wake-up's datagram (struct tt_hal.rx_lone_streak). The wake-up read is one recvfrom(), kept
@@ -3654,7 +3655,9 @@ static void rx_idle_count_return(struct tt_Context* node) {
         node->hal.rx_idle_since_ns = now;
         return;
     }
-    if (now - node->hal.rx_idle_since_ns >= TT_RX_IDLE_RECHECK_NS) {
+    const uint64_t recheck =
+        node->opts.poll.receive_timeout != 0 ? node->opts.poll.receive_timeout : TT_RX_IDLE_RECHECK_NS;
+    if (now - node->hal.rx_idle_since_ns >= recheck) {
         node->hal.rx_idle = 0;
         node->hal.rx_idle_since_ns = 0;
     }

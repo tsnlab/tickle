@@ -304,6 +304,25 @@ static uint16_t net_ip_reassembly_max(const struct tt_Context* node) {
     return value == tt_IP_REASSEMBLY_NONE ? 0 : value;
 }
 
+// The poll group (bundle 6), each read once per drain or per poll into a local: the loops compare the local. A
+// whitebox context, built by hand and never created, leaves them 0 and reads the defaults.
+static inline uint32_t poll_rx_clock_refresh(const struct tt_Context* node) {
+    return node->opts.poll.rx_clock_refresh != 0 ? node->opts.poll.rx_clock_refresh : (uint32_t)tt_RX_CLOCK_REFRESH;
+}
+
+static inline uint32_t poll_rx_lock_chunk(const struct tt_Context* node) {
+    return node->opts.poll.rx_lock_chunk != 0 ? node->opts.poll.rx_lock_chunk : (uint32_t)tt_RX_LOCK_CHUNK;
+}
+
+static inline uint64_t poll_receive_timeout(const struct tt_Context* node) {
+    return node->opts.poll.receive_timeout != 0 ? node->opts.poll.receive_timeout : (uint64_t)tt_RECEIVE_TIMEOUT;
+}
+
+static inline uint32_t poll_scheduler_io_interleave(const struct tt_Context* node) {
+    return node->opts.poll.scheduler_io_interleave != 0 ? node->opts.poll.scheduler_io_interleave
+                                                        : (uint32_t)tt_SCHEDULER_IO_INTERLEAVE;
+}
+
 // A link's threshold as the send path compares it: tt_UNICAST_ALWAYS_BROADCAST is zero peers.
 static uint8_t link_threshold(uint8_t configured) {
     if (configured == 0) {
@@ -552,7 +571,18 @@ static void resolve_qos_options(struct tt_QosDefaults* qos) {
 }
 
 static void resolve_poll_options(struct tt_PollOptions* poll) {
-    (void)poll;
+    if (poll->rx_clock_refresh == 0) {
+        poll->rx_clock_refresh = tt_RX_CLOCK_REFRESH;
+    }
+    if (poll->rx_lock_chunk == 0) {
+        poll->rx_lock_chunk = tt_RX_LOCK_CHUNK;
+    }
+    if (poll->receive_timeout == 0) {
+        poll->receive_timeout = (uint64_t)tt_RECEIVE_TIMEOUT;
+    }
+    if (poll->scheduler_io_interleave == 0) {
+        poll->scheduler_io_interleave = tt_SCHEDULER_IO_INTERLEAVE;
+    }
 }
 
 static void resolve_socket_options(struct tt_SocketOptions* socket) {
@@ -806,9 +836,21 @@ static tt_ret_t validate_qos_options(const struct tt_QosDefaults* qos) {
     return tt_RET_OK;
 }
 
+// The bounds keep each one what its name says: a count past tt_POLL_COUNT_MAX lets a drain or a run of scheduler work
+// go on for milliseconds with stale stamps, a waiting publisher or a starved socket; a slice past a second lets a busy
+// context keep its caller - and the HAL keep a skipped socket unread (hal_linux.c rx_idle_count_return()) - that long.
 static tt_ret_t validate_poll_options(const struct tt_PollOptions* poll) {
-    if (poll->reserved != 0) {
-        return reject_option("poll.reserved", "is not 0");
+    if (poll->rx_clock_refresh > tt_POLL_COUNT_MAX) {
+        return reject_option("poll.rx_clock_refresh", "exceeds tt_POLL_COUNT_MAX");
+    }
+    if (poll->rx_lock_chunk > tt_POLL_COUNT_MAX) {
+        return reject_option("poll.rx_lock_chunk", "exceeds tt_POLL_COUNT_MAX");
+    }
+    if (poll->receive_timeout > tt_POLL_RECEIVE_TIMEOUT_MAX) {
+        return reject_option("poll.receive_timeout", "exceeds tt_POLL_RECEIVE_TIMEOUT_MAX");
+    }
+    if (poll->scheduler_io_interleave > tt_POLL_COUNT_MAX) {
+        return reject_option("poll.scheduler_io_interleave", "exceeds tt_POLL_COUNT_MAX");
     }
     return tt_RET_OK;
 }
@@ -23646,6 +23688,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
     uint32_t drained = 0;
     bool hand_back = false;
     node->segment_plan_mark = node->rx_keep_last_delivered; // read by segment_skip_head() between plans
+    const uint32_t chunk = poll_rx_lock_chunk(node);        // once per drain (opts.poll.rx_lock_chunk)
     while (drained < tt_SEGMENT_DRAIN_PER_POLL) {
         // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
         // process_datagram_locked() says so in its name and every field a datagram touches is under
@@ -23656,11 +23699,11 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         // went red on 1c69658a and stayed red, and this is why.
         //
         // Chunked rather than one lock for the whole drain so a publishing thread waits at most
-        // tt_RX_LOCK_CHUNK records, which is the bound drain_rx() already chose for the same reason.
+        // opts.poll.rx_lock_chunk records, which is the bound drain_rx() already chose for the same reason.
         state_lock(node);
         uint32_t taken = 0;
         bool ran_dry = false;
-        while (taken < tt_RX_LOCK_CHUNK && drained + taken < tt_SEGMENT_DRAIN_PER_POLL && !ran_dry) {
+        while (taken < chunk && drained + taken < tt_SEGMENT_DRAIN_PER_POLL && !ran_dry) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
@@ -23829,11 +23872,11 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     return tt_RET_OK;
 }
 
-// One datagram more of a drain_rx() pass: every tt_RX_CLOCK_REFRESH of them the receive clock is read again, so a long
-// drain keeps its stamps within microseconds (D1). True when it was - the drain's "this pass is long" point, where
-// drain_rx() also looks at the ring (ring_takes_its_turn()).
-static inline bool drain_clock_tick(struct tt_Context* node, uint32_t* since_clock) {
-    if (++*since_clock <= tt_RX_CLOCK_REFRESH) {
+// One datagram more of a drain_rx() pass: every `refresh` of them (opts.poll.rx_clock_refresh, read once per drain) the
+// receive clock is read again, so a long drain keeps its stamps within microseconds (D1). True when it was - the
+// drain's "this pass is long" point, where drain_rx() also looks at the ring (ring_takes_its_turn()).
+static inline bool drain_clock_tick(struct tt_Context* node, uint32_t* since_clock, uint32_t refresh) {
+    if (++*since_clock <= refresh) {
         return false;
     }
     node->rx_clock_ns = tt_get_ns();
@@ -23841,19 +23884,21 @@ static inline bool drain_clock_tick(struct tt_Context* node, uint32_t* since_clo
     return true;
 }
 
-// D4: datagrams the HAL already holds are processed under one lock, up to tt_RX_LOCK_CHUNK of them - a publishing
-// thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4). *long_pass is set when the clock was read again.
-static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, bool* long_pass) {
+// D4: datagrams the HAL already holds are processed under one lock, up to `chunk` of them (opts.poll.rx_lock_chunk) - a
+// publishing thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4). *long_pass is set when the clock was read
+// again.
+static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, uint32_t refresh, uint32_t chunk,
+                               bool* long_pass) {
     tt_ret_t result = tt_RET_OK;
     uint32_t ip = 0;
     uint16_t port = 0;
     state_lock(node);
-    for (uint32_t taken = 0; taken < tt_RX_LOCK_CHUNK && result == tt_RET_OK && tt_rx_buffered(node) > 0; taken++) {
+    for (uint32_t taken = 0; taken < chunk && result == tt_RET_OK && tt_rx_buffered(node) > 0; taken++) {
         int32_t len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
         if (len < 0) {
             break;
         }
-        if (drain_clock_tick(node, since_clock)) {
+        if (drain_clock_tick(node, since_clock, refresh)) {
             *long_pass = true;
         }
         result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP, 1);
@@ -23872,8 +23917,11 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     }
 
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
+    // Read once per drain, not per datagram: the loops below compare locals (bundle 6, opts.poll).
+    const uint32_t refresh = poll_rx_clock_refresh(node);
+    const uint32_t chunk = poll_rx_lock_chunk(node);
     while (true) {
-        bool long_pass = false; // the clock was read again: tt_RX_CLOCK_REFRESH more datagrams in this drain
+        bool long_pass = false; // the clock was read again: `refresh` more datagrams in this drain
         tt_ret_t result = tt_RET_OK;
         if (tt_rx_buffered(node) == 0) {
             // The next receive may read the socket: outside the lock, one datagram, as before D4.
@@ -23883,10 +23931,10 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
             if (len < 0) {
                 break; // -1 nothing waiting, -2 I/O error - either way, done draining
             }
-            long_pass = drain_clock_tick(node, &since_clock);
+            long_pass = drain_clock_tick(node, &since_clock, refresh);
             result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
         } else {
-            result = drain_rx_chunk(node, &since_clock, &long_pass);
+            result = drain_rx_chunk(node, &since_clock, refresh, chunk, &long_pass);
         }
         if (result != tt_RET_OK) {
             return result;
@@ -24235,13 +24283,15 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
-    bool did_work = false; // a scheduler entry has run during this call
+    bool did_work = false;                                          // a scheduler entry has run during this call
+    const uint32_t interleave = poll_scheduler_io_interleave(node); // once per call (opts.poll)
+    const uint64_t busy_slice = poll_receive_timeout(node);
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
-        if (consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
+        if (consecutive_scheduler_runs < interleave) {
             ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
         } else {
             has_next = sched_next_time(node, &next);
@@ -24252,7 +24302,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
             consecutive_scheduler_runs++;
             did_work = true;
         } else if (has_next && next <= time) {
-            // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
+            // A scheduler entry is still due, but opts.poll.scheduler_io_interleave consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
             // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
             // there, fall straight back into scheduler processing next iteration.
@@ -24275,7 +24325,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
         time = new_time;
         node->rx_clock_ns = time;
-        if (until_next_event && did_work && time - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT) {
+        if (until_next_event && did_work && time - poll_start >= busy_slice) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }
     }
