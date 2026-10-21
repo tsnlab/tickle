@@ -304,25 +304,6 @@ static uint16_t net_ip_reassembly_max(const struct tt_Context* node) {
     return value == tt_IP_REASSEMBLY_NONE ? 0 : value;
 }
 
-// The poll group (bundle 6), each read once per drain or per poll into a local: the loops compare the local. A
-// whitebox context, built by hand and never created, leaves them 0 and reads the defaults.
-static inline uint32_t poll_rx_clock_refresh(const struct tt_Context* node) {
-    return node->opts.poll.rx_clock_refresh != 0 ? node->opts.poll.rx_clock_refresh : (uint32_t)tt_RX_CLOCK_REFRESH;
-}
-
-static inline uint32_t poll_rx_lock_chunk(const struct tt_Context* node) {
-    return node->opts.poll.rx_lock_chunk != 0 ? node->opts.poll.rx_lock_chunk : (uint32_t)tt_RX_LOCK_CHUNK;
-}
-
-static inline uint64_t poll_receive_timeout(const struct tt_Context* node) {
-    return node->opts.poll.receive_timeout != 0 ? node->opts.poll.receive_timeout : (uint64_t)tt_RECEIVE_TIMEOUT;
-}
-
-static inline uint32_t poll_scheduler_io_interleave(const struct tt_Context* node) {
-    return node->opts.poll.scheduler_io_interleave != 0 ? node->opts.poll.scheduler_io_interleave
-                                                        : (uint32_t)tt_SCHEDULER_IO_INTERLEAVE;
-}
-
 // A link's threshold as the send path compares it: tt_UNICAST_ALWAYS_BROADCAST is zero peers.
 static uint8_t link_threshold(uint8_t configured) {
     if (configured == 0) {
@@ -6381,8 +6362,10 @@ static void wall_offset_refresh(struct tt_Context* node) {
 static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
     // when this changes nothing) or built by hand in a whitebox test (the service group still zero). The call path
-    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest).
+    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest), and the
+    // receive loop the poll options (drain_rx_more(), node_poll(); bundle 6).
     resolve_service_options(&node->opts.service);
+    resolve_poll_options(&node->opts.poll);
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -23770,7 +23753,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
     uint32_t drained = 0;
     bool hand_back = false;
     node->segment_plan_mark = node->rx_keep_last_delivered; // read by segment_skip_head() between plans
-    const uint32_t chunk = poll_rx_lock_chunk(node);        // once per drain (opts.poll.rx_lock_chunk)
+    const uint32_t chunk = node->opts.poll.rx_lock_chunk;   // once per drain
     while (drained < tt_SEGMENT_DRAIN_PER_POLL) {
         // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
         // process_datagram_locked() says so in its name and every field a datagram touches is under
@@ -23994,8 +23977,8 @@ static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, u
 static tt_ret_t drain_rx_more(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
     // Read once per drain, not per datagram: the loops below compare locals (bundle 6, opts.poll).
-    const uint32_t refresh = poll_rx_clock_refresh(node);
-    const uint32_t chunk = poll_rx_lock_chunk(node);
+    const uint32_t refresh = node->opts.poll.rx_clock_refresh;
+    const uint32_t chunk = node->opts.poll.rx_lock_chunk;
     if (len >= 0) {
         bool long_pass = drain_clock_tick(node, &since_clock, refresh);
         tt_ret_t result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
@@ -24393,17 +24376,13 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
     bool did_work = false; // a scheduler entry has run during this call
-    // The bounds on running more of it (opts.poll), read when the call's first entry has run: a poll that runs none -
-    // most of a latency cell's - reads no option, and one that runs many compares registers (bundle 6). Until then
-    // the count is 0, below any interleave, and the slice is not asked.
-    uint32_t interleave = 0;
-    uint64_t busy_slice = 0;
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
-        if (consecutive_scheduler_runs == 0 || consecutive_scheduler_runs < interleave) {
+        // opts.poll's two bounds are compared where they are, as the constants were: no copy to make per call.
+        if (consecutive_scheduler_runs < node->opts.poll.scheduler_io_interleave) {
             ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
         } else {
             has_next = sched_next_time(node, &next);
@@ -24412,11 +24391,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         if (ran) {
             // Run scheduler first
             consecutive_scheduler_runs++;
-            if (!did_work) {
-                did_work = true;
-                interleave = poll_scheduler_io_interleave(node);
-                busy_slice = poll_receive_timeout(node);
-            }
+            did_work = true;
         } else if (has_next && next <= time) {
             // A scheduler entry is still due, but opts.poll.scheduler_io_interleave consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
@@ -24441,7 +24416,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
         time = new_time;
         node->rx_clock_ns = time;
-        if (until_next_event && did_work && time - poll_start >= busy_slice) {
+        if (until_next_event && did_work && time - poll_start >= node->opts.poll.receive_timeout) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }
     }

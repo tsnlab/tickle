@@ -11,7 +11,7 @@
 // struct tt_InitOptions, bundle 6: the poll group (struct tt_PollOptions), through the mock HAL.
 //   - the defaults are the config.h constants, and a context created with the options holds them resolved;
 //   - every field, set to a value other than its default, changes what tt_Context_poll() does - the controls are the
-//     same scenario at the default and with the options left 0, as a context built by hand has them:
+//     same scenario at the default and with the options left 0 (a context built by hand, node_init_locks() resolves):
 //       rx_clock_refresh         how old the last datagram's stamp is at the end of a long drain,
 //       rx_lock_chunk            how many times a backlog takes the state lock,
 //       receive_timeout          how much back-to-back scheduler work a negative-timeout poll runs before it returns,
@@ -63,7 +63,7 @@ static struct tt_InitOptions defaults(void) {
 }
 
 // A context built as tests/test_poll_wait.c builds one, with the poll group a creation would have given it. NULL
-// leaves the options 0 - a context built by hand, which must read the defaults.
+// leaves the options 0 - a context built by hand, which node_init_locks() gives the defaults.
 static void setup(const struct tt_PollOptions* poll) {
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
