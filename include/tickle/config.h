@@ -430,6 +430,14 @@
 #ifndef tt_CALL_RETRY_MAX_SRTT_MULTIPLE
 #define tt_CALL_RETRY_MAX_SRTT_MULTIPLE 64 // a wait's ceiling, in multiples of max(srtt, G)
 #endif
+// An answer that came only after its call was resent is not an RTT sample (Karn's algorithm): it may answer either
+// send. The doublings that call needed carry over to the next call's first wait instead, added up over consecutive
+// resent calls and cleared by the next answer to a call never resent (RFC 6298 5.5-5.7), so a client whose first wait
+// has become too short still reaches a clean sample. At most this many: 6 doublings take the first wait from max(srtt,
+// G) to the ceiling, 64 x it.
+#ifndef tt_CALL_BACKOFF_MAX
+#define tt_CALL_BACKOFF_MAX 6 // doublings
+#endif
 #ifndef tt_CALL_DEADLINE_PER_SEND
 #define tt_CALL_DEADLINE_PER_SEND (250 * tt_MILLISECOND) // nanosecond - an auto call ends within (count + 1) x this
 #endif

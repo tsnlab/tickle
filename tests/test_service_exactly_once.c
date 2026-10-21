@@ -19,7 +19,7 @@
 // raised the next first wait (srtt + 4 rttvar), which made the next loss's sample larger still - Karn's ambiguity,
 // unchecked.
 //
-// Two defects; this file's arms are the horizon's (K2 is both):
+// Two defects, each with its own arms here:
 //   horizon  the server keeps an answer for less than the client's auto horizon. The client sends nothing after its
 //            deadline, (count + 1) x tt_CALL_DEADLINE_PER_SEND (call_deadline()), but its retries before that can be
 //            later than any seed schedule: its waits are srtt-relative, and srtt is measured.
@@ -32,7 +32,9 @@
 //
 // Arms, each reading written into its expectation:
 //   H0 control   service 10 ms, a lost answer: the retry comes 20 ms after the answer, inside the seed schedule - one
-//                run before and after the fix. Shows a retry the server still holds the answer for counts as no re-run.
+//                run before and after the fix. Each H arm first calls until a call is answered without a resend: the
+//                client's first sample (K arms), srtt = the service time and rttvar half of it. Shows a retry the
+//                server still holds the answer for counts as no re-run.
 //   H1 defect    service 100 ms (srtt 100 ms, rttvar 50 ms: first wait 300 ms), a lost answer: the retry comes ~200
 //                ms after the answer. Before the fix two runs; the reading after: one.
 //   H2 edge      as H1, with the first retry lost too: the second, ~900 ms after the call - the last send before the
@@ -40,8 +42,13 @@
 //   H3 margin    as H2, the second retry 250 ms longer on the wire: it reaches the server ~1.05 s after the answer,
 //                past the deadline itself (the lifetime keeps one tt_CALL_DEADLINE_PER_SEND beyond it). One run; the
 //                client has given up by then, so no answer and one timeout.
-//   K2 c21       a 200 us round trip, alternately a clean call and a call whose first send is lost, then a call whose
-//                answer is lost: one run (two before the fix: the history had pushed the first wait past 75 ms).
+//   K1 wait      a 200 us round trip, alternately a clean call and a call whose first send is lost. Reading: the
+//                first wait after it is at most twice the clean first wait (762 ms against 0.4 ms before the fix).
+//   K2 c21       K1's history, then a call whose answer is lost: one run (two before either fix).
+//   K3 jump      the round trip jumps from 200 us to 5 ms. Samples from resent calls are no longer taken, so the
+//                estimate could only learn the new round trip from a clean call, and with every first wait too short
+//                there would be none: the backed-off wait is kept for the next call (RFC 6298 5.5-5.7), so by the
+//                fourth call after the jump calls go clean. Reading: no resend in calls 4..8 after the jump.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -332,30 +339,40 @@ static uint64_t first_wait(void) {
     return compute_retry_interval(&client, 0);
 }
 
-// H arms: call 1 clean, call 2 with its first answer lost and the request sends in `lost_requests` lost.
-// H arms: call 1 clean, call 2 with its first answer lost, the request sends in `lost_requests` lost, and the send
-// with retry `slow_retry` (0: none) `slow_ns` longer on the wire. One answer expected unless the call times out.
+// H arms: calls until one is answered without a resend - the client's first sample, srtt = the service time, rttvar
+// half of it - then the subject call, with its first answer lost, the request sends in `lost_requests` lost, and the
+// send with retry `slow_retry` (0: none) `slow_ns` longer on the wire. One answer expected unless the call times out.
+#define SUBJECT 20
 static void test_horizon(const char* name, uint64_t service_time, uint8_t lost_requests, uint8_t slow_retry,
                          uint64_t slow_ns, int expected_runs, int expected_timeouts) {
     setup(service_time, 100 * US);
-    call(1);
-    drop_response_mask[2] = 1U;
-    drop_request_mask[2] = lost_requests;
-    slow_request_retry[2] = slow_retry;
+    uint16_t warm = 1;
+    for (; warm < SUBJECT; warm++) {
+        call(warm);
+        EXPECT_EQ_INT(1, runs[warm]);
+        EXPECT_EQ_INT(1, answers[warm]);
+        if (request_sends[warm] == 1) {
+            break; // never resent: a sample (Karn)
+        }
+    }
+    EXPECT_TRUE(warm < SUBJECT);
+    drop_response_mask[SUBJECT] = 1U;
+    drop_request_mask[SUBJECT] = lost_requests;
+    slow_request_retry[SUBJECT] = slow_retry;
     slow_request_ns = slow_ns;
-    call(2);
-    printf("  %-44s first wait %7.1f ms, runs %d (expected %d), answers %d, sends %u\n", name,
-           (double)first_wait() / MS, runs[2], expected_runs, answers[2], request_sends[2]);
-    EXPECT_EQ_INT(1, runs[1]);
-    EXPECT_EQ_INT(1, answers[1]);
-    EXPECT_EQ_INT(expected_runs, runs[2]);
-    EXPECT_EQ_INT(1 - expected_timeouts, answers[2]);
+    uint64_t subject_wait = first_wait();
+    call(SUBJECT);
+    printf("  %-44s %u warm-up, first wait %5.1f ms, runs %d (expected %d), answers %d, sends %u\n", name,
+           (unsigned)warm, (double)subject_wait / MS, runs[SUBJECT], expected_runs, answers[SUBJECT],
+           request_sends[SUBJECT]);
+    EXPECT_EQ_INT(expected_runs, runs[SUBJECT]);
+    EXPECT_EQ_INT(1 - expected_timeouts, answers[SUBJECT]);
     EXPECT_EQ_INT(expected_timeouts, timeouts);
     EXPECT_EQ_INT(0, wrong_answers);
     test_mock_send_hook = NULL;
 }
 
-// K2's history: CLEAN clean calls, then PAIRS pairs of (first send lost, clean). Returns the clean first wait.
+// K1/K2's history: CLEAN clean calls, then PAIRS pairs of (first send lost, clean). Returns the clean first wait.
 #define CLEAN 16
 #define PAIRS 16
 static uint16_t lossy_history(uint64_t* clean_wait) {
@@ -377,6 +394,17 @@ static uint16_t lossy_history(uint64_t* clean_wait) {
     return tag;
 }
 
+static void test_karn_wait(void) {
+    uint64_t clean_wait = 0;
+    (void)lossy_history(&clean_wait);
+    uint64_t wait = first_wait();
+    printf("  %-44s clean first wait %.3f ms, after the losses %.3f ms (expected <= %.3f)\n", "K1 wait",
+           (double)clean_wait / MS, (double)wait / MS, (double)(2 * clean_wait) / MS);
+    EXPECT_TRUE(wait <= 2 * clean_wait);
+    EXPECT_EQ_INT(0, timeouts);
+    test_mock_send_hook = NULL;
+}
+
 static void test_karn_c21(void) {
     uint64_t clean_wait = 0;
     uint16_t tag = lossy_history(&clean_wait);
@@ -390,12 +418,41 @@ static void test_karn_c21(void) {
     test_mock_send_hook = NULL;
 }
 
+static void test_karn_jump(void) {
+    setup(0, 100 * US);
+    uint16_t tag = 1;
+    for (int i = 0; i < CLEAN; i++) {
+        call(tag++);
+    }
+    one_way_ns = 2500 * US;
+    uint16_t jump = tag;
+    for (int i = 0; i < 8; i++) {
+        call(tag++);
+    }
+    uint32_t late_resends = 0;
+    for (uint16_t k = jump; k < tag; k++) {
+        EXPECT_EQ_INT(1, runs[k]);
+        EXPECT_EQ_INT(1, answers[k]);
+        late_resends += k >= jump + 3 ? request_sends[k] - 1 : 0;
+    }
+    printf("  %-44s sends per call after the jump:", "K3 jump 200 us -> 5 ms");
+    for (uint16_t k = jump; k < tag; k++) {
+        printf(" %u", request_sends[k]);
+    }
+    printf(" (expected no resend from the 4th)\n");
+    EXPECT_EQ_U32(0, late_resends);
+    EXPECT_EQ_INT(0, timeouts);
+    test_mock_send_hook = NULL;
+}
+
 int main(void) {
     test_horizon("H0 control: service 10 ms, answer lost", 10 * MS, 0, 0, 0, 1, 0);
     test_horizon("H1 defect: service 100 ms, answer lost", 100 * MS, 0, 0, 0, 1, 0);
     test_horizon("H2 edge: + first retry lost", 100 * MS, 1U << 1U, 0, 0, 1, 0);
     test_horizon("H3 margin: + last retry 250 ms on the wire", 100 * MS, 1U << 1U, 2, 250 * MS, 1, 1);
+    test_karn_wait();
     test_karn_c21();
+    test_karn_jump();
 
     if (test_result() != 0) {
         return 1;

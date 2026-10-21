@@ -55,6 +55,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   each way at 1 kHz (rig cell c21, on the PC) 1-2 calls in 3,000-7,000 ran twice. The server now keeps an answer for
   the auto client's deadline plus one `tt_CALL_DEADLINE_PER_SEND` (1.25 s), still at most `tt_CLIENT_CALL_WINDOW` per
   calling client (`tests/test_service_exactly_once.c`).
+- A core service client's retry estimate grew without bound under loss: every answer was an RTT sample, an answer that
+  came only after a resend included, whose R is the lost send's wait plus the round trip. At 5% loss each way the
+  first wait went from 0.4 ms to 290-600 ms within ~120 calls, and c21 made 130-430 calls/s of 1,000. Only calls never
+  resent are sampled now (Karn); a resent call's doublings carry to the next call's first wait until a clean answer
+  (RFC 6298 5.5-5.7, `tt_CALL_BACKOFF_MAX`).
 - An rmw_tickle service request whose answer was lost was served twice. The server's `tt_Service` left the client's
   retry schedule at 0, so core kept the answer 75 ms (the auto schedule) while the client retries after 100 ms; the
   retry found nothing kept and ran the callback again. The server now carries the client's 100 ms x 50, and keeps an

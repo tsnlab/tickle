@@ -1999,6 +1999,10 @@ struct tt_Client { // extends endpoint
     // When the estimate was last doubled for a timeout. A call sent before then timed out on the schedule of the
     // estimate before it, so it does not double it again: several calls lost together back off once, as one call did.
     uint64_t latency_backed_off_at;
+    // Doublings a call's first wait starts with (compute_retry_interval()): an answer that came only after resends is
+    // not an RTT sample (Karn), so the wait it took is kept instead - the resends are added here - until an answer to
+    // a call never resent is taken as a sample and clears it (RFC 6298 5.5-5.7). At most tt_CALL_BACKOFF_MAX.
+    uint8_t call_backoff;
     // Tells this Client from the context's other Clients of the same service, which share its endpoint_id: the
     // smallest of 1..255 none of them holds, given at create, 0 when all are taken. Carried in every CallRequest
     // (tt_CallRequestHeader.client_tag) so the server keeps an answer per Client, not per context.
