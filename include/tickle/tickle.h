@@ -857,9 +857,11 @@ struct tt_ServiceOptions {
     uint32_t call_retry_count;    // retries of a call; 0 = tt_CALL_RETRY_COUNT
     // ns, a call's G; 0 = tt_CALL_RETRY_GRANULARITY; tt_CALL_RETRY_GRANULARITY_AUTO = twice the reliable retry's G
     uint32_t call_retry_granularity;
+    // ns, an auto call ends within (count + 1) x this; 0 = tt_CALL_DEADLINE_PER_SEND. 32 bits, so that the product
+    // with (count + 1) cannot overflow and the call path needs no check (no 64-bit division on a 32-bit target).
+    uint32_t call_deadline_per_send;
     uint16_t call_retry_max_srtt_multiple; // a wait's ceiling in max(srtt, G); 0 = tt_CALL_RETRY_MAX_SRTT_MULTIPLE
     uint16_t server_cache_gap_multiple; // answers kept this x the observed retry gap; 0 = tt_SERVER_CACHE_GAP_MULTIPLE
-    uint64_t call_deadline_per_send; // ns, an auto call ends within (count + 1) x this; 0 = tt_CALL_DEADLINE_PER_SEND
     // ns, a deferred request's time to be answered; 0 = tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
     uint64_t server_deferred_response_timeout;
 };

@@ -312,44 +312,38 @@ static uint8_t link_threshold(uint8_t configured) {
     return configured == tt_UNICAST_ALWAYS_BROADCAST ? 0 : configured;
 }
 
-// The service defaults (struct tt_ServiceOptions), each zero read as the compiled default.
+// The service options (struct tt_ServiceOptions), read on the call path as they are: every context holds them
+// resolved - a created one by resolve_init_options(), a whitebox one built by hand by node_init_locks() - so these
+// need no fallback for a zero. Each fallback cost two instructions a read, and a call reads several (PC instruction
+// A/B, examples/perf_hil/experiments/service_options_insn.sh, 2026-10-21).
 static uint32_t service_call_retry_interval(const struct tt_Context* node) {
-    uint32_t value = node->opts.service.call_retry_interval;
-    return value != 0 ? value : (uint32_t)tt_CALL_RETRY_INTERVAL;
+    return node->opts.service.call_retry_interval;
 }
 
 static uint32_t service_call_retry_count(const struct tt_Context* node) {
-    uint32_t value = node->opts.service.call_retry_count;
-    return value != 0 ? value : (uint32_t)tt_CALL_RETRY_COUNT;
+    return node->opts.service.call_retry_count;
 }
 
 // 0: twice the reliable retry's G (call_retry_granularity()).
 static uint64_t service_call_retry_granularity(const struct tt_Context* node) {
     uint32_t value = node->opts.service.call_retry_granularity;
-    if (value == 0) {
-        return (uint64_t)tt_CALL_RETRY_GRANULARITY;
-    }
     return value == tt_CALL_RETRY_GRANULARITY_AUTO ? 0 : value;
 }
 
 static uint64_t service_call_retry_max_srtt_multiple(const struct tt_Context* node) {
-    uint16_t value = node->opts.service.call_retry_max_srtt_multiple;
-    return value != 0 ? value : (uint64_t)tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
+    return node->opts.service.call_retry_max_srtt_multiple;
 }
 
-static uint64_t service_call_deadline_per_send(const struct tt_Context* node) {
-    uint64_t value = node->opts.service.call_deadline_per_send;
-    return value != 0 ? value : (uint64_t)tt_CALL_DEADLINE_PER_SEND;
+static uint32_t service_call_deadline_per_send(const struct tt_Context* node) {
+    return node->opts.service.call_deadline_per_send;
 }
 
 static uint64_t service_server_cache_gap_multiple(const struct tt_Context* node) {
-    uint16_t value = node->opts.service.server_cache_gap_multiple;
-    return value != 0 ? value : (uint64_t)tt_SERVER_CACHE_GAP_MULTIPLE;
+    return node->opts.service.server_cache_gap_multiple;
 }
 
 static uint64_t service_server_deferred_response_timeout(const struct tt_Context* node) {
-    uint64_t value = node->opts.service.server_deferred_response_timeout;
-    return value != 0 ? value : (uint64_t)tt_SERVER_DEFERRED_RESPONSE_TIMEOUT;
+    return node->opts.service.server_deferred_response_timeout;
 }
 
 // The one link a context gets when none is configured: the scalar addr and broadcast, the default threshold.
@@ -396,8 +390,9 @@ static void resolve_reliable_options(struct tt_ReliableOptions* reliable) {
 }
 
 // What the defaults must be is checked at creation (validate_service_options()); here only that each fits its field.
-static_assert(tt_CALL_RETRY_INTERVAL <= UINT32_MAX && tt_CALL_RETRY_COUNT <= UINT32_MAX,
-              "tt_ServiceOptions.call_retry_interval and call_retry_count are uint32_t");
+static_assert(tt_CALL_RETRY_INTERVAL <= UINT32_MAX && tt_CALL_RETRY_COUNT <= UINT32_MAX &&
+                  tt_CALL_DEADLINE_PER_SEND <= UINT32_MAX,
+              "tt_ServiceOptions.call_retry_interval, call_retry_count and call_deadline_per_send are uint32_t");
 static_assert(tt_CALL_RETRY_GRANULARITY < tt_CALL_RETRY_GRANULARITY_AUTO,
               "tt_ServiceOptions.call_retry_granularity is uint32_t, its largest value the AUTO sentinel");
 static_assert(tt_CALL_RETRY_MAX_SRTT_MULTIPLE <= UINT16_MAX && tt_SERVER_CACHE_GAP_MULTIPLE <= UINT16_MAX,
@@ -421,7 +416,7 @@ static void resolve_service_options(struct tt_ServiceOptions* service) {
         service->server_cache_gap_multiple = (uint16_t)tt_SERVER_CACHE_GAP_MULTIPLE;
     }
     if (service->call_deadline_per_send == 0) {
-        service->call_deadline_per_send = (uint64_t)tt_CALL_DEADLINE_PER_SEND;
+        service->call_deadline_per_send = (uint32_t)tt_CALL_DEADLINE_PER_SEND;
     }
     if (service->server_deferred_response_timeout == 0) {
         service->server_deferred_response_timeout = (uint64_t)tt_SERVER_DEFERRED_RESPONSE_TIMEOUT;
@@ -641,12 +636,12 @@ static tt_ret_t validate_service_options(const struct tt_ServiceOptions* service
     if (service->call_retry_count != (uint32_t)tt_CALL_RETRY_COUNT ||
         service->call_retry_interval != (uint32_t)tt_CALL_RETRY_INTERVAL ||
         service->call_retry_max_srtt_multiple != (uint16_t)tt_CALL_RETRY_MAX_SRTT_MULTIPLE ||
-        service->call_deadline_per_send != (uint64_t)tt_CALL_DEADLINE_PER_SEND) {
+        service->call_deadline_per_send != (uint32_t)tt_CALL_DEADLINE_PER_SEND) {
         TT_LOG_WARNING(
             "tt_InitOptions.service: a call's retry schedule differs from the build's (count %u, seed %u ns, "
-            "ceiling %u x srtt, deadline %llu ns per send) - a peer's server keeps answers for the build's",
+            "ceiling %u x srtt, deadline %u ns per send) - a peer's server keeps answers for the build's",
             (unsigned)service->call_retry_count, (unsigned)service->call_retry_interval,
-            (unsigned)service->call_retry_max_srtt_multiple, (unsigned long long)service->call_deadline_per_send);
+            (unsigned)service->call_retry_max_srtt_multiple, (unsigned)service->call_deadline_per_send);
     }
     return tt_RET_OK;
 }
@@ -6109,6 +6104,10 @@ static void wall_offset_refresh(struct tt_Context* node) {
 // that builds a node by hand on the mock HAL instead - a zeroed node is not ready for FreeRTOS, and a
 // zeroed inbox state array only happens to mean "empty".
 static void node_init_locks(struct tt_Context* node) {
+    // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
+    // when this changes nothing) or built by hand in a whitebox test (the service group still zero). The call path
+    // reads the service options with no fallback for a zero (service_call_retry_interval() and the rest).
+    resolve_service_options(&node->opts.service);
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -7833,13 +7832,12 @@ static uint32_t call_retry_count(const struct tt_Client* client) {
 // How long after it was made an auto-path call reports failure at the latest: (count + 1) x tt_CALL_DEADLINE_PER_SEND,
 // the worst case the old fixed 250 ms ceiling gave (config.h). An explicit call_retry_interval has no deadline: its
 // (count + 1) waits are used as given, as before.
-static uint64_t call_deadline(const struct tt_Client* client) {
+__attribute__((always_inline)) static inline uint64_t call_deadline(const struct tt_Client* client) {
     if (client_retry_interval(client) != 0) {
         return UINT64_MAX;
     }
-    uint64_t sends = (uint64_t)call_retry_count(client) + 1;
-    uint64_t per_send = service_call_deadline_per_send(client->node);
-    return sends > UINT64_MAX / per_send ? UINT64_MAX : sends * per_send;
+    // At most 2^32 sends of at most 2^32 - 1 ns each: the product fits, and needs no overflow check.
+    return ((uint64_t)call_retry_count(client) + 1U) * service_call_deadline_per_send(client->node);
 }
 
 // When the wait after the call's `retry`-th send, starting at `now`, ends: the retry interval, cut short at the
@@ -18412,11 +18410,13 @@ static uint64_t server_client_window(const struct tt_Server* server) {
 // How long an answered response is kept for a retrying client: how long the client may retry (server_client_window()),
 // or tt_SERVER_CACHE_GAP_MULTIPLE x the longest recent retry gap this server has seen, whichever is longer. See
 // config.h for why the server derives it from these and not from the client's srtt.
-static uint64_t server_cache_lifetime(const struct tt_Server* server) {
+__attribute__((always_inline)) static inline uint64_t server_cache_lifetime(const struct tt_Server* server) {
     uint64_t window = server_client_window(server);
-    uint64_t multiple = service_server_cache_gap_multiple(server->node);
-    uint64_t learnt =
-        server->client_retry_gap > UINT64_MAX / multiple ? UINT64_MAX : server->client_retry_gap * multiple;
+    // A 16-bit multiple: a gap up to UINT64_MAX / UINT16_MAX (3.3 days) cannot overflow, and the bound is a constant -
+    // no division at run time (none of 64 bits on a 32-bit target).
+    uint64_t learnt = server->client_retry_gap > UINT64_MAX / UINT16_MAX
+                          ? UINT64_MAX
+                          : server->client_retry_gap * service_server_cache_gap_multiple(server->node);
     return learnt > window ? learnt : window;
 }
 
