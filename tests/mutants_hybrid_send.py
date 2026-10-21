@@ -6,21 +6,26 @@ run ends, what a repair is, how loss and cost are counted - and names the test b
 that still passes means either the test does not test what it says, or the condition decides nothing and should not be
 in the code.
 
-Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it, or any of several separated by "|" (the controls always run).
+Run from the repository root. MUTANTS=<substring> runs only the mutants whose name contains it, or any of several
+separated by "|" (the controls always run). MUTANTS_SHARD=k/n runs only the mutants whose index is k modulo n: the
+sweep is ~180 runs of a test binary that takes one to two minutes, so two shards in two checkouts halve it.
+tests/mutant_guard.py refuses the sweep unless every anchor occurs exactly
+once - checked for all of them before the controls, so a stale anchor is reported with every other one rather than one
+at a time mid-sweep (35 went stale at once when tt_InitOptions bundle 7 moved the hybrid constants into
+node->opts.hybrid_transport) - bounds every child (2 GB, a deadline, capped output) and restores the edited sources
+whatever happens, SIGINT/SIGTERM/SIGHUP included.
 """
 import os
 import pathlib
-import shutil
-import signal
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-TESTS = ROOT / "platform/linux/obj/debug/tests"
+LINUX = ROOT / "platform/linux"
+TESTS = LINUX / "obj/debug/tests"
+TIMEOUT_S = 300
 SEND = "test_hybrid_send"
 SHM = "test_large_shm"
 CAP = "test_hybrid_capability"
@@ -336,7 +341,7 @@ MUTANTS = [
     (
         "nacks: an ACKNACK's NACKs not read",
         "src/tickle.c",
-        "            hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);",
+        "            hybrid_note_nacks(node, pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);",
         "",
         SEND,
     ),
@@ -385,7 +390,7 @@ MUTANTS = [
     (
         "path: no MTU period after the judgement",
         "src/tickle.c",
-        "            if (now - watch->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {\n                return 1U;\n            }",
+        "            if (now - watch->path_failed_ns < node->opts.hybrid_transport.path_clean_ns) {\n                return 1U;\n            }",
         "",
         SEND,
     ),
@@ -441,7 +446,7 @@ MUTANTS = [
     (
         "reader: the window never halves",
         "src/tickle.c",
-        "    if (estimate->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {",
+        "    if (estimate->frames >= estimate->window_frames) {",
         "    if (false) {",
         SEND,
     ),
@@ -469,8 +474,8 @@ MUTANTS = [
     (
         "cap: n_max quantised like the rest",
         "src/tickle.c",
-        "    if (cap >= n_max) {\n        return node->ip_reassembly_max;",
-        "    if (cap > n_max) {\n        return node->ip_reassembly_max;",
+        "    if (cap >= n_max && node->opts.hybrid_transport.n_max >= (uint8_t)tt_HYBRID_N_MAX) {",
+        "    if (cap > n_max && node->opts.hybrid_transport.n_max >= (uint8_t)tt_HYBRID_N_MAX) {",
         SEND,
     ),
     (
@@ -483,7 +488,7 @@ MUTANTS = [
     (
         "cap: the benchmark switch not read at create",
         "src/tickle.c",
-        "    hybrid->cap_off = _tt_CONFIG.reassembly_cap_off != 0;",
+        "    hybrid->cap_off = node->opts.net.reassembly_cap_off != 0;",
         "    hybrid->cap_off = false;",
         SEND,
     ),
@@ -602,15 +607,15 @@ MUTANTS = [
     (
         "reader: a lost body read as arrived runs",
         "src/tickle.c",
-        "        hybrid_rx_run(&node->hybrid, writer, size, true);",
-        "        hybrid_rx_run(&node->hybrid, writer, size, false);",
+        "        hybrid_rx_run(node, writer, size, true);",
+        "        hybrid_rx_run(node, writer, size, false);",
         SEND,
     ),
     (
         "reader: lost runs not in the pooled window",
         "src/tickle.c",
-        "    run_window_observe(&hybrid->window, size, lost);",
-        "    run_window_observe(&hybrid->window, size, false);",
+        "    run_window_observe(&hybrid->window, size, lost, &hybrid->mtu_loss.window_frames);",
+        "    run_window_observe(&hybrid->window, size, false, &hybrid->mtu_loss.window_frames);",
         SEND,
     ),
     (
@@ -630,8 +635,8 @@ MUTANTS = [
     (
         "reader: a missing tail not an MTU loss",
         "src/tickle.c",
-        "        hybrid_rx_mtu(hybrid, 1, 1); // the tail, always an MTU unit",
-        "        hybrid_rx_mtu(hybrid, 1, 0);",
+        "        hybrid_rx_mtu(node, 1, 1); // the tail, always an MTU unit",
+        "        hybrid_rx_mtu(node, 1, 0);",
         SEND,
     ),
     (
@@ -645,13 +650,13 @@ MUTANTS = [
         "reader: a gap of unknown layout counted as MTU loss",
         "src/tickle.c",
         "            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);",
-        "            hybrid_rx_mtu(hybrid, body_end - from, body_end - from);",
+        "            hybrid_rx_mtu(node, body_end - from, body_end - from);",
         SEND,
     ),
     (
         "law: no collapse ever called",
         "src/tickle.c",
-        "    if (hybrid_collapsed(&hybrid->window, &hybrid->mtu_loss)) {",
+        "    if (hybrid_collapsed(&hybrid->window, &hybrid->mtu_loss, opts)) {",
         "    if (false) {",
         SEND,
     ),
@@ -672,14 +677,14 @@ MUTANTS = [
     (
         "law: collapse on fewer than the minimum lost",
         "src/tickle.c",
-        " || window->lost < tt_HYBRID_COLLAPSE_MIN_LOST) {",
+        " || window->lost < opts->collapse_min_lost) {",
         ") {",
         SEND,
     ),
     (
         "law: collapse on fewer than the minimum runs",
         "src/tickle.c",
-        "    if (window->sent < tt_HYBRID_COLLAPSE_MIN_RUNS || window->lost",
+        "    if (window->sent < opts->collapse_min_runs || window->lost",
         "    if (window->lost",
         SEND,
     ),
@@ -742,14 +747,14 @@ MUTANTS = [
     (
         "law: a clean window without the minimum runs",
         "src/tickle.c",
-        "    return window->sent >= tt_HYBRID_COLLAPSE_MIN_RUNS &&\n           (double)window->lost <=",
+        "    return window->sent >= opts->collapse_min_runs &&\n           (double)window->lost <=",
         "    return (double)window->lost <=",
         SEND,
     ),
     (
         "law: the drop is a halving",
         "src/tickle.c",
-        "    uint32_t dropped = (uint32_t)(((double)n_fail * tt_HYBRID_DROP) + HYBRID_HALF);",
+        "    uint32_t dropped = (uint32_t)(((double)n_fail * drop) + HYBRID_HALF);",
         "    uint32_t dropped = (uint32_t)(((double)n_fail * 0.5) + HYBRID_HALF);",
         SEND,
     ),
@@ -791,8 +796,8 @@ MUTANTS = [
     (
         "law: the probe wait not doubled on a failure",
         "src/tickle.c",
-        "        hybrid->backoff = hybrid->backoff < tt_HYBRID_PROBE_BACKOFF_MAX ? (uint8_t)(hybrid->backoff + 1U)",
-        "        hybrid->backoff = hybrid->backoff < tt_HYBRID_PROBE_BACKOFF_MAX ? (uint8_t)(hybrid->backoff + 0U)",
+        "            hybrid->backoff < opts->probe_backoff_max ? (uint8_t)(hybrid->backoff + 1U) : opts->probe_backoff_max;",
+        "            hybrid->backoff < opts->probe_backoff_max ? (uint8_t)(hybrid->backoff + 0U) : opts->probe_backoff_max;",
         SEND,
     ),
     (
@@ -833,21 +838,21 @@ MUTANTS = [
     (
         "law: the slow start's two units back",
         "src/tickle.c",
-        "    hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max);",
+        "    hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max, node->opts.hybrid_transport.slow_start);",
         "    hybrid->cap = hybrid->cap_off ? n_max : 2U;",
         SEND,
     ),
     (
         "p: no 'none seen', the posterior mean at no events",
         "src/tickle.c",
-        "    if (estimate->events == 0 &&\n        estimate->frames - estimate->frames_at_doubt >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt",
+        "    if (estimate->events == 0 &&\n        estimate->frames - estimate->frames_at_doubt >= opts->none_seen_frames) { // seen, since a doubt",
         "    if (false) {",
         SEND,
     ),
     (
         "p: 'none seen' after any frame",
         "src/tickle.c",
-        "    if (estimate->events == 0 &&\n        estimate->frames - estimate->frames_at_doubt >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt",
+        "    if (estimate->events == 0 &&\n        estimate->frames - estimate->frames_at_doubt >= opts->none_seen_frames) { // seen, since a doubt",
         "    if (estimate->events == 0 && estimate->frames != 0) {",
         SEND,
     ),
@@ -905,64 +910,64 @@ MUTANTS = [
     (
         "p: stale events forgotten by the rule before 2026-10-15 (9.21 / p, p read at the event)",
         "src/tickle.c",
-        "        if (chance > tt_HYBRID_STALE_FALSE_FORGET) {",
+        "        if (chance > opts->stale_false_forget) {",
         "        if (((double)estimate->events + 1.0) * (double)clean < 9.21 * (double)anchor) {",
         SEND,
     ),
     (
         "p: stale events forgotten only at the floor, never by the ratio",
         "src/tickle.c",
-        "        if (chance > tt_HYBRID_STALE_FALSE_FORGET) {",
+        "        if (chance > opts->stale_false_forget) {",
         "        if (true) {",
         SEND,
     ),
     (
         "p: stale floor removed (the ratio alone, be097aec)",
         "src/tickle.c",
-        "    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames",
-        "    if (true) { // the floor: 9,210 frames",
+        "    if (clean < estimate->stale_floor_frames) { // the floor: 9,210 frames by default",
+        "    if (true) { // the floor: 9,210 frames by default",
         SEND,
     ),
     (
         "p: stale floor not at p_min (9.21 / 1e-2, 921 frames)",
         "src/tickle.c",
-        "    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames",
-        "    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / 1e-2) { // the floor: 9,210 frames",
+        "    double floor = hybrid_stale_exposure(opts) / opts->stale_p_min;",
+        "    double floor = hybrid_stale_exposure(opts) / 1e-2;",
         SEND,
     ),
     (
         "p: stale floor one clean frame early",
         "src/tickle.c",
-        "    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames",
-        "    if ((double)(clean + 1U) < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames",
+        "    if (clean < estimate->stale_floor_frames) { // the floor: 9,210 frames by default",
+        "    if (clean + 1U < estimate->stale_floor_frames) { // the floor: 9,210 frames by default",
         SEND,
     ),
     (
         "p: stale events forgotten however many",
         "src/tickle.c",
-        "estimate->events > (uint32_t)tt_HYBRID_STALE_EVENTS ||",
-        "false ||",
+        "    if (estimate->events - 1U >= opts->stale_events || estimate->frames_at_event == 0) {",
+        "    if (estimate->events == 0 || estimate->frames_at_event == 0) {",
         SEND,
     ),
     (
         "p: stale events forgotten only at the interval, not at a tail",
         "src/tickle.c",
-        "static void hybrid_rx_first_estimate(struct tt_Context* node) {\n    hybrid_rx_forget_stale(&node->hybrid);",
+        "static void hybrid_rx_first_estimate(struct tt_Context* node) {\n    hybrid_rx_forget_stale(node);",
         "static void hybrid_rx_first_estimate(struct tt_Context* node) {",
         SEND,
     ),
     (
         "scale: on a single tick",
         "src/tickle.c",
-        "    if (hybrid->scale_streak < tt_HYBRID_SCALE_TICKS && hybrid->scale_streak > -tt_HYBRID_SCALE_TICKS) {",
+        "    if (hybrid->scale_streak < ticks && hybrid->scale_streak > -ticks) {",
         "    if (false) {",
         SEND,
     ),
     (
         "scale: a normal tick does not break the streak",
         "src/tickle.c",
-        "    } else {\n        hybrid->scale_streak = 0;\n    }\n    if (hybrid->scale_streak <",
-        "    }\n    if (hybrid->scale_streak <",
+        "    } else {\n        hybrid->scale_streak = 0;\n    }\n    int32_t ticks",
+        "    }\n    int32_t ticks",
         SEND,
     ),
     (
@@ -1032,7 +1037,7 @@ MUTANTS = [
     (
         "path rx: frame loss no excuse",
         "src/tickle.c",
-        "    if (writer->path_odds >= tt_HYBRID_PATH_ALPHA) {\n        return;\n    }\n    writer->path_odds = 1.0;",
+        "    if (writer->path_odds >= node->opts.hybrid_transport.path_alpha) {\n        return;\n    }\n    writer->path_odds = 1.0;",
         "    writer->path_odds = 1.0;",
         SEND,
     ),
@@ -1144,22 +1149,22 @@ MUTANTS = [
     (
         "p: the first p held one frame short",
         "src/tickle.c",
-        "        hybrid->rx_loss.frames < (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {\n        return 0;",
-        "        hybrid->rx_loss.frames + 1U < (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {\n        return 0;",
+        "hybrid->rx_loss.frames < opts->none_seen_frames) {\n        return 0;",
+        "hybrid->rx_loss.frames + 1U < opts->none_seen_frames) {\n        return 0;",
         SEND,
     ),
     (
         "p: the interval announces a first p the excused gaps left",
         "src/tickle.c",
-        "    uint16_t loss = hybrid_rx_announce_code(hybrid);",
-        "    uint16_t loss = hybrid_rx_loss_code(&hybrid->rx_loss);",
+        "    uint16_t loss = hybrid_rx_announce_code(hybrid, &node->opts.hybrid_transport);",
+        "    uint16_t loss = hybrid_rx_loss_code(&hybrid->rx_loss, &node->opts.hybrid_transport);",
         SEND,
     ),
     (
         "p: 'none seen' counts the frames before a doubt",
         "src/tickle.c",
-        "        estimate->frames - estimate->frames_at_doubt >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt",
-        "        estimate->frames >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt",
+        "        estimate->frames - estimate->frames_at_doubt >= opts->none_seen_frames) { // seen, since a doubt",
+        "        estimate->frames >= opts->none_seen_frames) { // seen, since a doubt",
         SEND,
     ),
     (
@@ -1249,36 +1254,36 @@ MUTANTS = [
     (
         "p_mtu: a jump counted across a size that changed",
         "src/tickle.c",
-        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
-        "    if (jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (count != writer->count || jump % count != 0) {",
+        "    if (jump % count != 0) {",
         SEND,
     ),
     (
         "p_mtu: a jump of not whole samples counted",
         "src/tickle.c",
-        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
-        "    if (count != writer->count || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (count != writer->count || jump % count != 0) {",
+        "    if (count != writer->count) {",
         SEND,
     ),
     (
         "p_mtu: a jump counted however long",
         "src/tickle.c",
-        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
-        "    if (count != writer->count || jump % count != 0) {",
+        "    if (unseen > HYBRID_MISSED_MAX) {",
+        "    if (false) {",
         SEND,
     ),
     (
         "p_mtu: the bound one sample short",
         "src/tickle.c",
-        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
-        "    if (count != writer->count || jump % count != 0 || jump / count >= HYBRID_MISSED_MAX) {",
+        "    if (unseen > HYBRID_MISSED_MAX) {",
+        "    if (unseen >= HYBRID_MISSED_MAX) {",
         SEND,
     ),
     (
         "p_mtu: a jump counted as one sample, however many",
         "src/tickle.c",
-        "    for (uint32_t missed = jump / count; missed != 0; missed--) {",
-        "    for (uint32_t missed = jump != 0 ? 1U : 0U; missed != 0; missed--) {",
+        "    for (uint32_t missed = unseen; missed != 0; missed--) {",
+        "    for (uint32_t missed = unseen != 0 ? 1U : 0U; missed != 0; missed--) {",
         SEND,
     ),
     (
@@ -1313,71 +1318,67 @@ MUTANTS = [
 ]
 
 
+
+
 def build_and_run(binary, control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), f"obj/debug/tests/{binary}"],
-        capture_output=True, text=True,
-    )
+    build = run_capped(["make", "-s", f"obj/debug/tests/{binary}"], timeout=900, cwd=LINUX)
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, TESTS / binary):
         return NOT_COMPILED, ""
-    try:
-        run = subprocess.run([str(TESTS / binary)], capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired as hung:
-        return "HANG", str(hung.stdout or "")[-1000:]
-    if run.returncode < 0:
-        return "CRASH", run.stdout[-1000:] + run.stderr[-1000:]
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    run = run_capped([str(TESTS / binary)], timeout=TIMEOUT_S, cwd=LINUX)
+    if run.timed_out:
+        return "HANG", f"(stopped after {TIMEOUT_S} s)\n" + run.output[-1000:]
+    if run.returncode is None or run.returncode < 0:
+        return "CRASH", run.output
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def main():
-    files = sorted({m[1] for m in MUTANTS})
-    backup = pathlib.Path(tempfile.mkdtemp(prefix="hybrid_send_mutants_"))
-    for name in files:
-        (backup / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / name, backup / name)
-
-    def restore():
-        # copy(), then touch: copy2 would keep the original mtime, older than the mutant's objects, and make would then
-        # reuse a binary built from mutated source (tests/mutants_shm_stage1.py, 2026-10-02).
-        for name in files:
-            shutil.copy(backup / name, ROOT / name)
-            (ROOT / name).touch()
-
-    signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
+    be_nice()
+    check_anchors(ROOT, [(name, rel, old, new) for name, rel, old, new, _binary in MUTANTS])
     only = os.environ.get("MUTANTS", "")
+    shard = None
+    if os.environ.get("MUTANTS_SHARD"):
+        k, n = (int(part) for part in os.environ["MUTANTS_SHARD"].split("/"))
+        if not 0 <= k < n:
+            print(f"REFUSED: MUTANTS_SHARD={k}/{n} names no shard")
+            return 2
+        shard = (k, n)
     failures = 0
+    ran = 0
     digests = {}
-    try:
+    with SourceGuard(ROOT, {m[1] for m in MUTANTS}) as guard:
         for binary in sorted({m[4] for m in MUTANTS}):
             verdict, output = build_and_run(binary)
-            print(f"[control]  {binary:<28} unmutated -> {verdict}")
+            print(f"[control]  {binary:<28} unmutated -> {verdict}", flush=True)
             if verdict != "PASS":
                 print(output[-2000:])
                 print("control did not pass; the sweep cannot decide anything")
                 return 1
             digests[binary] = code_digest(TESTS / binary)
-        for name, path, old, new, binary in MUTANTS:
+        for index, (name, rel, old, new, binary) in enumerate(MUTANTS):
             if only and not any(part in name for part in only.split("|")):
                 continue
-            text = (backup / path).read_text()
-            if text.count(old) != 1:
-                print(f"[ANCHOR]   {name}: matched {text.count(old)} times, not once")
-                failures += 1
+            if shard is not None and index % shard[1] != shard[0]:
                 continue
-            (ROOT / path).write_text(text.replace(old, new))
+            ran += 1
+            (ROOT / rel).write_text(guard.original(rel).replace(old, new, 1))
             try:
-                verdict, _ = build_and_run(binary, digests[binary])
+                verdict, output = build_and_run(binary, digests[binary])
             finally:
-                restore()
+                guard.restore()
             caught = verdict in ("FAIL", "CRASH", "HANG")
-            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<72} {binary} -> {verdict}")
+            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<72} {binary} -> {verdict}", flush=True)
+            if caught:
+                print(f"  killed by: {', '.join(killed_by(output, ROOT)) or '(no failing check printed)'}", flush=True)
+            else:
+                print(output[-1500:], flush=True)
             failures += 0 if caught else 1
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
-    print(f"{len(MUTANTS)} mutants, {failures} not caught" if failures else f"all {len(MUTANTS)} mutants caught")
+    for binary in sorted({m[4] for m in MUTANTS}):
+        run_capped(["make", "-s", f"obj/debug/tests/{binary}"], timeout=900, cwd=LINUX)  # leave the parent's build
+    print(usage_line())
+    print(f"{ran} mutants, {failures} not caught" if failures else f"all {ran} mutants caught")
     return 1 if failures else 0
 
 
