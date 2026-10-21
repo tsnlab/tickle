@@ -23,6 +23,7 @@
 #include <string.h>
 #include <time.h> // nanosleep()
 
+#include <tickle/config.h> // tt_MAX_SERVER_CACHE_COUNT
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -47,6 +48,7 @@
 #define POLL_MS 50L
 #define RESEND_EVERY 20 // polls between request resends until the service has heard one
 #define NS_PER_MS 1000000L
+#define KEPT_MS 300L // after the response was taken: a client retry and more past the 75 ms the server once kept it
 
 struct pair {
     uint32_t first;
@@ -179,12 +181,28 @@ int main(void) {
     assert(taken && FIRST + SECOND == got_response.first && MARK == got_response.second);
     assert(0 == memcmp(info.request_id.writer_guid, client_gid.data, RMW_GID_STORAGE_SIZE)); // the same request
 
+    // The answer is kept for as long as the client may retry (2026-10-21): the server knows the client's schedule,
+    // and a response sent at least KEPT_MS ago - past a client retry (RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS) and past the
+    // 75 ms the server kept it while it did not know - is still there for a retry to be answered from. Without it a
+    // retry after a lost answer ran the service callback again (tests/test_service_retry_horizon.c has the counts).
+    struct timespec kept = {.tv_sec = 0, .tv_nsec = KEPT_MS * NS_PER_MS};
+    nanosleep(&kept, NULL);
+    int live = 0;
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        live += NULL != svc->tickle_server.cache[i] ? 1 : 0;
+    }
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
+    assert(1 == live);
+    assert(svc->service.call_retry_interval == cli->service.call_retry_interval);
+    assert(svc->service.call_retry_count == cli->service.call_retry_count);
+
     assert(RMW_RET_OK == rmw_destroy_client(node, client));
     assert(RMW_RET_OK == rmw_destroy_service(node, service));
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));
     assert(RMW_RET_OK == rmw_context_fini(&context));
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
-    printf("test_service_roundtrip: PASS (response %u)\n", got_response.first);
+    printf("test_service_roundtrip: PASS (response %u, kept %d after %ld ms)\n", got_response.first, live, KEPT_MS);
     return 0;
 }

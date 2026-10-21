@@ -94,6 +94,13 @@ bool rmw_tickle_check_topic_callbacks_usable(const rosidl_typesupport_tickle_c_m
 // recover a lost request or response well within a human-scale service call, rare enough that a
 // call waiting the full tt_SERVER_DEFERRED_RESPONSE_TIMEOUT costs 50 small datagrams.
 #define RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS 100000000U // 100 ms
+// How many times: until tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, after which the server has dropped the request too.
+// rmw_service.c gives its server these same two numbers (tt_Service.call_retry_*): they are how long core keeps an
+// answered response for a retry (server_cache_lifetime(), tickle.c), and nothing on the wire carries them. Left at 0
+// there, the server kept an answer 75 ms against a client retrying after 100 ms, and a request whose answer was lost
+// was served twice (2026-10-21, tests/test_service_retry_horizon.c).
+#define RMW_TICKLE_CLIENT_RETRY_COUNT \
+    ((uint32_t)(tt_SERVER_DEFERRED_RESPONSE_TIMEOUT / RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS))
 
 // `n` rounded up to the 8-byte unit core's attached storage slots must come in (tt_Server_set_storage()).
 #define RMW_TICKLE_ROUND_UP_8(n) (((n) + 7U) & ~(size_t)7U)

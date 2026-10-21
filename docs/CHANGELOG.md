@@ -39,6 +39,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- An rmw_tickle service request whose answer was lost was served twice. The server's `tt_Service` left the client's
+  retry schedule at 0, so core kept the answer 75 ms (the auto schedule) while the client retries after 100 ms; the
+  retry found nothing kept and ran the callback again. The server now carries the client's 100 ms x 50, and keeps an
+  answer for the client's 5 s horizon - at most `tt_CLIENT_CALL_WINDOW` (8) per calling client
+  (`tests/test_service_retry_horizon.c`: 2 runs before, 1 after, including a retry delivered after 49 lost).
 - rmw_tickle DEADLINE re-arms at the last activity + P and counts every missed period; a gap between P and 2P was
   missed before (D4, `d2818e79`).
 - A hybrid reader no longer counts samples the segment drain passed over as superseded (KEEP_LAST skip-to-newest) as

@@ -248,6 +248,13 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     svc->service.response_encode = (tt_RESPONSE_ENCODE)callbacks.response->tickle_encode;
     svc->service.response_decode = (tt_RESPONSE_DECODE)callbacks.response->tickle_decode;
     svc->service.response_free = (tt_RESPONSE_FREE)callbacks.response->tickle_free;
+    // The retry schedule of this service's clients (rmw_client.c), which core reads from here to know how long a client
+    // may still ask again for an answer it lost: an answered response is kept that long (server_cache_lifetime(),
+    // tickle.c), and a retry after it would run the callback a second time. Left at 0 - core's own clients' auto
+    // schedule, 75 ms - a client retrying after 100 ms found nothing kept and its request was served twice
+    // (2026-10-21, tests/test_service_retry_horizon.c).
+    svc->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
+    svc->service.call_retry_count = RMW_TICKLE_CLIENT_RETRY_COUNT;
 
     svc->response_storage = allocator->zero_allocate(1, callbacks.response->tickle_struct_size, allocator->state);
     if (NULL == svc->response_storage) {

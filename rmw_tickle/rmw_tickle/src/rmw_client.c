@@ -238,8 +238,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // tickle.c); once answered, a retry gets the cached response. A BEST_EFFORT client (D6) sends the request once and
     // keeps the call for that same span, so a deferred answer still reaches it.
     client_impl->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
-    client_impl->service.call_retry_count =
-        (uint32_t)(tt_SERVER_DEFERRED_RESPONSE_TIMEOUT / RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS);
+    client_impl->service.call_retry_count = RMW_TICKLE_CLIENT_RETRY_COUNT;
 
     // Responses kept untaken: the QoS depth, as a DDS response reader keeps (KEEP_LAST), never fewer than the calls
     // that can be in flight; RMW_TICKLE_CLIENT_RESPONSE_DEFAULT_DEPTH when the profile gives no depth.
