@@ -127,6 +127,8 @@ static uint32_t value_of(const uint8_t* payload) {
 
 // A slot's held mark after index `index` (segment_pass_held()): held at `index`, or passed over there.
 #define HELD(index) ((index) + 2U)
+// The mark once the reader has passed that index too (segment_pass_head()).
+#define HELD_READER_PASSED(index) ((index) + 3U)
 
 static uint32_t slot_sequence(const struct tt_Context* owner, uint32_t index) {
     return ((const struct tt_SegmentSlot*)segment_slot(owner->own_segment, index))->sequence;
@@ -321,7 +323,8 @@ static void test_a_retained_slot_survives_a_lap(void) {
     EXPECT_EQ_U64(2, rig.owner.segment_held_passed);
     EXPECT_EQ_U32((2 * SLOTS) + 3, rig.owner.own_segment->write_index); // 2 x SLOTS + 1 records and two passes
     EXPECT_EQ_U32((2 * SLOTS) + 3, rig.owner.own_segment->read_index);
-    EXPECT_EQ_U32(HELD(2 * SLOTS), slot_sequence(&rig.owner, 0)); // passed at SLOTS, then at 2 x SLOTS
+    // Passed at SLOTS, then at 2 x SLOTS by the writer and then by the reader.
+    EXPECT_EQ_U32(HELD_READER_PASSED(2 * SLOTS), slot_sequence(&rig.owner, 0));
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
     EXPECT_EQ_U32(3 * SLOTS, slot_sequence(&rig.owner, 0)); // free for the next index at its position
@@ -399,7 +402,7 @@ static void test_skip_to_newest_never_frees_a_retained_slot(void) {
         publish(500 + i); // the held slot has come round: passed over
     }
     drain(&rig.owner);
-    EXPECT_EQ_U32(HELD(SLOTS), slot_sequence(&rig.owner, 0));
+    EXPECT_EQ_U32(HELD_READER_PASSED(SLOTS), slot_sequence(&rig.owner, 0));
     EXPECT_TRUE(kept_intact(&cb.kept[0]));
     EXPECT_EQ_U64(0, rig.sender.lend.full_retained);
     EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
@@ -591,6 +594,7 @@ static uint8_t* claim_value(uint32_t value) {
 // The drain reads a claimed sample through its reference, in publish order behind an ordinary one published while
 // the claim was out; the sample can be retained where it lies, in the claimed slot, which then stays held across
 // laps (passed over) until the release - the same as a slot read in place.
+static void keep_a_claimed_sample(bool by_reference);
 static void test_a_claim_is_read_by_reference_and_can_be_kept(void) {
     rig_up(true, 0);
     cb.mode = KEEP_FIRST;
@@ -607,15 +611,29 @@ static void test_a_claim_is_read_by_reference_and_can_be_kept(void) {
     EXPECT_EQ_U32(SLOTS, slot_sequence(&rig.owner, 0)); // the claim's slot, given back once read
     rig_down();
 
+    // Kept: by reference (the reader passed the claim before its publish, so it cannot go in place), and in place.
+    for (int by_reference = 1; by_reference >= 0; by_reference--) {
+        keep_a_claimed_sample(by_reference != 0);
+    }
+}
+
+// One claimed sample kept where it lies, the slot held across two laps, then released.
+static void keep_a_claimed_sample(bool by_reference) {
     rig_up(true, 0);
     cb.mode = KEEP_FIRST;
     test_mock_now += 1000000;
-    payload = claim_value(910);
+    uint8_t* payload = claim_value(910);
+    if (by_reference) {
+        drain(&rig.owner); // passes the held claim: its index marked by the reader
+        EXPECT_EQ_U32(3, slot_sequence(&rig.owner, 0));
+    }
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&rig.pub, payload, SMALL_SAMPLE_BYTES));
     drain(&rig.owner);
+    EXPECT_EQ_U64(by_reference ? 1U : 0U, rig.owner.segment_refs_read);
+    EXPECT_EQ_U64(by_reference ? 0U : 1U, rig.sender.segment_claims_in_place);
     EXPECT_EQ_U32(1, cb.kept_count);
     EXPECT_TRUE(cb.kept[0].sample.payload == payload); // lent where the publisher built it
-    EXPECT_EQ_U32(HELD(0), slot_sequence(&rig.owner, 0));
+    EXPECT_EQ_U32(by_reference ? HELD_READER_PASSED(0) : HELD(0), slot_sequence(&rig.owner, 0));
     for (uint32_t i = 1; i <= 2 * SLOTS; i++) {
         publish(910 + i);
         drain(&rig.owner);

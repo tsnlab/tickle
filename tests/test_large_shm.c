@@ -305,14 +305,20 @@ static uint32_t claimed_record_seq_no(void) {
     for (uint32_t i = 0; i < ring()->write_index; i++) {
         const struct tt_SegmentSlot* slot =
             (const struct tt_SegmentSlot*)segment_slot(ring(), i); // NOLINT(readability-redundant-casting)
-        if (slot->seq_span != tt_SEGMENT_SPAN_REF || slot->length != sizeof(struct tt_SegmentRef)) {
-            continue;
+        if (slot->sequence != i + 1U) {
+            continue; // not published here
         }
-        struct tt_SegmentRef desc;
-        memcpy(&desc, slot + 1, sizeof(desc));
-        const uint8_t* record = segment_slot(ring(), desc.index) + sizeof(struct tt_SegmentSlot);
+        // In place (claim_publish_in_place()), or by a reference naming the held slot.
+        const uint8_t* record = (const uint8_t*)(slot + 1);
+        uint32_t length = slot->length;
+        if (slot->seq_span == tt_SEGMENT_SPAN_REF && slot->length == sizeof(struct tt_SegmentRef)) {
+            struct tt_SegmentRef desc;
+            memcpy(&desc, slot + 1, sizeof(desc));
+            record = segment_slot(ring(), desc.index) + sizeof(struct tt_SegmentSlot);
+            length = desc.length;
+        }
         const struct tt_SingleHeader* single = (const struct tt_SingleHeader*)record;
-        if (desc.length == ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + SMALL_BYTES) &&
+        if (length == ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + SMALL_BYTES) &&
             single->type == tt_SUBMESSAGE_TYPE_DATA) {
             return ((const struct tt_DataHeader*)(record + sizeof(struct tt_SingleHeader)))->seq_no;
         }

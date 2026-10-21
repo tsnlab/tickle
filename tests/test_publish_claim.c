@@ -88,9 +88,13 @@ struct arm {
     uint8_t arena[ARENA_MAX];
     struct tt_ReliableCache cache;
 };
-static struct arm arms[2];
-
-enum mode { ENCODED = 0, CLAIMED = 1 };
+// How send_one() publishes a sample. ENCODED: the encoder (the control). CLAIMED: claim, fill, publish - nothing
+// claimed after it, so it is published in place (claim_publish_in_place()). REFERENCED: the same with a second claim
+// made after it and abandoned after the publish, so the ring's next index is taken and it goes by reference. PASSED:
+// the reader passes the claim's held index between the claim and the publish (note_head_stall(); the claim must be at
+// the head), so it goes by reference - the race the publish loses.
+enum mode { ENCODED = 0, CLAIMED, REFERENCED, PASSED, MODES };
+static struct arm arms[MODES];
 
 static struct tt_SegmentHeader* ring(struct arm* arm) {
     return arm->owner.own_segment;
@@ -166,10 +170,11 @@ static void teardown(struct arm* arm) {
     release_arm(arm);
     test_mock_segments_free();
 }
-// Both arms of a comparison: the mock's segments are freed once, after both are released.
-static void teardown_pair(void) {
-    release_arm(&arms[ENCODED]);
-    release_arm(&arms[CLAIMED]);
+// The arms of a comparison, ENCODED up to `last`: the mock's segments are freed once, after all are released.
+static void teardown_arms(enum mode last) {
+    for (int mode = ENCODED; mode <= (int)last; mode++) {
+        release_arm(&arms[mode]);
+    }
     test_mock_segments_free();
 }
 
@@ -189,7 +194,17 @@ static tt_ret_t send_one(struct arm* arm, enum mode mode, uint32_t id, int32_t s
         return claimed;
     }
     fill_pattern(payload, id, size);
-    return tt_Publisher_publish_claimed(&arm->pub, payload, (uint32_t)size);
+    uint8_t* after = NULL;
+    if (mode == REFERENCED) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 8, &after));
+    } else if (mode == PASSED) {
+        EXPECT_EQ_INT((int)HEAD_STALL_PASSED, (int)note_head_stall(&arm->owner));
+    }
+    const tt_ret_t published = tt_Publisher_publish_claimed(&arm->pub, payload, (uint32_t)size);
+    if (after != NULL) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, after));
+    }
+    return published;
 }
 
 // A ring record as the reader gets it: in its own slot, or - a reference - in the held slot it names.
@@ -259,9 +274,9 @@ static uint32_t seq_no_of(const uint8_t* datagram) {
     return ((const struct tt_DataHeader*)(datagram + sizeof(struct tt_SingleHeader)))->seq_no;
 }
 
-static void expect_arms_identical(const char* what) {
+static void expect_arms_identical(const char* what, enum mode mode) {
     struct arm* encoded = &arms[ENCODED];
-    struct arm* claimed = &arms[CLAIMED];
+    struct arm* claimed = &arms[mode];
     struct logical a_records[LOGICAL_MAX];
     struct logical b_records[LOGICAL_MAX];
     uint32_t records = logical_records(encoded, a_records);
@@ -308,20 +323,32 @@ static void run_best_effort(enum mode mode) {
     }
 }
 
-// The bytes the reader gets are the encoder's; the claimed arm's CDR was written by the caller where the slot is, at
-// 4 mod 8 - so a 4-byte prefix and then a struct with 64-bit members is aligned for it there.
+// The bytes the reader gets are the encoder's, published in place or by reference; the claimed arm's CDR was written
+// by the caller where the slot is, at 4 mod 8 - so a 4-byte prefix and then a struct with 64-bit members is aligned
+// for it there.
 static void test_a_claimed_publish_writes_what_the_encoder_writes(void) {
     run_best_effort(ENCODED);
     run_best_effort(CLAIMED);
-    expect_arms_identical("best effort");
+    run_best_effort(REFERENCED);
+    expect_arms_identical("best effort, in place", CLAIMED);
+    expect_arms_identical("best effort, by reference", REFERENCED);
     EXPECT_EQ_U64(SIZE_COUNT, arms[ENCODED].sender.segment_encoded_in_slot);
-    EXPECT_EQ_U64(0, arms[CLAIMED].sender.segment_encoded_in_slot);
-    EXPECT_EQ_U64(SIZE_COUNT, arms[CLAIMED].sender.segment_claims_published);
-    EXPECT_EQ_U64(0, arms[CLAIMED].sender.segment_claims_copied);
-    EXPECT_EQ_U32(sizeof(struct tt_Header), arms[CLAIMED].sender.tx_tail); // tx_buffer never used
-
-    EXPECT_EQ_U64(SIZE_COUNT, arms[CLAIMED].sender.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
-    EXPECT_EQ_U32(2 * SIZE_COUNT, ring(&arms[CLAIMED])->write_index); // each claim's held index and its reference
+    for (int mode = CLAIMED; mode <= REFERENCED; mode++) {
+        EXPECT_EQ_U64(0, arms[mode].sender.segment_encoded_in_slot);
+        EXPECT_EQ_U64(SIZE_COUNT, arms[mode].sender.segment_claims_published);
+        EXPECT_EQ_U64(0, arms[mode].sender.segment_claims_copied);
+        EXPECT_EQ_U32(sizeof(struct tt_Header), arms[mode].sender.tx_tail); // tx_buffer never used
+        EXPECT_EQ_U64(SIZE_COUNT, arms[mode].sender.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    }
+    // In place: one index a sample, the claim's own, which reads "published" there.
+    EXPECT_EQ_U64(SIZE_COUNT, arms[CLAIMED].sender.segment_claims_in_place);
+    EXPECT_EQ_U32(SIZE_COUNT, ring(&arms[CLAIMED])->write_index);
+    for (uint32_t i = 0; i < SIZE_COUNT; i++) {
+        EXPECT_EQ_U32(i + 1U, slot_at(&arms[CLAIMED], i)->sequence);
+    }
+    // By reference: the claim's held index, the second claim's and the reference.
+    EXPECT_EQ_U64(0, arms[REFERENCED].sender.segment_claims_in_place);
+    EXPECT_EQ_U32(3 * SIZE_COUNT, ring(&arms[REFERENCED])->write_index);
 
     struct arm* arm = &arms[CLAIMED];
     uint8_t* payload = NULL;
@@ -332,7 +359,7 @@ static void test_a_claimed_publish_writes_what_the_encoder_writes(void) {
                                sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
     EXPECT_EQ_U32(next + 2U, slot_at(arm, next)->sequence); // held from the claim on
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
-    teardown_pair();
+    teardown_arms(REFERENCED);
 }
 
 // RELIABLE KEEP_LAST: the cache keeps the same records, and seq_no runs the same.
@@ -349,10 +376,16 @@ static void run_reliable(enum mode mode) {
 static void test_reliable_claims_cache_what_the_encoder_caches(void) {
     run_reliable(ENCODED);
     run_reliable(CLAIMED);
-    expect_arms_identical("reliable");
-    EXPECT_EQ_U32(5, arms[CLAIMED].cache.newest_seq_no);
-    EXPECT_EQ_U64(5, arms[CLAIMED].sender.segment_claims_published);
-    teardown_pair();
+    run_reliable(REFERENCED);
+    expect_arms_identical("reliable, in place", CLAIMED);
+    expect_arms_identical("reliable, by reference", REFERENCED);
+    for (int mode = CLAIMED; mode <= REFERENCED; mode++) {
+        EXPECT_EQ_U32(5, arms[mode].cache.newest_seq_no);
+        EXPECT_EQ_U64(5, arms[mode].sender.segment_claims_published);
+    }
+    EXPECT_EQ_U64(5, arms[CLAIMED].sender.segment_claims_in_place);
+    EXPECT_EQ_U64(0, arms[REFERENCED].sender.segment_claims_in_place);
+    teardown_arms(REFERENCED);
 }
 
 // Several claims at once, and the Publisher's ordinary publishes go on meanwhile; the reader is never stopped at a
@@ -423,6 +456,65 @@ static void test_several_claims_and_publishes_meanwhile(void) {
     teardown(arm);
 }
 
+// In place only while it is safe (claim_publish_in_place()): a claim followed in the ring by an ordinary publish of its
+// own Publisher goes by reference, or the reader would take it, with the later seq_no, ahead of that publish; and a
+// claim the reader has passed goes by reference, its index marked by the reader (i + 3), which the publish's exchange
+// cannot take. The control is a claim with nothing after it and nobody passing it, published in place.
+static void test_in_place_only_when_last_and_unpassed(void) {
+    struct arm* arm = &arms[CLAIMED];
+    uint8_t buf[tt_CONTROL_MAX_LENGTH];
+    uint32_t len = 0;
+    uint32_t ip = 0;
+
+    setup(arm); // control
+    uint8_t* payload = NULL;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    fill_pattern(payload, 7, 64);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 64));
+    EXPECT_EQ_U64(1, arm->sender.segment_claims_in_place);
+    EXPECT_EQ_U32(1, ring(arm)->write_index);
+    EXPECT_EQ_U32(1, slot_at(arm, 0)->sequence); // published at its own index
+    // The race's other side: a drain that found the head held, and whose pass then lost to this publish, sees it
+    // published and reads on - not a stalled head.
+    EXPECT_EQ_INT((int)HEAD_STALL_PASSED, (int)note_head_stall(&arm->owner));
+    EXPECT_EQ_U64(0, arm->owner.segment_head_stalls);
+    EXPECT_EQ_U32(0, ring(arm)->read_index);
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+    EXPECT_EQ_U32(1, seq_no_of(buf));
+    teardown(arm);
+
+    setup(arm); // an ordinary publish after the claim
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    struct sample sample = {9, 64};
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&arm->pub, (struct tt_Data*)&sample)); // index 1, seq 1
+    fill_pattern(payload, 7, 64);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 64)); // seq 2
+    EXPECT_EQ_U64(0, arm->sender.segment_claims_in_place);
+    EXPECT_EQ_U32(3, ring(arm)->write_index);    // the claim's index, the publish, the reference
+    EXPECT_EQ_U32(2, slot_at(arm, 0)->sequence); // still held: nobody has passed it yet
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+    EXPECT_EQ_U32(1, seq_no_of(buf));
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+    EXPECT_EQ_U32(2, seq_no_of(buf));
+    EXPECT_TRUE(!ring_next(arm, buf, &len, &ip));
+    teardown(arm);
+
+    setup(arm); // the reader passes the claim first
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    EXPECT_EQ_INT((int)HEAD_STALL_PASSED, (int)note_head_stall(&arm->owner));
+    EXPECT_EQ_U32(3, slot_at(arm, 0)->sequence); // the reader's mark
+    EXPECT_EQ_U32(1, ring(arm)->read_index);
+    fill_pattern(payload, 7, 64);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 64));
+    EXPECT_EQ_U64(0, arm->sender.segment_claims_in_place);
+    EXPECT_EQ_U32(3, slot_at(arm, 0)->sequence); // the exchange lost: the slot is untouched as a ring state
+    EXPECT_EQ_U32(2, ring(arm)->write_index);
+    EXPECT_TRUE(ring_next(arm, buf, &len, &ip));
+    EXPECT_EQ_U32(1, seq_no_of(buf));
+    EXPECT_EQ_U32(ring(arm)->slots, slot_at(arm, 0)->sequence); // given back by the reader: free for the next lap
+    teardown(arm);
+}
+
 // The capacity is room, the length is what goes: a claim may be published shorter than it was claimed (a ROS
 // message's struct can be longer than its wire bytes), and a length over the capacity is refused, the slot given back
 // empty and the claim spent.
@@ -436,10 +528,10 @@ static void test_a_claim_publishes_its_length_not_its_capacity(void) {
     struct logical records[LOGICAL_MAX];
     EXPECT_EQ_U32(1, logical_records(arm, records));
     EXPECT_EQ_U32(ROUNDUP(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + 100), records[0].length);
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload)); // index 2
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload)); // index 1: the first in place
     EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Publisher_publish_claimed(&arm->pub, payload, 65));
-    EXPECT_EQ_U32(2 + ring(arm)->slots, slot_at(arm, 2)->sequence); // given back: free for the next lap
-    EXPECT_EQ_U32(3, ring(arm)->write_index);                       // and no reference written
+    EXPECT_EQ_U32(1 + ring(arm)->slots, slot_at(arm, 1)->sequence); // given back: free for the next lap
+    EXPECT_EQ_U32(2, ring(arm)->write_index);                       // and no reference written
     EXPECT_EQ_U32(0, arm->pub.claims_out);
     EXPECT_EQ_U32(1, arm->pub.seq_no);
     teardown(arm);
@@ -656,9 +748,13 @@ static void test_no_room_for_the_reference_drops_as_a_full_ring(void) {
 // top of a sample already delivered - until the budget or the next scheduler entry. rmw_perf_pingpong with slot loans
 // on both sides: every round trip waited out the ping's deadline or a 250 ms idle Heartbeat (rtt p50 ~200-250 ms, 20
 // round trips in 3 s against ~4,400; ab_loans.sh's PC preflight). The control is the same sample encoded into its own
-// slot; both arms must end the poll at once, and the claimed arm must have read a reference (its treatment).
+// slot; every arm must end the poll at once, and the arms by reference (REFERENCED, PASSED) must have read their
+// references (their treatment) and the arm in place none.
 static void test_a_sample_read_by_reference_ends_the_poll(void) {
-    for (int mode = ENCODED; mode <= CLAIMED; mode++) {
+    static const uint64_t refs[MODES] = {0, 0, 2, 2};
+    static const uint64_t passes[MODES] = {0, 0, 4, 2}; // REFERENCED: the claim's index and the abandoned one's
+    static const char* const names[MODES] = {"encoded", "in place", "referenced", "passed"};
+    for (int mode = ENCODED; mode < MODES; mode++) {
         struct arm* arm = &arms[mode];
         setup(arm);
         test_mock_receive_advances_clock = true;              // a wait with nothing arriving lets its whole length pass
@@ -675,13 +771,14 @@ static void test_a_sample_read_by_reference_ends_the_poll(void) {
         const uint64_t start = test_mock_now;
         const tt_ret_t polled = tt_Context_poll(&arm->owner, budget);
         EXPECT_EQ_U32(2, (uint32_t)arm->owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
-        EXPECT_EQ_U64(mode == CLAIMED ? 2U : 0U, arm->owner.segment_refs_read); // the arm's treatment
-        EXPECT_EQ_U64(mode == CLAIMED ? 2U : 0U, arm->owner.segment_held_passed);
+        EXPECT_EQ_U64(refs[mode], arm->owner.segment_refs_read); // the arm's treatment
+        EXPECT_EQ_U64(passes[mode], arm->owner.segment_held_passed);
+        EXPECT_EQ_U64(mode == CLAIMED ? 2U : 0U, arm->sender.segment_claims_in_place);
         EXPECT_EQ_INT((int)tt_RET_OK, (int)polled);
         EXPECT_EQ_INT(0, test_mock_receive_call_count);
         EXPECT_TRUE(test_mock_now - start < (uint64_t)budget);
         if (test_mock_now - start >= (uint64_t)budget) {
-            printf("  %s: the poll held a delivered sample for %llu ms\n", mode == CLAIMED ? "claimed" : "encoded",
+            printf("  %s: the poll held a delivered sample for %llu ms\n", names[mode],
                    (unsigned long long)((test_mock_now - start) / tt_MILLISECOND));
         }
         teardown(arm);
@@ -777,6 +874,7 @@ int main(void) {
     test_a_claimed_publish_writes_what_the_encoder_writes();
     test_reliable_claims_cache_what_the_encoder_caches();
     test_several_claims_and_publishes_meanwhile();
+    test_in_place_only_when_last_and_unpassed();
     test_a_claim_publishes_its_length_not_its_capacity();
     test_abandon_and_destroy_give_the_slot_back();
     test_a_claimed_mapping_stays_mapped();

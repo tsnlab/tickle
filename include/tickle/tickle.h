@@ -1300,6 +1300,9 @@ struct tt_Context {
     uint64_t segment_claims_published;
     uint64_t segment_claims_copied;
     uint64_t segment_claims_abandoned;
+    // Of segment_claims_published, those published at their own index (claim_publish_in_place() in tickle.c); the
+    // rest were handed over by a reference (tt_SEGMENT_SPAN_REF).
+    uint64_t segment_claims_in_place;
     // Ring indices the owner moved past because the writers passed them while their slot was held (a retained sample,
     // a claim): DESIGN.md section 10, "Held slots".
     uint64_t segment_held_passed;
