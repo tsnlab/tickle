@@ -62,6 +62,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   constants are per-context defaults (`tt_HYBRID_N_MAX` also the build's bound, `tt_HYBRID_COLLAPSE_Z` compiled, the
   stale exposure derived from `stale_false_forget`), checked at creation; a build without the hybrid transport refuses
   them set.
+- **Capacity** (`tt_InitOptions.capacity`, bundle 9): runtime limits on the fixed tables - RELIABLE readers per
+  Publisher, peers and writer proxies per endpoint, remembered ACKNACK requests, outstanding claims, retained large
+  samples - each at most its compiled size, which stays the array size and the default. A table is full at its limit,
+  with the refusal it always had; `peers` must exceed every link's unicast threshold.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
