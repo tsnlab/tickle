@@ -5404,7 +5404,6 @@ static void deliver_locally_if(bool local, struct tt_Context* node, struct tt_Pu
 }
 #endif
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param);
-static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param);
 
 // A Client's calls and a Server's cached responses, cleared as their context goes (node_destroy_locked()). Fixed
 // buffers (no malloc/free), so this just forgets them; the scheduler entries naming them are wiped wholesale after.
@@ -5418,12 +5417,13 @@ static void clear_service_endpoint(struct tt_Endpoint* endpoint) {
         struct tt_Server* server = (struct tt_Server*)endpoint;
         for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
             server->cache[j] = NULL;
-            server->clean_scheduled[j] = false;
+            server->cache_expires_at[j] = 0;
             server->cache_sent_at[j] = 0;
         }
     }
 }
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
+static bool server_cache_live(struct tt_Server* server, int slot, uint64_t now);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
 #if tt_LARGE_SAMPLES
@@ -6471,7 +6471,7 @@ static tt_ret_t server_reset(struct tt_Context* node, struct tt_Server* server, 
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         server->cache[i] = NULL;
-        server->clean_scheduled[i] = false;
+        server->cache_expires_at[i] = 0;
         server->cache_sent_at[i] = 0;
         server->cache_client_entity[i] = 0;
         server->cache_client_tag[i] = 0;
@@ -6525,8 +6525,9 @@ static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cac
         (cache_entry_length < smallest_response || !storage_aligned(cache_storage, cache_entry_length))) {
         return tt_RET_INVALID_ARGUMENT;
     }
+    uint64_t now = tt_get_ns();
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL) {
+        if (server_cache_live(server, i, now)) {
             return tt_RET_ILLEGAL_STATUS; // an entry already lives in the storage being replaced
         }
     }
@@ -7524,9 +7525,7 @@ static tt_ret_t server_destroy_locked(struct tt_Server* server) {
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL) {
-            // Cancel each pending server_cache_clean before clearing the slot it references,
-            // otherwise that timer later fires on this (possibly freed/reused) server.
-            clear_server_cache_slot(server, i);
+            clear_server_cache_slot(server, i); // nothing scheduled names it: its expiry is a time in the slot
         }
     }
 
@@ -17506,9 +17505,28 @@ static bool server_cache_slot_names(struct tt_Server* server, int slot, uint8_t 
            callresponse_header->seq_no == seq_no;
 }
 
+// Whether slot `slot` holds a live answer at `now`. An answer expires lazily: the first look at it from its expiry time
+// on clears cache[slot] - what a scheduler entry per kept answer did when it fired, until 2026-10-21 - and keeps
+// cache_sent_at and the bytes, so a later retry can still be matched to it (learn_from_expired_response()) until the
+// slot is reused. Every reader of cache[] that decides liveness goes through this first, with the same `now` for one
+// decision.
+static bool server_cache_live(struct tt_Server* server, int slot, uint64_t now) {
+    if (server->cache[slot] == NULL) {
+        return false;
+    }
+    if (now < server->cache_expires_at[slot]) {
+        return true;
+    }
+    server->cache[slot] = NULL; // expired
+    return false;
+}
+
+// The slot holding the live answer to (receiver, client_tag, seq_no), or -1. The clock is read only when a slot names
+// the call: a first request, the common case, finds none and costs no clock read here.
 static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no) {
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL && server_cache_slot_names(server, i, receiver, client_tag, seq_no)) {
+        if (server->cache[i] != NULL && server_cache_slot_names(server, i, receiver, client_tag, seq_no) &&
+            server_cache_live(server, i, tt_get_ns())) {
             return i;
         }
     }
@@ -17585,32 +17603,16 @@ static void note_client_retry_gap(struct tt_Server* server, uint64_t gap) {
     server->client_retry_gap = gap > decayed ? gap : decayed;
 }
 
-// (Re-)arms slot `slot`'s expiry one lifetime from `now`. False if the scheduler is full, with nothing armed.
-static bool arm_server_cache_expiry(struct tt_Server* server, int slot, uint64_t now) {
-    if (server->clean_scheduled[slot]) {
-        tt_Context_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
-        server->clean_scheduled[slot] = false;
-    }
+// (Re-)sets slot `slot`'s expiry one lifetime from `now` (server_cache_live() reads it). Takes no scheduler entry.
+static void set_server_cache_expiry(struct tt_Server* server, int slot, uint64_t now) {
     uint64_t lifetime = server_cache_lifetime(server);
-    uint64_t expires_at = lifetime > UINT64_MAX - now ? UINT64_MAX : now + lifetime;
-    server->clean_config[slot].server = server;
-    server->clean_config[slot].slot = slot;
-    if (!tt_Context_schedule(server->node, expires_at, server_cache_clean, &server->clean_config[slot])) {
-        return false;
-    }
-    server->clean_scheduled[slot] = true;
-    return true;
+    server->cache_expires_at[slot] = lifetime > UINT64_MAX - now ? UINT64_MAX : now + lifetime;
 }
 
-// Cancels slot i's cleanup timer (if any) and frees it up for reuse. The timer must be
-// cancelled before the slot is reused, otherwise it later fires and clears whatever
-// unrelated entry ends up occupying the slot by then.
+// Frees slot `slot` for reuse, forgetting what it held, live or expired.
 static void clear_server_cache_slot(struct tt_Server* server, int slot) {
-    if (server->clean_scheduled[slot]) {
-        tt_Context_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
-        server->clean_scheduled[slot] = false;
-    }
     server->cache[slot] = NULL;
+    server->cache_expires_at[slot] = 0;
     server->cache_sent_at[slot] = 0; // the client moved on, or the slot is wanted: nothing to learn from it
     server->cache_client_entity[slot] = 0;
     server->cache_client_tag[slot] = 0;
@@ -17644,29 +17646,15 @@ static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t s
     }
 }
 
-// Expiry. The slot keeps cache_sent_at and its bytes, so a retry that comes after this can still be matched to it
-// (learn_from_expired_response()) until the slot is reused.
-static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param) {
-    UNUSED(node);
-    UNUSED(time);
-
-    struct server_cache_clean_config* clean = param;
-    clean->server->cache[clean->slot] = NULL;
-    clean->server->clean_scheduled[clean->slot] = false;
-}
-
 // A retry served from the cache: what it took the client to ask again is a sample of its retry gap, and a client
-// still retrying is the evidence the entry is wanted, so it is re-armed from now.
+// still retrying is the evidence the entry is wanted, so its expiry is set again from now.
 static void note_server_cache_hit(struct tt_Server* server, int slot) {
     uint64_t now = tt_get_ns();
     if (now > server->cache_sent_at[slot]) {
         note_client_retry_gap(server, now - server->cache_sent_at[slot]);
     }
     server->cache_sent_at[slot] = now;
-    if (!arm_server_cache_expiry(server, slot, now)) {
-        TT_LOG_ERROR("Cannot schedule server_cache_clean");
-        clear_server_cache_slot(server, slot); // never an entry with no way to expire
-    }
+    set_server_cache_expiry(server, slot, now);
 }
 
 // A retry with no live entry: if its response did go out and has since expired, the client waits longer than this
@@ -17755,11 +17743,13 @@ static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t 
     }
 }
 
+// Every slot's liveness is decided here at `now` (server_cache_live()), so pick_own_oldest() after it reads cache[] as
+// live.
 static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
-                                    struct server_cache_pick* pick) {
+                                    uint64_t now, struct server_cache_pick* pick) {
     *pick = (struct server_cache_pick) {-1, -1, -1, -1, 0, 0, 0};
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] == NULL) {
+        if (!server_cache_live(server, i, now)) {
             if (server->cache_sent_at[i] == 0) {
                 pick->empty_slot = pick->empty_slot < 0 ? i : pick->empty_slot;
             } else if (pick->expired_slot < 0 || server->cache_sent_at[i] < server->cache_sent_at[pick->expired_slot]) {
@@ -17800,17 +17790,18 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     uint16_t seq_no =
         ((const struct tt_CallResponseHeader*)((const uint8_t*)submessage_header + sizeof(struct tt_SubmessageHeader)))
             ->seq_no;
+    uint64_t now = tt_get_ns();
 
     if (tt_CLIENT_MAX_OUTSTANDING == 1) {
         for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&
+            if (server_cache_live(server, i, now) && server->cache[i]->receiver == receiver &&
                 server->cache_client_tag[i] == client_tag) {
                 clear_server_cache_slot(server, i);
             }
         }
     }
     struct server_cache_pick pick;
-    pick_server_cache_slots(server, receiver, client_tag, seq_no, &pick);
+    pick_server_cache_slots(server, receiver, client_tag, seq_no, now, &pick);
 
     if (length > server_cache_entry_length(server)) {
         // Larger than this server's cache entries (tt_Server_set_storage() sized them for this
@@ -17844,15 +17835,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
-    // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
-    // otherwise the slot would hold an entry that never gets cleared.
-    uint64_t now = tt_get_ns();
-    if (!arm_server_cache_expiry(server, free_slot, now)) {
-        TT_LOG_ERROR("Cannot schedule server_cache_clean");
-        server->cache_sent_at[free_slot] = 0; // its bytes were just overwritten: no longer an expired entry either
-        return false;
-    }
-
+    set_server_cache_expiry(server, free_slot, now);
     server->cache_sent_at[free_slot] = now;
     server->cache_client_entity[free_slot] = server_client_entity(server, receiver);
     server->cache_client_tag[free_slot] = client_tag;
@@ -17936,8 +17919,8 @@ static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node,
         }
     }
 
-    // Cache submessage header before flush. set_server_cache() already logs its own reason on
-    // failure, so nothing to add here.
+    // Cache submessage header before flush. (set_server_cache() has had no way to fail since a kept answer's expiry
+    // stopped taking a scheduler entry, 2026-10-21; a false would still roll the response back.)
     if (!set_server_cache(server, submessage_header, receiver, client_tag)) {
         rollback(node, old_tx_tail);
         return NULL;
@@ -17969,8 +17952,7 @@ static int find_pending_slot(struct tt_Server* server, uint8_t receiver, uint8_t
 // Timer callback (tt_Context_schedule(), Milestone 17): if a deferred request still hasn't been
 // answered by the time it fires, reclaim its slot rather than let it leak forever.
 // tt_Server_send_response()'s own compare-exchange against tt_SERVER_SLOT_PENDING loses cleanly
-// if it races against this, exactly like server_cache_clean() already reclaims an *answered*
-// slot's own retry-cache lifetime.
+// if it races against this.
 static void pending_response_timeout(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(node);
     UNUSED(time);
@@ -18015,8 +17997,7 @@ static bool defer_call_response(struct tt_Server* server, tt_RequestId request_i
     server->pending_timeout_config[slot].server = server;
     server->pending_timeout_config[slot].slot = slot;
 
-    // Only publish once the timeout is guaranteed to run - same "don't publish an entry with no
-    // way to reclaim it" reasoning set_server_cache() already follows for its own timer.
+    // Only publish once the timeout is guaranteed to run: never an entry with no way to reclaim it.
     if (!tt_Context_schedule(server->node, tt_get_ns() + tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, pending_response_timeout,
                              &server->pending_timeout_config[slot])) {
         TT_LOG_ERROR("Cannot schedule pending_response_timeout");
