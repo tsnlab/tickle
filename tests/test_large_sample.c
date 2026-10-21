@@ -1058,7 +1058,7 @@ static void test_a_lost_tail_is_recovered_within_two_retry_intervals(void) {
     // back within a few. Without the second ask the last sample of a burst would wait for whatever came next.
     uint64_t both = lost_tail_case(true);
     printf("test_large_sample: tail and its HEARTBEAT lost - recovered in %.2f ms (retry interval %.2f ms)\n",
-           (double)both / 1e6, (double)reliable_retry_interval_publisher() / 1e6);
+           (double)both / 1e6, (double)reliable_retry_interval_publisher(NULL) / 1e6);
     EXPECT_TRUE(both <= 4 * TEST_RETRY_INTERVAL);
 }
 

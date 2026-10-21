@@ -420,7 +420,7 @@ static void test_reliable_cache_oversize_record_is_not_cached(void) {
     // An ACKNACK naming it must report it gone (Phase 1-c's eviction Heartbeat path), not resend
     // whatever bytes happen to sit in its slot.
     bool gone = false;
-    EXPECT_TRUE(find_resendable_cache_entry(&cache, cache.depth, 3, 0, false, &gone) == NULL);
+    EXPECT_TRUE(find_resendable_cache_entry(&node, &cache, cache.depth, 3, 0, false, &gone) == NULL);
     EXPECT_TRUE(gone);
 }
 
@@ -1303,7 +1303,7 @@ static void test_a_keep_last_publisher_resends_while_it_holds_the_sample(void) {
 
     struct tt_Header header;
     init_header(&header);
-    const uint64_t interval = reliable_retry_interval_publisher();
+    const uint64_t interval = reliable_retry_interval_publisher(&node);
     uint32_t resent = 0;
     for (int i = 1; i <= (3 * tt_RELIABLE_RETRY) + 1; i++) {
         // Past the first tt_RELIABLE_RETRY: one request half an interval after the last resend (suppressed), then one
@@ -1746,12 +1746,13 @@ static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
 static void test_retry_interval_explicit_value_wins(void) {
     struct tt_WriterProxy proxy;
     memset(&proxy, 0, sizeof(proxy));
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, COLD_G, &proxy));
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy));
 
     proxy.recovery_srtt_ns = 3000000; // an estimate that would otherwise give ~3ms+
     proxy.recovery_rttvar_ns = 100000;
-    EXPECT_EQ_U64(5 * tt_MILLISECOND, retry_interval_for(5 * tt_MILLISECOND, COLD_G, &proxy));
-    EXPECT_EQ_U64(3000000ULL + 400000ULL, retry_interval_for(0, COLD_G, &proxy)); // srtt + 4 * rttvar
+    EXPECT_EQ_U64(5 * tt_MILLISECOND, retry_interval_for(&reliable_defaults, 5 * tt_MILLISECOND, COLD_G, &proxy));
+    EXPECT_EQ_U64(3000000ULL + 400000ULL,
+                  retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy)); // srtt + 4 * rttvar
 }
 
 // The estimate converges on a steady recovery time, its variance term counts when recoveries jitter,
@@ -1767,13 +1768,13 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     EXPECT_EQ_U32(400000, proxy.recovery_srtt_ns);
     EXPECT_EQ_U32(0, proxy.recovery_rttvar_ns); // no jitter left to account for
     // Not 400us: a retry at the mean recovery time would fire while half the recoveries are in flight.
-    EXPECT_EQ_U64(400000 + COLD_G, retry_interval_for(0, COLD_G, &proxy));
+    EXPECT_EQ_U64(400000 + COLD_G, retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy));
 
     memset(&proxy, 0, sizeof(proxy));
     for (int i = 0; i < 64; i++) {
         note_recovery_sample(&proxy, (i % 2) == 0 ? 200000 : 600000); // 400us on average, jittering
     }
-    uint64_t jittery = retry_interval_for(0, COLD_G, &proxy);
+    uint64_t jittery = retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy);
     EXPECT_TRUE(jittery > 2 * (uint64_t)proxy.recovery_srtt_ns); // the variance term, not srtt alone
     EXPECT_TRUE(jittery < (uint64_t)proxy.recovery_srtt_ns * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE);
 
@@ -1781,20 +1782,21 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     // 10ms ceiling would have retried ten times before a single answer could arrive.
     memset(&proxy, 0, sizeof(proxy));
     note_recovery_sample(&proxy, 100 * tt_MILLISECOND);
-    EXPECT_EQ_U64(300 * tt_MILLISECOND, retry_interval_for(0, COLD_G, &proxy));
+    EXPECT_EQ_U64(300 * tt_MILLISECOND, retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy));
 
     // The ceiling binds only for a pathological estimate - variance far beyond the mean.
     memset(&proxy, 0, sizeof(proxy));
     proxy.recovery_srtt_ns = 100000;             // 100us
     proxy.recovery_rttvar_ns = 10 * 1000 * 1000; // 10ms of "variance"
-    EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE, retry_interval_for(0, COLD_G, &proxy));
+    EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE,
+                  retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy));
 
     // A recovery timed at 1 ns - a repair answered in the instant it was asked for - leaves the interval at srtt + G,
     // not under G: the ceiling is a multiple of max(srtt, G). Of srtt alone it was 64 ns, and every wait was cut to
     // it (2026-10-16).
     memset(&proxy, 0, sizeof(proxy));
     note_recovery_sample(&proxy, 1);
-    EXPECT_EQ_U64(1 + COLD_G, retry_interval_for(0, COLD_G, &proxy));
+    EXPECT_EQ_U64(1 + COLD_G, retry_interval_for(&reliable_defaults, 0, COLD_G, &proxy));
 }
 
 // End to end: the recovery is timed from the FIRST ACKNACK that named the watermark, a timer retry of
@@ -1835,8 +1837,9 @@ static void test_recovery_probe_times_from_the_first_request(void) {
     node.rx_targeted = false;
     EXPECT_EQ_U32(3000000, proxy->recovery_srtt_ns);
     EXPECT_EQ_U32(1500000, proxy->recovery_rttvar_ns);
-    EXPECT_EQ_U64(0, proxy->probe_ns);                                            // done, not re-timed
-    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, COLD_G, proxy)); // srtt + 4 * rttvar
+    EXPECT_EQ_U64(0, proxy->probe_ns); // done, not re-timed
+    EXPECT_EQ_U64(3000000ULL + 6000000ULL,
+                  retry_interval_for(&reliable_defaults, 0, COLD_G, proxy)); // srtt + 4 * rttvar
 }
 
 // A recovery the back-off reached is not timed (2026-10-15): from the first request it spans the doubled waits, and
@@ -1910,7 +1913,7 @@ static void test_recovery_probe_ignores_a_late_original(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // not a recovery: nothing learned
     EXPECT_EQ_U64(0, proxy->probe_ns);         // but the probe is over
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, COLD_G, proxy));
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(&reliable_defaults, 0, COLD_G, proxy));
 }
 
 // Only a request that names the watermark can time its recovery. A narrow request for a gap further
@@ -2845,7 +2848,7 @@ static void test_keep_all_refuses_at_bound_and_unblocks_on_ack(void) {
     // The watermark's solicitation is still unanswered, so the refusal re-asks only once that one has had the retry
     // interval to come back (solicit_ack_throttled()). This test passed for a year at the mock's t=0 without the
     // advance, because a stamp of 0 read as "never solicited" - the clock's artefact, not the throttle's rule.
-    test_mock_now += reliable_retry_interval_publisher();
+    test_mock_now += reliable_retry_interval_publisher(&node);
     int sends_before = test_mock_send_call_count + test_mock_send_to_call_count;
     EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     // Phase 3 step 4 - a refusal does send something now, but never the sample: it solicits an ACK
@@ -3150,7 +3153,7 @@ static void test_keep_all_refused_publisher_resolicits_by_itself(void) {
     EXPECT_EQ_U32(scheduled_before + 1, node.scheduler_tail); // a second refusal does not add another
 
     // Nobody publishes again. One retry interval later the timer fires and asks on its own.
-    test_mock_now += reliable_retry_interval_publisher();
+    test_mock_now += reliable_retry_interval_publisher(&node);
     int before = test_mock_send_call_count + test_mock_send_to_call_count;
     keep_all_resolicit(&node, test_mock_now, &pub);
     EXPECT_TRUE(test_mock_send_call_count + test_mock_send_to_call_count > before);
@@ -3163,7 +3166,7 @@ static void test_keep_all_refused_publisher_resolicits_by_itself(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_TRUE(!pub.writable_pending);
-    test_mock_now += reliable_retry_interval_publisher();
+    test_mock_now += reliable_retry_interval_publisher(&node);
     before = test_mock_send_call_count + test_mock_send_to_call_count;
     keep_all_resolicit(&node, test_mock_now, &pub);
     EXPECT_EQ_INT(before, test_mock_send_call_count + test_mock_send_to_call_count);
