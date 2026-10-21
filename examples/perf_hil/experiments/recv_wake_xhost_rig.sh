@@ -9,13 +9,15 @@
 #
 # What runs: recv_wake_xhost.c (its header says what is measured and how), built on both Pis from the commit SHA. The
 # receiver is the KH pong Pi (10.1.1.213), the sender the other (10.1.1.214), over eth0, one sender and one receiver.
-# Arms (ARMS): recvfrom recvfrom_aa recvmsg epoll3 uring uring_dt uring_ms uring_ms_dt - recvfrom_aa is recvfrom under
-# a second name, the A/A control. Every rep runs every arm once, in an order rotated by one per rep. ROUNDS (20100)
+# Arms (ARMS): recvfrom recvfrom_aa recvmsg epoll3 uring uring_dt uring_ms uring_ms_dt prod prod_dt - recvfrom_aa is
+# recvfrom under a second name, the A/A control; prod is production's own receive and prod_dt the same with its wait and
+# read replaced by one DEFER_TASKRUN io_uring call (added 2026-10-22; decided against prod, "PROD VERDICT"). Every rep runs every arm once, in an order rotated by one per rep. ROUNDS (20100)
 # datagrams a run after WARMUP (1000), so a run keeps >= 20,000 samples if a few are lost; REPS 5.
 # The reading rules are code in recv_wake_xhost_read.py (--prereg prints them, --selftest checks them), written before
 # any run; this script runs it at the end. The decision: an io_uring style gains >= 0.5 us at p50 over epoll3 with
 # non-overlapping rep ranges -> worth implementing; else drop; the A/A control failing -> no verdict; a compared rep
-# range wider than 1.0 us with no gain -> no verdict (NOISY: re-run), not drop.
+# range wider than 1.0 us with no gain -> no verdict (NOISY: re-run), not drop. The same rule decides prod_dt against
+# prod (PROD VERDICT), separately.
 #
 # Guards, enforced here:
 #   - the rig lock (rig_lock.sh) taken ONCE, by this process, for every run;
@@ -34,8 +36,8 @@
 #     < /dev/null &
 #   Wait on "RWX_END" in $OUT.txt (printed on every exit); "RWX_DONE" precedes it when the run completed.
 # DURATION (rig): build ~1 min; a run is 21,100 datagrams x ~0.36 ms (200 us gap + sleep overshoot + a ~90 us round
-#   trip) = ~7.6 s plus ~4 s of ssh = ~12 s; 8 arms x 5 reps = 40 runs = ~8 min; total ~10 min, analyse an overrun at
-#   15 min. (Plus the wait for the lock: RIG_LOCK_WAIT, default 1800 s.)
+#   trip) = ~7.6 s plus ~4 s of ssh = ~12 s; 10 arms x 5 reps = 50 runs = ~10 min; total ~12 min, analyse an overrun
+#   at 18 min. (Plus the wait for the lock: RIG_LOCK_WAIT, default 1800 s.)
 #
 # PC_PREFLIGHT=1 (no rig, no lock, no sha check): "sender" and "receiver" are two private network namespaces joined by
 # a veth named eth0 in each (192.168.10.3 and .2); every host command runs in its namespace as this user; the binary is
@@ -60,12 +62,12 @@ RX_CPU=${RX_CPU:-2}
 TX_CPU=${TX_CPU:-}
 PORT=${PORT:-47611}
 ECHO_PORT=${ECHO_PORT:-47612}
-ARMS=${ARMS:-"recvfrom recvfrom_aa recvmsg epoll3 uring uring_dt uring_ms uring_ms_dt"}
+ARMS=${ARMS:-"recvfrom recvfrom_aa recvmsg epoll3 uring uring_dt uring_ms uring_ms_dt prod prod_dt"}
 case "$REPS$ROUNDS$WARMUP$GAP_US$RX_CPU${TX_CPU:-0}$PORT$ECHO_PORT" in
     *[!0-9]*) echo "REPS ROUNDS WARMUP GAP_US RX_CPU TX_CPU PORT ECHO_PORT are whole numbers" >&2; exit 64 ;;
 esac
 for a in $ARMS; do
-    case "$a" in recvfrom | recvfrom_aa | recvmsg | epoll3 | uring | uring_dt | uring_ms | uring_ms_dt) ;;
+    case "$a" in recvfrom | recvfrom_aa | recvmsg | epoll3 | uring | uring_dt | uring_ms | uring_ms_dt | prod | prod_dt) ;;
         *) echo "unknown arm '$a'" >&2; exit 64 ;; esac
 done
 [ "$ROUNDS" -ge 20000 ] || echo "note: ROUNDS $ROUNDS < 20000 - every run will read VOID (n < 20000)" >&2
@@ -243,7 +245,7 @@ run_one() { # rep arm
         grep -q '^TXRESULT status=ok ' "$R/${stem}_tx.log" || status="VOID:no_txresult"
     fi
     echo "RUN rep=$rep arm=$arm stem=$stem status=$status" >>"$R/index.txt"
-    say "RUN $stem $status | $(grep -h -oE '^RXRESULT .*' "$R/${stem}_rx.log" | grep -oE ' (n|missing|bad_stamps|p50_ns|cpu_ns_per)=[0-9]+' | tr -d '\n')" \
+    say "RUN $stem $status | $(grep -h -oE '^RXRESULT .*' "$R/${stem}_rx.log" | grep -oE ' (n|missing|bad_stamps|p50_ns|cpu_ns_per|drain_reads)=[0-9]+' | tr -d '\n')" \
         "| $(grep -h -oE ' (lost|rtt_p50_ns)=[0-9]+' "$R/${stem}_tx.log" | tr -d '\n')"
 }
 

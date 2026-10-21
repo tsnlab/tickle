@@ -7,6 +7,8 @@ Usage:
     recv_wake_xhost_read.py --selftest   check the rules against synthetic runs whose verdict is known
 
 The rules (PREREG) were written on 2026-10-21, before any run on the rig, and each one is code below, not a comment.
+The PROD VERDICT (prod_dt against prod, production's own receive) was added on 2026-10-22, before any rig run of
+those arms, and is printed after the VERDICT, which it does not change.
 """
 
 import os
@@ -29,7 +31,12 @@ CONTROL = ("recvfrom", "recvfrom_aa")  # the same code under two names, interlea
 BASE = "epoll3"  # rmw_tickle's receive today: epoll_pwait2 on a kept set, then recvfrom
 BLOCKING = "recvfrom"  # the vendors' wait: the floor a one-call wait could reach
 URING = ["uring", "uring_dt", "uring_ms", "uring_ms_dt"]
-ARMS = ["recvfrom", "recvfrom_aa", "recvmsg", "epoll3"] + URING
+# Added 2026-10-22, before any rig run of them: production's own receive (prod) and the same with its wait and read
+# replaced by one DEFER_TASKRUN io_uring call (prod_dt) - recv_wake_xhost.c's header says what each does. prod_dt is
+# decided against prod, the arm it would replace, by the same bar, range rule, noise rule and control.
+PROD_BASE = "prod"
+PROD_CANDIDATE = "prod_dt"
+ARMS = ["recvfrom", "recvfrom_aa", "recvmsg", "epoll3"] + URING + [PROD_BASE, PROD_CANDIDATE]
 
 PREREG = f"""recv_wake_xhost - reading rules (written 2026-10-21 before any rig run; enforced by recv_wake_xhost_read.py)
 Measured, per datagram, on the receiving Pi's own clock: kernel software receive stamp (skb->tstamp, read with
@@ -60,6 +67,17 @@ Decision, per io_uring style U in {URING}:
 VERDICT: WORTH IMPLEMENTING (best U named) if any U GAINS; else NO VERDICT (NOISY, re-run) if any U is NOISY; else
   DROP (every measured U: no gain); NO VERDICT if no U was measured. Falsifies the 4(b) proposal: DROP with the
   control PASS.
+PROD VERDICT (added 2026-10-22, before any rig run of {PROD_BASE}/{PROD_CANDIDATE}), separate from VERDICT and read
+  under the same CONTROL (A/A) - CONTROL FAILED or not measured: NO VERDICT. {PROD_BASE} is production's receive,
+  {PROD_CANDIDATE} the same with its wait and read replaced by one SINGLE_ISSUER|DEFER_TASKRUN io_uring call.
+  NO VERDICT ({PROD_BASE} not measured) / NO VERDICT ({PROD_CANDIDATE} not measured) when either has < {MIN_REPS} reps.
+  GAINS iff P50({PROD_BASE}) - P50({PROD_CANDIDATE}) >= {GAIN_US} us AND max RANGE({PROD_CANDIDATE}) <
+  min RANGE({PROD_BASE}). Else NOISY iff RANGE({PROD_CANDIDATE}) or RANGE({PROD_BASE}) is wider than {NOISE_MAX_US} us.
+  WORTH IMPLEMENTING ({PROD_CANDIDATE}) if GAINS ("stamp only" if the sender's round-trip P50 is not also lower by
+  >= {GAIN_US / 2} us); NO VERDICT (NOISY, re-run) if NOISY; else DROP. Falsifies "production gains from a
+  DEFER_TASKRUN wait": DROP with the control PASS.
+  Diagnostic (printed, does not decide): P50({PROD_BASE}) - P50({BASE}), what production's larger wait set and raw
+  calls cost against {BASE}; and P50({PROD_CANDIDATE}) - P50(uring_dt), the same for the io_uring wait.
 """
 
 
@@ -162,6 +180,69 @@ def decide(runs):
     return f"WORTH IMPLEMENTING ({arm}, {gain:+.2f} us at p50){note}", lines
 
 
+def decide_prod(runs):
+    """PROD VERDICT: prod_dt against prod, under the A/A control. Returns (verdict, lines)."""
+    lines = []
+    valid = {}
+    for run in runs:
+        if run["status"] == "ok":
+            valid.setdefault(run["arm"], []).append(run)
+    measured = {arm: reps for arm, reps in valid.items() if len(reps) >= MIN_REPS}
+
+    def p50(arm):
+        return statistics.median(r["p50_us"] for r in measured[arm])
+
+    def rng(arm):
+        values = [r["p50_us"] for r in measured[arm]]
+        return min(values), max(values)
+
+    def med(arm, key):
+        values = [r[key] for r in measured[arm] if r.get(key) is not None]
+        return statistics.median(values) if values else None
+
+    if not all(arm in measured for arm in CONTROL):
+        return "NO VERDICT (control not measured)", lines
+    aa = abs(p50(CONTROL[0]) - p50(CONTROL[1]))
+    a_low, a_high = rng(CONTROL[0])
+    b_low, b_high = rng(CONTROL[1])
+    if aa >= AA_MAX_US or not (a_low <= b_high and b_low <= a_high):
+        return "NO VERDICT (CONTROL FAILED)", lines
+    for arm in (PROD_BASE, PROD_CANDIDATE):
+        if arm not in measured:
+            return f"NO VERDICT ({arm} not measured)", lines
+    if BASE in measured:
+        lines.append(f"  diagnostic: P50({PROD_BASE}) - P50({BASE}) = {p50(PROD_BASE) - p50(BASE):+.2f} us")
+    if "uring_dt" in measured:
+        lines.append(f"  diagnostic: P50({PROD_CANDIDATE}) - P50(uring_dt) = "
+                     f"{p50(PROD_CANDIDATE) - p50('uring_dt'):+.2f} us")
+    gain = p50(PROD_BASE) - p50(PROD_CANDIDATE)
+    apart = rng(PROD_CANDIDATE)[1] < rng(PROD_BASE)[0]
+    gains = gain >= GAIN_US and apart
+    width = max(rng(PROD_CANDIDATE)[1] - rng(PROD_CANDIDATE)[0], rng(PROD_BASE)[1] - rng(PROD_BASE)[0])
+    noisy = not gains and width > NOISE_MAX_US
+    rtt_b, rtt_c = med(PROD_BASE, "rtt_p50_us"), med(PROD_CANDIDATE, "rtt_p50_us")
+    rtt_gain = rtt_b - rtt_c if rtt_b is not None and rtt_c is not None else None
+    corroborated = rtt_gain is not None and rtt_gain >= GAIN_US / 2
+    cpu_b, cpu_c = med(PROD_BASE, "cpu_us"), med(PROD_CANDIDATE, "cpu_us")
+    cpu_delta = cpu_c - cpu_b if cpu_b is not None and cpu_c is not None else None
+    lines.append(
+        f"  {PROD_CANDIDATE} vs {PROD_BASE}: gain {gain:+.2f} us (bar {GAIN_US}), ranges apart: {apart}, widest range "
+        f"{width:.2f} us -> {'GAINS' if gains else ('NOISY' if noisy else 'no gain')}"
+        f"; rtt gain {rtt_gain if rtt_gain is None else round(rtt_gain, 2)} us"
+        f"; cpu {'n/a' if cpu_delta is None else f'{cpu_delta:+.2f}'} us/datagram")
+    by_rep = {r["rep"]: r["p50_us"] for r in measured[PROD_BASE]}
+    paired = [round(by_rep[r["rep"]] - r["p50_us"], 2)
+              for r in sorted(measured[PROD_CANDIDATE], key=lambda r: r["rep"]) if r["rep"] in by_rep]
+    lines.append(f"      paired per rep, p50({PROD_BASE}) - p50({PROD_CANDIDATE}) (diagnostic, does not decide): {paired}")
+    if gains:
+        note = "" if corroborated else " - stamp only, the round trip does not show it: check before building"
+        return f"WORTH IMPLEMENTING ({PROD_CANDIDATE}, {gain:+.2f} us at p50 over {PROD_BASE}){note}", lines
+    if noisy:
+        return f"NO VERDICT (NOISY: a rep range wider than {NOISE_MAX_US} us; re-run)", lines
+    return (f"DROP ({PROD_CANDIDATE} does not gain >= {GAIN_US} us at p50 over {PROD_BASE} with apart rep ranges)",
+            lines)
+
+
 def read_dir(out):
     runs_dir = out + ".runs"
     runs, listing = [], []
@@ -234,6 +315,10 @@ def report(out):
     print("per arm, over valid reps:")
     print("\n".join(lines))
     print(f"VERDICT: {verdict}")
+    prod_verdict, prod_lines = decide_prod(runs)
+    print(f"{PROD_CANDIDATE} against {PROD_BASE}:")
+    print("\n".join(prod_lines))
+    print(f"PROD VERDICT: {prod_verdict}")
     return 0
 
 
@@ -256,7 +341,7 @@ def synthetic(p50s, aa_shift=0.0, reps=3, n=MIN_N, refused=(), rtt_follow=True):
 
 def selftest():
     base = {"recvfrom": 13.0, "recvmsg": 13.1, "epoll3": 17.5, "uring": 17.4, "uring_dt": 16.6, "uring_ms": 17.3,
-            "uring_ms_dt": 17.2}
+            "uring_ms_dt": 17.2, "prod": 17.8, "prod_dt": 16.9}
     cases = [
         ("uring_dt 0.9 us faster, apart", synthetic(base), "WORTH IMPLEMENTING (uring_dt"),
         ("every uring within 0.4 us", synthetic(dict(base, uring_dt=17.1)), "DROP"),
@@ -305,6 +390,37 @@ def selftest():
             ok = ok and "stamp only" in verdict
         failed += 0 if ok else 1
         print(f"{'PASS' if ok else 'FAIL'}  {name}: {verdict}")
+    # PROD VERDICT: prod_dt against prod.
+    prod_slow = synthetic(base)
+    for run in prod_slow:
+        if run["arm"] == PROD_CANDIDATE and run["rep"] == 3:
+            run["p50_us"] = 21.9  # a slow-state rep: range 5 us wide, median gain 0.85 but not apart
+    prod_touch = synthetic(dict(base, prod_dt=17.25))
+    for run in prod_touch:
+        if run["arm"] == PROD_CANDIDATE and run["rep"] == 3:
+            run["p50_us"] = 17.8  # reaches into prod's range
+    prod_cases = [
+        ("prod_dt 0.9 us faster than prod, apart", synthetic(base), "WORTH IMPLEMENTING (prod_dt"),
+        ("prod_dt within 0.4 us of prod", synthetic(dict(base, prod_dt=17.4)), "DROP"),
+        ("prod_dt 0.55 us faster but ranges touch", prod_touch, "DROP"),
+        ("prod_dt slower than prod", synthetic(dict(base, prod_dt=18.6)), "DROP"),
+        ("prod_dt refused", synthetic(base, refused=("prod_dt",)), "NO VERDICT (prod_dt not measured)"),
+        ("prod refused", synthetic(base, refused=("prod",)), "NO VERDICT (prod not measured)"),
+        ("A/A apart by 0.3 us", synthetic(base, aa_shift=0.3), "NO VERDICT (CONTROL FAILED)"),
+        ("only 2 reps", synthetic(base, reps=2), "NO VERDICT (control not measured)"),
+        ("a slow-state rep in prod_dt, nothing gains", prod_slow, "NO VERDICT (NOISY"),
+        ("prod_dt gain only in the stamp", synthetic(base, rtt_follow=False), "WORTH IMPLEMENTING (prod_dt"),
+        ("the uring arms gain, prod_dt does not", synthetic(dict(base, prod_dt=17.7)), "DROP"),
+    ]
+    for name, runs, expected in prod_cases:
+        verdict, _ = decide_prod(runs)
+        ok = verdict.startswith(expected)
+        if "stamp" in name:
+            ok = ok and "stamp only" in verdict
+        if name == "the uring arms gain, prod_dt does not":
+            ok = ok and decide(runs)[0].startswith("WORTH IMPLEMENTING (uring_dt")  # the two verdicts are separate
+        failed += 0 if ok else 1
+        print(f"{'PASS' if ok else 'FAIL'}  PROD {name}: {verdict}")
     # The file path end to end: a directory written as the driver writes it, one arm's samples file cut short (the
     # witness must void it) - then the verdict must still come out of the remaining reps.
     with tempfile.TemporaryDirectory() as tmp:
@@ -327,9 +443,12 @@ def selftest():
         runs, _ = read_dir(out)
         voided = [r for r in runs if r["status"].startswith("VOID:witness")]
         verdict, _ = decide(runs)
-        ok = len(voided) == 1 and verdict.startswith("WORTH IMPLEMENTING (uring_dt")
+        prod_verdict, _ = decide_prod(runs)
+        ok = (len(voided) == 1 and verdict.startswith("WORTH IMPLEMENTING (uring_dt")
+              and prod_verdict.startswith("WORTH IMPLEMENTING (prod_dt"))
         failed += 0 if ok else 1
-        print(f"{'PASS' if ok else 'FAIL'}  files end to end, one cut samples file voided: {len(voided)} void, {verdict}")
+        print(f"{'PASS' if ok else 'FAIL'}  files end to end, one cut samples file voided: {len(voided)} void, {verdict}"
+              f"; PROD {prod_verdict}")
     print(f"selftest: {'PASS' if failed == 0 else f'FAIL ({failed})'}")
     return 1 if failed else 0
 
