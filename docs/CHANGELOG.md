@@ -67,6 +67,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   are per context, the constants their defaults (`tt_SEGMENT_SLOTS` stays the build's most slots). `net.segment_slot_bytes`
   (unreleased) is `segment.slot_bytes`. The dead-reader time follows the context's discovery interval, and the check
   against the silence moved from the discovery group to it. Wire bytes and the default ring unchanged.
+- **Capacity** (`tt_InitOptions.capacity`, bundle 9): runtime limits on the fixed tables - RELIABLE readers per
+  Publisher, peers and writer proxies per endpoint, remembered ACKNACK requests, outstanding claims, retained large
+  samples - each at most its compiled size, which stays the array size and the default. A table is full at its limit,
+  with the refusal it always had; `peers` must exceed every link's unicast threshold.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,

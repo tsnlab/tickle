@@ -110,6 +110,19 @@ which the earlier PC run (user plus kernel instructions, other cells) could not 
 v2 A/B of the fixed build (A 05118219, B 8b2f69ed's tree before its rebase, `ab_samehost_initoptions8v2_segment_20261022-050502`,
 REPS 4, sentinel control held at -0.20%) reads IMPROVED: 6 comparisons better, 28 held, none worse.
 
+**Capacity** (`tt_InitOptions.capacity`, bundle 9): how much of a fixed table a context uses - `ack_entries` (readers a
+Publisher tracks), `peers` (a Publisher's or Client's peers, a Subscriber's writer proxies), `request_history`,
+`publisher_claims`, `large_retained`, each at most and by default its compiled size (`tt_MAX_ACK_ENTRIES`,
+`tt_MAX_PEER_COUNT`, `tt_RELIABLE_REQUEST_HISTORY`, `tt_PUBLISHER_CLAIMS`, `tt_LARGE_RETAINED`). The arrays keep that
+size, so no struct and no `tt_*_storage_size()` changes (the six bytes fill padding: `tt_Context` is the same size on
+Linux and RV32); memory is bundle 10's. A limit is read only where an entry is taken, never on a walk - the entries past
+it stay empty - so the per-sample peer scans and the large ring's index are untouched. A full table refuses as it did at
+the compiled size. `peers` must exceed every link's unicast threshold, so a full table still means broadcasting.
+`tt_DISCOVERY_PENDING_REQUESTS` stays compiled: a full table only skips retries. Cost: none measurable - user instructions per sample, client, B vs A with A+P the placement control, every
+row EQUAL: p1 +0.02% (P -0.01%), p3 +0.01% (-0.01%), t1 +0.01% (+0.02%), t3 0.00%, 1% loss l1 +0.01% (0.00%), l3 0.00%
+(-0.01%) (`initoptions_insn_pc.sh`, A 05118219, B 3ad9a3d5, 3 reps). Default
+behaviour is wire-identical (`tests/wire_identity_initoptions_capacity.sh`).
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |
