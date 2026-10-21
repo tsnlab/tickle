@@ -688,6 +688,14 @@ struct tt_LossEstimate {
     // did not see, which may have held events. "None seen" and the stale rule count clean frames from here at the
     // earliest (tickle.c, loss_estimate_doubt()).
     uint32_t frames_at_doubt;
+    // Halved at this many frames: the context's hybrid_transport.window_frames, copied in when the reader starts
+    // (hybrid_reader_start()) and kept across every reset, so the per-run test reads a field of the estimate it is
+    // updating, not the context's options (examples/perf_hil/experiments/hybrid_options_insn.sh).
+    uint32_t window_frames;
+    // The stale rule's floor in clean frames, ceil(-ln(stale_false_forget) / stale_p_min) (tickle.c,
+    // loss_estimate_forget_stale()), copied in with window_frames: an integer compare at each tail, as it was when
+    // the floor was a constant.
+    uint32_t stale_floor_frames;
 };
 
 // Runs sent to a reader, arrived or lost, and their frames (units): q(n) as the reader measures it (DESIGN.md section

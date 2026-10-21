@@ -100,6 +100,15 @@ static const struct tt_HybridOptions* opts_of(void) {
     return &node.opts.hybrid_transport;
 }
 
+// An estimate of `events` over `frames` carrying the whitebox reader's constants (loss_estimate_init()).
+static struct tt_LossEstimate estimate_at(uint32_t events, uint32_t frames) {
+    struct tt_LossEstimate estimate;
+    loss_estimate_init(&estimate, opts_of());
+    estimate.events = events;
+    estimate.frames = frames;
+    return estimate;
+}
+
 // ---- The defaults.
 
 static bool same_options(const struct tt_HybridOptions* a, const struct tt_HybridOptions* b) {
@@ -178,21 +187,22 @@ static void test_n_max(void) {
 // window_frames: where the estimates halve.
 static void test_window_frames(void) {
     setup(&(struct tt_HybridOptions) {0});
-    struct tt_LossEstimate estimate = {0};
-    loss_estimate_observe(&estimate, 999, 2, opts_of());
-    loss_estimate_observe(&estimate, 1, 0, opts_of());
+    struct tt_LossEstimate estimate;
+    loss_estimate_init(&estimate, opts_of());
+    loss_estimate_observe(&estimate, 999, 2);
+    loss_estimate_observe(&estimate, 1, 0);
     EXPECT_EQ_U32(1000, estimate.frames);
     struct tt_RunWindow window = {0};
-    run_window_observe(&window, 1000, false, opts_of());
+    run_window_observe(&window, 1000, false, &node.hybrid.mtu_loss.window_frames);
     EXPECT_EQ_U32(1000, window.frames);
     setup(&(struct tt_HybridOptions) {.window_frames = 1000});
-    estimate = (struct tt_LossEstimate) {0};
-    loss_estimate_observe(&estimate, 999, 2, opts_of());
-    loss_estimate_observe(&estimate, 1, 0, opts_of());
+    loss_estimate_init(&estimate, opts_of());
+    loss_estimate_observe(&estimate, 999, 2);
+    loss_estimate_observe(&estimate, 1, 0);
     EXPECT_EQ_U32(500, estimate.frames);
     EXPECT_EQ_U32(1, estimate.events);
     window = (struct tt_RunWindow) {0};
-    run_window_observe(&window, 1000, false, opts_of());
+    run_window_observe(&window, 1000, false, &node.hybrid.mtu_loss.window_frames);
     EXPECT_EQ_U32(500, window.frames);
 }
 
@@ -236,7 +246,7 @@ static void test_path_clean_ns(void) {
 // (tests/test_hybrid_send.c, test_the_collapse_test_is_the_designs); not with more runs, more losses or a larger ratio
 // asked for.
 static void test_the_collapse_fields(void) {
-    struct tt_LossEstimate mtu = {30, 30000, 0, 0};
+    struct tt_LossEstimate mtu = estimate_at(30, 30000);
     struct tt_RunWindow excess = {1000, 26, 8000};
     setup(&(struct tt_HybridOptions) {0});
     EXPECT_TRUE(hybrid_collapsed(&excess, &mtu, opts_of()));
@@ -258,7 +268,7 @@ static void test_the_collapse_fields(void) {
 static void test_window_max_runs(void) {
     for (int arm = 0; arm < 2; arm++) {
         struct tt_HybridState* hybrid = setup(&(struct tt_HybridOptions) {.window_max_runs = arm == 0 ? 0 : 500});
-        hybrid->mtu_loss = (struct tt_LossEstimate) {30, 30000, 0, 0};
+        hybrid->mtu_loss = estimate_at(30, 30000);
         hybrid->window = (struct tt_RunWindow) {1000, 20, 8000};
         hybrid->window_n = 8;
         hybrid->cap = 8;
@@ -271,7 +281,7 @@ static void test_window_max_runs(void) {
 // drop and probe_backoff_max: a collapse drops the cap to drop x the ceiling; a failed probe doubles the next probe's
 // wait, up to 2^probe_backoff_max.
 static void collapse_at_8(struct tt_HybridState* hybrid) {
-    hybrid->mtu_loss = (struct tt_LossEstimate) {30, 30000, 0, 0};
+    hybrid->mtu_loss = estimate_at(30, 30000);
     hybrid->window = (struct tt_RunWindow) {1000, 540, 8000};
     hybrid->window_n = 8;
     hybrid->probe_since_ns = 1; // a probe in progress: it failed
@@ -320,7 +330,7 @@ static void test_slow_start(void) {
 
 // none_seen_frames: "none seen" after that many clean frames.
 static void test_none_seen_frames(void) {
-    struct tt_LossEstimate clean = {0, 500, 0, 0};
+    struct tt_LossEstimate clean = estimate_at(0, 500);
     setup(&(struct tt_HybridOptions) {0});
     EXPECT_EQ_U32(HYBRID_LOSS_NONE_SEEN, hybrid_rx_loss_code(&clean, opts_of()));
     setup(&(struct tt_HybridOptions) {.none_seen_frames = 501});
@@ -329,10 +339,11 @@ static void test_none_seen_frames(void) {
 
 // The stale rule's estimate: `events` events at F frames, then `clean` clean ones.
 static bool forgets(uint32_t frames, uint32_t events, uint32_t clean) {
-    struct tt_LossEstimate estimate = {0};
-    loss_estimate_observe(&estimate, frames - events, 0, opts_of());
-    loss_estimate_observe(&estimate, events, events, opts_of());
-    loss_estimate_observe(&estimate, clean, 0, opts_of());
+    struct tt_LossEstimate estimate;
+    loss_estimate_init(&estimate, opts_of());
+    loss_estimate_observe(&estimate, frames - events, 0);
+    loss_estimate_observe(&estimate, events, events);
+    loss_estimate_observe(&estimate, clean, 0);
     return loss_estimate_forget_stale(&estimate, opts_of());
 }
 
@@ -415,8 +426,8 @@ static void test_the_scale_fields(void) {
     EXPECT_EQ_U32(20, hybrid->n_fail);
     for (int arm = 0; arm < 2; arm++) {
         hybrid = scale_reader(&(struct tt_HybridOptions) {.scale_min_events = arm == 0 ? 0 : 5});
-        hybrid->mtu_loss = (struct tt_LossEstimate) {5, 5000, 0, 0}; // p 1e-3
-        hybrid->anchor_p = 2e-3;                                     // R p halved by p alone
+        hybrid->mtu_loss = estimate_at(5, 5000); // p 1e-3
+        hybrid->anchor_p = 2e-3;                 // R p halved by p alone
         ticks(hybrid, 1, R_UNITS);
         EXPECT_EQ_INT(arm == 0 ? 0 : 1, hybrid->scale_streak);
     }
@@ -428,7 +439,7 @@ static void test_the_scale_fields(void) {
 static void test_path_alpha(void) {
     for (int arm = 0; arm < 2; arm++) {
         struct tt_HybridState* hybrid = setup(&(struct tt_HybridOptions) {.path_alpha = arm == 0 ? 0.0 : 1e-3});
-        hybrid->mtu_loss = (struct tt_LossEstimate) {0, 100000, 0, 0};
+        hybrid->mtu_loss = estimate_at(0, 100000);
         struct tt_HybridRxWriter* writer = &hybrid->rx_writers[0];
         *writer = (struct tt_HybridRxWriter) {.entity_id = 1, .count = 12, .body_lost = 11, .source = WRITER};
         writer->layout_n = 11;
