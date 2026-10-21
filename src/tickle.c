@@ -622,28 +622,34 @@ static void resolve_socket_options(struct tt_SocketOptions* socket) {
     resolve_switch(&socket->rx_lazy_adapt);
     resolve_switch(&socket->rx_nonblock);
     if (socket->rx_hint == 0) {
+// NOLINTNEXTLINE(misc-include-cleaner) - tt_RX_HINT_URING: the platform header hal.h selects (hal_linux.h)
 #if defined(tt_HAL_RX_HINT) && tt_HAL_RX_HINT == tt_RX_HINT_URING
         socket->rx_hint = tt_SOCKET_RX_HINT_URING;
 #else
         socket->rx_hint = tt_SOCKET_RX_HINT_AUTO; // a build without io_uring: AUTO is what it does, a read per check
 #endif
     }
-    // The drain's defaults are the Linux HAL's (hal_linux.h); a HAL without a drain leaves these 0.
+    // The drain's defaults are the Linux HAL's (hal_linux.h, which the platform header hal.h selects - hence the
+    // include-cleaner exemptions); a HAL without a drain leaves these 0.
 #ifdef tt_RX_DRAIN_BYTES
     if (socket->drain_bytes == 0) {
-        socket->drain_bytes = tt_RX_DRAIN_BYTES;
+        socket->drain_bytes = tt_RX_DRAIN_BYTES; // NOLINT(misc-include-cleaner)
     }
     if (socket->drain_buffers == 0) {
-        socket->drain_buffers = tt_RX_DRAIN_BUFFERS;
+        socket->drain_buffers = tt_RX_DRAIN_BUFFERS; // NOLINT(misc-include-cleaner)
     }
     if (socket->drain_bytes_max == 0) {
         // tt_RX_DRAIN_BYTES_MAX's own rule, four times the start, against this context's start.
-        socket->drain_bytes_max = socket->drain_bytes == tt_RX_DRAIN_BYTES ? (uint32_t)tt_RX_DRAIN_BYTES_MAX
-                                  : socket->drain_bytes <= UINT32_MAX / 4U ? socket->drain_bytes * 4U
-                                                                           : UINT32_MAX;
+        if (socket->drain_bytes == tt_RX_DRAIN_BYTES) {                // NOLINT(misc-include-cleaner)
+            socket->drain_bytes_max = (uint32_t)tt_RX_DRAIN_BYTES_MAX; // NOLINT(misc-include-cleaner)
+        } else if (socket->drain_bytes <= UINT32_MAX / 4U) {
+            socket->drain_bytes_max = socket->drain_bytes * 4U;
+        } else {
+            socket->drain_bytes_max = UINT32_MAX;
+        }
     }
     if (socket->drain_holdoff_ns == 0) {
-        socket->drain_holdoff_ns = tt_RX_DRAIN_HOLDOFF_NS;
+        socket->drain_holdoff_ns = tt_RX_DRAIN_HOLDOFF_NS; // NOLINT(misc-include-cleaner)
     }
 #endif
 }

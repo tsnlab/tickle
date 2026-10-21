@@ -62,12 +62,12 @@
 #define PORT 47331
 #define LOOPBACK_BROADCAST "127.255.255.255"
 #define CONTEXT_ID 23
-#define SMALL_BUFFER 16384U           // the kernel grants twice what it is asked, above its minimum
-#define FEW_BUFFERS 64U               // drain_buffers
-#define SMALL_DRAIN (256U * 1024U)    // drain_bytes
-#define SHORT_HOLDOFF (2U * 1000000U) // drain_holdoff_ns, 2 ms
-#define CUT_BYTES 3000                // longer than a drain buffer for 1,472-byte datagrams
-#define RECHECK_SHORT (50U * 1000U)   // poll.receive_timeout, 50 us
+#define SMALL_BUFFER 16384U               // the kernel grants twice what it is asked, above its minimum
+#define FEW_BUFFERS 64U                   // drain_buffers
+#define SMALL_DRAIN (256U * 1024U)        // drain_bytes
+#define SHORT_HOLDOFF (2ULL * 1000000ULL) // drain_holdoff_ns, 2 ms
+#define CUT_BYTES 3000                    // longer than a drain buffer for 1,472-byte datagrams
+#define RECHECK_SHORT (50ULL * 1000ULL)   // poll.receive_timeout, 50 us
 
 static struct tt_Context ctx;
 
@@ -370,8 +370,8 @@ static uint64_t holdoff_after_a_cut(uint64_t holdoff_ns) {
 static void test_drain_holdoff_is_the_wait_after_a_cut(void) {
     const uint64_t standard = holdoff_after_a_cut(0);
     const uint64_t shorter = holdoff_after_a_cut(SHORT_HOLDOFF);
-    EXPECT_TRUE(standard >= tt_RX_DRAIN_HOLDOFF_NS && standard < tt_RX_DRAIN_HOLDOFF_NS + (50U * 1000000U));
-    EXPECT_TRUE(shorter >= SHORT_HOLDOFF && shorter < SHORT_HOLDOFF + (50U * 1000000U));
+    EXPECT_TRUE(standard >= tt_RX_DRAIN_HOLDOFF_NS && standard < tt_RX_DRAIN_HOLDOFF_NS + (50ULL * 1000000ULL));
+    EXPECT_TRUE(shorter >= SHORT_HOLDOFF && shorter < SHORT_HOLDOFF + (50ULL * 1000000ULL));
 }
 
 // ---- poll.receive_timeout in the HAL: a socket skipped as idle is asked again after it.
@@ -394,10 +394,10 @@ static bool recheck_after(uint64_t receive_timeout, uint64_t elapsed) {
 }
 
 static void test_receive_timeout_is_the_idle_recheck(void) {
-    EXPECT_TRUE(!recheck_after(0, 60U * 1000U)); // the default, 100 us: not yet
+    EXPECT_TRUE(!recheck_after(0, 60ULL * 1000ULL)); // the default, 100 us: not yet
     EXPECT_TRUE(recheck_after(0, tt_RECEIVE_TIMEOUT));
-    EXPECT_TRUE(recheck_after(RECHECK_SHORT, 60U * 1000U)); // 50 us: past it
-    EXPECT_TRUE(!recheck_after(RECHECK_SHORT, 40U * 1000U));
+    EXPECT_TRUE(recheck_after(RECHECK_SHORT, 60ULL * 1000ULL)); // 50 us: past it
+    EXPECT_TRUE(!recheck_after(RECHECK_SHORT, 40ULL * 1000ULL));
 }
 
 // ---- The checks.
