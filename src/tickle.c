@@ -6642,9 +6642,9 @@ static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
     // when this changes nothing) or built by hand in a whitebox test (the service, reliable, poll and hybrid
     // groups still zero). The call path reads the service options, the repair path the reliable ones, the receive loop
-    // the poll options and the hybrid transport its own (service_call_retry_interval(), resend_suppressed(), drain_rx_more(),
-    // node_poll() and the rest), with no fallback for a zero; reset_node_state() after this starts the hybrid reader
-    // on them.
+    // the poll options and the hybrid transport its own (service_call_retry_interval(), resend_suppressed(),
+    // drain_rx_more(), node_poll() and the rest), with no fallback for a zero; reset_node_state() after this starts the
+    // hybrid reader on them.
     resolve_service_options(&node->opts.service);
     resolve_reliable_options(&node->opts.reliable);
     resolve_poll_options(&node->opts.poll);

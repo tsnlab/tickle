@@ -80,9 +80,12 @@ bound under it; a reader below it advertises that many units. The slow start is 
 (`tt_HYBRID_SLOW_START_OFF`); `path_clean_ns` scales with `queue_lifetime_ns`. `tt_HYBRID_COLLAPSE_Z` stays compiled
 (the 99.9% table assumes it) and the stale exposure is derived, `-ln(stale_false_forget)`. A build without the hybrid
 transport refuses the group set, compared byte by byte (no soft-float on RV32). Cost: none measurable, 0 instructions per 1 MB
-sample within spread, VERDICT=PASS at 04b85348 (`hybrid_options_insn.sh`: the halving threshold and the stale floor
-are copied into each estimate); default behaviour is trace-identical
-(`tests/wire_identity_hybrid_estimator.sh`).
+sample within spread, VERDICT=PASS on 2cf7d2d0's change before its rebase onto bundles 3 and 6
+(`hybrid_options_insn.sh`: the halving threshold and the stale floor are copied into each estimate); default behaviour
+is trace-identical (`tests/wire_identity_hybrid_estimator.sh`). On the rig (`rmw_keepall_rig.sh`, A ed1d3a2a, same
+build): Array1m 30 Hz and Array4m 15 Hz reliable cross-host, 100% delivered and latency equal at 0, 0.1 and 1% loss; at 1%
+CPU per run is bimodal on both arms (about 4.5 / 3.5 or 5.5 / 4.5 ms per MB, sub / pub), and 10 reps per arm gave 2/10
+runs in the high mode on each (Fisher p 0.71) and low-mode CPU +0.77% sub, -0.04% pub.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
