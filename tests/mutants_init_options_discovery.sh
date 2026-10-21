@@ -62,7 +62,6 @@ refusal() {
 }
 refusal 'durations[i].field'
 refusal '"discovery.tx_interval_ns"'
-refusal '"discovery.update_interval_ns",'
 mutant "the interop WARNING" \
     "    if (discovery->update_interval_ns != tt_CONTEXT_UPDATE_INTERVAL ||
         discovery->miss_threshold != tt_LIVELINESS_MISS_THRESHOLD) {" \

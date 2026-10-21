@@ -417,6 +417,26 @@ static uint64_t discovery_silence_ns(const struct tt_Context* node) {
     return discovery_silence_of(discovery_update_interval_ns(node), discovery_miss_threshold(node));
 }
 
+#if tt_SEGMENT_ENABLED
+// The dead-reader time a context uses (tt_SegmentOptions.dead_reader_ns): its own when set; else config.h's
+// tt_SEGMENT_DEAD_READER_NS at the default discovery timing, which is what that constant is derived from, and the same
+// derivation from the context's own timing otherwise - one interval of its silence. A zero discovery field is the
+// default, as on a whitebox context. At creation only: the division is a libcall on rv32.
+static uint64_t segment_dead_reader_of(const struct tt_SegmentOptions* segment,
+                                       const struct tt_DiscoveryOptions* discovery) {
+    if (segment->dead_reader_ns != 0) {
+        return segment->dead_reader_ns;
+    }
+    uint64_t interval =
+        discovery->update_interval_ns != 0 ? discovery->update_interval_ns : (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    uint64_t miss = discovery->miss_threshold != 0 ? discovery->miss_threshold : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD;
+    if (interval == (uint64_t)tt_CONTEXT_UPDATE_INTERVAL && miss == (uint64_t)tt_LIVELINESS_MISS_THRESHOLD) {
+        return (uint64_t)tt_SEGMENT_DEAD_READER_NS;
+    }
+    return discovery_silence_of(interval, miss) * 2U / ((miss * 2U) + 1U);
+}
+#endif
+
 // The shortest finite lease a context can keep: its summary goes out lease_divisor times a lease, at most once a tx
 // tick (DESIGN.md section 9). rmw_tickle refuses the same floor, from the same options.
 static uint64_t discovery_lease_floor_ns(const struct tt_Context* node) {
@@ -763,8 +783,27 @@ static void resolve_hybrid_options(struct tt_HybridOptions* hybrid) {
 #endif
 }
 
+// Not bytes, slot_bytes or dead_reader_ns: their zero stays "the default" in the options (struct tt_SegmentOptions).
+// node_init_locks() sets the context's dead_reader_ns.
 static void resolve_segment_options(struct tt_SegmentOptions* segment) {
-    (void)segment;
+    if (segment->fence_hold_ns == 0) {
+        segment->fence_hold_ns = (uint64_t)tt_SEGMENT_FENCE_HOLD_NS;
+    }
+    if (segment->drain_per_poll == 0) {
+        segment->drain_per_poll = (uint32_t)tt_SEGMENT_DRAIN_PER_POLL;
+    }
+    if (segment->probe_every_max == 0) {
+        segment->probe_every_max = (uint32_t)tt_SEGMENT_PROBE_EVERY_MAX;
+    }
+    if (segment->stall_passes == 0) {
+        segment->stall_passes = (uint32_t)tt_SEGMENT_STALL_PASSES;
+    }
+    if (segment->attach_retry_sends == 0) {
+        segment->attach_retry_sends = (uint32_t)tt_SEGMENT_ATTACH_RETRY_SENDS;
+    }
+    if (segment->revalidate_sends == 0) {
+        segment->revalidate_sends = (uint32_t)tt_SEGMENT_REVALIDATE_SENDS;
+    }
 }
 
 static void resolve_capacity_options(struct tt_Capacity* capacity) {
@@ -889,16 +928,6 @@ static tt_ret_t validate_net_options(const struct tt_NetOptions* net) {
         return reject_option("net.discovery_range", "needs a build with tt_DISCOVERY_OPTIONS");
     }
 #endif
-#if tt_SEGMENT_ENABLED
-    // A slot size the user set and this build cannot use is their configuration and their error, so it is refused
-    // here rather than quietly replaced by the default - a value silently ignored reads exactly like a value that had
-    // no effect, which is the shape config.h's own #ifndef guards were in until 2026-09-29.
-    if (net->segment_slot_bytes != 0 && !valid_slot_bytes(net->segment_slot_bytes)) {
-        TT_LOG_ERROR("Configured segment slot of %u bytes is outside [%u, %u] and cannot hold a datagram",
-                     net->segment_slot_bytes, (unsigned)sizeof(struct tt_Header), (unsigned)tt_MAX_SAMPLE_LENGTH);
-        return reject_option("net.segment_slot_bytes", "cannot hold a datagram");
-    }
-#endif
     if (net->large_fragmentation > tt_LARGE_FRAGMENTATION_IP) {
         return reject_option("net.large_fragmentation", "is not a tt_LARGE_FRAGMENTATION_* value");
     }
@@ -936,15 +965,7 @@ static tt_ret_t validate_discovery_options(const struct tt_DiscoveryOptions* dis
     if (discovery->tx_interval_ns > discovery->update_interval_ns) {
         return reject_option("discovery.tx_interval_ns", "is longer than discovery.update_interval_ns");
     }
-#if tt_SEGMENT_ENABLED
-    uint64_t silence = discovery_silence_of(discovery->update_interval_ns, discovery->miss_threshold);
-    // Was static_assert(tt_SEGMENT_DEAD_READER_NS < tt_LIVELINESS_SILENCE_NS): a stopped same-host reader must be given
-    // up before its node is presumed dead - see tt_SEGMENT_DEAD_READER_NS.
-    if (silence <= (uint64_t)tt_SEGMENT_DEAD_READER_NS) {
-        return reject_option("discovery.update_interval_ns",
-                             "x (miss_threshold + 1/2) is not above tt_SEGMENT_DEAD_READER_NS");
-    }
-#endif
+    // The silence against the segment's dead-reader time is checked with the segment (validate_segment_options()).
     if (discovery->update_interval_ns != tt_CONTEXT_UPDATE_INTERVAL ||
         discovery->miss_threshold != tt_LIVELINESS_MISS_THRESHOLD) {
         TT_LOG_WARNING(
@@ -1174,10 +1195,64 @@ static tt_ret_t validate_hybrid_options(const struct tt_HybridOptions* hybrid) {
 }
 #endif
 
-static tt_ret_t validate_segment_options(const struct tt_SegmentOptions* segment) {
-    if (segment->reserved != 0) {
-        return reject_option("segment.reserved", "is not 0");
+// The ring's slot count from its bytes (tt_SegmentOptions.bytes): the largest power of two of slots of
+// 16 + slot_bytes that fit, 0 for fewer than one.
+static uint32_t segment_slots_in(uint32_t bytes, uint32_t slot_bytes) {
+    uint32_t raw = bytes / (uint32_t)(sizeof(struct tt_SegmentSlot) + slot_bytes);
+    uint32_t slots = 1;
+    if (raw == 0) {
+        return 0;
     }
+    while (slots <= raw / 2U) {
+        slots *= 2U;
+    }
+    return slots;
+}
+
+// With the discovery group, which the dead-reader time is ordered against. Unused, so unchecked, where
+// tt_SEGMENT_ENABLED is 0.
+static tt_ret_t validate_segment_options(const struct tt_SegmentOptions* segment,
+                                         const struct tt_DiscoveryOptions* discovery) {
+#if tt_SEGMENT_ENABLED
+    // A slot size the user set and this build cannot use is their configuration and their error, so it is refused
+    // here rather than quietly replaced by the default - a value silently ignored reads exactly like a value that had
+    // no effect, which is the shape config.h's own #ifndef guards were in until 2026-09-29.
+    if (segment->slot_bytes != 0 && !valid_slot_bytes(segment->slot_bytes)) {
+        TT_LOG_ERROR("Configured segment slot of %u bytes is outside [%u, %u] and cannot hold a datagram",
+                     segment->slot_bytes, (unsigned)sizeof(struct tt_Header), (unsigned)tt_MAX_SAMPLE_LENGTH);
+        return reject_option("segment.slot_bytes", "cannot hold a datagram");
+    }
+    if (segment->bytes != 0) {
+        uint32_t slot_bytes = segment->slot_bytes != 0 ? segment->slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
+        uint32_t slots = segment_slots_in(segment->bytes, slot_bytes);
+        // Was static_assert(tt_SEGMENT_RAW_SLOTS >= 4) in config.h.
+        if (slots < 4U) {
+            return reject_option("segment.bytes", "holds fewer than 4 slots of 16 + slot_bytes");
+        }
+        // The reader's per-slot state (segment_plan_skip) is sized by the build's tt_SEGMENT_SLOTS.
+        if (slots > (uint32_t)tt_SEGMENT_SLOTS) {
+            return reject_option("segment.bytes", "holds more slots than tt_SEGMENT_SLOTS, this build's most");
+        }
+    }
+    // Was static_assert(tt_SEGMENT_DEAD_READER_NS < tt_LIVELINESS_SILENCE_NS), then a check of the discovery group: a
+    // stopped same-host reader must be given up before its node is presumed dead - see tt_SEGMENT_DEAD_READER_NS.
+    uint64_t dead_reader = segment_dead_reader_of(segment, discovery);
+    if (dead_reader >= discovery_silence_of(discovery->update_interval_ns, discovery->miss_threshold)) {
+        return reject_option("segment.dead_reader_ns",
+                             "is not below the discovery silence (update_interval_ns x (miss_threshold + 1/2))");
+    }
+    // A held fence takes nothing from the ring; held as long as that, its writers would give the reader up as dead.
+    if (segment->fence_hold_ns >= dead_reader) {
+        return reject_option("segment.fence_hold_ns", "is not below segment.dead_reader_ns");
+    }
+    // segment_next_mode() doubles the interval from 1 up to this, and the window is a mask of it.
+    if ((segment->probe_every_max & (segment->probe_every_max - 1U)) != 0) {
+        return reject_option("segment.probe_every_max", "is not a power of two");
+    }
+#else
+    (void)segment;
+    (void)discovery;
+#endif
     return tt_RET_OK;
 }
 
@@ -1212,7 +1287,7 @@ static tt_ret_t validate_init_options(const struct tt_InitOptions* opts) {
         ret = validate_hybrid_options(&opts->hybrid_transport);
     }
     if (ret == tt_RET_OK) {
-        ret = validate_segment_options(&opts->segment);
+        ret = validate_segment_options(&opts->segment, &opts->discovery);
     }
     if (ret == tt_RET_OK) {
         ret = validate_capacity_options(&opts->capacity);
@@ -1247,7 +1322,7 @@ static tt_ret_t init_options_from_legacy_config(struct tt_InitOptions* opts) {
 #if tt_DISCOVERY_OPTIONS
     net->discovery_range = _tt_CONFIG.discovery_range;
 #endif
-    net->segment_slot_bytes = _tt_CONFIG.segment_slot_bytes;
+    opts->segment.slot_bytes = _tt_CONFIG.segment_slot_bytes;
     net->large_fragmentation = _tt_CONFIG.large_fragmentation;
     net->ip_reassembly_max = _tt_CONFIG.ip_reassembly_max != 0 ? _tt_CONFIG.ip_reassembly_max : tt_IP_REASSEMBLY_NONE;
     net->reassembly_cap_off = _tt_CONFIG.reassembly_cap_off != 0 ? 1 : 0;
@@ -1643,7 +1718,21 @@ static uint8_t* segment_slot(struct tt_SegmentHeader* header, uint32_t index) {
 // otherwise. One place interprets the sentinel, so "did the user choose this?" is asked where it is answered
 // and not re-derived at each use.
 static uint32_t own_slot_bytes(const struct tt_Context* node) {
-    return node->opts.net.segment_slot_bytes != 0 ? node->opts.net.segment_slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
+    return node->opts.segment.slot_bytes != 0 ? node->opts.segment.slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
+}
+
+// The slot count this context builds its own segment with (tt_SegmentOptions.bytes): tt_SEGMENT_SLOTS for a zero,
+// whatever the slot size, as before the option; else what the bytes hold at this context's slot size. Kept within
+// [4, tt_SEGMENT_SLOTS], which creation checks (validate_segment_options()) and a whitebox context may not have been.
+static uint32_t own_slots(const struct tt_Context* node) {
+    if (node->opts.segment.bytes == 0) {
+        return (uint32_t)tt_SEGMENT_SLOTS;
+    }
+    uint32_t slots = segment_slots_in(node->opts.segment.bytes, own_slot_bytes(node));
+    if (slots < 4U) {
+        return 4U;
+    }
+    return slots < (uint32_t)tt_SEGMENT_SLOTS ? slots : (uint32_t)tt_SEGMENT_SLOTS;
 }
 
 // Is a user-set slot size one this context can build a segment from at all? Checked at creation, where the
@@ -2102,13 +2191,13 @@ static void segment_peer_clear(struct tt_Context* node, uint8_t context_id) {
     node->segment_peer_live[context_id] = 0;
 }
 
-static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
+static void remember_absent(const struct tt_Context* node, struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
     entry->mapping = NULL;
     entry->incarnation = 0;
     entry->ip = ip;
     entry->port = port;
     entry->missing = true;
-    entry->recheck_in = tt_SEGMENT_ATTACH_RETRY_SENDS;
+    entry->recheck_in = node->opts.segment.attach_retry_sends;
 }
 
 // The peer's segment, attached on first use and kept. NULL when this peer is not reachable that way
@@ -2328,7 +2417,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     char path[tt_SEGMENT_PATH_LENGTH];
     if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
         note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
-        remember_absent(entry, ip, port);
+        remember_absent(node, entry, ip, port);
         return NULL;
     }
     size_t bytes = 0;
@@ -2337,7 +2426,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     header = segment_attach_fenced(node, entry, header, bytes, ip, port, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
-        remember_absent(entry, ip, port);
+        remember_absent(node, entry, ip, port);
         return NULL;
     }
     entry->mapped_bytes = bytes;
@@ -2350,7 +2439,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     // last_progress_ns is NOT cleared here: a fresh entry has it at zero from the memset, and a
     // re-attach carries the reader's own clock across (above). Setting it here was the other half of
     // the same defect.
-    entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
+    entry->recheck_in = node->opts.segment.revalidate_sends;
     // Only ever raised: a ceiling too high costs the walk record_size_limit() skips; one too low would cap a record
     // below what a peer can take.
     if (header->slot_bytes > node->segment_slot_ceiling) {
@@ -2379,7 +2468,8 @@ static void create_own_segment(struct tt_Context* node) {
     if (segment_name(path, sizeof(path), own_ip, own_port, node->id) < 0) {
         return;
     }
-    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes(node)));
+    const uint32_t slots = own_slots(node);
+    void* mapping = tt_segment_create(path, segment_bytes(slots, own_slot_bytes(node)));
     if (mapping == NULL) {
         return; // no segment: peers reach this context over UDP, counted as unattached on their side
     }
@@ -2398,7 +2488,7 @@ static void create_own_segment(struct tt_Context* node) {
     header->owner_port = own_port;
     header->owner_context_id = node->id;
     header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_wall_ns();
-    header->slots = tt_SEGMENT_SLOTS;
+    header->slots = slots;
     header->slot_bytes = own_slot_bytes(node);
     header->write_index = 0;
     header->read_index = 0;
@@ -2514,7 +2604,7 @@ static void release_segments(struct tt_Context* node) {
     // slot size settable at runtime, what this context BUILT is the only thing that says how much to unmap, and
     // re-deriving it would hand munmap a length that is right only while nothing changed between.
     size_t bytes = node->own_segment != NULL ? segment_bytes(node->own_segment->slots, node->own_segment->slot_bytes)
-                                             : segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes(node));
+                                             : segment_bytes(own_slots(node), own_slot_bytes(node));
 
     // The name is computed FIRST, while the mapping is certainly still there, and the own mapping is
     // taken out of the table before the loop - because a context is routinely attached to its own
@@ -2820,11 +2910,11 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
         if (entry->last_progress_ns == 0) {
             entry->last_progress_ns = now; // the first refusal since we last got something in
         }
-        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS && entry->claims == 0) {
+        if (now - entry->last_progress_ns >= node->opts.segment.dead_reader_ns && entry->claims == 0) {
             tt_segment_detach(entry->mapping, entry->mapped_bytes);
             peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry));
-            remember_absent(entry, ip, port);
+            remember_absent(node, entry, ip, port);
             note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says
         }
         if (node->segment_full_warnings == 0) {
@@ -6640,15 +6730,21 @@ static void wall_offset_refresh(struct tt_Context* node) {
 // zeroed inbox state array only happens to mean "empty".
 static void node_init_locks(struct tt_Context* node) {
     // Not a lock: the one call every context makes before its first use, created (after its options were resolved,
-    // when this changes nothing) or built by hand in a whitebox test (the service, reliable, poll and hybrid
+    // when this changes nothing) or built by hand in a whitebox test (the service, reliable, poll, hybrid and segment
     // groups still zero). The call path reads the service options, the repair path the reliable ones, the receive loop
-    // the poll options and the hybrid transport its own (service_call_retry_interval(), resend_suppressed(),
-    // drain_rx_more(), node_poll() and the rest), with no fallback for a zero; reset_node_state() after this starts the
-    // hybrid reader on them.
+    // the poll options, the hybrid transport its own and the segment's drain and send paths theirs
+    // (service_call_retry_interval(), resend_suppressed(), drain_rx_more(), node_poll(), drain_own_segment() and the
+    // rest), with no fallback for a zero; reset_node_state() after this starts the hybrid reader on them. The segment's
+    // dead-reader time is derived from the discovery group (a whitebox context's zero discovery fields are the
+    // defaults).
     resolve_service_options(&node->opts.service);
     resolve_reliable_options(&node->opts.reliable);
     resolve_poll_options(&node->opts.poll);
     resolve_hybrid_options(&node->opts.hybrid_transport);
+    resolve_segment_options(&node->opts.segment);
+#if tt_SEGMENT_ENABLED
+    node->opts.segment.dead_reader_ns = segment_dead_reader_of(&node->opts.segment, &node->opts.discovery);
+#endif
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -23068,7 +23164,7 @@ static uint8_t segment_next_mode(struct tt_Context* node, uint8_t mode) {
         return node->segment_preferred;
     }
     if (mode != preferred) {
-        if (node->segment_probe_every < tt_SEGMENT_PROBE_EVERY_MAX) {
+        if (node->segment_probe_every < node->opts.segment.probe_every_max) {
             node->segment_probe_every *= 2; // a re-measure that did not change the choice: the next one later
         }
         node->segment_probe_in = node->segment_probe_every;
@@ -23102,7 +23198,9 @@ static void segment_epoch_turn(struct tt_Context* node, uint64_t now, uint32_t r
         // record or more. Halved by the count of its own epochs instead, it kept a whole run's re-measures, and after
         // the costs changed took over 30,000 epochs to follow them. Its wider standard error is the price: once the
         // re-measures are rare, the choice moves only on a clear difference - which a change of placement is.
-        if ((node->segment_epochs[0] + node->segment_epochs[1]) % tt_SEGMENT_PROBE_EVERY_MAX == 0) {
+        // A mask: probe_every_max is a power of two (validate_segment_options()), and a 64-bit modulo is a libcall on
+        // rv32.
+        if (((node->segment_epochs[0] + node->segment_epochs[1]) & (node->opts.segment.probe_every_max - 1U)) == 0) {
             for (uint8_t each = 0; each < 2; each++) {
                 if (node->segment_cost_n[each] >= 4) {
                     node->segment_cost_n[each] /= 2U;
@@ -23199,7 +23297,7 @@ static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decid
         return;
     }
     const uint64_t cost = resumed - decided;
-    if (node->segment_sleep_cost_n >= tt_SEGMENT_PROBE_EVERY_MAX) {
+    if (node->segment_sleep_cost_n >= node->opts.segment.probe_every_max) {
         node->segment_sleep_cost_n /= 2U;
     }
     const uint32_t count = ++node->segment_sleep_cost_n;
@@ -23261,7 +23359,7 @@ static enum head_stall note_head_stall(struct tt_Context* node) {
     }
     node->segment_head_stalls++;
     node->segment_head_stall_passes++;
-    if (node->segment_head_stall_passes == tt_SEGMENT_STALL_PASSES && node->segment_stall_warnings == 0) {
+    if (node->segment_head_stall_passes == node->opts.segment.stall_passes && node->segment_stall_warnings == 0) {
         node->segment_stall_warnings++;
         TT_LOG_WARNING("Segment ring head stalled: slot %u was claimed by a peer that never published it, and %u "
                        "drain passes have found it so. Nothing can be read past it and the ring will fill; traffic "
@@ -23346,7 +23444,7 @@ static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHead
     } else {
         const uint64_t now = tt_get_ns();
         if (node->segment_fence_deadline_ns == 0) {
-            node->segment_fence_deadline_ns = now + tt_SEGMENT_FENCE_HOLD_NS;
+            node->segment_fence_deadline_ns = now + node->opts.segment.fence_hold_ns;
             // The sleep that waits for the datagram ends by the deadline because the scheduler has an entry there,
             // not because the sleep asks: a test on every sleep would be paid by every round trip for a wait that
             // happens once per switch. Under the state lock (the drain's), so into the heap directly. A full heap
@@ -24059,9 +24157,11 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
     uint32_t delivered = 0;
     uint32_t drained = 0;
     bool hand_back = false;
+    // Read once a poll, not per record: the record loop below compares against this local as it did the constant.
+    const uint32_t drain_per_poll = node->opts.segment.drain_per_poll;
     node->segment_plan_mark = node->rx_keep_last_delivered; // read by segment_skip_head() between plans
     const uint32_t chunk = node->opts.poll.rx_lock_chunk;   // once per drain
-    while (drained < tt_SEGMENT_DRAIN_PER_POLL) {
+    while (drained < drain_per_poll) {
         // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
         // process_datagram_locked() says so in its name and every field a datagram touches is under
         // it. This drain called it **unlocked from the day the segment landed** (1c69658a) and
@@ -24075,7 +24175,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         state_lock(node);
         uint32_t taken = 0;
         bool ran_dry = false;
-        while (taken < chunk && drained + taken < tt_SEGMENT_DRAIN_PER_POLL && !ran_dry) {
+        while (taken < chunk && drained + taken < drain_per_poll && !ran_dry) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;

@@ -82,7 +82,7 @@ MUTANTS = [
     (
         "the window of recent epochs (the modes' records never halved)",
         "src/tickle.c",
-        "        if ((node->segment_epochs[0] + node->segment_epochs[1]) % tt_SEGMENT_PROBE_EVERY_MAX == 0) {",
+        "        if (((node->segment_epochs[0] + node->segment_epochs[1]) & (node->opts.segment.probe_every_max - 1U)) == 0) {",
         "        if (node->segment_epochs[0] == 0xFFFFFFFFU) {",
         "test_the_choice_follows_a_change_in_the_costs",
     ),
