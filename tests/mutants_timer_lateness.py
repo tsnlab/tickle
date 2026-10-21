@@ -133,7 +133,10 @@ MUTANTS = [
         "the call keeps the cold G",
         "src/tickle.c",
         "    uint64_t granularity = call_retry_granularity(client->node);",
-        "    uint64_t granularity = call_retry_granularity(NULL);",
+        # The cold G spelled out, not call_retry_granularity(NULL): since the service options (ed1d3a2a) that reads
+        # node->opts.service with no NULL fallback, so the NULL mutant was a segfault in the guard before any EXPECT
+        # could name a line - "did not fail", read as a survivor. reliable_retry_granularity(NULL) still means cold.
+        "    uint64_t granularity = 2U * reliable_retry_granularity(NULL);",
         "test_the_retry_intervals_use_the_measured_lateness",
     ),
     (
@@ -156,6 +159,9 @@ def build_and_run(control=None):
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
     run = subprocess.run([str(BIN)], capture_output=True, text=True, check=False, timeout=600)
+    if run.returncode < 0:
+        # Killed by a signal: no EXPECT reported a line, so no guard can be credited - say so, not "did not fail".
+        return f"CRASHED(signal {-run.returncode})", run.stdout + run.stderr
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
 
