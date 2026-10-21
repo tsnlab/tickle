@@ -31,7 +31,10 @@
 #define TEST_COMMON_DEFINE_STORAGE
 #include "test_common.h"
 #define TEST_MOCK_DEFINE_STORAGE
-#include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
+#ifndef TICKLE_C
+#define TICKLE_C "../src/tickle.c"
+#endif
+#include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox; tests/mutants_init_options_capacity.sh passes a mutant
 #include "test_mock.h"
 
 #define ENDPOINT_ID 0xaabbccdd
@@ -456,6 +459,42 @@ static void test_several_claims_and_publishes_meanwhile(void) {
     teardown(arm);
 }
 
+// tt_InitOptions bundle 9: a context's capacity.publisher_claims is the most claims one of its Publishers holds at
+// once, claims[] keeping its compiled size. Two here: the third is refused as a full claims[] is, and a claim given
+// back makes room. The control is the same Publisher at the default, which takes the third.
+// tests/mutants_init_options_capacity.sh puts tt_PUBLISHER_CLAIMS back in the reader and expects this to fail.
+#define CAPACITY_CLAIMS 2U
+static void test_capacity_publisher_claims_is_the_claims_held(void) {
+    static_assert(CAPACITY_CLAIMS < tt_PUBLISHER_CLAIMS, "the limit must be below the compiled size to show anything");
+    struct arm* arm = &arms[CLAIMED];
+    for (int limited = 0; limited <= 1; limited++) {
+        setup(arm);
+        EXPECT_EQ_U32(tt_PUBLISHER_CLAIMS, arm->sender.opts.capacity.publisher_claims); // resolved by node_init_locks()
+        if (limited) {
+            arm->sender.opts.capacity.publisher_claims = CAPACITY_CLAIMS;
+        }
+        uint8_t* payloads[CAPACITY_CLAIMS + 1U] = {NULL};
+        for (uint32_t k = 0; k < CAPACITY_CLAIMS; k++) {
+            EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payloads[k]));
+        }
+        tt_ret_t third = tt_Publisher_claim(&arm->pub, 64, &payloads[CAPACITY_CLAIMS]);
+        EXPECT_EQ_INT(limited ? (int)tt_RET_ILLEGAL_STATUS : (int)tt_RET_OK, (int)third);
+        EXPECT_EQ_U32(limited ? CAPACITY_CLAIMS : CAPACITY_CLAIMS + 1U, arm->pub.claims_out);
+        if (limited) {
+            EXPECT_TRUE(payloads[CAPACITY_CLAIMS] == NULL);
+            EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payloads[0]));
+            EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payloads[0])); // room again
+        }
+        for (uint32_t k = 0; k <= CAPACITY_CLAIMS; k++) {
+            if (payloads[k] != NULL) {
+                EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payloads[k]));
+            }
+        }
+        EXPECT_EQ_U32(0, arm->pub.claims_out);
+        teardown(arm);
+    }
+}
+
 // In place only while it is safe (claim_publish_in_place()): a claim followed in the ring by an ordinary publish of its
 // own Publisher goes by reference, or the reader would take it, with the later seq_no, ahead of that publish; and a
 // claim the reader has passed goes by reference, its index marked by the reader (i + 3), which the publish's exchange
@@ -874,6 +913,7 @@ int main(void) {
     test_a_claimed_publish_writes_what_the_encoder_writes();
     test_reliable_claims_cache_what_the_encoder_caches();
     test_several_claims_and_publishes_meanwhile();
+    test_capacity_publisher_claims_is_the_claims_held();
     test_in_place_only_when_last_and_unpassed();
     test_a_claim_publishes_its_length_not_its_capacity();
     test_abandon_and_destroy_give_the_slot_back();
