@@ -25,10 +25,15 @@
 //   uring_dt     the same on a ring set up with IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN, so the copy
 //                runs in the waiting thread's own io_uring_enter()
 //   uring_ms     one multishot IORING_OP_RECV (IORING_RECV_MULTISHOT) with a provided-buffer ring, armed once; each
-//                wait is io_uring_enter(0 submit, min_complete 1); the buffer goes back to the ring after the read
+//                wait is io_uring_enter(0 submit, min_complete 1); the buffer goes back to the ring after the read.
+//                The ring is registered as production's drain registers it: in this process's memory, else the
+//                kernel's own (IOU_PBUF_RING_MMAP); a kernel that refuses both refuses the style
 //   uring_ms_dt  the same on a DEFER_TASKRUN ring
 // A style whose setup the kernel refuses prints "REFUSED <style> <reason>" and exits 3: not measured, not a failure of
-// the others. `probe` tries every style's setup and prints AVAILABLE or REFUSED for each.
+// the others. `probe` tries every style's setup and prints AVAILABLE or REFUSED for each, then PBUF lines: which
+// IORING_REGISTER_PBUF_RING variants the kernel accepts, against a control it must refuse, and a PBUF_CAUSE line that
+// says whether a refusal is the harness's arguments or the kernel (2026-10-22: the rig's Pis, Linux 6.8.0-1064-raspi,
+// refused the multishot styles with EINVAL; production's drain logs the same EINVAL there for both ring variants).
 //
 // The reading rules - which difference decides, the control, the sample counts - are code in recv_wake_xhost_read.py
 // (--prereg prints them, --selftest checks them), written before the first run.
@@ -60,6 +65,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling (hal_linux.c); the numbers live in an architecture header.
 #include <sys/syscall.h> // NOLINT(misc-include-cleaner)
 
@@ -83,6 +89,15 @@
 #define PBUF_COUNT 8U
 #define PBUF_BYTES 2048U
 #define PBUF_GROUP 7U
+// The buffer-ring constants of Linux 6.4 (IOU_PBUF_RING_MMAP), for headers older than the kernel they run on.
+#ifndef IOU_PBUF_RING_MMAP
+#define IOU_PBUF_RING_MMAP 1U
+#endif
+#ifndef IORING_OFF_PBUF_RING
+#define IORING_OFF_PBUF_RING 0x80000000ULL
+#define IORING_OFF_PBUF_SHIFT 16
+#endif
+#define WHY_BYTES 256
 #define MAX_ROUNDS 1000000L
 #define MAX_GAP_US 1000000L
 #define MAX_PORT 65535L
@@ -224,6 +239,53 @@ static void pbuf_give(struct uring* ring, uint16_t bid) {
     __atomic_store_n(&ring->pbuf->tail, ring->pbuf_tail, __ATOMIC_RELEASE);
 }
 
+// One IORING_REGISTER_PBUF_RING: 0, or the errno the kernel refused it with.
+static int pbuf_reg(int ring_fd, uint64_t ring_addr, uint32_t entries, uint16_t group, uint16_t flags, uint64_t resv0) {
+    struct io_uring_buf_reg reg;
+    memset(&reg, 0, sizeof(reg));
+    reg.ring_addr = ring_addr;
+    reg.ring_entries = entries;
+    reg.bgid = group;
+    reg.flags = flags;
+    reg.resv[0] = resv0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - __NR_io_uring_register: <sys/syscall.h>, above
+    return syscall(__NR_io_uring_register, ring_fd, IORING_REGISTER_PBUF_RING, &reg, 1) == 0 ? 0 : errno;
+}
+
+// The multishot styles' buffer ring, the way production's drain asks for it (hal_linux.c drain_register_buffers()):
+// the ring in this process's memory, else the kernel's own (IOU_PBUF_RING_MMAP, Linux 6.4), mapped here. Production
+// then falls back to classic provided buffers; these styles measure a buffer ring, so they are refused instead, with
+// both answers in *why (`probe` says which kernel check it is).
+static int pbuf_register(struct uring* ring, size_t ring_bytes, const char** why) {
+    static char reason[WHY_BYTES];
+    int user_err = pbuf_reg(ring->fd, (uint64_t)(uintptr_t)ring->pbuf, PBUF_COUNT, PBUF_GROUP, 0, 0);
+    if (user_err == 0) {
+        return 0;
+    }
+    int kernel_err = pbuf_reg(ring->fd, 0, PBUF_COUNT, PBUF_GROUP, IOU_PBUF_RING_MMAP, 0);
+    if (kernel_err == 0) {
+        void* mapped = mmap(NULL, ring_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring->fd,
+                            (off_t)(IORING_OFF_PBUF_RING | ((uint64_t)PBUF_GROUP << IORING_OFF_PBUF_SHIFT)));
+        if (mapped != MAP_FAILED) {
+            (void)munmap(ring->pbuf, ring_bytes);
+            ring->pbuf = mapped;
+            return 0;
+        }
+        kernel_err = errno;
+    }
+    struct utsname host;
+    if (uname(&host) != 0) {
+        (void)snprintf(host.release, sizeof(host.release), "unknown");
+    }
+    (void)snprintf(
+        reason, sizeof(reason),
+        "IORING_REGISTER_PBUF_RING (user ring: %s; IOU_PBUF_RING_MMAP: %s; Linux %s; `probe` names the check)",
+        strerror(user_err), strerror(kernel_err), host.release);
+    *why = reason;
+    errno = user_err;
+    return -1;
+}
+
 static void arm_multishot(struct receiver* rcv) {
     struct io_uring_sqe* sqe = uring_sqe(&rcv->ring);
     sqe->opcode = IORING_OP_RECV;
@@ -271,14 +333,7 @@ static int receiver_setup(struct receiver* rcv, const char** why) {
             return -1;
         }
         memset(rcv->ring.pbuf, 0, ring_bytes);
-        struct io_uring_buf_reg reg;
-        memset(&reg, 0, sizeof(reg));
-        reg.ring_addr = (uint64_t)(uintptr_t)rcv->ring.pbuf;
-        reg.ring_entries = PBUF_COUNT;
-        reg.bgid = PBUF_GROUP;
-        // NOLINTNEXTLINE(misc-include-cleaner) - __NR_io_uring_register: <sys/syscall.h>, above
-        if (syscall(__NR_io_uring_register, rcv->ring.fd, IORING_REGISTER_PBUF_RING, &reg, 1) != 0) {
-            *why = "IORING_REGISTER_PBUF_RING";
+        if (pbuf_register(&rcv->ring, ring_bytes, why) != 0) {
             return -1;
         }
         for (uint16_t bid = 0; bid < PBUF_COUNT; bid++) {
@@ -431,6 +486,98 @@ static int open_receiver(struct receiver* rcv, enum style style, int port, const
     return receiver_setup(rcv, why);
 }
 
+// One registration variant on a ring of its own (so no earlier group is in the way): the errno, 0 when accepted.
+static int pbuf_variant(uint64_t ring_addr, uint32_t entries, uint16_t group, uint16_t flags, uint64_t resv0) {
+    struct uring ring;
+    memset(&ring, 0, sizeof(ring));
+    if (uring_setup(&ring, 0) != 0) {
+        return errno;
+    }
+    int err = pbuf_reg(ring.fd, ring_addr, entries, group, flags, resv0);
+    (void)close(ring.fd); // the mappings go with the process
+    return err;
+}
+
+// Classic provided buffers (IORING_OP_PROVIDE_BUFFERS, Linux 5.7) - what production's drain falls back to: the CQE's
+// result, or the errno of a refused setup or submission.
+static int pbuf_classic(const uint8_t* memory) {
+    struct uring ring;
+    memset(&ring, 0, sizeof(ring));
+    if (uring_setup(&ring, 0) != 0) {
+        return errno;
+    }
+    struct io_uring_sqe* sqe = uring_sqe(&ring);
+    sqe->opcode = IORING_OP_PROVIDE_BUFFERS;
+    sqe->fd = (int32_t)PBUF_COUNT;
+    sqe->addr = (uint64_t)(uintptr_t)memory;
+    sqe->len = PBUF_BYTES;
+    sqe->buf_group = PBUF_GROUP;
+    if (uring_enter(&ring, 1, 1) < 0) {
+        int err = errno;
+        (void)close(ring.fd);
+        return err;
+    }
+    uint32_t head = *ring.cq_head;
+    int res = head != __atomic_load_n(ring.cq_tail, __ATOMIC_ACQUIRE) ? ring.cqes[head & *ring.cq_mask].res : -EAGAIN;
+    (void)close(ring.fd);
+    return res < 0 ? -res : 0;
+}
+
+// Why IORING_REGISTER_PBUF_RING is refused, decided by variants rather than read off one errno: a control the kernel
+// must refuse (resv[0] set: EINVAL on every kernel since 5.19) proves the call reaches the argument checks; then the
+// harness's own registration, the same with one entry and with group 0, page-aligned memory each time (so neither
+// alignment nor a power of two nor the group can be the reason), and the kernel's own ring (IOU_PBUF_RING_MMAP, which
+// takes no user memory at all). Printed as PBUF lines and one PBUF_CAUSE line.
+static void pbuf_diagnose(void) {
+    struct utsname host;
+    if (uname(&host) != 0) {
+        (void)snprintf(host.release, sizeof(host.release), "unknown");
+    }
+    long page = sysconf(_SC_PAGESIZE);
+    size_t bytes = (size_t)page;
+    uint8_t* user = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    uint8_t* memory = malloc((size_t)PBUF_COUNT * PBUF_BYTES);
+    if (user == MAP_FAILED || memory == NULL) {
+        printf("PBUF_CAUSE unknown: no memory for the variants\n");
+        return;
+    }
+    const uint64_t addr = (uint64_t)(uintptr_t)user;
+    const int control = pbuf_variant(addr, PBUF_COUNT, PBUF_GROUP, 0, 1);
+    const int harness = pbuf_variant(addr, PBUF_COUNT, PBUF_GROUP, 0, 0);
+    const int one = pbuf_variant(addr, 1, PBUF_GROUP, 0, 0);
+    const int group0 = pbuf_variant(addr, PBUF_COUNT, 0, 0, 0);
+    const int kernel = pbuf_variant(0, PBUF_COUNT, PBUF_GROUP, IOU_PBUF_RING_MMAP, 0);
+    const int classic = pbuf_classic(memory);
+    printf("PBUF Linux %s, page %ld bytes, user ring at page offset %lu\n", host.release, page,
+           (unsigned long)(addr % (uint64_t)page));
+    printf("PBUF control resv[0]=1 (must be refused, EINVAL): %s\n", control == 0 ? "accepted" : strerror(control));
+    printf("PBUF user ring, entries=%u bgid=%u (the harness's): %s\n", PBUF_COUNT, PBUF_GROUP,
+           harness == 0 ? "accepted" : strerror(harness));
+    printf("PBUF user ring, entries=1: %s\n", one == 0 ? "accepted" : strerror(one));
+    printf("PBUF user ring, bgid=0: %s\n", group0 == 0 ? "accepted" : strerror(group0));
+    printf("PBUF kernel ring (IOU_PBUF_RING_MMAP, no user memory): %s\n", kernel == 0 ? "accepted" : strerror(kernel));
+    printf("PBUF classic IORING_OP_PROVIDE_BUFFERS (production's drain fallback): %s\n",
+           classic == 0 ? "accepted" : strerror(classic));
+    if (control != EINVAL) {
+        printf("PBUF_CAUSE unknown: the control was not refused with EINVAL (%s) - the variants cannot be read\n",
+               control == 0 ? "accepted" : strerror(control));
+    } else if (harness == 0) {
+        printf("PBUF_CAUSE none: the harness's registration is accepted\n");
+    } else if (one == 0 || group0 == 0) {
+        printf("PBUF_CAUSE harness: a variant of the harness's own arguments is accepted - fix the harness\n");
+    } else if (kernel == 0) {
+        printf("PBUF_CAUSE kernel: Linux %s refuses buffer rings in user memory (any size, any group, page-aligned) "
+               "and accepts its own (IOU_PBUF_RING_MMAP) - the harness falls back to that\n",
+               host.release);
+    } else {
+        printf("PBUF_CAUSE kernel: Linux %s refuses every buffer ring registration - user memory (page-aligned, power "
+               "of two, any group) and IOU_PBUF_RING_MMAP alike - with a control that shows the call reaches the "
+               "argument checks; not the harness. Multishot styles stay REFUSED; classic provided buffers: %s\n",
+               host.release, classic == 0 ? "accepted" : strerror(classic));
+    }
+    free(memory);
+}
+
 static int run_probe(void) {
     int refused = 0;
     for (int i = 0; i < STYLE_COUNT; i++) {
@@ -444,6 +591,7 @@ static int run_probe(void) {
         }
         // the process exits soon: the descriptors and rings go with it
     }
+    pbuf_diagnose();
     return refused == STYLE_COUNT ? 1 : 0;
 }
 
