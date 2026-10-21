@@ -285,7 +285,8 @@ static void wrap_with_held(uint32_t held) {
     for (uint32_t h = 0; h < kept; h++) {
         EXPECT_TRUE(record_is(kept_record[h], kept_value[h]));
         uint32_t sequence = seq_of(ring, kept_index[h]);
-        EXPECT_EQ_U32(2U, (sequence - kept_index[h]) & (SLOTS - 1U)); // still marked
+        // Still marked: by the last writer to pass it (2) or by the reader that passed it after (3).
+        EXPECT_TRUE(((sequence - kept_index[h]) & (SLOTS - 1U)) - 2U <= 1U);
         segment_unhold(ring, kept_index[h]);
     }
     // Released: one more lap and a half is written ahead of the reader, which needs every slot free again.

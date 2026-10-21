@@ -110,7 +110,8 @@ resolved at creation against endpoints already discovered. `rmw_get_publishers_i
   slot is passed over by the ring's writers (DESIGN.md section 10, "Held slots"), so it stops nothing (until 2026-10-20
   it stopped the ring one lap later). `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1` builds in
   the subscriber's slot (no publish copy for BEST_EFFORT): up to `tt_PUBLISHER_CLAIMS` (4) slot loans out at once, each
-  held and passed over by the ring, other publishes going on meanwhile, read in publish order. No slot free (full ring,
+  held and passed over by the ring, other publishes going on meanwhile, read in publish order; one published with
+  nothing claimed after it goes out in place, at its own ring index (core `shm_claims_in_place`). No slot free (full ring,
   several or remote peers, 4 out): the borrow lends a kept buffer, and a slot loan that cannot go where it is (a psn
   past the short form, KEEP_ALL without room) is published by copy (`slot_loans_copied` on the loans line).
 - **Measured:** PC, no visible difference (RESULTS.md "Loaned messages (PC)"). Rig A/B 2026-10-09 (`7a321d26`..`e521bbba`

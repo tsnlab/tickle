@@ -502,6 +502,9 @@ with nothing held), `tests/mutants_segment_held.sh`. Cost with nothing held (PC,
 2026-10-20, 6 runs an arm, A P B B P A): PASS 16/16 on instructions per sample, writers -0.08..+0.38%; the be readers'
 count follows the reader's wait mode (sleeping ~890, watching ~1,500-1,700 a sample), not the build. The two slow paths
 are cold and out of line: inlined, the writer's claim carried 3 more instructions (+0.3-0.5% a sample). Rig: pending.
+Since 2026-10-21 the reader passes a head marked `i + 2` by CASing it to `i + 3` ("passed by the reader"), a held mark
+like `p + 2` everywhere else (writers pass it, the release frees it, a reference may name it), so that a claim's
+publish can tell whether the reader got there first (below).
 
 **Claimed-slot publish** (`tt_Publisher_claim` / `_publish_claimed` / `_abandon_claim`): the caller builds the CDR in
 the subscriber's slot.
@@ -509,7 +512,8 @@ the subscriber's slot.
 | rule | detail |
 |---|---|
 | when | a lone DATA to one attached same-host peer whose segment has `tt_SEGMENT_FEATURE_HELD_REF`; otherwise refused with a reason (`UNSUPPORTED`, `OUT_OF_BUFFER`, `WOULD_BLOCK`, `ILLEGAL_STATUS`), meaning "publish ordinarily" |
-| held, by reference | the claimed slot is held at once (the ring passes it); the publish writes a `tt_SEGMENT_SPAN_REF` record (`struct tt_SegmentRef`: index, length) in the next free index, and the reader reads the datagram in the held slot there, then gives it back (`shm_refs_read`; a malformed or foreign one: `shm_refs_refused`). No room for the reference: dropped as a full ring drops |
+| in place when it still can be | nothing claimed in the ring after it (`write_index` = its index + 1) and the reader not past it: the publish CASes the mark `i + 2` to `i + 1`, against the reader's `i + 2 -> i + 3`; read at its own index, one ring index and no pass (`shm_claims_in_place`). Why: by reference every claim cost two indices, a pass and an out-of-order read - rig ab_loans slots 2026-10-20 (A `04c71310`, B f588b101 of ab/slot-loans before its rebase onto main, here `b0d21912`), loans on, rtt array1k block +2.6 us best effort and +1.85 us reliable, `shm_held_passed` = `shm_refs_read` = claims in every B run. PC (`slotloans_cost_pc.sh`, back-to-back array1k, 6 runs an arm): user-mode instructions a round trip on each side, A 14.9-17.2k, B +~410 (+2.5%), in place +~120-135 (+0.8%), every claim in place; the pre-registered user+kernel reading is SAME for both (bimodal wake-up costs) |
+| held, by reference | otherwise: the claimed slot is held at once (the ring passes it); the publish writes a `tt_SEGMENT_SPAN_REF` record (`struct tt_SegmentRef`: index, length) in the next free index, and the reader reads the datagram in the held slot there, then gives it back (`shm_refs_read`; a malformed or foreign one: `shm_refs_refused`). No room for the reference: dropped as a full ring drops |
 | several per publisher | up to `tt_PUBLISHER_CLAIMS` (4); ordinary publishes go on meanwhile; the seq_no is taken at the publish, so samples are read in publish order (until 2026-10-20: one claim, other publishes refused, the ring stopped at it) |
 | re-checked | if the destination changed since the claim, the bytes are copied and published ordinarily (`shm_claims_copied`); KEEP_ALL is checked at the claim and at the publish (`WOULD_BLOCK` keeps the claim) |
 | RELIABLE | still copies into its cache; destroy abandons every outstanding claim |

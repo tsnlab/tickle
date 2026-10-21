@@ -762,15 +762,30 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 // follows from that: a slot passed at i and then released before the reader came to i reads i + slots, which the
 // reader also passes (no writer can have published it: i + slots is not reachable before read_index passes i).
 //
-// Marks need p + 2 to differ from p and p + 1 at every position, so a ring of fewer than 4 slots never makes one and
-// keeps the old behaviour. Nothing on the hot path changes: a writer still claims on `sequence == claimed`, a reader
-// still reads on `sequence == read_index + 1`, and both look at marks only where they used to give up.
+// THE READER MARKS WHAT IT PASSED (2026-10-21). The reader passes a head marked i + 2 by turning the mark into i + 3 -
+// "held, passed by the reader at i" - by compare-and-exchange, before it moves read_index. A claim
+// (tt_Publisher_claim()) is held at i + 2 from the moment it is made, and its publish may turn that i + 2 into i + 1 -
+// published in place and read at its own index - by the same exchange, when nothing was claimed in the ring after it.
+// Whichever exchange lands first decides, and a publish that loses hands the slot over by reference. Everywhere else i
+// + 3 is a held mark as i + 2 is: writers pass it at the next lap, the release frees it for i + slots, and a reference
+// may name it.
+//
+// Marks need p + 2 and p + 3 to differ from p and p + 1 at every position, so a ring of fewer than 4 slots never makes
+// one and keeps the old behaviour. Nothing on the hot path changes: a writer still claims on `sequence == claimed`, a
+// reader still reads on `sequence == read_index + 1`, and both look at marks only where they used to give up.
 #define SEGMENT_HELD_MIN_SLOTS 4U
 
 // Whether index `index` of `header` was passed while its slot was held (`sequence` is the slot's): the reader moves
-// past it without reading.
+// past it without reading: i + 2 (a writer's mark or a claim's), i + 3 (the reader's own) or i + slots (passed, then
+// released).
 static inline bool segment_seq_passed(const struct tt_SegmentHeader* header, uint32_t sequence, uint32_t index) {
-    return header->slots >= SEGMENT_HELD_MIN_SLOTS && (sequence == index + 2U || sequence == index + header->slots);
+    return header->slots >= SEGMENT_HELD_MIN_SLOTS &&
+           (sequence - index - 2U <= 1U || sequence == index + header->slots);
+}
+
+// Whether `sequence` is a held mark made at `index` or at a later index of the same position: p + 2 or p + 3.
+static inline bool segment_seq_held_since(const struct tt_SegmentHeader* header, uint32_t sequence, uint32_t index) {
+    return ((sequence - index) & (header->slots - 1U)) - 2U <= 1U;
 }
 
 // A writer at index `claimed` whose slot is not free (its sequence `sequence`): true when the index was passed - its
@@ -784,9 +799,9 @@ __attribute__((cold, noinline)) static bool segment_pass_held(struct tt_SegmentH
     if (slots < SEGMENT_HELD_MIN_SLOTS) {
         return false;
     }
-    if (sequence == claimed - slots + 2U) {
-        // Held since the last lap: passed at this index. A release or another writer changing the mark first makes
-        // the exchange fail, and the caller looks again.
+    if (sequence - (claimed - slots) - 2U <= 1U) {
+        // Held since the last lap (a writer's, a claim's or the reader's mark): passed at this index. A release or
+        // another writer changing the mark first makes the exchange fail, and the caller looks again.
         if (!__atomic_compare_exchange_n(&slot_header->sequence, &sequence, claimed + 2U, false, __ATOMIC_ACQ_REL,
                                          __ATOMIC_ACQUIRE)) {
             return true;
@@ -804,8 +819,17 @@ __attribute__((cold, noinline)) static bool segment_pass_held(struct tt_SegmentH
 #if tt_SEGMENT_ENABLED
 // The reader at `read_index`, its head slot's sequence `sequence` not "published": true when the index was passed over
 // (segment_seq_passed()) and read_index has moved past it. write_index is moved first if the writer that marked it has
-// not yet, so read_index never runs ahead of it.
+// not yet, so read_index never runs ahead of it. A mark i + 2 is first made the reader's, i + 3, by
+// compare-and-exchange (above): one that fails found the claim published in place (false: the head reads now) or given
+// back (passed).
 static bool segment_pass_head(struct tt_SegmentHeader* header, uint32_t read_index, uint32_t sequence) {
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, read_index);
+    while (sequence == read_index + 2U) {
+        if (__atomic_compare_exchange_n(&slot_header->sequence, &sequence, read_index + 3U, false, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            break;
+        }
+    }
     if (!segment_seq_passed(header, sequence, read_index)) {
         return false;
     }
@@ -829,16 +853,18 @@ static void segment_hold(struct tt_SegmentHeader* header, uint32_t index) {
 #endif
 
 #if tt_SEGMENT_ENABLED
-// A held slot given back (segment_unhold()): its mark p + 2 becomes p + slots, free for the next index at its position;
-// a slot never marked (published, index + 1, as in a ring under SEGMENT_HELD_MIN_SLOTS) becomes index + slots, as
-// before. Release ordering: every read the holder made happens before a writer that sees the slot free reuses it.
+// A held slot given back (segment_unhold()): its mark p + 2 or p + 3 becomes p + slots, free for the next index at its
+// position; a slot never marked (published, index + 1, as in a ring under SEGMENT_HELD_MIN_SLOTS) becomes index +
+// slots, as before. Release ordering: every read the holder made happens before a writer that sees the slot free reuses
+// it.
 static void segment_unhold(struct tt_SegmentHeader* header, uint32_t index) {
     struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index);
     const uint32_t slots = header->slots;
     uint32_t sequence = __atomic_load_n(&slot_header->sequence, __ATOMIC_RELAXED);
     for (;;) {
-        const bool marked = slots >= SEGMENT_HELD_MIN_SLOTS && ((sequence - index) & (slots - 1U)) == 2U;
-        const uint32_t free_at = marked ? sequence - 2U + slots : index + slots;
+        const uint32_t mark = (sequence - index) & (slots - 1U); // 2 or 3 for a held mark
+        const bool marked = slots >= SEGMENT_HELD_MIN_SLOTS && mark - 2U <= 1U;
+        const uint32_t free_at = marked ? sequence - mark + slots : index + slots;
         if (__atomic_compare_exchange_n(&slot_header->sequence, &sequence, free_at, false, __ATOMIC_RELEASE,
                                         __ATOMIC_RELAXED)) {
             return;
@@ -5788,6 +5814,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_claims_published = 0;
     node->segment_claims_copied = 0;
     node->segment_claims_abandoned = 0;
+    node->segment_claims_in_place = 0;
     node->segment_held_passed = 0;
     node->segment_refs_read = 0;
     node->segment_refs_refused = 0;
@@ -11003,6 +11030,31 @@ static struct tt_PublisherClaim* claim_of(struct tt_Publisher* pub, const uint8_
     return NULL;
 }
 
+// IN PLACE WHEN IT STILL CAN BE (2026-10-21). A claim whose ring has had nothing claimed after it - write_index still
+// its index + 1, so nothing this Publisher published since can be read ahead of it - and that its reader has not passed
+// is published at its own index: its held mark i + 2 becomes "published", i + 1, by compare-and-exchange against the
+// reader's pass (i + 2 -> i + 3, segment_pass_head()). True when it was; false, and the caller hands it over by
+// reference, when another index was claimed meanwhile or the reader got there first. Why: by reference a sample costs
+// two ring indices, the reader's pass of the held index and a read out of ring order - on the rig, slot loans on, an
+// array1k round trip 2.6 us (best effort) and 1.85 us (reliable) slower than main's in-place claim, where every claim
+// was read by reference (ab_loans slots, 2026-10-20: shm_held_passed and shm_refs_read equal to the claims).
+static bool claim_publish_in_place(const struct tt_PublisherClaim* claim, uint32_t record_len, uint32_t sender_ip,
+                                   uint16_t sender_port) {
+    if (__atomic_load_n(&claim->segment->write_index, __ATOMIC_ACQUIRE) != claim->index + 1U) {
+        return false;
+    }
+    struct tt_SegmentSlot* slot = claim->slot;
+    // Written before the exchange that publishes them. If it fails the slot stays held and passed, and nobody reads
+    // these: a reference names its length itself, and its sender is the reference's.
+    slot->length = record_len;
+    slot->sender_ip = sender_ip;
+    slot->sender_port = sender_port;
+    slot->seq_span = 1;
+    uint32_t held = claim->index + 2U;
+    return __atomic_compare_exchange_n(&slot->sequence, &held, claim->index + 1U, false, __ATOMIC_RELEASE,
+                                       __ATOMIC_RELAXED);
+}
+
 static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload) {
     struct tt_PublisherClaim* claim = NULL;
     for (uint32_t k = 0; k < tt_PUBLISHER_CLAIMS && claim == NULL; k++) {
@@ -11172,22 +11224,30 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint8
                         true); // counted as try_publish_into_slot() counts it; the destination rule ruled out a firing
     struct tt_SingleHeader single = {native_single_marker(), tt_VERSION, node->id, tt_SUBMESSAGE_TYPE_DATA};
     _tt_memcpy(record, &single, sizeof(single));
-    // The reference, in the ring's next free index: the held slot's bytes are complete before its release store.
+    // In place where it still can be (claim_publish_in_place()), else by a reference in the ring's next free index: the
+    // held slot's bytes are complete before either release.
     struct tt_SegmentHeader* segment = claim->segment;
-    uint32_t ref_index = 0;
-    struct tt_SegmentSlot* ref = segment_claim(segment, &ref_index);
-    if (ref == NULL) {
-        // No room for the reference: dropped, as a full ring drops any datagram (segment_deliver_ringing()). The
-        // sample is spent - its seq_no taken and, RELIABLE, cached for a repair - exactly as a dropped one is.
-        node->segment_full_dropped++;
-        claim_release(pub, claim, false);
-    } else {
-        const struct tt_SegmentRef desc = {claim->index, record_len};
-        _tt_memcpy(segment_slot_payload(ref), &desc, sizeof(desc));
-        segment_publish_as(ref, ref_index, (uint32_t)sizeof(desc), own_ip, own_port, (uint16_t)tt_SEGMENT_SPAN_REF);
-        claim_release(pub, claim, true);
+    if (claim_publish_in_place(claim, record_len, own_ip, own_port)) {
+        claim_release(pub, claim, true); // published: the reader gives the slot back, as any record's
         node->segment_claims_published++;
+        node->segment_claims_in_place++;
         segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
+    } else {
+        uint32_t ref_index = 0;
+        struct tt_SegmentSlot* ref = segment_claim(segment, &ref_index);
+        if (ref == NULL) {
+            // No room for the reference: dropped, as a full ring drops any datagram (segment_deliver_ringing()). The
+            // sample is spent - its seq_no taken and, RELIABLE, cached for a repair - exactly as a dropped one is.
+            node->segment_full_dropped++;
+            claim_release(pub, claim, false);
+        } else {
+            const struct tt_SegmentRef desc = {claim->index, record_len};
+            _tt_memcpy(segment_slot_payload(ref), &desc, sizeof(desc));
+            segment_publish_as(ref, ref_index, (uint32_t)sizeof(desc), own_ip, own_port, (uint16_t)tt_SEGMENT_SPAN_REF);
+            claim_release(pub, claim, true);
+            node->segment_claims_published++;
+            segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
+        }
     }
 #ifdef tt_RELIABLE_STATS
     g_rstats.datagrams++; // flush_tx()'s accounting for the one DATA this datagram carries
@@ -21966,6 +22026,11 @@ static enum head_stall note_head_stall(struct tt_Context* node) {
         node->segment_head_stall_passes = 0;
         return HEAD_STALL_PASSED;
     }
+    if (__atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE) == read_index + 1U) {
+        // A claim published in place while the reader was about to pass it (segment_pass_head()): the drain reads it.
+        node->segment_head_stall_passes = 0;
+        return HEAD_STALL_PASSED;
+    }
     node->segment_head_stalls++;
     node->segment_head_stall_passes++;
     if (node->segment_head_stall_passes == tt_SEGMENT_STALL_PASSES && node->segment_stall_warnings == 0) {
@@ -22095,7 +22160,7 @@ segment_ref_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, ui
     const uint32_t sequence = __atomic_load_n(&target->sequence, __ATOMIC_ACQUIRE);
     // Held (its mark at its position), marked at or after the claim, the claim before the reference, and room enough.
     bool valid = framed && header->slots >= SEGMENT_HELD_MIN_SLOTS &&
-                 ((sequence - desc.index) & (header->slots - 1U)) == 2U && sequence - desc.index < SEGMENT_INDEX_HALF &&
+                 segment_seq_held_since(header, sequence, desc.index) && sequence - desc.index < SEGMENT_INDEX_HALF &&
                  index - desc.index - 1U < SEGMENT_INDEX_HALF && desc.length != 0 && desc.length <= header->slot_bytes;
 #if tt_SAMPLE_LENDING
     valid = valid && !(node->lend.held_slots != 0 && lend_holds_slot(node, header, desc.index));
@@ -23900,9 +23965,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         "lend_held=%lu shm_full_retained=%lu "
         // Attaches refused because no live context owned the file: a dead one's segment, left in /dev/shm.
         "shm_attach_orphaned=%lu "
-        // Claimed-slot publishes (tt_Publisher_claim()): built in place, copied out at publish, abandoned.
-        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu shm_held_passed=%lu shm_refs_read=%lu "
-        "shm_refs_refused=%lu "
+        // Claimed-slot publishes (tt_Publisher_claim()): built in place, copied out at publish, abandoned; of the
+        // published, those at their own index (the rest by reference).
+        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu shm_claims_in_place=%lu "
+        "shm_held_passed=%lu shm_refs_read=%lu shm_refs_refused=%lu "
         // The switch from UDP to a segment (tt_SEGMENT_SPAN_FENCE): fences this writer sent, and fences met at the head
         // of this context's own ring - passed on their datagram, or given up at the deadline.
         "shm_fences_sent=%lu shm_fences_passed=%lu shm_fences_expired=%lu "
@@ -23941,14 +24007,15 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)LEND_COUNT(node, bad_releases), (unsigned long)LEND_COUNT(node, held),
         (unsigned long)LEND_COUNT(node, full_retained), (unsigned long)node->segment_attach[tt_SEGMENT_ORPHANED],
         (unsigned long)node->segment_claims_published, (unsigned long)node->segment_claims_copied,
-        (unsigned long)node->segment_claims_abandoned, (unsigned long)node->segment_held_passed,
-        (unsigned long)node->segment_refs_read, (unsigned long)node->segment_refs_refused,
-        (unsigned long)node->segment_fences_sent, (unsigned long)node->segment_fences_passed,
-        (unsigned long)node->segment_fences_expired, (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads,
-        (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8,
-        (unsigned long)node->udp_gso_sends, (unsigned long)node->udp_gso_datagrams,
-        (unsigned long)node->tx_unmatched_dropped, (unsigned long)node->tx_unmatched_kept, (int)node->sched_peak,
-        tt_MAX_SCHEDULER_LENGTH - 1, (unsigned long)node->sched_full);
+        (unsigned long)node->segment_claims_abandoned, (unsigned long)node->segment_claims_in_place,
+        (unsigned long)node->segment_held_passed, (unsigned long)node->segment_refs_read,
+        (unsigned long)node->segment_refs_refused, (unsigned long)node->segment_fences_sent,
+        (unsigned long)node->segment_fences_passed, (unsigned long)node->segment_fences_expired,
+        (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged,
+        (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8, (unsigned long)node->udp_gso_sends,
+        (unsigned long)node->udp_gso_datagrams, (unsigned long)node->tx_unmatched_dropped,
+        (unsigned long)node->tx_unmatched_kept, (int)node->sched_peak, tt_MAX_SCHEDULER_LENGTH - 1,
+        (unsigned long)node->sched_full);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
