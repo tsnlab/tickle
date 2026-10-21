@@ -86,9 +86,11 @@ replace "read: node_poll() ignores scheduler_io_interleave" \
     "consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE"
 replace "read: node_poll() ignores receive_timeout" \
     "time - poll_start >= node->opts.poll.receive_timeout" "time - poll_start >= tt_RECEIVE_TIMEOUT"
+# The line alone: the groups node_init_locks() resolves after it changed with bundles 7 and 8, and an anchor that took
+# the next line with it matched nothing from then on.
 replace "init: a context built by hand keeps a zero poll group" \
     "    resolve_poll_options(&node->opts.poll);
-    tt_lock_init" "    tt_lock_init"
+" ""
 replace "resolve: a zero rx_lock_chunk is not the default" \
     "poll->rx_lock_chunk = tt_RX_LOCK_CHUNK;" "poll->rx_lock_chunk = 1;"
 
