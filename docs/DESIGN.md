@@ -101,12 +101,14 @@ cost unchanged" for the first build, and the rig's same-host gate v2 A/B (A fab1
 client user instructions a sample on BE p1/p3, reliable p3 and latency p1/p3. The drain compared every record against the runtime bound, one live value too many on aarch64: drain_own_segment +7.8
 instructions a call, the only function that moved (`aarch64_insn/samehost_qemu.sh`, exact counts). Each lock chunk now
 folds the bound into its own count, one compare a record: -15 a round trip against main there, and on the PC
-(`initoptions8_segment_insn_pc.sh`, A 05118219, B a9f0566a, n 6/6/6 a cell) latency p1/p3 -0.17% client and -0.36%
+(`initoptions8_segment_insn_pc.sh`, A 05118219, B e93346b4 before its rebase, n 6/6/6 a cell) latency p1/p3 -0.17% client and -0.36%
 server, BE p1/p3 and reliable p3 clients -0.04% to -0.30%. Its pre-registered verdict is FAIL all the same, on the
 BE p1/p3 and reliable p3 servers only: their count on this PC is bimodal - a reader that catches the writer mid-copy
 polls the claimed head, 0.13-0.34 head stalls a sample against 0.03-0.04 - and the placement arm itself moved +16% to
 +68% there; within one mode B is at or below A. The unfixed build failed on the latency cells (+5 a round trip, server),
-which the earlier PC run (user plus kernel instructions, other cells) could not see. Rig same-host A/B pending.
+which the earlier PC run (user plus kernel instructions, other cells) could not see. The rig decides: same-host gate
+v2 A/B of the fixed build (A 05118219, B 8b2f69ed's tree before its rebase, `ab_samehost_initoptions8v2_segment_20261022-050502`,
+REPS 4, sentinel control held at -0.20%) reads IMPROVED: 6 comparisons better, 28 held, none worse.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 

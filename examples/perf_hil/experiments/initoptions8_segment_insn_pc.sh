@@ -2,7 +2,8 @@
 # initoptions8_segment_insn_pc.sh - user instructions per sample of the same-host segment path on THIS PC, in the very
 # cells the rig's same-host gate v2 A/B of tt_InitOptions bundle 8 (segment options) ran. 2026-10-22.
 #
-# Why this exists: that rig A/B (ab_samehost_initoptions8_segment_20261022-003748, A=fab14fd9, B=94683aed) came out
+# Why this exists: that rig A/B (ab_samehost_initoptions8_segment_20261022-003748, A=fab14fd9, B=the first build,
+# branch ab/initoptions-8-segment) came out
 # WORSE on the segment path - server user insn/sample +0.6% to +1.66% (BE p1/p3, reliable_throughput p3, latency
 # p1/p3), client +0.6% on the latency cells - while the PC measurement made before it
 # (initoptions8_segment_insn_pc_20261021-210540, run with heldslot_samehost_insn_pc.sh) said PASS. That run could not
