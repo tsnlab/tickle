@@ -48,6 +48,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `_MISS_THRESHOLD`, `tt_DISCOVERY_REQUEST_RETRY`, `_ATTEMPTS`, `tt_SCHED_FULL_WARN_INTERVAL`) are per context, the
   constants their defaults; `tt_SEGMENT_DEAD_READER_NS < silence` checked at creation. A non-default update interval or
   miss threshold logs a WARNING (peers judge silence by their own). rmw_tickle reads them from its core context.
+- **Segment options** (`tt_InitOptions.segment`, bundle 8): `tt_SEGMENT_BYTES`, `_SLOT_BYTES`, `_FENCE_HOLD_NS`,
+  `_DEAD_READER_NS`, `_DRAIN_PER_POLL`, `_PROBE_EVERY_MAX`, `_STALL_PASSES`, `_ATTACH_RETRY_SENDS` and `_REVALIDATE_SENDS`
+  are per context, the constants their defaults (`tt_SEGMENT_SLOTS` stays the build's most slots). `net.segment_slot_bytes`
+  (unreleased) is `segment.slot_bytes`. The dead-reader time follows the context's discovery interval, and the check
+  against the silence moved from the discovery group to it. Wire bytes and the default ring unchanged.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
