@@ -673,6 +673,12 @@
 // unless the application gives the HAL its own memory (hal_freertos.h). A microcontroller's RAM, not a host's, and
 // two contexts of one image hand each other samples within one scheduling decision, so the ring holds a burst while
 // its reader is not scheduled rather than a host's millisecond stalls. Not measured: the formula above is the guide.
+//
+// Since tt_InitOptions bundle 8 a context sets its own (struct tt_SegmentOptions, tickle.h), and the constants here are
+// its defaults: tt_SEGMENT_BYTES (bytes; this one is also the build's most, through tt_SEGMENT_SLOTS, which sizes the
+// reader's per-slot state), tt_SEGMENT_SLOT_BYTES, tt_SEGMENT_FENCE_HOLD_NS, tt_SEGMENT_DRAIN_PER_POLL,
+// tt_SEGMENT_PROBE_EVERY_MAX, tt_SEGMENT_STALL_PASSES, tt_SEGMENT_ATTACH_RETRY_SENDS, tt_SEGMENT_REVALIDATE_SENDS and
+// tt_SEGMENT_DEAD_READER_NS. tt_PUBLISHER_CLAIMS and tt_SEGMENT_FENCES_SEEN size arrays and stay compile-time.
 #ifndef tt_SEGMENT_BYTES
 #if defined(TT_PLATFORM_FREERTOS)
 #define tt_SEGMENT_BYTES (24 * 1024)
@@ -792,7 +798,8 @@
 // wrong is UDP until the next recheck. It was a literal 1 s until 2026-10-06 (ROADMAP.md 5a) - the same
 // value at the default tt_CONTEXT_UPDATE_INTERVAL, but a build with an interval below ~286 ms put the
 // liveliness silence under it, and the rule could no longer fire before the peer was presumed dead.
-// Derived now, and the ordering is checked at creation against the context's own silence (tt_DiscoveryOptions).
+// Derived now, and the ordering is checked at creation against the context's own silence (tt_DiscoveryOptions). A
+// context whose discovery timing is not the default derives its own the same way (tt_SegmentOptions.dead_reader_ns).
 #ifndef tt_SEGMENT_DEAD_READER_NS
 #define tt_SEGMENT_DEAD_READER_NS (tt_LIVELINESS_SILENCE_NS * 2U / (((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U))
 #endif
@@ -1472,7 +1479,8 @@ struct _tt_Config {
     // (g6) tt_DISCOVERY_RANGE_*: SUBNET (0, the default) is the links as always.
     uint8_t discovery_range;
 #endif
-    // Bytes of payload one shared-memory slot holds, or 0 (the default) for tt_SEGMENT_SLOT_BYTES.
+    // Bytes of payload one shared-memory slot holds, or 0 (the default) for tt_SEGMENT_SLOT_BYTES. Read into
+    // tt_SegmentOptions.slot_bytes (tickle.h).
     //
     // Runtime rather than only -D, for three reasons measured on 2026-10-02. The hot path never used the
     // constant - segment_slot() takes its stride and its mask from the header - so moving it costs nothing

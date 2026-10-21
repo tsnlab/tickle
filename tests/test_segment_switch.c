@@ -678,7 +678,7 @@ static void test_a_late_fence_does_not_pass_a_newer_one(void) {
     drop_fences = true;
     drain_reader(); // read now, and remembered
     struct tt_SegmentPeer* entry = &node_a.segment_peers[node_b.id];
-    remember_absent(entry, entry->ip, entry->port);
+    remember_absent(&node_a, entry, entry->ip, entry->port);
     attach_refused = true;
     const uint64_t shm_before = node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM];
     for (int i = 0; i < UDP_SAMPLES; i++) {
@@ -719,7 +719,7 @@ static void test_a_full_ring_refuses_the_switch(void) {
         segment_publish(slot, claimed, 0, TEST_HOST_IP, 20009, 1); // filler, never drained
     }
     struct tt_SegmentPeer* entry = &node_a.segment_peers[node_b.id];
-    remember_absent(entry, entry->ip, entry->port); // as after a dead-reader give-up
+    remember_absent(&node_a, entry, entry->ip, entry->port); // as after a dead-reader give-up
     entry->recheck_in = 0;
     const uint64_t fences = node_a.segment_fences_sent;
     EXPECT_TRUE(peer_segment(&node_a, node_b.id, entry->ip, entry->port) == NULL);

@@ -830,7 +830,6 @@ struct tt_NetOptions {
     struct tt_LinkOptions links[tt_MAX_LINK_COUNT];
     uint8_t link_count;
     uint8_t discovery_range;     // tt_DISCOVERY_RANGE_*; 0 = SUBNET. Others need tt_DISCOVERY_OPTIONS
-    uint32_t segment_slot_bytes; // payload bytes of one shared-memory slot; 0 = tt_SEGMENT_SLOT_BYTES
     uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO/_MTU/_IP; 0 = AUTO
     // The largest datagram accepted from IP reassembly, advertised in announces; 0 = _tt_IP_REASSEMBLY_MAX (Linux
     // 65507, FreeRTOS none); tt_IP_REASSEMBLY_NONE = none. At most tt_IPV4_UDP_MAX_PAYLOAD.
@@ -919,8 +918,33 @@ struct tt_SocketOptions {
 struct tt_HybridOptions {
     uint8_t reserved;
 };
+// The same-host shared-memory segment (bundle 8; config.h "SHM_PLAN.md stage 1"), unused where tt_SEGMENT_ENABLED is 0.
+// Each 0 is the config.h constant named beside it. Three are not resolved, so a zero in the context's copy still means
+// "the default": slot_bytes (a slot the user set refuses a type too large for it, the default only counts it -
+// _tt_CONFIG.segment_slot_bytes in config.h), bytes (the ring's slot count follows the slot size) and dead_reader_ns in
+// tt_InitOptions_default()'s result (derived from the context's discovery timing when the context is created).
+// The ring's geometry is the owner's alone: a peer reads it from the segment's header, so contexts with different
+// values attach to each other.
 struct tt_SegmentOptions {
-    uint8_t reserved;
+    // Bytes of the context's own ring: its slot count is the largest power of two whose slots of 16 + slot_bytes fit,
+    // at least 4 and at most tt_SEGMENT_SLOTS (the build's, which sizes the reader's per-slot state). 0 =
+    // tt_SEGMENT_SLOTS slots - what tt_SEGMENT_BYTES gives at tt_SEGMENT_SLOT_BYTES - whatever the slot size.
+    uint32_t bytes;
+    uint32_t slot_bytes; // payload bytes of one slot; 0 = tt_SEGMENT_SLOT_BYTES. Was tt_NetOptions.segment_slot_bytes
+    // How long a fence at the head of the ring waits for its datagram; tt_SEGMENT_FENCE_HOLD_NS. Below dead_reader_ns:
+    // the ring takes nothing while the fence is held, which its writers would read as a dead reader.
+    uint64_t fence_hold_ns;
+    // A writer gives up a reader that took nothing from a full ring this long; 0 = tt_SEGMENT_DEAD_READER_NS at the
+    // default discovery timing, else derived as it is (one update interval of discovery). Below the silence after
+    // which the reader's node is presumed dead.
+    uint64_t dead_reader_ns;
+    uint32_t drain_per_poll;     // records taken from the ring in one poll at most; tt_SEGMENT_DRAIN_PER_POLL
+    uint32_t probe_every_max;    // a power of two: epochs between two re-measures, at most; tt_SEGMENT_PROBE_EVERY_MAX
+    uint32_t stall_passes;       // drain passes over a claimed head before it is reported; tt_SEGMENT_STALL_PASSES
+    uint32_t attach_retry_sends; // sends to a peer with no segment before it is looked for again;
+                                 // tt_SEGMENT_ATTACH_RETRY_SENDS
+    uint32_t revalidate_sends;   // sends over an attached segment before its name is checked again;
+                                 // tt_SEGMENT_REVALIDATE_SENDS
 };
 struct tt_Capacity {
     uint8_t reserved;
@@ -3800,8 +3824,10 @@ void tt_InitOptions_default(struct tt_InitOptions* opts);
 // tt_Context_create() returns, and tt_RET_INVALID_ARGUMENT, with a log line naming the field, for an option this build
 // cannot honour: a link_count above tt_MAX_LINK_COUNT, a link without a broadcast, an address that is not a dotted
 // IPv4 quad, a unicast_threshold not below tt_MAX_PEER_COUNT, an unknown discovery_range or large_fragmentation, a
-// discovery_range or peer link without tt_DISCOVERY_OPTIONS, a segment_slot_bytes that cannot hold a datagram, an
-// ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, or a reserved field not 0.
+// discovery_range or peer link without tt_DISCOVERY_OPTIONS, a segment.slot_bytes that cannot hold a datagram, an
+// ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, a segment ring of fewer than
+// 4 or more than tt_SEGMENT_SLOTS slots, segment timings out of order (fence hold < dead reader < the discovery
+// silence), a segment.probe_every_max not a power of two, or a reserved field not 0.
 //
 // tt_Context_create(node) is tt_Context_create_with() given the process-wide _tt_CONFIG. DEPRECATED (2026-10-21):
 // writing _tt_CONFIG to configure a context. It stays read by tt_Context_create() until every caller has moved to

@@ -2955,7 +2955,7 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     test_mock_segments_free();
 
     memset(&owner, 0, sizeof(owner));
-    owner.opts.net.segment_slot_bytes = configured;
+    owner.opts.segment.slot_bytes = configured;
     owner.id = OWNER_ID;
     owner.entity_id_base = OWNER_INCARNATION;
     owner.hal.own_ip = OWNER_IP;
@@ -2970,7 +2970,7 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
 
     // And a size this build cannot use is refused rather than quietly replaced by the default, because a
     // silently ignored setting is the failure this whole field exists to avoid repeating.
-    opts.net.segment_slot_bytes = 1; // below a datagram header
+    opts.segment.slot_bytes = 1; // below a datagram header
     memset(&owner, 0, sizeof(owner));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create_with(&owner, &opts));
     // And through the legacy path, tt_Context_create() reading _tt_CONFIG, which still refuses it.
@@ -2990,7 +2990,7 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     // than no test, because it reads as cover. This asserts the ceiling in a build that can tell them apart
     // (any frag build, e.g. the p4 harness at tt_MAX_SAMPLE_LENGTH=4096) and says so where it cannot.
 #if tt_MAX_SAMPLE_LENGTH > FRAG_WHOLE_DATA_LIMIT
-    opts.net.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT + 1U;
+    opts.segment.slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT + 1U;
     memset(&owner, 0, sizeof(owner));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create_with(&owner, &opts));
 #endif
@@ -2998,7 +2998,7 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     // The boundary itself is allowed, so the refusal above is the ceiling and not an off-by-one that would
     // also reject every usable size.
     memset(&owner, 0, sizeof(owner));
-    owner.opts.net.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
+    owner.opts.segment.slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
     owner.id = OWNER_ID;
     owner.entity_id_base = OWNER_INCARNATION;
     owner.hal.own_ip = OWNER_IP;

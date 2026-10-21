@@ -25,7 +25,7 @@ MUTANTS = [
     (
         "negative attach caching",
         "src/tickle.c",
-        "        note_attach(node, verdict);\n        remember_absent(entry, ip, port);\n",
+        "        note_attach(node, verdict);\n        remember_absent(node, entry, ip, port);\n",
         "        note_attach(node, verdict);\n",
         "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
     ),
@@ -46,7 +46,7 @@ MUTANTS = [
     (
         "giving up on a ring nobody drains",
         "src/tickle.c",
-        "        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS && entry->claims == 0) {",
+        "        if (now - entry->last_progress_ns >= node->opts.segment.dead_reader_ns && entry->claims == 0) {",
         "        if (false) {",
         "test_a_writer_gives_up_on_a_ring_nobody_drains",
     ),

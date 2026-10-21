@@ -521,15 +521,13 @@ static void test_validation(void) {
     expect_refused(&opts, "discovery.tx_interval_ns above update_interval_ns");
 
 #if tt_SEGMENT_ENABLED
-    // The silence stays above tt_SEGMENT_DEAD_READER_NS: 3.5 x 285714286 ns is above 1 s, 3.5 x 285714285 is not.
+    // A silence not above the build's tt_SEGMENT_DEAD_READER_NS (3.5 x 285714285 ns) was refused here until bundle 8:
+    // the context's dead-reader time is now derived from its own interval, so it stays below the silence, and the
+    // order is checked with the segment (tests/test_init_options_segment.c).
     opts = defaults();
-    opts.discovery.update_interval_ns = ((tt_SEGMENT_DEAD_READER_NS * 2U) / 7U) + 1U;
-    expect_accepted(&opts, "a silence just above tt_SEGMENT_DEAD_READER_NS");
     opts.discovery.update_interval_ns = (tt_SEGMENT_DEAD_READER_NS * 2U) / 7U;
-    expect_refused(&opts, "a silence not above tt_SEGMENT_DEAD_READER_NS");
-    // A higher miss threshold lets the same interval through.
-    opts.discovery.miss_threshold = 4;
-    expect_accepted(&opts, "the same interval at miss_threshold 4");
+    expect_accepted(&opts,
+                    "a silence not above the build's tt_SEGMENT_DEAD_READER_NS: the dead-reader time follows it");
 #endif
 }
 

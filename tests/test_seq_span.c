@@ -364,7 +364,7 @@ static void test_a_whole_record_advances_the_reader_by_its_span(void) {
     // writes two, and the second silently never reached the segment.
     // (valid_slot_bytes() caps the runtime knob at one datagram until 6e(b); this is whitebox and
     // sets the field create_own_segment() actually reads, same as that test's own comment says.)
-    owner.opts.net.segment_slot_bytes = 4096;
+    owner.opts.segment.slot_bytes = 4096;
     create_own_segment(&owner);
     EXPECT_TRUE(owner.own_segment != NULL);
     EXPECT_EQ_U32(4096, owner.own_segment->slot_bytes);
