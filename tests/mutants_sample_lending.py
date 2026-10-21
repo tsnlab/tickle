@@ -7,17 +7,23 @@ is missing or the piece is doing nothing, and both are findings. The verdict als
 the failures, so a mutant killed by an assertion elsewhere does not count for the piece it names; a crash (the binary
 killed by a signal) counts, and is printed as CRASH.
 
-Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it (the control always runs).
+Run from the repository root. MUTANTS=<substring> runs only the mutants whose name contains it (the control always
+runs). Refuses to start (exit 2) if any anchor is not in its file exactly once - "the release frees the slot" matched
+nothing from 6f0c8a93, when the release became segment_unhold(), and the sweep counted it as one error among the rest -
+or if a file it edits is already modified. Every child is bounded (tests/mutant_guard.py: 2 GB of address space, a
+deadline, at most 256 KB of its output kept); every file is restored after each mutant, on an exception and on
+SIGINT/SIGTERM/SIGHUP, with a fresh mtime so make rebuilds.
+
+Not covered: the writer's lend.full_retained count (segment_full_by_hold()). Since 6f0c8a93 a writer passes a held
+slot instead of being refused by it, and every build's ring has at least SEGMENT_HELD_MIN_SLOTS slots, so no test here
+can make a hold refuse a writer; its mutant survived as written and was removed.
 """
 import os
 import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 
 from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, run_capped, usage_line
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_sample_lending"
@@ -41,7 +47,8 @@ MUTANTS = [
     (
         "the release frees the slot",
         "src/tickle.c",
-        "    __atomic_store_n(&slot_header->sequence, released->index + header->slots, __ATOMIC_RELEASE);\n#else",
+        # Since 6f0c8a93 the release turns the slot's held mark into "free" by CAS (segment_unhold()), not a store.
+        "    segment_unhold(header, released->index);\n#else",
         "#else",
         "test_a_retained_slot_survives_a_lap",
     ),
@@ -58,13 +65,6 @@ MUTANTS = [
         "    if (node->lend.rx_kind == tt_LEND_SLOT && node->lend.rx_index == released->index) {\n        return; // still",
         "    if (false) {\n        return; // still",
         "test_retain_and_release_in_one_callback",
-    ),
-    (
-        "the writer's hold counter",
-        "src/tickle.c",
-        "        if (segment_full_by_hold(segment)) {\n            node->lend.full_retained++;",
-        "        if (segment_full_by_hold(segment)) {\n            (void)0;",
-        "test_a_retained_slot_survives_a_lap",
     ),
     (
         "the socket moved to a spare buffer",
@@ -199,37 +199,28 @@ def failing_tests(output, spans):
 
 
 def build_and_run(control=None):
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True, cwd=ROOT / "platform/linux",
-    )
+    build = run_capped(["make", "-s", "-j2", str(BIN.relative_to(ROOT / "platform/linux"))], timeout=900,
+                       cwd=ROOT / "platform/linux")
     if build.returncode != 0:
-        return "BUILD_FAILED", build.stderr[-2000:]
+        return "BUILD_FAILED", build.output[-2000:]
     if unchanged(control, BIN):
         return NOT_COMPILED, ""
-    run = subprocess.run([str(BIN)], capture_output=True, text=True)
-    if run.returncode < 0:
-        return "CRASH", run.stdout + run.stderr  # killed by a signal: a failure no test line can name
-    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+    run = run_capped([str(BIN)], timeout=300)
+    if run.timed_out:
+        return "HANG", run.output  # a failure too, but one no test line names: printed as such
+    if run.returncode is None or run.returncode < 0:
+        return "CRASH", run.output  # killed by a signal: a failure no test line can name
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def main():
-    backup = tempfile.mkdtemp(prefix="lend_mutants_")
-    touched = {m[1] for m in MUTANTS}
-    for rel in touched:
-        shutil.copy2(ROOT / rel, pathlib.Path(backup) / rel.replace("/", "_"))
-
-    def restore():
-        for rel in touched:
-            # copy() and touch, not copy2(): a restored file must look newer than objects built from the mutant.
-            shutil.copy(pathlib.Path(backup) / rel.replace("/", "_"), ROOT / rel)
-            (ROOT / rel).touch()
-
+    be_nice()
+    check_anchors(ROOT, [(name, rel, old, new) for name, rel, old, new, _test in MUTANTS])
     spans = test_spans()
     failures = 0
-    try:
+    with SourceGuard(ROOT, {m[1] for m in MUTANTS}) as guard:
         verdict, output = build_and_run()
-        print(f"[control]  parent, unmutated                              -> {verdict}")
+        print(f"[control]  parent, unmutated                              -> {verdict}", flush=True)
         if verdict != "PASS":
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
@@ -240,28 +231,22 @@ def main():
         for name, rel, old, new, test in MUTANTS:
             if only and only not in name:
                 continue
-            path = ROOT / rel
-            text = path.read_text()
-            count = text.count(old)
-            if count != 1:
-                print(f"[ERROR]    {name:48s} -> anchor matched {count} times, not 1")
-                failures += 1
-                continue
-            path.write_text(text.replace(old, new))
-            assert path.read_text().count(old) == 0, "substitution did not apply"
-            verdict, output = build_and_run(control)
-            restore()
+            (ROOT / rel).write_text(guard.original(rel).replace(old, new, 1))
+            try:
+                verdict, output = build_and_run(control)
+            finally:
+                guard.restore()
             red = failing_tests(output, spans)
-            # A crash counts: the piece's absence is what made the binary die, though no assertion names the test.
-            ok = (verdict == "FAIL" and test in red) or verdict == "CRASH"
+            # A crash or a hang counts: the piece's absence is what stopped the binary, though no assertion names the
+            # test.
+            ok = (verdict == "FAIL" and test in red) or verdict in ("CRASH", "HANG")
             failures += 0 if ok else 1
-            print(f"[{label(verdict, ok):8s}] {name:48s} -> {verdict} in {sorted(red) or '-'} (guard: {test})")
+            print(f"[{label(verdict, ok):8s}] {name:48s} -> {verdict} in {sorted(red) or '-'} (guard: {test})",
+                  flush=True)
             if not ok:
                 print(output[-1500:])
-    finally:
-        restore()
-        shutil.rmtree(backup, ignore_errors=True)
 
+    print(usage_line())
     print("mutant sweep:", "all mutants died" if failures == 0 else f"{failures} problem(s)")
     return 1 if failures else 0
 
