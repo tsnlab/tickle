@@ -44,6 +44,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   retry found nothing kept and ran the callback again. The server now carries the client's 100 ms x 50, and keeps an
   answer for the client's 5 s horizon - at most `tt_CLIENT_CALL_WINDOW` (8) per calling client
   (`tests/test_service_retry_horizon.c`: 2 runs before, 1 after, including a retry delivered after 49 lost).
+- A Server's kept answers no longer fill the context's scheduler. Each held a scheduler entry (its expiry timer), so
+  with answers kept for the 5 s horizon, 17 Client-Server pairs calling at 100 Hz into one context reached the 128
+  entries: 127 of 204 calls were served, 68 turned away by the full scheduler (`tests/test_kept_answer_lazy_expiry.c` on
+  the parent). The expiry is now a time in the answer's slot, checked when the slot is looked up or reused: 0 entries,
+  every call served, the same answers kept and served. Server instructions per call on the PC's mock HAL -15% (one
+  pair) and -30% (12 pairs) (`examples/perf_hil/experiments/kept_answer_insn.sh`).
 - rmw_tickle DEADLINE re-arms at the last activity + P and counts every missed period; a gap between P and 2P was
   missed before (D4, `d2818e79`).
 - A hybrid reader no longer counts samples the segment drain passed over as superseded (KEEP_LAST skip-to-newest) as
