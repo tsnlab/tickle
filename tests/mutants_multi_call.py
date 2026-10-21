@@ -25,7 +25,13 @@ Each mutant removes one part of the change in src/tickle.c and must make its tes
   duplicate_kept        a late duplicate's answer to a call older than all kept pushes out a live one
   newest_is_new         calls are aged from the new answer's seq_no, not from the Client's newest call
 A control run of the unmutated source must pass every test first, so a test that fails for another reason cannot
-kill a mutant. src/tickle.c is restored, with a fresh mtime so make rebuilds, whatever happens.
+kill a mutant.
+
+Refuses to start (exit 2) if any anchor is not in src/tickle.c exactly once - answers_replaced matched twice from
+a54ab490, when server_cache_can_keep() took the same two lines, and the sweep counted it as one failure among the rest -
+or if src/tickle.c is already modified. Every child is bounded (tests/mutant_guard.py: 2 GB of address space, a
+deadline, at most 256 KB of its output kept); src/tickle.c is restored after each mutant, on an exception and on
+SIGINT/SIGTERM/SIGHUP, with a fresh mtime so make rebuilds.
 
 A mutant whose test binary, debug sections aside, is the control's (tests/mutant_digest.py) is reported DEAD
 (NOT_COMPILED) and counted as a failure: it edited code that binary's build leaves out. MUTANTS=<substring> runs only
@@ -35,13 +41,14 @@ Usage: tests/mutants_multi_call.py   (from the repository root)
 """
 
 import os
-import subprocess
 import sys
 
 from mutant_digest import NOT_COMPILED, code_digest, unchanged
+from mutant_guard import SourceGuard, be_nice, check_anchors, killed_by, run_capped, usage_line
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCE = os.path.join(REPO, "src", "tickle.c")
+SOURCE_REL = "src/tickle.c"
+SOURCE = os.path.join(REPO, SOURCE_REL)
 LINUX = os.path.join(REPO, "platform", "linux")
 TESTS = ["test_client_multi_call", "test_server_cache", "test_two_clients_one_service"]
 
@@ -70,8 +77,11 @@ MUTANTS = [
      "    return client->cache_storage + ((size_t)slot * share);\n",
      "    return client->cache_storage;\n"),
     ("answers_replaced", "test_client_multi_call",
-     "    if (tt_CLIENT_MAX_OUTSTANDING == 1) {\n        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {\n",
-     "    if (tt_CLIENT_MAX_OUTSTANDING >= 1) {\n        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {\n"),
+     # set_server_cache()'s, by its third line: server_cache_can_keep() opens with the same two (a54ab490).
+     "    if (tt_CLIENT_MAX_OUTSTANDING == 1) {\n        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {\n"
+     "            if (server_cache_live(server, i, now) && server->cache[i]->receiver == receiver &&\n",
+     "    if (tt_CLIENT_MAX_OUTSTANDING >= 1) {\n        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {\n"
+     "            if (server_cache_live(server, i, now) && server->cache[i]->receiver == receiver &&\n"),
     ("no_answer_bound", "test_server_cache",
      "    if (pick.own_live >= tt_CLIENT_CALL_WINDOW) { // this Client's bound\n",
      "    if (pick.own_live >= tt_MAX_SERVER_CACHE_COUNT + 1) { // this Client's bound\n"),
@@ -93,49 +103,57 @@ MUTANTS = [
 ]
 
 
+def binary_of(name):
+    return os.path.join(LINUX, "obj", "debug", "tests", name)
+
+
 def run_test(name, control=None):
-    """Builds and runs one test binary: PASS, FAIL (a failed build too), or NOT_COMPILED if it is the control's."""
-    target = os.path.join("obj", "debug", "tests", name)
-    build = subprocess.run(["make", "-s", target], cwd=LINUX, capture_output=True, text=True, check=False)
+    """Builds and runs one test binary: PASS, FAIL, HANG, BUILD_FAILED, or NOT_COMPILED if it is the control's."""
+    build = run_capped(["make", "-s", "-j2", os.path.relpath(binary_of(name), LINUX)], timeout=900, cwd=LINUX)
     if build.returncode != 0:
-        print(f"  build of {name} failed:\n{build.stdout[-2000:]}{build.stderr[-2000:]}")
-        return "FAIL"
-    if unchanged(control, os.path.join(LINUX, target)):
-        return NOT_COMPILED
-    run = subprocess.run([os.path.join(LINUX, target)], cwd=LINUX, capture_output=True, text=True, check=False,
-                         timeout=600)
-    return "PASS" if run.returncode == 0 else "FAIL"
+        # Not a kill: a mutant that does not compile is wrongly written, and says nothing about the test.
+        print(f"  build of {name} failed:\n{build.output[-2000:]}")
+        return "BUILD_FAILED", ""
+    if unchanged(control, binary_of(name)):
+        return NOT_COMPILED, ""
+    run = run_capped([binary_of(name)], timeout=600, cwd=LINUX)
+    if run.timed_out:
+        return "HANG", run.output  # a kill too: the test did not pass
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.output
 
 
 def main():
-    original = open(SOURCE, encoding="utf-8").read()
+    be_nice()
+    check_anchors(REPO, [(label, SOURCE_REL, before, after) for label, _test, before, after in MUTANTS])
     only = os.environ.get("MUTANTS", "")
     failures = 0
     digests = {}
-    try:
+    with SourceGuard(REPO, [SOURCE_REL]) as guard:
         for name in TESTS:
-            if run_test(name) != "PASS":
+            verdict, output = run_test(name)
+            if verdict != "PASS":
+                print(output[-2000:])
                 print(f"CONTROL FAILED: {name} fails on the unmutated source - no mutant can be judged")
                 return 2
-            digests[name] = code_digest(os.path.join(LINUX, "obj", "debug", "tests", name))
-        print("control: every test passes on the unmutated source")
+            digests[name] = code_digest(binary_of(name))
+        print("control: every test passes on the unmutated source", flush=True)
+        original = guard.original(SOURCE_REL)
         for label, test, before, after in MUTANTS:
             if only and only not in label:
                 continue
-            if original.count(before) != 1:
-                print(f"MUTANT {label}: its text occurs {original.count(before)} times, not once - not applied")
-                failures += 1
-                continue
             with open(SOURCE, "w", encoding="utf-8") as out:
                 out.write(original.replace(before, after, 1))
-            verdict = run_test(test, digests[test])
-            killed = verdict == "FAIL"
+            try:
+                verdict, output = run_test(test, digests[test])
+            finally:
+                guard.restore()
+            killed = verdict in ("FAIL", "HANG")
             outcome = "killed" if killed else ("DEAD (NOT_COMPILED)" if verdict == NOT_COMPILED else "SURVIVED")
-            print(f"mutant {label}: {outcome} by {test}")
+            print(f"mutant {label}: {outcome} by {test} ({verdict})", flush=True)
+            if killed:
+                print(f"  killed by: {', '.join(killed_by(output, REPO)) or '(no failing check printed)'}")
             failures += 0 if killed else 1
-    finally:
-        with open(SOURCE, "w", encoding="utf-8") as out:
-            out.write(original)  # a fresh mtime: make rebuilds from the restored source
+    print(usage_line())
     return 1 if failures else 0
 
 
