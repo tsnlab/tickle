@@ -69,8 +69,9 @@ MUTANTS = [
     (
         "declining more than one destination",
         "src/tickle.c",
-        "    if (tx_destinations(peers, peer_count, destinations) != 1) {",
-        "    if (tx_destinations(peers, peer_count, destinations) == 0) {",
+        # tx_destinations() takes the context since 3e343345 (tt_InitOptions).
+        "    if (tx_destinations(node, peers, peer_count, destinations) != 1) {",
+        "    if (tx_destinations(node, peers, peer_count, destinations) == 0) {",
         "test_what_stays_on_the_staging_path",
     ),
     (
@@ -201,7 +202,7 @@ MUTANTS = [
 
 
 def build_and_run(control=None):
-    build = run_capped(["make", "-s", "-j4", str(BIN.relative_to(ROOT / "platform/linux"))], timeout=900,
+    build = run_capped(["make", "-s", "-j2", str(BIN.relative_to(ROOT / "platform/linux"))], timeout=900,
                        cwd=ROOT / "platform/linux")
     if build.returncode != 0:
         return "BUILD_FAILED", build.output[-2000:]
