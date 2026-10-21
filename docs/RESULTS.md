@@ -37,7 +37,7 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 
 | headline | rmw_tickle | FastDDS | CycloneDDS | row |
 |---|---:|---:|---:|---|
-| RTT mean from creation, block wait, Bench 64 B, us | **45.1** | 194.3 | 167.8 | R1c |
+| RTT mean from creation, block wait, Bench 64 B, us | **40.2** | 190.1 | 171.7 | R1c |
 
 **rmw, large messages** ([L4](#rmw-large-messages-l4-cross-host)): WIN 58, DRAW 21, LOSE 1 of 80 (one letter per vendor).
 
@@ -144,36 +144,40 @@ apex `perf_test`; 3 reps. Every row is a WIN.
 | # | metric, cell | rmw_tickle | FastDDS | CycloneDDS | src |
 |---|---|---:|---:|---:|---|
 | | **RTT mean from creation, us** | | | | |
-| R1c | block wait, Bench 64 B, BEST_EFFORT | **45.1** | 194.3 | 167.8 | RSc |
-| R2c | block wait, Bench 64 B, RELIABLE | **46.8** | 211.8 | 167.8 | RSc |
-| R3c | block wait, Array1k, BEST_EFFORT | **46.5** | 192.2 | 167.7 | RSc |
-| R4c | block wait, Array1k, RELIABLE | **48.0** | 207.2 | 171.1 | RSc |
-| R5c | poll wait 100 us, Bench, BEST_EFFORT | **209.8** | 247.6 | 242.1 | RSc |
-| R6c | poll wait 100 us, Bench, RELIABLE | **208.1** | 261.9 | 244.3 | RSc |
-| R7c | poll wait 100 us, Array1k, BEST_EFFORT | **208.7** | 249.6 | 243.7 | RSc |
-| R8c | poll wait 100 us, Array1k, RELIABLE | **212.0** | 260.0 | 245.2 | RSc |
+| R1c | block wait, Bench 64 B, BEST_EFFORT | **40.2** | 190.1 | 171.7 | RS2 |
+| R2c | block wait, Bench 64 B, RELIABLE | **41.4** | 211.3 | 166.7 | RS2 |
+| R3c | block wait, Array1k, BEST_EFFORT | **41.8** | 193.7 | 169.7 | RS2 |
+| R4c | block wait, Array1k, RELIABLE | **43.1** | 214.9 | 171.6 | RS2 |
+| R5c | poll wait 100 us, Bench, BEST_EFFORT | **206.7** | 245.5 | 241.1 | RS2 |
+| R6c | poll wait 100 us, Bench, RELIABLE | **209.4** | 256.4 | 243.0 | RS2 |
+| R7c | poll wait 100 us, Array1k, BEST_EFFORT | **212.8** | 253.1 | 241.7 | RS2 |
+| R8c | poll wait 100 us, Array1k, RELIABLE | **210.9** | 263.3 | 244.1 | RS2 |
 | | **CPU, ping + pong, us per round trip** | | | | |
-| R9 | block, Bench RELIABLE | **64.4** | 254.3 | 150.0 | RSc |
-| R10 | block, Array1k RELIABLE | **66.0** | 251.6 | 153.3 | RSc |
+| R9 | block, Bench RELIABLE | **54.1** | 255.1 | 147.4 | RS2 |
+| R10 | block, Array1k RELIABLE | **56.3** | 258.7 | 154.4 | RS2 |
 | | **Peak RSS, larger process, kB** | | | | |
-| R11 | RTT, Bench BEST_EFFORT block | **14,664** | 27,124 | 16,104 | RSc |
-| R12 | RTT, Bench RELIABLE block | **14,752** | 27,144 | 16,236 | RSc |
-| R13 | throughput, Array1k RELIABLE | **16,000** | 35,796 | 17,152 | RS |
+| R11 | RTT, Bench BEST_EFFORT block | **14,700** | 27,168 | 16,136 | RS2 |
+| R12 | RTT, Bench RELIABLE block | **14,736** | 27,184 | 16,140 | RS2 |
+| R13 | throughput, Array1k RELIABLE | **16,536** | 35,972 | 17,152 | RS2 |
 | | **Delivered msg/s, max rate** | | | | |
-| R14 | Array1k BEST_EFFORT KEEP_LAST 1 | **140,885** | 17,547 | 70,420 | RS |
-| R15 | Array4k BEST_EFFORT KEEP_LAST 1 | **83,048** | 4,171 | 60,818 | RS |
-| R16 | Array1k RELIABLE KEEP_ALL | **187,965** | 2,322 | 64,522 | RS |
-| R17 | Array4k RELIABLE KEEP_ALL | **155,635** | 17,507 | 49,904 | RS |
+| R14 | Array1k BEST_EFFORT KEEP_LAST 1 | **252,441** | 5,040 | 70,165 | RS2 |
+| R15 | Array4k BEST_EFFORT KEEP_LAST 1 | **133,876** | 5,691 | 64,258 | RS2 |
+| R16 | Array1k RELIABLE KEEP_ALL | **342,075** | 2,581 | 60,976 | RS2 |
+| R17 | Array4k RELIABLE KEEP_ALL | **243,688** | 16,967 | 46,379 | RS2 |
 | | **CPU, pub + sub, us per delivered sample** | | | | |
-| R18 | Array1k BEST_EFFORT | **14.02** | 152.93 | 33.80 | RS |
-| R19 | Array4k BEST_EFFORT | **23.83** | 636.13 | 36.79 | RS |
-| R20 | Array1k RELIABLE | **6.35** | 639.34 | 35.12 | RS |
-| R21 | Array4k RELIABLE | **8.64** | 83.84 | 38.72 | RS |
+| R18 | Array1k BEST_EFFORT | **7.84** | 527.79 | 33.35 | RS2 |
+| R19 | Array4k BEST_EFFORT | **14.62** | 464.87 | 36.20 | RS2 |
+| R20 | Array1k RELIABLE | **3.98** | 568.39 | 35.82 | RS2 |
+| R21 | Array4k RELIABLE | **6.52** | 85.42 | 40.07 | RS2 |
 
 - **The 31 cells not shown** (RTT p50 and p99, CPU and RSS of the other RTT cells, three RSS cells) are WIN too.
-- **Re-read 2026-10-18:** R1c-R12 come from `29826912` (was `18f16b85`); the polling thread's 1 ns timer slack
-  (`119d14bd`) halved block-wait RTT (R1c 94.9 -> 45.1 us). All 8 controls PASS.
-- **Corrected 2026-10-18:** R9-R12 replaced the `06dd78d8` figures; CycloneDDS rose alike (the session).
+- **Re-measured 2026-10-21 (`RS2`, `69f394cc`, slot loans off):** every row now comes from one run (was `RSc` for
+  R1c-R12, `RS` for R13-R21); 0 VOID, all 8 controls PASS, ~11,000 round trips a rep in block cells, ~6,400 in poll.
+  Against our own figures: block RTT -10..-12% and its CPU -15..-16% (the hold-over `58bd6b1a`, whose A/B gave
+  -12%); poll RTT within 2%; delivered msg/s +57..+82% and CPU per sample -25..-44% (against `06dd78d8`, so the
+  hold-over plus later changes); R13 RSS +536 kB. CycloneDDS moved -7..+6%, FastDDS RTT -2..+4%; FastDDS BEST_EFFORT
+  msg/s spans 3,383-17,457 across reps (R14 median 5,040, was 17,547). No verdict flipped.
+- **Earlier:** 2026-10-18 `29826912` gave R1c 45.1 us, after the 1 ns timer slack (`119d14bd`) halved it from 94.9.
 
 ### Loaned messages (PC)
 
@@ -429,6 +433,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LS | `rig_lifespan_reshaped.sh` (row 47, reshaped TickLE harness) | `3ae5f34f` | 2026-10-20 | `lifespan_reshaped_3ae5f34f_20261020-035439.txt` |
 | MX | `mixed_delivery.sh`; CycloneDDS `mixed_delivery_campaign.sh` (`e4e090cd`) | `7f127d56` | 2026-10-05, -17 | `mixed_4e49ed43_20261017-152135.*` |
 | RS, RSc | `rmw_samehost.sh`, `rmw_samehost_summary.py` | `06dd78d8`, `29826912` | 2026-10-09, -18 | `rmw_samehost_06dd78d8_20261009-110918.*`, `creation_rtt_rmwsh_29826912_20261018-111338.*` |
+| RS2 | the same, rotated order | `69f394cc` | 2026-10-21 | `rmw_samehost_69f394cc_20261021-134220.*` |
 | LN | `rmw_loan_bench.sh` (PC) | `ab/lending` + `f837ae82` | 2026-10-08 | `~/rmw_loans_ws/bench3/` |
 | L15, L16 | `rmw_keepall_rig.sh`, `largemsg_rig_summary.py` | f5fcda06, dde87857 | 2026-10-15, -16 | `l4main2_*_20261015-094605.txt`, `l4main3_i1rel_20261016-065517.*` |
 | LR | `l4_rtt_rig.sh`, `l4_rtt_read.py` (RTT column) | `3583f0d1` | 2026-10-19 | `l4_rtt_3583f0d1_20261019-161849.{txt,verdicts.txt}` |
