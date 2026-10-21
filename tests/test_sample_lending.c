@@ -117,6 +117,8 @@ static struct {
     struct tt_Subscriber* other;
     bool forget_peer; // the callback runs forget_same_host_peer(owner, 1), as a farewell read from the ring would
     uint32_t sequence_in_callback;
+    uint32_t publish_in_callback; // the first callback has `publisher` publish this many, its record still in place
+    struct tt_Publisher* publisher;
 } cb;
 
 static uint32_t value_of(const uint8_t* payload) {
@@ -143,6 +145,15 @@ static void callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t s
         cb.values[cb.seen] = value;
     }
     cb.seen++;
+    if (cb.publish_in_callback != 0) {
+        const uint32_t count = cb.publish_in_callback;
+        cb.publish_in_callback = 0;
+        for (uint32_t i = 1; i <= count; i++) {
+            uint32_t next = value + i;
+            test_mock_now += 1000000;
+            (void)tt_Publisher_publish(cb.publisher, (struct tt_Data*)&next);
+        }
+    }
     if (cb.forget_peer) {
         cb.forget_peer = false;
         forget_same_host_peer(subscriber->node, 1);
@@ -409,6 +420,73 @@ static void test_skip_to_newest_never_frees_a_retained_slot(void) {
     EXPECT_EQ_U32(502, cb.values[cb.seen - 1]); // the newest
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[0].sample));
     EXPECT_EQ_U32(2 * SLOTS, slot_sequence(&rig.owner, 0));
+    rig_down();
+}
+
+// THE WRITER'S full_retained COUNT (segment_full_by_hold()): a datagram dropped because the slot it was refused is one
+// its reader has read and still holds. Three situations, and what each must count.
+//
+// (a) Every slot held by retained samples: the writer passes each held slot (segment_pass_held()) until the indices say
+// full, and is refused there. The refusal is the reader's retention and nothing else - the reader has read everything.
+static void test_a_writer_refused_by_held_slots_counts_it(void) {
+    rig_up(true, 0);
+    cb.mode = KEEP_EVERY;
+    for (uint32_t i = 0; i < SLOTS; i++) {
+        publish(700 + i);
+        drain(&rig.owner);
+    }
+    EXPECT_EQ_U32(SLOTS, cb.kept_count);
+    EXPECT_EQ_U32(SLOTS, rig.owner.lend.held_slots);
+    publish(700 + SLOTS); // every slot held: passed over, all of them, and then refused
+    EXPECT_EQ_U64(1, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(1, rig.sender.lend.full_retained);
+    drain(&rig.owner); // the reader passes the indices the writer passed; still every slot held
+    publish(800);
+    EXPECT_EQ_U64(2, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(2, rig.sender.lend.full_retained);
+    for (uint32_t k = 0; k < cb.kept_count; k++) {
+        EXPECT_TRUE(kept_intact(&cb.kept[k]));
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[k].sample));
+    }
+    drain(&rig.owner); // the reader passes the indices the second refusal's writer passed
+    publish(900);      // released: the stream goes on, and nothing more is counted
+    drain(&rig.owner);
+    EXPECT_EQ_U32(900, cb.values[cb.seen - 1]);
+    EXPECT_EQ_U64(2, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(2, rig.sender.lend.full_retained);
+    rig_down();
+}
+
+// (b) The reader partway through a record read in place: its slot still says "published" (segment_take()), read_index
+// is past it, and a writer a lap ahead is refused by it. The callback has the sender publish a lap's worth.
+static void test_a_writer_refused_by_a_record_being_read_counts_it(void) {
+    rig_up(true, 0);
+    publish(1000);
+    cb.publisher = &rig.pub;
+    cb.publish_in_callback = SLOTS; // indices 1 .. SLOTS - 1 fit; index SLOTS is slot 0, still being read
+    drain(&rig.owner);
+    EXPECT_EQ_U64(1, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(1, rig.sender.lend.full_retained);
+    EXPECT_EQ_U32(SLOTS, cb.seen); // 1000 and the SLOTS - 1 that got in
+    EXPECT_EQ_U32(1000 + SLOTS - 1, cb.values[SLOTS - 1]);
+    rig_down();
+}
+
+// (c) The controls: a writer that is never refused counts nothing, and a writer refused by a ring full of records not
+// yet read - its reader holds nothing - counts the drop and not the hold.
+static void test_full_retained_counts_only_a_hold(void) {
+    rig_up(true, 0);
+    for (uint32_t i = 0; i < 2 * SLOTS; i++) {
+        publish(1100 + i);
+        drain(&rig.owner);
+    }
+    EXPECT_EQ_U64(0, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(0, rig.sender.lend.full_retained);
+    for (uint32_t i = 0; i <= SLOTS; i++) {
+        publish(1200 + i); // the last one finds the ring full of unread records
+    }
+    EXPECT_EQ_U64(1, rig.sender.segment_full_dropped);
+    EXPECT_EQ_U64(0, rig.sender.lend.full_retained);
     rig_down();
 }
 
@@ -851,6 +929,9 @@ int main(void) {
     test_unretained_records_are_released_as_read();
     test_a_held_slot_blocks_no_ring();
     test_skip_to_newest_never_frees_a_retained_slot();
+    test_a_writer_refused_by_held_slots_counts_it();
+    test_a_writer_refused_by_a_record_being_read_counts_it();
+    test_full_retained_counts_only_a_hold();
     test_a_batch_record_is_released_with_its_last_sample();
     test_retain_and_release_in_one_callback();
     test_bad_releases_are_refused_and_touch_nothing();

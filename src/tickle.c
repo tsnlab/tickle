@@ -2052,15 +2052,23 @@ static void segment_done(struct tt_Context* node, struct tt_SegmentHeader* heade
                      __ATOMIC_RELEASE);
 }
 
-// Whether a writer's refusal by `header` is its reader holding a slot: the slot at write_index was published one lap
-// ago (sequence index - slots + 1), and the reader has read past it (the ring is not full by the indices). A racy
-// look, for a counter only; the writer reads the same three words to refuse.
+// Whether a writer's refusal by `header` is its reader holding the slot at write_index. Two ways (segment_claim()):
+// - full by the indices, and that slot carries a held mark: a retained sample's slot, which writers have passed over
+//   until write_index is a lap ahead of the reader (since 6f0c8a93 the one way a retention refuses a writer);
+// - not full by the indices, and that slot still says "published" one lap ago: its record is being read in place
+//   (segment_take()), or a ring under SEGMENT_HELD_MIN_SLOTS keeps it for a retained sample.
+// A claim not yet published (tt_Publisher_claim()) carries the same mark as a held slot, and refusing a writer with it
+// is counted too. A racy look, for a counter only, made on the refusal branch alone; the writer read the same words to
+// refuse.
 static bool segment_full_by_hold(struct tt_SegmentHeader* header) {
     uint32_t claimed = __atomic_load_n(&header->write_index, __ATOMIC_RELAXED);
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);
     const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(header, claimed);
-    return claimed - read_index < header->slots &&
-           __atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) == claimed - header->slots + 1U;
+    const uint32_t sequence = __atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE);
+    if (claimed - read_index >= header->slots) {
+        return header->slots >= SEGMENT_HELD_MIN_SLOTS && segment_seq_held_since(header, sequence, claimed);
+    }
+    return sequence == claimed - header->slots + 1U;
 }
 #endif
 

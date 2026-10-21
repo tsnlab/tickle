@@ -14,9 +14,10 @@ or if a file it edits is already modified. Every child is bounded (tests/mutant_
 deadline, at most 256 KB of its output kept); every file is restored after each mutant, on an exception and on
 SIGINT/SIGTERM/SIGHUP, with a fresh mtime so make rebuilds.
 
-Not covered: the writer's lend.full_retained count (segment_full_by_hold()). Since 6f0c8a93 a writer passes a held
-slot instead of being refused by it, and every build's ring has at least SEGMENT_HELD_MIN_SLOTS slots, so no test here
-can make a hold refuse a writer; its mutant survived as written and was removed.
+The writer's lend.full_retained count (segment_full_by_hold()) has three mutants: the increment, and each of its two
+ways. Since 6f0c8a93 a writer passes a held slot, so a retention refuses it only once every slot is held and the
+writer has passed them all - full by the indices with a held mark at write_index - which the check before this one
+never counted.
 """
 import os
 import pathlib
@@ -161,6 +162,27 @@ MUTANTS = [
         "lend_reading_slot(node)) {",
         "    if (!node->lend.segment_release_deferred) {",
         "test_the_segment_outlives_a_held_slot",
+    ),
+    (
+        "a refusal by a hold counted",
+        "src/tickle.c",
+        "        if (segment_full_by_hold(segment)) {\n            node->lend.full_retained++;\n        }",
+        "        (void)segment_full_by_hold(segment);",
+        "test_a_writer_refused_by_held_slots_counts_it",
+    ),
+    (
+        "full by the indices: a held mark at write_index",
+        "src/tickle.c",
+        "        return header->slots >= SEGMENT_HELD_MIN_SLOTS && segment_seq_held_since(header, sequence, claimed);",
+        "        return false;",
+        "test_a_writer_refused_by_held_slots_counts_it",
+    ),
+    (
+        "not full by the indices: a record still being read",
+        "src/tickle.c",
+        "    return sequence == claimed - header->slots + 1U;\n}",
+        "    return false;\n}",
+        "test_a_writer_refused_by_a_record_being_read_counts_it",
     ),
     (
         "destroy forgets held samples",
