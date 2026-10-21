@@ -134,6 +134,10 @@ variant_args() {
         trace) echo "-DRMW_TICKLE_TRACE=ON" ;;
         trace_rxb8) echo "-DRMW_TICKLE_TRACE=ON -DRMW_TICKLE_RX_BATCH=8" ;;
         rxb8) echo "-DRMW_TICKLE_RX_BATCH=8" ;;
+        # libc (2026-10-21): the HAL's hot system calls through glibc instead of raw tt_sys6 (hal_linux.c), so that
+        # sysstamp's LD_PRELOAD sees rmw_tickle's sends, receives and epoll_pwait2 as it sees the vendors'. The last
+        # -DCMAKE_C_FLAGS wins over RMW_TICKLE_BUILD's, so the flags are repeated with the define added.
+        libc) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS'" ;;
         *) echo "" ;;
     esac
 }
@@ -173,7 +177,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST, qoses: $QOSES ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST (rotated per rep: ${ROTATE:-0}), qoses: $QOSES ==="
 say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (every rmw_tickle, TickLE typesupport, interface and pingpong unit; empty: the plain build)"
 say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the ping and the pong; 1 only with RMW_LIST=rmw_tickle)"
 
@@ -666,6 +670,12 @@ for rep in $(seq 1 "$REPS"); do
             if [ -n "$TICKLE_VARIANTS" ]; then
                 RMWS=""; for v in $TICKLE_VARIANTS; do RMWS="$RMWS rmw_tickle@$v"; done
                 RMWS="$RMWS rmw_fastrtps_cpp rmw_cyclonedds_cpp"
+            fi
+            # ROTATE=1 (2026-10-21): the rmw order rotates by one each repetition, so no rmw always runs first after a
+            # build or always follows the same one. Unset, the order is RMW_LIST's in every repetition, as before.
+            if [ "${ROTATE:-0}" = 1 ]; then
+                read -r -a rot <<<"$RMWS"
+                RMWS=""; for i in $(seq 0 $((${#rot[@]} - 1))); do RMWS="$RMWS ${rot[$(((i + rep - 1) % ${#rot[@]}))]}"; done
             fi
             for WAIT in $WAITS; do
               WAITSTEM=""; [ "$WAITS" != poll ] && WAITSTEM="_$WAIT"

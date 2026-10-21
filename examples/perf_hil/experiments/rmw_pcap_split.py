@@ -122,7 +122,11 @@ def first_by_key(pcap, keys, src_ip):
     return out
 
 
-WAITS = ("poll", "ppoll", "epoll_wait", "epoll_pwait", "select", "pselect")
+# epoll_pwait2 since 2026-10-21: rmw_tickle's wait set (hal_linux.c rx_wait()) in a TT_HAL_LIBC_CALLS build, which
+# sysstamp.c records since 9d87885c; without it every rmw_tickle "tap->wake" read n/a.
+WAITS = ("poll", "ppoll", "epoll_wait", "epoll_pwait", "epoll_pwait2", "select", "pselect")
+# Per ok row, for wake_summary(): stem -> {"rmw", "cell", "sst", "rtt", "n", "wire", segment p50s in ns}
+ROWS = {}
 
 
 def sysstamp_records(directory):
@@ -256,6 +260,12 @@ def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
         seg["ping tap->recv"].append(prr[3] - back[k])
         to_recv.append(prr[3] - send_ns_rt)
     n = len(seg["ping app->send"])
+    row = ROWS.get(stem)
+    if row is not None:
+        row["n"] = n
+        for label in ("pong tap->wake", "pong tap->recv", "ping tap->recv"):
+            if seg[label]:
+                row[label] = sorted(seg[label])[len(seg[label]) // 2]
     print(f"   sysstamp: {n} of {len(keys)} samples found in both hosts' records "
           f"(pong receive and reply on different threads in {handoff})")
     for label, xs in seg.items():
@@ -295,6 +305,9 @@ def main():
         stem = (f"{m.group(1)}_{m.group(2)}_{m.group(3)}_rep{m.group(4)}" + (f"_{m.group(5)}" if m.group(5) else "")
                 + (f"_ps{m.group(6)}" if m.group(6) else "") + ("_sst" if m.group(7) else ""))
         rtts[stem] = (m.group(8), float(m.group(9)))
+        if m.group(8) == "ok":
+            ROWS[stem] = {"rmw": m.group(1), "cell": f"{m.group(2)} {m.group(3)}", "sst": bool(m.group(7)),
+                          "rtt": float(m.group(9))}
     for stem, (coff, cdrift, sdrift) in offsets.items():
         ping, pong = out.with_suffix(out.suffix + ".pcaps") / f"{stem}_ping.pcap", \
             out.with_suffix(out.suffix + ".pcaps") / f"{stem}_pong.pcap"
@@ -342,6 +355,8 @@ def main():
         wire = [(back[k] - sent[k][0]) - (dep[k] - arr[k]) for k in full]
         tap_rtt = [back[k] - sent[k][1] - coff for k in full]
         bad = sum(1 for x in send + turn + wire if x < 0)
+        if stem in ROWS:
+            ROWS[stem]["wire"] = sorted(wire)[len(wire) // 2]
         print(f"   ping_send  {stats(send)}")
         print(f"   pong_turn  {stats(turn)}")
         print(f"   wire       {stats(wire)}")
@@ -351,6 +366,81 @@ def main():
             print(f"   WARNING: {bad} negative segments - offsets or matching are wrong for this row")
         matches = kernel_split(stem, full, sent, back, arr, dep, coff, rtt, out.with_suffix(out.suffix + ".sysstamp"))
         app_split(stem, full, sent, back, arr, dep, matches, out.with_suffix(out.suffix + ".stamps"))
+    wake_summary()
+
+
+def range_rule(subj, other):
+    """SLOWER when every subject rep is above every other rep, FASTER when every one is below, else NOT RESOLVED."""
+    if min(subj) > max(other):
+        return "SLOWER"
+    if max(subj) < min(other):
+        return "FASTER"
+    return "NOT RESOLVED"
+
+
+def wake_summary():
+    """The Pi's kernel wake split after the hold-over (58bd6b1a), the ROADMAP item "rmw kernel wake (~6 us)": in
+    September the pong's tap -> receive return read 18.2 us for rmw_tickle against CycloneDDS's 12.6.
+
+    HOW TO READ IT, written 2026-10-21 before the run and enforced here:
+      K0 SAMPLES FIRST. Only rows the harness marked ok are read; a row's sysstamp segments only with >= 50 samples
+         matched on both hosts (a default rmw_tickle build makes raw system calls sysstamp cannot see, so its sst rows
+         are expected NOT READ - the check that the libc variant is what makes them visible). An rmw with fewer than
+         2 readable reps in a cell is NOT READ there.
+      K1 CONTROL per cell: the wire (both links below the tap) is the same link for every rmw, so the reps' median
+         wire p50s of the readable rmws must agree within 10 us; otherwise the cell's K2 verdicts are NOT READ.
+      K2 THE KERNEL WAKE, per cell, rmw_tickle (the TT_HAL_LIBC_CALLS variant when present) against each vendor:
+         per-rep p50 of "pong tap->recv" by the range rule (SLOWER / FASTER / NOT RESOLVED), the median difference
+         beside it, and the same for "pong tap->wake" (the wait's return; a vendor blocking in its receive has none).
+         NOT RESOLVED means "not resolved on the rig at this n", not "zero".
+      K3 the instrument's cost: per rmw and cell, median RTT with sysstamp minus without (diagnostic, not a verdict).
+    """
+    if not ROWS:
+        return
+    print("\n=== kernel wake summary (K0-K3) ===")
+    for cell in sorted({r["cell"] for r in ROWS.values()}):
+        on = [r for r in ROWS.values() if r["cell"] == cell and r["sst"]]
+        off = [r for r in ROWS.values() if r["cell"] == cell and not r["sst"]]
+        rmws = sorted({r["rmw"] for r in on + off})
+        print(f"-- {cell}")
+        for rmw in rmws:
+            a = [r["rtt"] for r in on if r["rmw"] == rmw]
+            b = [r["rtt"] for r in off if r["rmw"] == rmw]
+            if a and b:
+                print(f"   K3 {rmw:24s} rtt sst-on - sst-off "
+                      f"{(statistics.median(a) - statistics.median(b)) * 1e3:+7.1f} us (reps {len(a)}/{len(b)})")
+        read = {}
+        for rmw in rmws:
+            rr = [r for r in on if r["rmw"] == rmw and r.get("n", 0) >= 50 and "pong tap->recv" in r and "wire" in r]
+            if len(rr) < 2:
+                nn = [r.get("n", 0) for r in on if r["rmw"] == rmw]
+                print(f"   K0 {rmw:24s} NOT READ: {len(rr)} readable sst reps (matched samples per rep {nn})")
+                continue
+            read[rmw] = rr
+            print(f"   K0 {rmw:24s} {len(rr)} reps, matched samples {[r['n'] for r in rr]}")
+        if len(read) < 2:
+            print("   K1 NOT READ: fewer than two rmws readable")
+            continue
+        wires = {rmw: statistics.median(r["wire"] for r in rr) for rmw, rr in read.items()}
+        spread = (max(wires.values()) - min(wires.values())) / 1000
+        ok = spread <= 10.0
+        print(f"   K1 wire p50 per rmw {', '.join(f'{k} {v / 1000:.1f}' for k, v in wires.items())} us: spread"
+              f" {spread:.1f} us -> CONTROL {'PASS' if ok else 'FAIL'}")
+        subj = [k for k in read if k.startswith("rmw_tickle@libc")] or [k for k in read if k.startswith("rmw_tickle")]
+        if not subj:
+            print("   K2 NOT READ: no rmw_tickle arm readable")
+            continue
+        s = subj[0]
+        for v in [k for k in read if not k.startswith("rmw_tickle")]:
+            for seg in ("pong tap->recv", "pong tap->wake"):
+                xs = [r[seg] / 1000 for r in read[s] if seg in r]
+                ys = [r[seg] / 1000 for r in read[v] if seg in r]
+                if len(xs) < 2 or len(ys) < 2:
+                    print(f"   K2 {s} vs {v} {seg}: n/a ({len(xs)}/{len(ys)} reps have it)")
+                    continue
+                verdict = range_rule(xs, ys) if ok else "NOT READ (K1)"
+                print(f"   K2 {s} vs {v} {seg}: {statistics.median(xs):.1f} vs {statistics.median(ys):.1f} us"
+                      f" (diff {statistics.median(xs) - statistics.median(ys):+.1f}) -> {verdict}")
 
 
 if __name__ == "__main__":
