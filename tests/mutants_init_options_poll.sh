@@ -76,13 +76,13 @@ replace "read: drain_rx() ignores rx_clock_refresh" \
     "const uint32_t refresh = poll_rx_clock_refresh(node);" "const uint32_t refresh = tt_RX_CLOCK_REFRESH;"
 replace "read: drain_rx() ignores rx_lock_chunk" \
     "const uint32_t chunk = poll_rx_lock_chunk(node);
-    while (true) {" "const uint32_t chunk = tt_RX_LOCK_CHUNK;
-    while (true) {"
+    if (len >= 0) {" "const uint32_t chunk = tt_RX_LOCK_CHUNK;
+    if (len >= 0) {"
 replace "read: node_poll() ignores scheduler_io_interleave" \
-    "const uint32_t interleave = poll_scheduler_io_interleave(node);" \
-    "const uint32_t interleave = tt_SCHEDULER_IO_INTERLEAVE;"
+    "consecutive_scheduler_runs < poll_scheduler_io_interleave(node)" \
+    "consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE"
 replace "read: node_poll() ignores receive_timeout" \
-    "const uint64_t busy_slice = poll_receive_timeout(node);" "const uint64_t busy_slice = tt_RECEIVE_TIMEOUT;"
+    "time - poll_start >= poll_receive_timeout(node)" "time - poll_start >= tt_RECEIVE_TIMEOUT"
 replace "read: a context built by hand reads 0, not the default" \
     "return node->opts.poll.rx_clock_refresh != 0 ? node->opts.poll.rx_clock_refresh : (uint32_t)tt_RX_CLOCK_REFRESH;" \
     "return node->opts.poll.rx_clock_refresh;"

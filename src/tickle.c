@@ -24070,19 +24070,23 @@ static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, u
     return result;
 }
 
-// After tt_receive() hands tt_Context_poll() the first datagram, pull whatever else the kernel
-// already has buffered without another poll() per packet - a saturated receiver otherwise pays
-// poll()+recvfrom() per packet instead of one poll() per drain. Best-effort: stops on the first
-// "nothing waiting", a protocol error, or an I/O error (the outer poll picks that back up).
-static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
-    if (first_result != tt_RET_OK) {
-        return first_result;
-    }
-
+// drain_rx() once a datagram more than the wait's is known to be there: `len` >= 0 is one it already read (from `ip`,
+// `port`), processed first exactly as the loop's first pass would have; -1, none read, the HAL holding some.
+static tt_ret_t drain_rx_more(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
     // Read once per drain, not per datagram: the loops below compare locals (bundle 6, opts.poll).
     const uint32_t refresh = poll_rx_clock_refresh(node);
     const uint32_t chunk = poll_rx_lock_chunk(node);
+    if (len >= 0) {
+        bool long_pass = drain_clock_tick(node, &since_clock, refresh);
+        tt_ret_t result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
+        if (result != tt_RET_OK) {
+            return result;
+        }
+        if (long_pass && ring_takes_its_turn(node)) {
+            return tt_RET_OK;
+        }
+    }
     while (true) {
         bool long_pass = false; // the clock was read again: `refresh` more datagrams in this drain
         tt_ret_t result = tt_RET_OK;
@@ -24110,6 +24114,29 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     }
 
     return tt_RET_OK;
+}
+
+// After tt_receive() hands tt_Context_poll() the first datagram, pull whatever else the kernel
+// already has buffered without another poll() per packet - a saturated receiver otherwise pays
+// poll()+recvfrom() per packet instead of one poll() per drain. Best-effort: stops on the first
+// "nothing waiting", a protocol error, or an I/O error (the outer poll picks that back up).
+// The first look is made here, before the drain reads its options: most drains end at it - the wait's datagram came
+// alone (every round trip of a latency cell) - and pay nothing for them (bundle 6, PC p1/p3 +0.6% when they did).
+static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
+    if (first_result != tt_RET_OK) {
+        return first_result;
+    }
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = -1;
+    if (tt_rx_buffered(node) == 0) {
+        // The next receive may read the socket: outside the lock, one datagram, as before D4.
+        len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
+        if (len < 0) {
+            return tt_RET_OK; // -1 nothing waiting, -2 I/O error - either way, done draining
+        }
+    }
+    return drain_rx_more(node, len, ip, port);
 }
 
 // Whether a scheduler entry is due at `now`.
@@ -24446,15 +24473,15 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
-    bool did_work = false;                                          // a scheduler entry has run during this call
-    const uint32_t interleave = poll_scheduler_io_interleave(node); // once per call (opts.poll)
-    const uint64_t busy_slice = poll_receive_timeout(node);
+    bool did_work = false; // a scheduler entry has run during this call
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
-        if (consecutive_scheduler_runs < interleave) {
+        // opts.poll.scheduler_io_interleave is read only once an entry has run: a poll that runs none - most of them -
+        // tests the count against 0 and reads no option (bundle 6).
+        if (consecutive_scheduler_runs == 0 || consecutive_scheduler_runs < poll_scheduler_io_interleave(node)) {
             ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
         } else {
             has_next = sched_next_time(node, &next);
@@ -24488,7 +24515,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
         time = new_time;
         node->rx_clock_ns = time;
-        if (until_next_event && did_work && time - poll_start >= busy_slice) {
+        if (until_next_event && did_work && time - poll_start >= poll_receive_timeout(node)) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }
     }
