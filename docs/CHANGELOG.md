@@ -58,6 +58,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `TT_UDP_CSUM0`, `TT_RX_DIRECT`, `TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`, `TT_RX_NONBLOCK`). A switch's variable, when
   set, still decides over the option. Defaults unchanged; the receive loop reads its two per-datagram bounds once per
   drain.
+- **Hybrid options** (`tt_InitOptions.hybrid_transport`, bundle 7): the `tt_HYBRID_*` estimator and control-law
+  constants are per-context defaults (`tt_HYBRID_N_MAX` also the build's bound, `tt_HYBRID_COLLAPSE_Z` compiled, the
+  stale exposure derived from `stale_false_forget`), checked at creation; a build without the hybrid transport refuses
+  them set.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
