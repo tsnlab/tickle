@@ -48,6 +48,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `_MISS_THRESHOLD`, `tt_DISCOVERY_REQUEST_RETRY`, `_ATTEMPTS`, `tt_SCHED_FULL_WARN_INTERVAL`) are per context, the
   constants their defaults; `tt_SEGMENT_DEAD_READER_NS < silence` checked at creation. A non-default update interval or
   miss threshold logs a WARNING (peers judge silence by their own). rmw_tickle reads them from its core context.
+- **Poll and socket settings per context** (`tt_InitOptions.poll` and `.socket`, bundle 6): the receive loop's clock
+  refresh, lock chunk, busy slice and I/O interleave; the socket buffer size, the io_uring hint (AUTO or URING), the
+  drain's sizes and hold-off, and the six Linux HAL switches that were environment variables only (`TT_UDP_OFFLOAD`,
+  `TT_UDP_CSUM0`, `TT_RX_DIRECT`, `TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`, `TT_RX_NONBLOCK`). A switch's variable, when
+  set, still decides over the option. Defaults unchanged; the receive loop reads its two per-datagram bounds once per
+  drain.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
