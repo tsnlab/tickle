@@ -3405,6 +3405,10 @@ static void wr_setup(struct tt_Context* node) {
     hal->wr_others = 0;
     hal->wr_moves = 0;
     hal->wr_stale = 0;
+    memset(&hal->wr_msg, 0, sizeof(hal->wr_msg)); // the recvmsg's header: wr_arm() sets its buffer
+    hal->wr_msg.msg_name = &hal->wr_from;
+    hal->wr_msg.msg_iov = &hal->wr_iov;
+    hal->wr_msg.msg_iovlen = 1;
     wr_close(hal, -1);
     if (hal->epoll_fd_plus1 == 0 || !wr_switch(node)) {
         return; // without the epoll set there is nothing to stand in for: every wait builds its ppoll() set
@@ -3540,10 +3544,7 @@ static struct io_uring_sqe* wr_sqe(struct tt_hal* hal, uint8_t opcode, int membe
     uint32_t tail = *hal->wr_sq_tail; // ours to move
     uint32_t index = tail & *hal->wr_sq_mask;
     struct io_uring_sqe* sqe = &((struct io_uring_sqe*)hal->wr_sqes)[index];
-    memset(sqe, 0, sizeof(*sqe));
-    sqe->opcode = opcode;
-    sqe->fd = member;
-    sqe->user_data = user_data;
+    *sqe = (struct io_uring_sqe) {.opcode = opcode, .fd = member, .user_data = user_data};
     hal->wr_sq_array[index] = index;
     __atomic_store_n(hal->wr_sq_tail, tail + 1U, __ATOMIC_RELEASE);
     hal->wr_unsubmitted++;
@@ -3636,13 +3637,9 @@ static void wr_arm(struct tt_Context* node) {
     if (sqe == NULL) {
         return;
     }
-    hal->wr_iov.iov_base = hal->wr_buf;
+    hal->wr_iov.iov_base = hal->wr_buf; // the header itself is wr_setup()'s, made once
     hal->wr_iov.iov_len = hal->wr_len;
-    memset(&hal->wr_msg, 0, sizeof(hal->wr_msg));
-    hal->wr_msg.msg_name = &hal->wr_from;
-    hal->wr_msg.msg_namelen = sizeof(hal->wr_from);
-    hal->wr_msg.msg_iov = &hal->wr_iov;
-    hal->wr_msg.msg_iovlen = 1;
+    hal->wr_msg.msg_namelen = sizeof(hal->wr_from); // the kernel writes back the length it gave
     sqe->addr = (uint64_t)(uintptr_t)&hal->wr_msg;
     sqe->len = 1U;
     hal->wr_gen = gen;
@@ -3724,12 +3721,13 @@ static uint32_t wr_completion(struct tt_hal* hal, const struct io_uring_cqe* cqe
     }
 }
 
-// Every completion in, RX_READY_* bits out.
-static uint32_t wr_harvest(struct tt_hal* hal) {
+// Every completion in, RX_READY_* bits out, and how many there were in *seen.
+static uint32_t wr_harvest(struct tt_hal* hal, uint32_t* seen) {
     uint32_t ready = 0;
     uint32_t head = *hal->wr_cq_head; // ours to move
     const uint32_t tail = __atomic_load_n(hal->wr_cq_tail, __ATOMIC_ACQUIRE);
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->wr_cqes;
+    *seen = tail - head;
     for (; head != tail; head++) {
         ready |= wr_completion(hal, &cqes[head & *hal->wr_cq_mask]);
     }
@@ -3781,36 +3779,32 @@ static __attribute__((noinline)) int wr_wait(struct tt_Context* node, const stru
     struct io_uring_getevents_arg arg;
     const struct io_uring_getevents_arg* timed = NULL;
     uint32_t flags = IORING_ENTER_GETEVENTS;
-    uint64_t until = 0;
     if (timeout_ts != NULL) {
-        // A call that submits returns the submitted count whether its wait timed out or not, so the end of the wait
-        // is told from the clock - read only for a wait with a timeout.
-        until = tt_get_ns() + ((uint64_t)timeout_ts->tv_sec * (uint64_t)SEC_NS) + (uint64_t)timeout_ts->tv_nsec;
-        memset(&arg, 0, sizeof(arg));
-        arg.ts = (uint64_t)(uintptr_t)&wait_ts;
-        timed = &arg;
-        flags |= IORING_ENTER_EXT_ARG;
         wait_ts.tv_sec = timeout_ts->tv_sec;
         wait_ts.tv_nsec = timeout_ts->tv_nsec;
+        arg = (struct io_uring_getevents_arg) {.ts = (uint64_t)(uintptr_t)&wait_ts};
+        timed = &arg;
+        flags |= IORING_ENTER_EXT_ARG;
     }
+    // The end of a timed wait is told without the clock: a call that submits returns the submitted count whether its
+    // wait timed out or not, but a wait for one completion that harvests none ended by its timeout (or by a signal,
+    // which the caller takes as one too). A wait woken only by completions that report nothing (a cancelled
+    // recvmsg's, a nudge's, one from before the ring was this thread's) waits its whole timeout again: rare, and late
+    // at most by what such a wake-up interrupted - nothing for a cancelled recvmsg, whose completion comes in the call
+    // that cancels it. Reading the clock for every timed wait cost +37 user instructions a round trip (PC, 2026-10-22).
     for (;;) {
         wr_arm(node); // again after a nudge: a bell made since
         const int err = wr_enter(hal, flags, timed) < 0 ? errno : 0;
-        *ready = wr_harvest(hal);
+        uint32_t seen = 0;
+        *ready = wr_harvest(hal, &seen);
         if (*ready != 0) {
             return __builtin_popcount(*ready & ~RX_READY_TAKEN);
         }
         if (err != 0) {
             return wr_failed(hal, err);
         }
-        // Woken by completions that report nothing: wait on, for what is left of the timeout.
-        if (timed != NULL) {
-            const uint64_t now = tt_get_ns();
-            if (now >= until) {
-                return 0;
-            }
-            wait_ts.tv_sec = (long long)((until - now) / (uint64_t)SEC_NS);
-            wait_ts.tv_nsec = (long long)((until - now) % (uint64_t)SEC_NS);
+        if (seen == 0) {
+            return 0; // nothing completed: the timeout ended the wait (or a signal)
         }
     }
 }
