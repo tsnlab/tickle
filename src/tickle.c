@@ -7923,7 +7923,7 @@ static void reset_node_state(struct tt_Context* node) {
     memset(&node->large_ref, 0, sizeof(node->large_ref));
 #endif
 
-    memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
+    // Nor the heap: nothing reads an entry at or past scheduler_tail.
     node->scheduler_tail = 0;
     node->sched_peak = 0;
     node->sched_full = 0;

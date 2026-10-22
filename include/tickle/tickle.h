@@ -1402,6 +1402,7 @@ struct tt_Context {
     uint32_t rx_tail;
     uint32_t rx_size;
 
+    // A heap of scheduler_tail entries; nothing reads past it, so the rest are never written.
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
     // The most entries the scheduler has held at once, and the entries it refused because it was full - a timer not
