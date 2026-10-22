@@ -479,6 +479,24 @@ else
     status=1
 fi
 
+# Contexts created in storage that was never zeroed (garbage_ctx_check.c): pub/sub, reliable under injected loss,
+# fragments, a service and the same-host path, from storage holding a pattern and then reset over its last state - in
+# the default build and in rmw_tickle's. Since 2026-10-22 creation no longer writes the large tables in full, and this
+# is what says nothing reads what it left unwritten.
+make garbage_ctx_check garbage_ctx_check_large
+for check in garbage_ctx_check garbage_ctx_check_large; do
+    if ./garbage_ctx_check.sh "$NS1" "$NS2" "$BROADCAST" "$check" a5 >"$check.out" 2>&1; then
+        SUMMARY="$SUMMARY
+$check: PASS"
+    else
+        echo "$check: FAIL"
+        cat "$check.out"
+        SUMMARY="$SUMMARY
+$check: FAIL"
+        status=1
+    fi
+done
+
 # A run read in place by the real HAL (rx_direct_check.c): the hinted run in place, everything else read whole. Twice:
 # the sends through the library, where the check refuses one (13), and over the HAL's own system calls (13r).
 make rx_direct_check rx_direct_check_raw

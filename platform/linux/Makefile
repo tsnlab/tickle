@@ -280,6 +280,27 @@ discovery_reply_check: $(DISCOVERY_REPLY_CHECK_SRC) $(wildcard $(INCLUDE)/tickle
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) -I$(ROOT)/examples/uint64 $(LDFLAGS) -o $@ \
 	    $(DISCOVERY_REPLY_CHECK_SRC) -lpthread -lm
 
+# Contexts created in storage that was never zeroed, against the real HAL (garbage_ctx_check.c), in the default build and
+# in rmw_tickle's (65507-byte datagrams, large samples: the tables at their largest, and samples big enough to fragment).
+# Receive loss injected (hal_linux.c TT_RX_DROP_PERCENT), so the reliable topics and the service are repaired. Run by
+# test.sh (test-linux).
+GARBAGE_CTX_SRC = garbage_ctx_check.c $(ROOT)/examples/set_bool/SetBool.c $(SRC_FILES)
+GARBAGE_CTX_DEFS = -DTT_RX_DROP_PERCENT=10 -I$(ROOT)/examples/set_bool
+garbage_ctx_check: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(GARBAGE_CTX_DEFS) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+garbage_ctx_check_large: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(GARBAGE_CTX_DEFS) $(LARGE_DEFINES) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+# The same under MemorySanitizer, which reports a read of a byte nothing wrote: run with fill "none", so the storage is
+# malloc()'s and every byte of it starts unwritten. The HAL makes the library's calls (MSan's interceptors see only
+# those) and reads its sockets without io_uring, whose completions MSan cannot see written.
+MSAN_CC ?= clang
+GARBAGE_CTX_MSAN = -fsanitize=memory -fsanitize-recover=memory -fsanitize-memory-track-origins -fno-omit-frame-pointer -O1 -g \
+    -Dtt_HAL_RX_HINT=1
+garbage_ctx_check_msan: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+garbage_ctx_check_large_msan: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) $(LARGE_DEFINES) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+
 test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
     bell_wake_check wr_check wr_check_large
 	./test_samehost.sh
@@ -659,6 +680,7 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f discovery_reply_check libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check wr_check wr_check_large udp_offload_check \
+	rm -f discovery_reply_check garbage_ctx_check garbage_ctx_check_large garbage_ctx_check_msan \
+	    garbage_ctx_check_large_msan libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check wr_check wr_check_large udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
