@@ -7105,7 +7105,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->frag_duplicate = 0;
 #endif
 
-    memset(node->tx_buffer, 0, sizeof(node->tx_buffer));
+    // tx_buffer is not zeroed: every datagram is built in it from its header on, and only [0, tx_tail) is read or sent.
     set_tx_tail(node, sizeof(struct tt_Header));
     node->tx_size = sizeof(node->tx_buffer);
     node->tx_has_pending_update = false;
@@ -7131,7 +7131,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->reached_nodes[i] = 0;
     }
 
-    memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
+    // rx_buffer is not zeroed either: what is read from it is what a receive, or a segment record, put there.
     node->rx_tail = 0;
     node->rx_size = tt_MAX_BUFFER_LENGTH * 2;
 #if tt_SAMPLE_LENDING
