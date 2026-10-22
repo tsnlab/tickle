@@ -31,6 +31,14 @@
 #           share - BETTER or EQUAL. A bN/tN client row EQUAL or WORSE falsifies "the scheduled publish no longer reads
 #           the clock" on that path; any WORSE row is a finding against the change.
 #
+# First run (2026-10-22 23:20-23:40, ~/rig_results_safe/poll_clock_insn_pc_20261022): A 132548dd, P = A+P, B the change
+# (ab/poll-clock-reuse's first commit, before any rebase); b1 b3 t1 t3 p1 p3, 3 reps, 0 void. The PC was shared (load
+# 4-21): the instruction rows hold, the cycles rows are its load. Client insn_u/sample B vs A (P vs A): b1 -6.75% BETTER
+# (+0.33%), b3 -6.17% BETTER (+0.59%), t1 -4.01% BETTER (+0.12%), t3 -4.09% EQUAL under its 5.4% bound (+0.20%), p1
+# -0.99% (-1.00%), p3 +3.07% (+1.09%) EQUAL. That is ~120-130 instructions a sample: one vDSO clock read through this
+# VM's kvm-clock (a Pi's arch timer read is shorter). Cycles, client: b1 -8.1%, t1 -3.3%, t3 -11.0%, all EQUAL under
+# 26-111% bounds. Server rows EQUAL (their per-sample counts move with the client's rate: spreads 10-150%).
+#
 # Usage: ARMS="A=origin/main P=origin/main+P B=ab/poll-clock-reuse" [REPS=3] [CELLS="b1 b3 t1 t3 p1 p3"]
 #        [LOSS_PCT=1] [CPU_C=12] [CPU_S=13] [OUT=prefix] poll_clock_insn_pc.sh
 #   OUT defaults to ~/rig_results_safe/poll_clock_insn_pc_<stamp> ($OUT.txt, $OUT.d/). Needs `sudo -n ip` (tc runs
