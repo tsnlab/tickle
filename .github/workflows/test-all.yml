@@ -281,6 +281,39 @@ jobs:
           # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
           submodules: true
 
+      # The apt packages this job installs, kept between runs - the same mechanism as check-all.yml's "Restore the apt
+      # package cache", which says why it cannot change what is installed. On 2026-10-22 (run 39817983477, 25dd0fb0) this
+      # job hit its 25-minute timeout inside "Install RISC-V toolchain and QEMU": 296 MB from azure.archive.ubuntu.com,
+      # picolibc-riscv64-unknown-elf (158 MB) timed out after 4 min 50 s, and qemu-system-misc (57.7 MB) was still
+      # downloading 5 min later when the job was cancelled. The step takes under a minute on a good mirror. Its own key
+      # prefix: the package set differs from Check all's.
+      - name: Restore the apt package cache
+        id: apt_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
+        with:
+          path: ~/apt-debs
+          key: apt-debs-freertos-ubuntu-24.04-v1-${{ github.run_id }}
+          restore-keys: apt-debs-freertos-ubuntu-24.04-v1-
+
+      - name: Seed apt's archive directory from the cache
+        run: |
+          # apt-get keeps what it downloads by default; set it anyway, so the save step cannot silently see nothing.
+          sudo tee /etc/apt/apt.conf.d/99tickle-keep-debs > /dev/null <<'EOF'
+          APT::Keep-Downloaded-Packages "true";
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          EOF
+          : > "$RUNNER_TEMP/apt-seeded.txt"
+          if [ -d "$HOME/apt-debs" ]; then
+            find "$HOME/apt-debs" -maxdepth 1 -name '*.deb' -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/apt-seeded.txt"
+            # Same filesystem, so a rename: no second copy on the runner's disk.
+            find "$HOME/apt-debs" -maxdepth 1 -name '*.deb' -exec sudo mv -t /var/cache/apt/archives/ {} +
+          fi
+          echo "seeded $(wc -l < "$RUNNER_TEMP/apt-seeded.txt") .deb files from cache entry" \
+            "'${{ steps.apt_cache.outputs.cache-matched-key }}'"
+
       - name: Install RISC-V toolchain and QEMU
         run: |
           sudo apt-get update
@@ -310,6 +343,47 @@ jobs:
           name: test-all-logs-freertos
           path: platform/freertos/*.log
           if-no-files-found: ignore
+
+      # The other half of "Restore the apt package cache" above; the same collect and save as check-all.yml's.
+      - name: Collect the apt packages this job installed
+        id: apt_collect
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          archives=/var/cache/apt/archives
+          dir="$HOME/apt-debs"
+          touch "$RUNNER_TEMP/apt-seeded.txt"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dpkg-query -W -f='${Package}:${Architecture}=${Version}\n' | sort -u > "$RUNNER_TEMP/apt-installed.txt"
+          shopt -s nullglob
+          for deb in "$archives"/*.deb; do
+            id=$(dpkg-deb --show --showformat='${Package}:${Architecture}=${Version}' "$deb" 2> /dev/null) || continue
+            if grep -qxF -- "$id" "$RUNNER_TEMP/apt-installed.txt"; then
+              cp "$deb" "$dir/"
+            fi
+          done
+          find "$dir" -maxdepth 1 -name '*.deb' -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/apt-kept.txt"
+          kept=$(wc -l < "$RUNNER_TEMP/apt-kept.txt")
+          reused=$(LC_ALL=C comm -12 "$RUNNER_TEMP/apt-kept.txt" "$RUNNER_TEMP/apt-seeded.txt" | wc -l)
+          echo "$kept installed .deb files, $reused of them seeded from the cache, $(du -sh "$dir" | cut -f1)"
+          if [ "$kept" -eq 0 ]; then
+            echo "::warning::no .deb files left in /var/cache/apt/archives - apt deleted them, so nothing is cached"
+            echo "key=" >> "$GITHUB_OUTPUT"
+          else
+            echo "key=apt-debs-freertos-ubuntu-24.04-v1-$(sha256sum < "$RUNNER_TEMP/apt-kept.txt" | cut -c1-16)" \
+              >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save the apt package cache
+        if: >-
+          ${{ !cancelled() && steps.apt_collect.outputs.key != ''
+          && steps.apt_collect.outputs.key != steps.apt_cache.outputs.cache-matched-key }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_collect.outputs.key }}
 
   # The gate, under the job name the workflow has always had, so a required "test" check keeps meaning "every tier".
   test:
