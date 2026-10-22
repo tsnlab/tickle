@@ -132,7 +132,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   takes the reading the poll ran the entry at (`tt_Context.entry_clock_ns`), so its stamp is early by the entry's own
   work before it. A second publish in the entry, and every entry after the first of a non-blocking poll, reads the
   clock as before. PC: -4% to -7% user instructions per sample on the throughput clients
-  (`poll_clock_insn_pc.sh`); the rig A/B is pending.
+  (`poll_clock_insn_pc.sh`). Rig core gate v2 (A 132548dd, B 1f5acb48 before its rebase,
+  `coreAB_5de951a7_20261022-234808`): PASS; client user instructions -1.4% to -4.1% on all 8 throughput cells, server
+  +0.06% to +0.19% on 8 rows (listed), no CPU or latency row WORSE.
 
 ### Fixed
 
