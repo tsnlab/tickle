@@ -893,6 +893,12 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
 #define LINK_T1S_RATE 10000000ULL
 #define LINK_T1S_IDLE_HEARTBEAT tt_SECOND
 #define LINK_T1S_PIGGYBACK_DIVISOR 8U
+// A change's first announce repeat waits this long after the broadcast it repeats; each later one twice the last gap
+// (docs/DESIGN.md "Link profiles"): three span 0.7 s, past a burst of that length and within half a 2 s join.
+#define LINK_ANNOUNCE_REPEAT_FIRST_NS (100U * tt_MILLISECOND)
+// The most unicast copies of one summary (tt_LinkOptions.summary_unicast) a round sends; past it, rounds take the
+// known peers in turn.
+#define LINK_SUMMARY_COPIES_MAX 16U
 // A continuation fragment's framing: what a fragment of a sample spends of its datagram before its CDR.
 #define LINK_FRAG_CONT_OVERHEAD \
     ((uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader)))
@@ -939,6 +945,26 @@ static bool context_value_set(uint64_t value, uint64_t default_value) {
     return value != 0 && value != default_value;
 }
 
+// A link's discovery fields left 0 (tt_LinkOptions.summary_unicast, announce_repeats): WIFI's, where a broadcast goes
+// at the basic rate with no MAC retry and a unicast is retried; off on every other profile.
+static void resolve_link_discovery(struct tt_LinkOptions* link) {
+    bool wifi = link->profile == tt_LINK_PROFILE_WIFI;
+    if (link->summary_unicast == tt_SWITCH_DEFAULT) {
+        link->summary_unicast = wifi ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;
+    }
+    if (link->announce_repeats == 0) {
+        link->announce_repeats = wifi ? (uint8_t)tt_LINK_WIFI_ANNOUNCE_REPEATS : (uint8_t)tt_ANNOUNCE_REPEATS_NONE;
+    }
+}
+
+// The context's miss threshold where it left it at 0 or the default: WIFI's when any link is WIFI - the silence the
+// most lossy link needs, carried to the peers by the summary.
+static void resolve_link_miss_threshold(struct tt_InitOptions* opts, bool any_wifi) {
+    if (any_wifi && !context_value_set(opts->discovery.miss_threshold, tt_LIVELINESS_MISS_THRESHOLD)) {
+        opts->discovery.miss_threshold = (uint8_t)tt_LINK_WIFI_MISS_THRESHOLD;
+    }
+}
+
 // One link's zero fields, each the profile's value. The MTU of T1S and TSN, and so T1S's retry floor, wait for the
 // interface (link_profiles_apply()). An unknown profile is filled as ETHERNET and refused by validate_link_options().
 static void resolve_link_profile(struct tt_LinkOptions* link) {
@@ -968,6 +994,7 @@ static void resolve_link_profile(struct tt_LinkOptions* link) {
     if (link->pacing_rate == 0) {
         link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
     }
+    resolve_link_discovery(link);
 }
 
 // Every link's profile, and the context-wide settings its links decide where the context left them 0: the batch tick
@@ -984,9 +1011,11 @@ static void resolve_link_profiles(struct tt_InitOptions* opts) {
     uint64_t idle = tt_QOS_DURATION_INFINITE;
     bool any_mtu = false;
     bool agree = true;
+    bool any_wifi = false;
     for (uint8_t i = 0; i < count; i++) {
         struct tt_LinkOptions* link = &net->links[i];
         resolve_link_profile(link);
+        any_wifi = any_wifi || link->profile == tt_LINK_PROFILE_WIFI;
         if (link->batch_tick_ns != 0 && (tick == 0 || link->batch_tick_ns < tick)) {
             tick = link->batch_tick_ns;
         }
@@ -1008,6 +1037,7 @@ static void resolve_link_profiles(struct tt_InitOptions* opts) {
         uint8_t mode = any_mtu ? (uint8_t)tt_LARGE_FRAGMENTATION_MTU : agreed;
         net->large_fragmentation = mode != tt_LARGE_FRAGMENTATION_INHERIT ? mode : net->large_fragmentation;
     }
+    resolve_link_miss_threshold(opts, any_wifi);
 }
 
 // A link's own value against the context's setting of the same thing, both before resolution: refused when both are set
@@ -1153,6 +1183,12 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     }
     if (link->piggyback_divisor > tt_RELIABLE_BITMAP_BITS) {
         return reject_option("net.links[].piggyback_divisor", "is above tt_RELIABLE_BITMAP_BITS");
+    }
+    if (link->summary_unicast > tt_SWITCH_OFF) {
+        return reject_option("net.links[].summary_unicast", "is not a tt_SWITCH_* value");
+    }
+    if (link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE && link->announce_repeats > tt_ANNOUNCE_REPEATS_MAX) {
+        return reject_option("net.links[].announce_repeats", "is above tt_ANNOUNCE_REPEATS_MAX");
     }
     return validate_link_pacing(link);
 }
@@ -1845,6 +1881,17 @@ static void link_warn_mtu(const struct _tt_Link* resolved, uint32_t mtu) {
 // What the context's links set for all its sends (struct tt_Context.control_max and the rest; docs/DESIGN.md "Link
 // profiles"), once tt_bind()'s resolution has asked the OS for each interface's MTU. A context with no links configured
 // has one ETHERNET link, and keeps every default.
+// Whether a link takes unicast copies of the summary: asked to, and unicasting at all (a link that broadcasts as soon
+// as one peer is known would turn every copy into one more broadcast).
+static bool link_takes_summary_copies(const struct tt_LinkOptions* link, const struct _tt_Link* resolved) {
+    return link->summary_unicast == tt_SWITCH_ON && resolved->unicast_threshold != 0;
+}
+
+// The repeats a link asks a change's announce for, tt_ANNOUNCE_REPEATS_NONE being none.
+static uint8_t link_announce_repeats(const struct tt_LinkOptions* link) {
+    return link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE ? link->announce_repeats : 0U;
+}
+
 static void link_profiles_apply(struct tt_Context* node) {
     struct tt_NetOptions* net = &node->opts.net;
     uint32_t control = (uint32_t)tt_CONTROL_MAX_LENGTH;
@@ -1852,6 +1899,8 @@ static void link_profiles_apply(struct tt_Context* node) {
     uint32_t divisor = 0;
     bool batch = net->link_count != 0;
     bool pacing = false;
+    bool copies = false;
+    uint8_t repeats = 0;
     for (uint8_t i = 0; i < link_count(node); i++) {
         uint32_t mtu = LINK_ETHERNET_MTU;
         if (i < net->link_count) {
@@ -1863,6 +1912,8 @@ static void link_profiles_apply(struct tt_Context* node) {
             floor = link->retry_floor_ns > floor ? link->retry_floor_ns : floor;
             divisor = link->piggyback_divisor > divisor ? link->piggyback_divisor : divisor;
             batch = batch && link->batch == tt_SWITCH_ON;
+            copies = copies || link_takes_summary_copies(link, &node->links[i]);
+            repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;
         }
         link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);
@@ -1871,6 +1922,8 @@ static void link_profiles_apply(struct tt_Context* node) {
     node->control_max = control;
     node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD;
     node->pacing = pacing;
+    node->summary_copies = copies;
+    node->announce_repeats = repeats;
     node->batch_default = batch;
     node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
     // The floor is put under the measured G where G is kept - its least (timer_lateness_fold()) and its cold start - so
@@ -6639,6 +6692,39 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
 // keeps creation to a clock read and a store. The periodic node_update() is untouched - this is one extra
 // announce per burst of changes, not a faster cadence. Since tt_VERSION 8 this broadcast is how a change
 // is pushed; a peer that misses it pulls the list when the next summary shows the new generation.
+// One repeat of a change's broadcast announce (tt_LinkOptions.announce_repeats): the current list, as the change sent
+// it - a peer that has it ignores the repeat (discovery_generation_applied()), one that missed it answers it as the
+// change itself. The next waits twice as long.
+static void announce_repeat(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(param);
+    if (node->announce_repeats_left == 0) {
+        return;
+    }
+    node->announce_repeats_left--;
+    if (build_and_send_update(node, NULL, 0)) {
+        node->announce_repeats_sent++;
+    }
+    node->announce_repeat_gap_ns *= 2U;
+    if (node->announce_repeats_left != 0 &&
+        !tt_Context_schedule(node, time + node->announce_repeat_gap_ns, announce_repeat, NULL)) {
+        node->announce_repeats_left = 0; // the peers still pull the list when the next summary shows it
+    }
+}
+
+// The repeats a change's broadcast announce is owed (tt_Context.announce_repeats), from the first gap; a change while
+// they run starts them again, for the newer list.
+static void arm_announce_repeats(struct tt_Context* node, uint64_t time) {
+    if (node->announce_repeats == 0) {
+        return;
+    }
+    (void)tt_Context_unschedule(node, announce_repeat, NULL);
+    node->announce_repeats_left = node->announce_repeats;
+    node->announce_repeat_gap_ns = LINK_ANNOUNCE_REPEAT_FIRST_NS;
+    if (!tt_Context_schedule(node, time + LINK_ANNOUNCE_REPEAT_FIRST_NS, announce_repeat, NULL)) {
+        node->announce_repeats_left = 0;
+    }
+}
+
 static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
     uint64_t quiet_at = node->endpoints_changed_ns + discovery_tx_interval_ns(node);
@@ -6650,6 +6736,7 @@ static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {
     }
     node->announce_soon_scheduled = false;
     build_and_send_update(node, NULL, 0);
+    arm_announce_repeats(node, time);
     reschedule_summary_for_leases(node, time);
 }
 
@@ -7483,6 +7570,8 @@ static void node_init_locks(struct tt_Context* node) {
     node->retry_floor_ns = 0;
     node->pacing = false; // no link paced: the send path's one branch (docs/DESIGN.md "Send pacing")
     memset(node->pacers, 0, sizeof(node->pacers));
+    node->summary_copies = false; // nor a WIFI link's discovery (link_profiles_apply())
+    node->announce_repeats = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -7531,6 +7620,11 @@ static uint16_t advertised_ip_reassembly_max(uint32_t setting) {
 
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
+    node->announce_repeats_left = 0;
+    node->summary_copy_next = 0;
+    node->summary_copy_ns = 0;
+    node->summary_copies_sent = 0;
+    node->announce_repeats_sent = 0;
     node->publish_clock_ns = 0; // outside a publish (publish_clock_or_now())
     node->pacing_waits = 0;
     node->pacing_repairs_deferred = 0;
@@ -7560,6 +7654,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
         node->peer_silence_ns[i] = 0;
+        node->summary_peer_port[i] = 0;
         node->update_part_generation[i] = 0;
         memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
         node->update_part_count[i] = 0;
@@ -16825,11 +16920,12 @@ static void fill_summary(const struct tt_Context* node, struct tt_HeartbeatHeade
     summary->summary_miss_threshold = miss == (uint64_t)tt_LIVELINESS_MISS_THRESHOLD ? 0 : (uint8_t)miss;
 }
 
-// The summary as a datagram of its own, built apart from tx_buffer, which may hold the very send it goes
-// ahead of (note_reached(), tt_Context.summary_rides). Broadcast, as the batched one is.
-static void send_summary_ahead(struct tt_Context* node) {
-    tt_ALIGNAS(4) uint8_t
-        datagram[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader)];
+#define SUMMARY_DATAGRAM_LENGTH \
+    (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader))
+
+// The summary as a datagram of its own in `datagram` (SUMMARY_DATAGRAM_LENGTH bytes, 4-aligned), built apart from
+// tx_buffer: in the single form, as the batched one goes when it is alone.
+static struct tx_datagram summary_datagram(const struct tt_Context* node, uint8_t* datagram) {
     struct tt_Header* header = (struct tt_Header*)datagram;
     header->magic_value = NATIVE_MAGIC_VALUE;
     header->version = tt_VERSION;
@@ -16840,10 +16936,53 @@ static void send_summary_ahead(struct tt_Context* node) {
     submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader));
     fill_summary(
         node, (struct tt_HeartbeatHeader*)(datagram + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)));
-    uint32_t skip = to_single_form(datagram, (uint32_t)sizeof(datagram), 0);
-    struct tx_datagram dgram = {datagram + skip, (uint32_t)sizeof(datagram) - skip, NULL, 0};
+    uint32_t skip = to_single_form(datagram, (uint32_t)SUMMARY_DATAGRAM_LENGTH, 0);
+    return (struct tx_datagram) {datagram + skip, (uint32_t)SUMMARY_DATAGRAM_LENGTH - skip, NULL, 0};
+}
+
+// The summary ahead of a send, which tx_buffer may hold (note_reached(), tt_Context.summary_rides). Broadcast, as the
+// batched one is.
+static void send_summary_ahead(struct tt_Context* node) {
+    tt_ALIGNAS(4) uint8_t datagram[SUMMARY_DATAGRAM_LENGTH];
+    struct tx_datagram dgram = summary_datagram(node, datagram);
     (void)send_datagram(node, &dgram, NULL, 0);
     node->summaries_ridden++;
+}
+
+// Whether node `id` is sent a copy of the summary: a peer whose list is applied, whose summaries' address is known, on
+// a link that takes copies (link_takes_summary_copies()).
+static bool summary_copy_due(struct tt_Context* node, uint8_t id) {
+    if (id == node->id || !node->update_seen[id] || node->summary_peer_port[id] == 0) {
+        return false;
+    }
+    uint8_t link = link_of_ip(node, node->summary_peer_ip[id]);
+    return link < node->opts.net.link_count &&
+           link_takes_summary_copies(&node->opts.net.links[link], &node->links[link]);
+}
+
+// The summary's unicast copies (tt_LinkOptions.summary_unicast): a broadcast on Wi-Fi goes at the basic rate with no
+// MAC retry and is lost far more often than a unicast, so each peer known on such a link is also sent the summary by
+// unicast - at most one round per update interval (the first once the clock has passed one), LINK_SUMMARY_COPIES_MAX
+// copies a round, each round starting where the last stopped.
+static void send_summary_copies(struct tt_Context* node, uint64_t time) {
+    if (!node->summary_copies || time - node->summary_copy_ns < discovery_update_interval_ns(node)) {
+        return;
+    }
+    node->summary_copy_ns = time;
+    tt_ALIGNAS(4) uint8_t datagram[SUMMARY_DATAGRAM_LENGTH];
+    struct tx_datagram dgram = summary_datagram(node, datagram);
+    uint32_t sent = 0;
+    uint32_t id = node->summary_copy_next;
+    for (uint32_t step = 0; step < tt_MAX_CONTEXT_IDS && sent < LINK_SUMMARY_COPIES_MAX; step++) {
+        if (summary_copy_due(node, (uint8_t)id)) {
+            struct tt_Peer peer = {(uint8_t)id, node->summary_peer_ip[id], node->summary_peer_port[id]};
+            (void)send_datagram(node, &dgram, &peer, 1);
+            sent++;
+        }
+        id = (id + 1U) % tt_MAX_CONTEXT_IDS;
+    }
+    node->summary_copy_next = (uint8_t)id;
+    node->summary_copies_sent += sent;
 }
 
 static void send_discovery_summary(struct tt_Context* node) {
@@ -17313,6 +17452,7 @@ static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     } else {
         node->summaries_skipped++;
     }
+    send_summary_copies(node, time);
 
     node->next_summary_ns = time + interval;
     if (!tt_Context_schedule(node, node->next_summary_ns, node_update, NULL)) {
@@ -17649,7 +17789,8 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->update_reprocess[source] = false;
     node->update_generation[source] = 0;
     node->update_last_seen[source] = 0;
-    node->peer_silence_ns[source] = 0; // its next summary says again
+    node->peer_silence_ns[source] = 0;   // its next summary says again
+    node->summary_peer_port[source] = 0; // nor sent copies of ours until it is known again
     node->traffic_last_seen[source] = 0;
     update_parts_clear(node, source);
     node->liveliness_flags[source] = 0;
@@ -21177,6 +21318,14 @@ static void note_peer_timing(struct tt_Context* node, uint8_t source, const stru
         summary_interval_decode(code), miss != 0 ? (uint64_t)miss : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD);
 }
 
+// Where `source`'s summaries come from, which its copies of ours go to (send_summary_copies()); only where copies go.
+static void note_summary_peer(struct tt_Context* node, uint8_t source, uint32_t sender_ip, uint16_t sender_port) {
+    if (node->summary_copies) {
+        node->summary_peer_ip[source] = sender_ip;
+        node->summary_peer_port[source] = sender_port;
+    }
+}
+
 // A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -
 // exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
 // other - a change missed, a node never heard in full - is asked for (rule 3), and asked again within
@@ -21184,6 +21333,7 @@ static void note_peer_timing(struct tt_Context* node, uint8_t source, const stru
 static bool process_discovery_summary(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                       uint16_t sender_port) {
     node->update_last_seen[source] = tt_get_ns();
+    note_summary_peer(node, source, sender_ip, sender_port);
     if (discovery_generation_applied(node, source, generation)) {
         return true;
     }

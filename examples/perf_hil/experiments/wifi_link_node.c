@@ -21,7 +21,8 @@
 //         Polls for -d SECONDS. It carries no data, so its liveliness rests on its discovery summaries alone.
 //
 // -m be|rel: BEST_EFFORT or RELIABLE (the zeroed profile otherwise: KEEP_LAST 10, VOLATILE - rmw's default).
-// -p ethernet|wifi: the link profile (tt_LINK_PROFILE_WIFI resolves to ETHERNET's values as of 2026-10-22).
+// -p ethernet|wifi: the link profile. RESULT ends with the discovery the context ran (2026-10-23): its miss threshold
+// and what it sent of the WIFI profile's summary copies and announce repeats - the treatment a wifi arm names.
 // The first -r samples (one second) are warm-up and not scored by either side.
 //
 // Every role watches discovery (tt_Context_set_discovery()) and prints one EVENT line per remote context's first
@@ -400,7 +401,8 @@ static void print_result(const char* role, uint64_t create_ns, const struct ping
     printf("RESULT role=%s ctx=%d reliable=%d size=%u rate_hz=%u profile=%s link_mtu=%u unicast_threshold=%u "
            "create_ns=%llu end_ns=%llu join_ms=%.1f published=%u publish_failed=%u warmup=%u scored=%u duplicates=%u "
            "below_warmup=%u max_seq=%u p50_us=%.1f p90_us=%.1f p99_us=%.1f max_us=%.1f pongs_sent=%u pongs_refused=%u "
-           "retransmitted=%u tx_datagrams=%llu rx_datagrams=%llu cpu_ms=%.1f events=%u events_dropped=%u\n",
+           "retransmitted=%u tx_datagrams=%llu rx_datagrams=%llu cpu_ms=%.1f events=%u events_dropped=%u "
+           "miss_threshold=%u summary_copies=%llu announce_repeats=%llu\n",
            role, opts.context_id, opts.reliable ? 1 : 0, opts.role == ROLE_PING ? ping_size : PONG_BYTES, opts.rate_hz,
            opts.wifi ? "wifi" : "ethernet", (unsigned)link->mtu, (unsigned)ctx.links[0].unicast_threshold,
            (unsigned long long)create_ns, (unsigned long long)now_ns(),
@@ -408,8 +410,9 @@ static void print_result(const char* role, uint64_t create_ns, const struct ping
            run != NULL ? run->publish_failed : 0U, warmup, scored, duplicates, below_warmup, max_seq, quantile_us(P50),
            quantile_us(P90), quantile_us(P99), scored > 0 ? (double)latency_ns[scored - 1U] / (double)NS_PER_US : 0.0,
            pongs_sent, pongs_refused, opts.role == ROLE_IDLE ? 0U : pub.retransmitted,
-           (unsigned long long)ctx.tx_datagrams, (unsigned long long)ctx.rx_datagrams, cpu, event_count,
-           events_dropped);
+           (unsigned long long)ctx.tx_datagrams, (unsigned long long)ctx.rx_datagrams, cpu, event_count, events_dropped,
+           (unsigned)ctx.opts.discovery.miss_threshold, (unsigned long long)ctx.summary_copies_sent,
+           (unsigned long long)ctx.announce_repeats_sent);
 }
 
 static const char* role_name(void) {

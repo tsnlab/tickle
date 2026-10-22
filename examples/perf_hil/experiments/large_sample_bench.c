@@ -45,7 +45,12 @@
 //
 // RESULT line fields: role, size, published/delivered, latency median/p99/max in microseconds (sub), torn, cpu_ms (the
 // process's user + system time while it ran), cpu_ms_per_mb (per MB delivered, sub; per MB published, pub),
-// peak_rss_kb, and core's large_* counters.
+// peak_rss_kb, and core's large_* counters, then the context's discovery: miss_threshold, summary_copies and
+// announce_repeats (what it sent of each).
+//
+// -P wifi (wifi_burst_loss_netns.sh, 2026-10-23): the context is created with tt_Context_create_with() and one link of
+// -b's broadcast and profile WIFI, the -F/-X/-C settings in its net options, instead of tt_Context_create() and
+// _tt_CONFIG; without -P nothing changes.
 
 #ifndef tt_MAX_BUFFER_LENGTH
 #define tt_MAX_BUFFER_LENGTH 65507 // rmw_tickle's datagram: tt_MAX_SAMPLE_LENGTH 65507, and large samples above it
@@ -288,6 +293,13 @@ static double cpu_ms(long* peak_rss_kb) {
     return user_ms + system_ms;
 }
 
+// The context's discovery as it ran (the header's RESULT fields): its miss threshold and what it sent of the WIFI
+// profile's summary copies and announce repeats - the treatment a -P wifi arm names.
+static void print_discovery(const struct tt_Context* node) {
+    printf(" miss_threshold=%u summary_copies=%lu announce_repeats=%lu", (unsigned)node->opts.discovery.miss_threshold,
+           (unsigned long)node->summary_copies_sent, (unsigned long)node->announce_repeats_sent);
+}
+
 static void print_large(const struct tt_Context* node) {
 #if BENCH_LARGE
     printf(" large_published=%lu large_reassembled=%lu large_abandoned=%lu large_no_buffer=%lu large_dropped=%lu "
@@ -400,6 +412,7 @@ struct options {
     bool cap_off;           // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
     double halve_after_s;   // -H: the rate halves after this many seconds; 0: never
     uint32_t region_chunks; // -B: step B's shared region for the publisher, 0 for none (fragments through the ring)
+    bool wifi;              // -P wifi: one link of profile WIFI (see the header)
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
@@ -419,10 +432,11 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
                               -1,
                               false,
                               0.0,
-                              0};
+                              0,
+                              false};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:D:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:D:P:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -447,6 +461,12 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
+            break;
+        case 'P':
+            if (strcmp(optarg, "wifi") != 0) { // NOLINT(misc-include-cleaner)
+                return false;
+            }
+            opts->wifi = true;
             break;
         case 'H':
             opts->halve_after_s = strtod(optarg, NULL); // NOLINT(misc-include-cleaner)
@@ -694,6 +714,7 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
            published > 0 ? cpu / published_mb : 0.0, peak_rss_kb);
     print_large(node);
     print_hybrid(node, &pub);
+    print_discovery(node);
     printf("\n");
     return 0;
 }
@@ -781,6 +802,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
            delivered > 0 ? cpu / delivered_mb : 0.0, peak_rss_kb);
     print_large(node);
     print_hybrid(node, NULL);
+    print_discovery(node);
     printf(" socket_drops=%u", bench_socket_drops(node->hal.sock) + bench_socket_drops(node->hal.data_sock));
 #if defined(tt_RX_DRAIN) && tt_RX_DRAIN
     printf(" drain_starts=%lu drain_datagrams=%lu drain_overruns=%lu drain_truncated=%lu",
@@ -817,7 +839,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv, &opts)) {
         fprintf(stderr,
                 "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] "
-                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE] [-B CHUNKS] [-D MS]\n",
+                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE] [-B CHUNKS] [-D MS] [-P wifi]\n",
                 argv[0]);
         return 2;
     }
@@ -835,7 +857,21 @@ int main(int argc, char** argv) {
 #endif
 
     static struct tt_Context node;
-    bool created = tt_Context_create(&node) == tt_RET_OK;
+    bool created = false;
+    if (opts.wifi) {
+        struct tt_InitOptions init;
+        memset(&init, 0, sizeof(init));
+        init.net.broadcast = opts.broadcast;
+        init.net.links[0].broadcast = opts.broadcast;
+        init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
+        init.net.link_count = 1;
+        init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
+        init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;
+        init.net.reassembly_cap_off = _tt_CONFIG.reassembly_cap_off;
+        created = tt_Context_create_with(&node, &init) == tt_RET_OK;
+    } else {
+        created = tt_Context_create(&node) == tt_RET_OK;
+    }
 #if BENCH_LARGE
     created = created && tt_Context_set_large_buffers(&node, large_acquire, large_release, NULL) == tt_RET_OK;
 #endif

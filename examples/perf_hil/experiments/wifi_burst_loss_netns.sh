@@ -83,6 +83,15 @@
 #   - R2's K model counts repair rounds and not the wait before a gap is seen: core's detect-to-recover was under 8 ms
 #     for ~90% of gaps at ge5b2/ge5b4, so most of the excess over the limit is the burst itself, before detection.
 #
+# AMENDED 2026-10-23, BEFORE THE FIRST PROFILE=wifi RUN (the WIFI profile's discovery values; no threshold moved):
+#   - rel_large's two large_sample_bench nodes run the profile too (-P wifi): until now only that cell's idle node did,
+#     so PROFILE named one node of three there, and R5 in rel_large is the idle node's view of those two. A
+#     PROFILE=ethernet run keeps the baseline's command lines exactly.
+#   - The treatment check: every node's RESULT names the discovery it ran (miss_threshold, summary_copies,
+#     announce_repeats sent). A wifi run's cell is VOID where any node ran the default miss threshold or the idle node
+#     sent no summary copy or ping no announce repeat; an ethernet run's where any node sent either or ran another
+#     threshold. The reader prints each cell's totals beside R5 and R6.
+#
 # Usage: [REPS=3] [REP_FIRST=1] [DUR=30] [ARMS="ctl ge1b2 ..."] [CELLS="be_small rel_small rel_large"] [PROFILE=ethernet|wifi]
 #        [OUT=dir] wifi_burst_loss_netns.sh
 #   OUT defaults to ~/rig_results_safe/wifi_baseline/<stamp>: raw logs per run under OUT/runs/, the summary in
@@ -116,6 +125,9 @@ fi
 [ "$REP_FIRST" = 1 ] && : >"$SUM"
 
 case "$PROFILE" in ethernet | wifi) ;; *) echo "PROFILE must be ethernet or wifi" >&2; exit 2 ;; esac
+# The large bench takes the profile only as -P wifi (header, AMENDED 2026-10-23); ethernet runs it as the baseline did.
+LARGE_PROFILE=()
+[ "$PROFILE" = wifi ] && LARGE_PROFILE=(-P wifi)
 WORK=$(mktemp -d "$HOME/tmp_build/wifi_burst.XXXXXX") || exit 1
 NS_LIST="$WORK/namespaces"
 : >"$NS_LIST"
@@ -273,11 +285,11 @@ run_one() { # run_one ARM CELL REP
     local idle_pid=$!
     TV_PID=""
     if [ "$cell" = rel_large ]; then
-        inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" >"$RUN_DIR/echo.log" 2>&1 &
+        inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" "${LARGE_PROFILE[@]}" >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
         [ "$arm" = tv ] && { tv_cycle & TV_PID=$!; }
-        inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" >"$RUN_DIR/ping.log" 2>&1
+        inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" "${LARGE_PROFILE[@]}" >"$RUN_DIR/ping.log" 2>&1
         wait "$echo_pid"
     else
         inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/owd_us.txt" \

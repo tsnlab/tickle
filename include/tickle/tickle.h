@@ -816,15 +816,23 @@ struct tt_HybridState {
 // order and names are fixed now so that each bundle edits only its own struct and its own default/validation function.
 
 // A link's medium (tt_LinkOptions.profile, docs/DESIGN.md "Link profiles"): which values its zero fields stand for.
-// ETHERNET (0) is every build before profiles existed, value for value. WIFI stands for ETHERNET's values: the Wi-Fi
-// stage of the network-profiles plan decides its own.
+// ETHERNET (0) is every build before profiles existed, value for value. WIFI (2026-10-23) is ETHERNET's values but for
+// discovery: its broadcasts go at the basic rate with no MAC retry, so it repeats each summary by unicast to the peers
+// it knows, judges silence by a longer miss threshold, and repeats a change's broadcast announce.
 #define tt_LINK_PROFILE_ETHERNET 0U // switched Ethernet: the defaults
 #define tt_LINK_PROFILE_T1S 1U      // 10BASE-T1S: a 10 Mbit/s half-duplex multidrop bus taking turns under PLCA
 #define tt_LINK_PROFILE_TSN 2U    // a TSN-scheduled Ethernet link: ETHERNET's values, no batching, the interface's MTU
-#define tt_LINK_PROFILE_WIFI 3U   // ETHERNET's values for now
+#define tt_LINK_PROFILE_WIFI 3U   // Wi-Fi: ETHERNET's values, discovery for a lossy broadcast (see above)
 #define tt_LINK_MTU_MIN 576U      // tt_LinkOptions.mtu's least: the datagram every IPv4 host must accept
 #define tt_LINK_RATE_MIN 1000U    // tt_LinkOptions.link_rate's least, bits per second
 #define tt_LINK_T1S_PLCA_NODES 8U // the nodes a T1S retry floor assumes take a turn per PLCA cycle
+// Discovery on a WIFI link (docs/DESIGN.md "Link profiles"). The miss threshold is the context's
+// (tt_InitOptions.discovery.miss_threshold) where it is left at 0 or the default and any link is WIFI: a silence of
+// (2 x 6 + 1) / 2 = 6.5 update intervals, which the summary carries to the peers.
+#define tt_LINK_WIFI_MISS_THRESHOLD 6U
+#define tt_LINK_WIFI_ANNOUNCE_REPEATS 3U   // tt_LinkOptions.announce_repeats: a WIFI link's
+#define tt_ANNOUNCE_REPEATS_NONE UINT8_MAX // tt_LinkOptions.announce_repeats: no repeat, whatever the profile
+#define tt_ANNOUNCE_REPEATS_MAX 8U         // tt_LinkOptions.announce_repeats' most
 // Send pacing (tt_LinkOptions.pacing_rate and pacing_burst, docs/DESIGN.md "Send pacing").
 #define tt_PACING_OFF UINT64_MAX   // tt_LinkOptions.pacing_rate: no pacing on the link, whatever its profile
 #define tt_LINK_T1S_PACING_PCT 75U // a T1S link's pacing rate, in percent of its link_rate
@@ -854,6 +862,15 @@ struct tt_LinkOptions {
     // tt_LARGE_FRAGMENTATION_*; 0 = the profile's (T1S _MTU: an MCU on the bus reassembles no IP fragments; the rest
     // leave it to net.large_fragmentation). Fills net.large_fragmentation when that is 0: _MTU if any link says so.
     uint8_t large_fragmentation;
+    // Whether each discovery summary is also sent by unicast to every peer known on this link, at most one round per
+    // update interval (tt_SWITCH_*; 0 = the profile's: WIFI on, the rest off). Only where the link unicasts (a resolved
+    // unicast_threshold above zero peers). A peer is known once its list is applied, at the address its summaries come
+    // from.
+    uint8_t summary_unicast;
+    // How many times the broadcast announce of a change is sent again, 100 ms after it and then at doubling gaps; 0 =
+    // the profile's (WIFI tt_LINK_WIFI_ANNOUNCE_REPEATS, the rest none), tt_ANNOUNCE_REPEATS_NONE = none, else at most
+    // tt_ANNOUNCE_REPEATS_MAX. Context: the most any link asks.
+    uint8_t announce_repeats;
     // The link's IP MTU in bytes, tt_LINK_MTU_MIN or more; 0 = the profile's: 1500 for ETHERNET and WIFI, the
     // interface's own (tt_link_mtu(), hal.h; 1500 when unknown) for T1S and TSN. Below 1500 it caps every datagram the
     // context builds from more than one submessage, its announce parts and its fragments (tt_CONTROL_MAX_LENGTH stays
@@ -2018,6 +2035,24 @@ struct tt_Context {
     // After every other field, so none of them moves (2 KB earlier moved the segment peer table across the page
     // boundary test_transport_seam's residency test relies on).
     uint64_t peer_silence_ns[tt_MAX_CONTEXT_IDS];
+    // Discovery on a lossy broadcast (tt_LinkOptions.summary_unicast and announce_repeats, docs/DESIGN.md "Link
+    // profiles", 2026-10-23), set by link_profiles_apply(); off on a hand-built context. summary_copies: whether any
+    // link takes unicast copies of the summary; announce_repeats: the repeats a change's broadcast announce is owed.
+    // summary_peer_ip/_port: per remote node, the address its latest summary came from (port 0: none), recorded only
+    // where copies go; summary_copy_next: the node id the next round of copies starts at, so a capped round reaches
+    // every peer in turn; summary_copy_ns: when the last round went. announce_repeats_left and announce_repeat_gap_ns:
+    // what the latest change is still owed, and the wait before the next. summary_copies_sent and
+    // announce_repeats_sent count what went. After every other field, as peer_silence_ns is.
+    bool summary_copies;
+    uint8_t announce_repeats;
+    uint8_t announce_repeats_left;
+    uint8_t summary_copy_next;
+    uint64_t summary_copy_ns;
+    uint64_t announce_repeat_gap_ns;
+    uint64_t summary_copies_sent;
+    uint64_t announce_repeats_sent;
+    uint32_t summary_peer_ip[tt_MAX_CONTEXT_IDS];
+    uint16_t summary_peer_port[tt_MAX_CONTEXT_IDS];
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s

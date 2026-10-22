@@ -88,7 +88,41 @@ def quantile(sorted_values, q):
     return sorted_values[i]
 
 
-def load_runs(out):
+WIFI_MISS_THRESHOLD = 6  # tt_LINK_WIFI_MISS_THRESHOLD; the default is 3
+DEFAULT_MISS_THRESHOLD = 3
+
+
+def treatment(r, profile):
+    """The discovery each node ran, against the profile the run names (header, AMENDED 2026-10-23): (problems, totals).
+    A RESULT line without the fields (a run before the amendment) is a problem only for a wifi run."""
+    problems = []
+    totals = {"copies": 0, "repeats": 0, "copies_idle": 0, "repeats_ping": 0}
+    for role in ("ping", "echo", "idle"):
+        res = r[role]
+        if res is None:
+            continue
+        if "miss_threshold" not in res:
+            if profile == "wifi":
+                problems.append(f"{role} reports no discovery treatment")
+            continue
+        miss, copies, repeats = int(num(res, "miss_threshold")), int(num(res, "summary_copies")), int(
+            num(res, "announce_repeats"))
+        totals["copies"] += copies
+        totals["repeats"] += repeats
+        totals["copies_idle"] += copies if role == "idle" else 0
+        totals["repeats_ping"] += repeats if role == "ping" else 0
+        if profile == "wifi" and miss != WIFI_MISS_THRESHOLD:
+            problems.append(f"{role} ran miss_threshold {miss}, not WIFI's {WIFI_MISS_THRESHOLD}")
+        if profile != "wifi" and (miss != DEFAULT_MISS_THRESHOLD or copies or repeats):
+            problems.append(f"{role} ran miss_threshold {miss}, {copies} copies, {repeats} repeats on ethernet")
+    if profile == "wifi" and r["idle"] is not None and "miss_threshold" in r["idle"] and totals["copies_idle"] == 0:
+        problems.append("the idle node sent no summary copy")
+    if profile == "wifi" and r["ping"] is not None and "miss_threshold" in r["ping"] and totals["repeats_ping"] == 0:
+        problems.append("ping sent no announce repeat")
+    return problems, totals
+
+
+def load_runs(out, profile="ethernet"):
     runs = []
     nproc = os.cpu_count() or 1
     for name in sorted(os.listdir(os.path.join(out, "runs"))):
@@ -126,6 +160,7 @@ def load_runs(out):
                 r["ends"][res["ctx"]] = int(res["end_ns"])
         if r["ping"] is None or r["echo"] is None or r["idle"] is None:
             r["void"].append("a RESULT line is missing")
+        r["treat_void"], r["treat"] = treatment(r, profile)
         runs.append(r)
     return runs
 
@@ -228,9 +263,13 @@ def pool(runs, dur):
     for r in runs:
         m = per_run(r, dur)
         key = (r["arm"], r["cell"])
-        c = cells.setdefault(key, {"reps": 0, "void": [], "m": [], "owd": [], "rtt": [], "owd_all": [], "lat_void": 0})
+        c = cells.setdefault(key, {"reps": 0, "void": [], "m": [], "owd": [], "rtt": [], "owd_all": [], "lat_void": 0,
+                                   "treat_void": [], "copies": 0, "repeats": 0})
         c["reps"] += 1
         c["void"] += [f"rep {r['rep']}: {v}" for v in r["void"]]
+        c["treat_void"] += [f"rep {r['rep']}: {v}" for v in r.get("treat_void", [])]
+        c["copies"] += r.get("treat", {}).get("copies", 0)
+        c["repeats"] += r.get("treat", {}).get("repeats", 0)
         if m is None:
             continue
         c["m"].append(m)
@@ -371,7 +410,7 @@ def rounds_needed(loss_pct, burst):
     return k
 
 
-def rules(cells, void, campaign_void):
+def rules(cells, void, campaign_void, treat_void=()):
     out = []
 
     def cell_ok(arm, cell):
@@ -426,6 +465,10 @@ def rules(cells, void, campaign_void):
         verdict("R4", p50 <= limit, f"{arm} rel_large one-way p50 {p50:.2f} ms (<= {limit:.2f} ms); reverse bytes "
                 f"{rev:.2f}% of forward", arm)
         c["rev_pct"] = rev
+    if treat_void:
+        # A run that did not apply the discovery its profile names says nothing about that profile's R5 or R6.
+        out.append(("R5/R6", "VOID", "the discovery treatment: " + "; ".join(treat_void)))
+        return out, (fails, cells)
     deaths = {k: c["false_deaths"] for k, c in cells.items() if c["false_deaths"]}
     verdict("R5", not deaths, "false peer deaths: " + (", ".join(f"{a}/{b}={n}" for (a, b), n in sorted(deaths.items()))
                                                       or "none"), "any")
@@ -484,7 +527,8 @@ def main():
     prov = kv(" ".join(read_lines(os.path.join(out, "provenance.txt"))))
     dur = int(prov.get("dur", "30"))
     print("provenance: " + " | ".join(read_lines(os.path.join(out, "provenance.txt"))))
-    runs = load_runs(out)
+    profile = prov.get("profile", "ethernet")
+    runs = load_runs(out, profile)
     cells = pool(runs, dur)
     arm_order = ["ctl", "ge1b2", "ge1b8", "ge5b2", "ge5b4", "ge5b8", "ge10b4", "bc", "tv"]
     arms = [a for a in arm_order if any(k[0] == a for k in cells)]
@@ -495,7 +539,11 @@ def main():
     for (arm, cell), msgs in sorted(void.items()):
         for msg in msgs:
             print(f"VOID  {arm}/{cell}: {msg}")
-    results, fails_cells = rules(cells, void, campaign_void)
+    treat_void = [f"{a}/{b} {v}" for (a, b), c in sorted(cells.items()) for v in c["treat_void"]]
+    for (arm, cell), c in sorted(cells.items()):
+        print(f"treatment {profile} {arm}/{cell}: summary copies {c['copies']}, announce repeats {c['repeats']} "
+              f"(all nodes, {c['reps']} reps)")
+    results, fails_cells = rules(cells, void, campaign_void, treat_void)
     for name, verdict, text in results:
         print(f"{verdict:5} {name}: {text}")
     for line in reading(fails_cells):
