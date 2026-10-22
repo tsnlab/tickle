@@ -815,14 +815,61 @@ struct tt_HybridState {
 // The groups after `net` are placeholders, each filled by a later bundle of ROADMAP "Context options": the member
 // order and names are fixed now so that each bundle edits only its own struct and its own default/validation function.
 
+// A link's medium (tt_LinkOptions.profile, docs/DESIGN.md "Link profiles"): which values its zero fields stand for.
+// ETHERNET (0) is every build before profiles existed, value for value. WIFI stands for ETHERNET's values: the Wi-Fi
+// stage of the network-profiles plan decides its own.
+#define tt_LINK_PROFILE_ETHERNET 0U // switched Ethernet: the defaults
+#define tt_LINK_PROFILE_T1S 1U      // 10BASE-T1S: a 10 Mbit/s half-duplex multidrop bus taking turns under PLCA
+#define tt_LINK_PROFILE_TSN 2U    // a TSN-scheduled Ethernet link: ETHERNET's values, no batching, the interface's MTU
+#define tt_LINK_PROFILE_WIFI 3U   // ETHERNET's values for now
+#define tt_LINK_MTU_MIN 576U      // tt_LinkOptions.mtu's least: the datagram every IPv4 host must accept
+#define tt_LINK_RATE_MIN 1000U    // tt_LinkOptions.link_rate's least, bits per second
+#define tt_LINK_T1S_PLCA_NODES 8U // the nodes a T1S retry floor assumes take a turn per PLCA cycle
+
 // One link a context talks on (the successor of struct _tt_Link's settings; see that struct in config.h).
+//
+// From `profile` on, each 0 is the profile's value (docs/DESIGN.md "Link profiles"); ETHERNET's are what a context did
+// before profiles existed. What a context applies to all its sends - a datagram is encoded once for every link it goes
+// to, and a sample's fragments are cut once and kept for repair - is derived from all its links at creation: the
+// smallest MTU, the longest retry floor, the shortest idle HEARTBEAT and batch tick, the most frequent piggybacked
+// HEARTBEAT, batching only where every link batches, MTU units where any link asks for them. unicast_threshold is
+// applied per link, on the send path.
 struct tt_LinkOptions {
     const char* broadcast; // the link's broadcast address (or, with `peer`, the peer's "a.b.c.d[/nn]"); required
     const char* addr;      // the local address to send from; NULL (0) = any local address ("0.0.0.0")
-    // Peers on this link it unicasts to before switching to one broadcast. 0 = tt_UNICAST_PEER_THRESHOLD;
-    // tt_UNICAST_ALWAYS_BROADCAST = broadcast as soon as one peer is known. Below tt_MAX_PEER_COUNT.
+    // Peers on this link it unicasts to before switching to one broadcast. 0 = the profile's:
+    // tt_UNICAST_PEER_THRESHOLD, T1S tt_UNICAST_ALWAYS_BROADCAST. tt_UNICAST_ALWAYS_BROADCAST = broadcast as soon as
+    // one peer is known. Below tt_MAX_PEER_COUNT.
     uint8_t unicast_threshold;
     bool peer; // (g6) one remote address reached on the well-known port, not an interface; needs tt_DISCOVERY_OPTIONS
+    uint8_t profile; // tt_LINK_PROFILE_*
+    // A Publisher's batching where its own options leave it to the context (tt_PublisherOptions.batching): tt_SWITCH_*,
+    // 0 = the profile's (T1S on, the rest off). The context batches by default only when every link says on.
+    uint8_t batch;
+    // tt_LARGE_FRAGMENTATION_*; 0 = the profile's (T1S _MTU: an MCU on the bus reassembles no IP fragments; the rest
+    // leave it to net.large_fragmentation). Fills net.large_fragmentation when that is 0: _MTU if any link says so.
+    uint8_t large_fragmentation;
+    // The link's IP MTU in bytes, tt_LINK_MTU_MIN or more; 0 = the profile's: 1500 for ETHERNET and WIFI, the
+    // interface's own (tt_link_mtu(), hal.h; 1500 when unknown) for T1S and TSN. Below 1500 it caps every datagram the
+    // context builds from more than one submessage, its announce parts and its fragments (tt_CONTROL_MAX_LENGTH stays
+    // the ceiling). A large sample's units and a service request or response, which do not fragment, keep their sizes.
+    uint16_t mtu;
+    // Piggybacked HEARTBEATs on a RELIABLE Publisher that leaves heartbeat_piggyback_every to the context: one every
+    // tt_RELIABLE_BITMAP_BITS / this samples; 0 = the profile's (T1S 8, the rest none). At most
+    // tt_RELIABLE_BITMAP_BITS.
+    uint32_t piggyback_divisor;
+    // Bits per second; 0 = the profile's (T1S 10 Mbit/s, the rest 1 Gbit/s). At least tt_LINK_RATE_MIN. T1S derives its
+    // retry floor from it.
+    uint64_t link_rate;
+    // The least the reliable retry's measured G may be, in ns; 0 = the profile's: T1S two PLCA cycles of
+    // tt_LINK_T1S_PLCA_NODES nodes each sending one MTU frame at link_rate, the rest none. At most UINT32_MAX.
+    uint64_t retry_floor_ns;
+    // The flush tick a batched send waits for, in ns: discovery.tx_interval_ns, which is also the summary period's
+    // floor and, times lease_divisor, the shortest lease. 0 = the context's (1 ms by default, T1S's tick too).
+    uint64_t batch_tick_ns;
+    // The idle HEARTBEAT period (reliable.idle_heartbeat_period), ns; 0 = the profile's (T1S 1 s, the rest the
+    // context's). tt_QOS_DURATION_INFINITE = off.
+    uint64_t idle_heartbeat_ns;
 };
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
@@ -1920,6 +1967,17 @@ struct tt_Context {
     struct tt_InitOptions opts;
     struct _tt_Link links[tt_MAX_LINK_COUNT];
     uint8_t link_count;
+    // What the context's links (opts.net.links, profiles resolved) set for all its sends (docs/DESIGN.md "Link
+    // profiles"), from tt_Context_create_with() once the links are resolved; a context built by hand has the defaults
+    // from node_init_locks(). control_max: the longest datagram it builds from more than one submessage, an announce
+    // part or a fragment - tt_CONTROL_MAX_LENGTH, or less under a smaller link MTU; frag_cont: a full continuation
+    // fragment's CDR at that length. batch_default: a Publisher's batching where its options leave it to the context;
+    // piggyback_every: its heartbeat_piggyback_every where they do; retry_floor_ns: the measured G's floor.
+    uint32_t control_max;
+    uint32_t frag_cont;
+    uint32_t piggyback_every;
+    uint32_t retry_floor_ns;
+    bool batch_default;
     // Per remote node, the silence after which it is presumed dead, from the timing its latest discovery summary
     // carried (tt_HeartbeatHeader.summary_interval, 2026-10-22): its (2 x miss_threshold + 1) x update interval / 2. 0
     // until a summary from it arrives, and again once it is presumed dead: judged by this context's own silence then.
@@ -3907,9 +3965,16 @@ struct tt_TypeSupport {
 
 // Settings that are not QoS, read at creation only. A zeroed struct is the default for every field; NULL is a zeroed
 // struct where nothing in it is required.
+#define tt_HEARTBEAT_PIGGYBACK_NONE \
+    UINT32_MAX // tt_PublisherOptions.heartbeat_piggyback_every: none, whatever the links
 struct tt_PublisherOptions {
-    bool batch;                                       // tt_Publisher.batch
-    uint32_t heartbeat_piggyback_every;               // tt_Publisher.heartbeat_piggyback_every; 0 = none
+    bool batch; // tt_Publisher.batch: true batches; false leaves it to `batching`
+    // With batch false: tt_SWITCH_DEFAULT (0) = the context's links' (tt_LinkOptions.batch: off unless every link
+    // batches), tt_SWITCH_ON or tt_SWITCH_OFF.
+    uint8_t batching;
+    // tt_Publisher.heartbeat_piggyback_every; 0 = the context's (none unless its links say otherwise,
+    // tt_LinkOptions.piggyback_divisor), tt_HEARTBEAT_PIGGYBACK_NONE = none
+    uint32_t heartbeat_piggyback_every;
     uint64_t heartbeat_period_ns;                     // tt_Publisher_set_heartbeat_period(); 0 = none
     uint64_t ack_solicit_period_ns;                   // tt_Publisher_set_ack_solicit_period(); 0 = none
     uint8_t ack_solicit_watermark_pct;                // tt_Publisher.ack_solicit_watermark_pct; 0 = none
@@ -3987,8 +4052,11 @@ void tt_InitOptions_default(struct tt_InitOptions* opts);
 // discovery_range or peer link without tt_DISCOVERY_OPTIONS, a segment.slot_bytes that cannot hold a datagram, an
 // ip_reassembly_max above tt_IPV4_UDP_MAX_PAYLOAD, a reassembly_cap_off other than 0 or 1, a segment ring of fewer than
 // 4 or more than tt_SEGMENT_SLOTS slots, segment timings out of order (fence hold < dead reader < the discovery
-// silence), a segment.probe_every_max not a power of two, a capacity above its compiled maximum, or a capacity.peers
-// not above a link's unicast_threshold.
+// silence), a segment.probe_every_max not a power of two, a capacity above its compiled maximum, a capacity.peers
+// not above a link's unicast_threshold, or a link with an unknown profile, batch or large_fragmentation, an mtu below
+// tt_LINK_MTU_MIN (or one at which tt_MAX_SAMPLE_LENGTH would need more than tt_FRAG_MAX_COUNT fragments), a link_rate
+// below tt_LINK_RATE_MIN, a retry_floor_ns above UINT32_MAX, a piggyback_divisor above tt_RELIABLE_BITMAP_BITS, or a
+// batch_tick_ns, idle_heartbeat_ns or large_fragmentation that contradicts the context's own setting of it.
 //
 // tt_Context_create(node) is tt_Context_create_with() given the process-wide _tt_CONFIG. DEPRECATED (2026-10-21):
 // writing _tt_CONFIG to configure a context. It stays read by tt_Context_create() until every caller has moved to

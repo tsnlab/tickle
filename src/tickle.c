@@ -873,7 +873,157 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
     }
 }
 
+// ---- Link profiles (tt_LinkOptions.profile, docs/DESIGN.md "Link profiles"). A profile fills the zero fields of its
+// link; what the context applies to every send is derived from all its links - here, for what the options alone decide,
+// and in link_profiles_apply() once the links are resolved, for what needs the interface's MTU.
+#define LINK_ETHERNET_MTU 1500U
+#define LINK_IPV4_UDP_HEADERS 28U // IPv4 20, UDP 8
+// An Ethernet frame's bytes on the wire around its payload: preamble and SFD 8, MAC header 14, FCS 4, inter-frame
+// gap 12.
+#define LINK_FRAME_OVERHEAD 38U
+#define LINK_RATE_DEFAULT 1000000000ULL // bits per second
+#define LINK_T1S_RATE 10000000ULL
+#define LINK_T1S_IDLE_HEARTBEAT tt_SECOND
+#define LINK_T1S_PIGGYBACK_DIVISOR 8U
+// A continuation fragment's framing: what a fragment of a sample spends of its datagram before its CDR.
+#define LINK_FRAG_CONT_OVERHEAD \
+    ((uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader)))
+
+// The datagram a link of this MTU carries without IP fragmenting it, at most tt_CONTROL_MAX_LENGTH. mtu is at least
+// tt_LINK_MTU_MIN.
+static uint32_t link_control_length(uint32_t mtu) {
+    uint32_t payload = mtu - LINK_IPV4_UDP_HEADERS;
+    return payload < (uint32_t)tt_CONTROL_MAX_LENGTH ? payload : (uint32_t)tt_CONTROL_MAX_LENGTH;
+}
+
+// Whether every sample this build may send still fragments at that length: tt_MAX_SAMPLE_LENGTH (and the padding a
+// cached record adds) within tt_FRAG_MAX_COUNT fragments, the most a fragment's 8-bit index can name.
+static bool link_control_fragments(uint32_t control) {
+#if tt_FRAG_ENABLED
+    uint32_t cont = control - LINK_FRAG_CONT_OVERHEAD;
+    uint32_t first = cont - (uint32_t)tt_FRAG_FIRST_SHORTFALL;
+    uint32_t cdr = (uint32_t)tt_MAX_SAMPLE_LENGTH + 3U;
+    return cdr <= first || 1U + ((cdr - first + cont - 1U) / cont) <= (uint32_t)tt_FRAG_MAX_COUNT;
+#else
+    (void)control;
+    return true;
+#endif
+}
+
+// A T1S link's retry floor: two PLCA cycles in which each of tt_LINK_T1S_PLCA_NODES nodes sends one frame of this MTU
+// at this rate - how long a repair can wait for its turn on a busy bus. At most UINT32_MAX ns.
+static uint64_t link_t1s_retry_floor(uint32_t mtu, uint64_t link_rate) {
+    uint64_t bits = 2ULL * tt_LINK_T1S_PLCA_NODES * ((uint64_t)mtu + LINK_FRAME_OVERHEAD) * 8ULL;
+    uint64_t floor = (bits * tt_SECOND) / link_rate;
+    return floor < UINT32_MAX ? floor : UINT32_MAX;
+}
+
+// Whether the context set a value its links could also decide: neither 0 nor the default. A context created from
+// tt_InitOptions_default() holds the defaults resolved, and its links' profiles must still apply.
+static bool context_value_set(uint64_t value, uint64_t default_value) {
+    return value != 0 && value != default_value;
+}
+
+// One link's zero fields, each the profile's value. The MTU of T1S and TSN, and so T1S's retry floor, wait for the
+// interface (link_profiles_apply()). An unknown profile is filled as ETHERNET and refused by validate_link_options().
+static void resolve_link_profile(struct tt_LinkOptions* link) {
+    bool t1s = link->profile == tt_LINK_PROFILE_T1S;
+    bool own_mtu = t1s || link->profile == tt_LINK_PROFILE_TSN;
+    if (link->unicast_threshold == 0 && t1s) {
+        link->unicast_threshold = tt_UNICAST_ALWAYS_BROADCAST; // a frame on the bus reaches every node at one cost
+    }
+    if (link->batch == tt_SWITCH_DEFAULT) {
+        link->batch = t1s ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;
+    }
+    if (link->large_fragmentation == tt_LARGE_FRAGMENTATION_INHERIT && t1s) {
+        link->large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+    }
+    if (link->mtu == 0 && !own_mtu) {
+        link->mtu = (uint16_t)LINK_ETHERNET_MTU;
+    }
+    if (link->piggyback_divisor == 0 && t1s) {
+        link->piggyback_divisor = LINK_T1S_PIGGYBACK_DIVISOR;
+    }
+    if (link->link_rate == 0) {
+        link->link_rate = t1s ? LINK_T1S_RATE : LINK_RATE_DEFAULT;
+    }
+    if (link->idle_heartbeat_ns == 0 && t1s) {
+        link->idle_heartbeat_ns = LINK_T1S_IDLE_HEARTBEAT;
+    }
+}
+
+// Every link's profile, and the context-wide settings its links decide where the context left them 0: the batch tick
+// (the shortest a link sets), the idle HEARTBEAT (the shortest, a link's 0 being the context's default) and
+// large_fragmentation (_MTU if any link asks for it, else what every link agrees on). Before the other groups resolve,
+// so that a zero is still "not set".
+static void resolve_link_profiles(struct tt_InitOptions* opts) {
+    struct tt_NetOptions* net = &opts->net;
+    uint8_t count = net->link_count < tt_MAX_LINK_COUNT ? net->link_count : (uint8_t)tt_MAX_LINK_COUNT;
+    if (count == 0) {
+        return;
+    }
+    uint64_t tick = 0;
+    uint64_t idle = tt_QOS_DURATION_INFINITE;
+    bool any_mtu = false;
+    bool agree = true;
+    for (uint8_t i = 0; i < count; i++) {
+        struct tt_LinkOptions* link = &net->links[i];
+        resolve_link_profile(link);
+        if (link->batch_tick_ns != 0 && (tick == 0 || link->batch_tick_ns < tick)) {
+            tick = link->batch_tick_ns;
+        }
+        uint64_t link_idle =
+            link->idle_heartbeat_ns != 0 ? link->idle_heartbeat_ns : reliable_defaults.idle_heartbeat_period;
+        idle = link_idle < idle ? link_idle : idle;
+        any_mtu = any_mtu || link->large_fragmentation == tt_LARGE_FRAGMENTATION_MTU;
+        agree = agree && link->large_fragmentation == net->links[0].large_fragmentation;
+    }
+    if (!context_value_set(opts->discovery.tx_interval_ns, tt_CONTEXT_TX_INTERVAL) && tick != 0) {
+        opts->discovery.tx_interval_ns = tick;
+    }
+    if (!context_value_set(opts->reliable.idle_heartbeat_period, reliable_defaults.idle_heartbeat_period) &&
+        idle != reliable_defaults.idle_heartbeat_period) {
+        opts->reliable.idle_heartbeat_period = idle;
+    }
+    if (!context_value_set(net->large_fragmentation, tt_LARGE_FRAGMENTATION_AUTO)) {
+        uint8_t agreed = agree ? net->links[0].large_fragmentation : (uint8_t)tt_LARGE_FRAGMENTATION_INHERIT;
+        uint8_t mode = any_mtu ? (uint8_t)tt_LARGE_FRAGMENTATION_MTU : agreed;
+        net->large_fragmentation = mode != tt_LARGE_FRAGMENTATION_INHERIT ? mode : net->large_fragmentation;
+    }
+}
+
+// A link's own value against the context's setting of the same thing, both before resolution: refused when both are set
+// and differ (validate_link_conflicts()).
+static bool link_contradicts(uint64_t link_value, uint64_t context_value, uint64_t context_default) {
+    return link_value != 0 && context_value_set(context_value, context_default) && link_value != context_value;
+}
+
+static tt_ret_t reject_option(const char* field, const char* why);
+
+// What a link sets that the context also sets, differently: the caller's two answers to one question. Checked on the
+// options as given, before any zero is resolved.
+static tt_ret_t validate_link_conflicts(const struct tt_InitOptions* opts) {
+    const struct tt_NetOptions* net = &opts->net;
+    for (uint8_t i = 0; i < net->link_count && i < tt_MAX_LINK_COUNT; i++) {
+        const struct tt_LinkOptions* link = &net->links[i];
+        if (link_contradicts(link->batch_tick_ns, opts->discovery.tx_interval_ns, tt_CONTEXT_TX_INTERVAL)) {
+            return reject_option("net.links[].batch_tick_ns", "differs from discovery.tx_interval_ns, which it sets");
+        }
+        if (link_contradicts(link->idle_heartbeat_ns, opts->reliable.idle_heartbeat_period,
+                             reliable_defaults.idle_heartbeat_period)) {
+            return reject_option("net.links[].idle_heartbeat_ns",
+                                 "differs from reliable.idle_heartbeat_period, which it sets");
+        }
+        if (link_contradicts(link->large_fragmentation, net->large_fragmentation, tt_LARGE_FRAGMENTATION_AUTO)) {
+            return reject_option("net.links[].large_fragmentation",
+                                 "differs from net.large_fragmentation, which it sets");
+        }
+    }
+    return tt_RET_OK;
+}
+
 static void resolve_init_options(struct tt_InitOptions* opts) {
+    resolve_link_profiles(opts);
     resolve_net_options(&opts->net);
     resolve_discovery_options(&opts->discovery);
     resolve_reliable_options(&opts->reliable);
@@ -940,6 +1090,36 @@ static tt_ret_t reject_option(const char* field, const char* why) {
 static bool valid_slot_bytes(uint32_t slot_bytes);
 #endif
 
+// A link's profile and the values it filled (validate_link_options()). The MTU of a T1S or TSN link left to the
+// interface is checked when it is known (link_profiles_apply()), and falls back to 1500 there rather than refusing.
+static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
+    if (link->profile > tt_LINK_PROFILE_WIFI) {
+        return reject_option("net.links[].profile", "is not a tt_LINK_PROFILE_* value");
+    }
+    if (link->batch > tt_SWITCH_OFF) {
+        return reject_option("net.links[].batch", "is not a tt_SWITCH_* value");
+    }
+    if (link->large_fragmentation > tt_LARGE_FRAGMENTATION_IP) {
+        return reject_option("net.links[].large_fragmentation", "is not a tt_LARGE_FRAGMENTATION_* value");
+    }
+    if (link->mtu != 0 && link->mtu < tt_LINK_MTU_MIN) {
+        return reject_option("net.links[].mtu", "is below tt_LINK_MTU_MIN");
+    }
+    if (link->mtu != 0 && !link_control_fragments(link_control_length(link->mtu))) {
+        return reject_option("net.links[].mtu", "cuts tt_MAX_SAMPLE_LENGTH into more than tt_FRAG_MAX_COUNT fragments");
+    }
+    if (link->link_rate < tt_LINK_RATE_MIN) {
+        return reject_option("net.links[].link_rate", "is below tt_LINK_RATE_MIN");
+    }
+    if (link->retry_floor_ns > UINT32_MAX) {
+        return reject_option("net.links[].retry_floor_ns", "is above UINT32_MAX ns, as G is");
+    }
+    if (link->piggyback_divisor > tt_RELIABLE_BITMAP_BITS) {
+        return reject_option("net.links[].piggyback_divisor", "is above tt_RELIABLE_BITMAP_BITS");
+    }
+    return tt_RET_OK;
+}
+
 // One link's settings (validate_net_options()).
 static tt_ret_t validate_link_options(const struct tt_LinkOptions* link) {
     uint32_t ip = 0;
@@ -960,7 +1140,7 @@ static tt_ret_t validate_link_options(const struct tt_LinkOptions* link) {
     if (link->unicast_threshold != tt_UNICAST_ALWAYS_BROADCAST && link->unicast_threshold >= tt_MAX_PEER_COUNT) {
         return reject_option("net.links[].unicast_threshold", "is not below tt_MAX_PEER_COUNT");
     }
-    return tt_RET_OK;
+    return validate_link_profile(link);
 }
 
 // What used to be static_asserts and silent clamps, checked where the values are now set: a value this build cannot
@@ -1492,14 +1672,11 @@ static uint8_t link_count(struct tt_Context* node) {
 // there. An unresolved link - the default limited broadcast, owned by no interface - has no MTU to ask.
 // Large rmw samples are fragmented on purpose (the user's decision), and are not what this is about.
 #define tt_ASSUMED_MTU (tt_ETHERNET_UDP_PAYLOAD + 20 + 8) // + IPv4 and UDP headers
+// Since link profiles (2026-10-22) the warning is link_profiles_apply()'s, against the MTU the link is configured with:
+// 1500 unless its options or its profile say otherwise, so a default link warns as it always did.
 static void check_link_mtu(struct _tt_Link* link) {
     link->resolved_mtu = link->resolved ? tt_link_mtu(link->resolved_addr) : -1;
     link->mtu_below_assumed = link->resolved_mtu > 0 && link->resolved_mtu < tt_ASSUMED_MTU;
-    if (link->mtu_below_assumed) {
-        TT_LOG_WARNING("Link %s has MTU %d, below the %d bytes this build assumes (tt_ETHERNET_UDP_PAYLOAD %d): "
-                       "control messages near that size will be IP-fragmented, and lost whenever any fragment is",
-                       link->broadcast, (int)link->resolved_mtu, (int)tt_ASSUMED_MTU, (int)tt_ETHERNET_UDP_PAYLOAD);
-    }
 }
 
 #if tt_DISCOVERY_OPTIONS
@@ -1568,6 +1745,85 @@ static tt_ret_t resolve_links(struct tt_Context* node) {
         }
     }
     return tt_RET_OK;
+}
+
+// The MTU of a T1S or TSN link left to its interface: the interface's, or 1500 when it reports none or one this build
+// cannot fragment every sample at (link_control_fragments()), which is then warned about.
+static uint16_t link_interface_mtu(const struct _tt_Link* resolved) {
+    int32_t mtu = resolved->resolved_mtu;
+    if (mtu < (int32_t)tt_LINK_MTU_MIN) {
+        return (uint16_t)LINK_ETHERNET_MTU;
+    }
+    uint32_t value = mtu < (int32_t)UINT16_MAX ? (uint32_t)mtu : (uint32_t)UINT16_MAX;
+    if (!link_control_fragments(link_control_length(value))) {
+        TT_LOG_WARNING("Link %s has MTU %u, at which tt_MAX_SAMPLE_LENGTH needs more than tt_FRAG_MAX_COUNT "
+                       "fragments - sending as if it were 1500",
+                       resolved->broadcast, (unsigned)value);
+        return (uint16_t)LINK_ETHERNET_MTU;
+    }
+    return (uint16_t)value;
+}
+
+// What the context's links set for all its sends (struct tt_Context.control_max and the rest; docs/DESIGN.md "Link
+// profiles"), once tt_bind()'s resolution has asked the OS for each interface's MTU. A context with no links configured
+// has one ETHERNET link, and keeps every default.
+static void link_profiles_apply(struct tt_Context* node) {
+    struct tt_NetOptions* net = &node->opts.net;
+    uint32_t control = (uint32_t)tt_CONTROL_MAX_LENGTH;
+    uint64_t floor = 0;
+    uint32_t divisor = 0;
+    bool batch = net->link_count != 0;
+    for (uint8_t i = 0; i < link_count(node); i++) {
+        const struct _tt_Link* resolved = &node->links[i];
+        uint32_t mtu = LINK_ETHERNET_MTU;
+        if (i < net->link_count) {
+            struct tt_LinkOptions* link = &net->links[i];
+            if (link->mtu == 0) {
+                link->mtu = link_interface_mtu(resolved);
+            }
+            if (link->retry_floor_ns == 0 && link->profile == tt_LINK_PROFILE_T1S) {
+                link->retry_floor_ns = link_t1s_retry_floor(link->mtu, link->link_rate);
+            }
+            mtu = link->mtu;
+            floor = link->retry_floor_ns > floor ? link->retry_floor_ns : floor;
+            divisor = link->piggyback_divisor > divisor ? link->piggyback_divisor : divisor;
+            batch = batch && link->batch == tt_SWITCH_ON;
+        }
+        // tt_ETHERNET_UDP_PAYLOAD sized every datagram for a 1500-byte MTU, and nothing checked that the link has
+        // one; a link configured (or profiled) with a smaller MTU is now sent to at its size. An interface narrower
+        // than what its link is configured with - a VPN tunnel at 1420, PPPoE at 1492, under a default link - still
+        // delivers, through IP fragmentation, which is why this warns rather than refusing the node: but a fragmented
+        // control message is lost whenever any one fragment is, and nothing else would say so.
+        if (resolved->resolved_mtu > 0 && (uint32_t)resolved->resolved_mtu < mtu) {
+            TT_LOG_WARNING("Link %s has MTU %d, below the %u bytes it is configured with (tt_LinkOptions.mtu): "
+                           "control messages near that size will be IP-fragmented, and lost whenever any fragment is",
+                           resolved->broadcast, (int)resolved->resolved_mtu, (unsigned)mtu);
+        }
+        uint32_t link_control = link_control_length(mtu);
+        control = link_control < control ? link_control : control;
+    }
+    node->control_max = control;
+    node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD;
+    node->batch_default = batch;
+    node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
+    // The floor is put under the measured G where G is kept - its least (timer_lateness_fold()) and its cold start - so
+    // the retry paths read G as they did. A fixed G (reliable.retry_granularity) is the caller's own and stays as set.
+    node->retry_floor_ns = (uint32_t)floor;
+    if (node->retry_floor_ns > node->timer_resolution_ns) {
+        node->timer_resolution_ns = node->retry_floor_ns;
+    }
+    if (floor > node->opts.reliable.timer_lateness_initial) {
+        node->opts.reliable.timer_lateness_initial = floor;
+    }
+    if (control < (uint32_t)tt_CONTROL_MAX_LENGTH) {
+        // A run's units are full-length continuations, which a smaller datagram cannot carry: MTU units only
+        // (hybrid_mode()). A large sample's units keep their length - a reader places them by index at that length
+        // (large_place()) - and go IP-fragmented on such a link.
+        node->large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+        TT_LOG_INFO("Datagrams of more than one submessage, announce parts and fragments cut to %u bytes for the "
+                    "smallest link MTU",
+                    (unsigned)control);
+    }
 }
 
 // Which configured link a peer address belongs to. A link the OS resolved matches addresses in its
@@ -1852,6 +2108,19 @@ static uint32_t own_slots(const struct tt_Context* node) {
 // fragmenting and the ceiling on a configured segment slot, declared once here because they are the
 // same bound and were briefly two.
 #define FRAG_WHOLE_DATA_LIMIT tt_CONTROL_MAX_LENGTH
+
+// The largest record a sample goes as whole on this context: its control_max (FRAG_WHOLE_DATA_LIMIT at the default,
+// less under a smaller link MTU, link_profiles_apply()) where fragmentation is compiled in. A build that cannot split a
+// sample keeps the build's limit, so what it accepted it still sends - IP-fragmented on a narrower link, as before. The
+// segment's slot ceiling (valid_slot_bytes()) is same-host memory, not a link, and keeps FRAG_WHOLE_DATA_LIMIT.
+static inline uint32_t frag_whole_limit(const struct tt_Context* node) {
+#if tt_FRAG_ENABLED
+    return node->control_max;
+#else
+    (void)node;
+    return (uint32_t)FRAG_WHOLE_DATA_LIMIT;
+#endif
+}
 
 static bool valid_slot_bytes(uint32_t slot_bytes) {
     // Below a datagram header nothing can be placed at all. The ceiling is a datagram's worth rather than
@@ -3560,17 +3829,30 @@ _Static_assert(FRAG_FIRST_PAYLOAD + tt_FRAG_FIRST_SHORTFALL == FRAG_CONT_PAYLOAD
 // How many fragments a sample of cdr_len CDR bytes takes, and where fragment `index` of it starts and
 // how long it is. Fragment 0 carries tt_FRAG_FIRST_SHORTFALL bytes less than a continuation, and every
 // fragment but the last is full.
-static uint32_t frag_count_for(uint32_t cdr_len) {
-    return 1 + ((cdr_len - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) / FRAG_CONT_PAYLOAD);
+//
+// Cut at the context's control_max (FRAG_FIRST_PAYLOAD and FRAG_CONT_PAYLOAD at the default, smaller under a smaller
+// link MTU - link_profiles_apply()). A reader learns a sample's continuation length from its fragments
+// (frag_learn_cont_length(), frag_fast_take()), so a shorter cut is one every reader takes.
+static inline uint32_t frag_cont_payload(const struct tt_Context* node) {
+    return node->frag_cont;
 }
 
-static uint32_t frag_payload_offset(uint32_t index) {
-    return index == 0 ? 0 : FRAG_FIRST_PAYLOAD + ((index - 1) * FRAG_CONT_PAYLOAD);
+static inline uint32_t frag_first_payload(const struct tt_Context* node) {
+    return node->frag_cont - (uint32_t)tt_FRAG_FIRST_SHORTFALL;
 }
 
-static uint32_t frag_payload_length(uint32_t index, uint32_t cdr_len) {
-    uint32_t offset = frag_payload_offset(index);
-    uint32_t full = index == 0 ? FRAG_FIRST_PAYLOAD : FRAG_CONT_PAYLOAD;
+static uint32_t frag_count_for(const struct tt_Context* node, uint32_t cdr_len) {
+    uint32_t cont = frag_cont_payload(node);
+    return 1 + ((cdr_len - frag_first_payload(node) + cont - 1) / cont);
+}
+
+static uint32_t frag_payload_offset(const struct tt_Context* node, uint32_t index) {
+    return index == 0 ? 0 : frag_first_payload(node) + ((index - 1) * frag_cont_payload(node));
+}
+
+static uint32_t frag_payload_length(const struct tt_Context* node, uint32_t index, uint32_t cdr_len) {
+    uint32_t offset = frag_payload_offset(node, index);
+    uint32_t full = index == 0 ? frag_first_payload(node) : frag_cont_payload(node);
     return cdr_len - offset < full ? cdr_len - offset : full;
 }
 
@@ -3666,8 +3948,13 @@ static uint32_t hybrid_bucket(uint32_t run_n, uint32_t n_max) {
     return bucket;
 }
 
-// The mode a Publisher sends with: its own, or its context's when it inherits.
+// The mode a Publisher sends with: its own, or its context's when it inherits. MTU units whatever it asks for on a
+// context whose datagrams are cut below tt_CONTROL_MAX_LENGTH: a run's units are full-length continuations, which the
+// reader checks them against (process_frag_run()), and a smaller link carries none (link_profiles_apply()).
 static uint32_t hybrid_mode(const struct tt_Context* node, const struct tt_Publisher* pub) {
+    if (node->control_max < (uint32_t)tt_CONTROL_MAX_LENGTH) {
+        return tt_LARGE_FRAGMENTATION_MTU;
+    }
     return pub->large_fragmentation != tt_LARGE_FRAGMENTATION_INHERIT ? pub->large_fragmentation
                                                                       : node->large_fragmentation;
 }
@@ -3826,8 +4113,9 @@ static struct tt_OutDatagram hybrid_small_run(uint8_t* out, const struct tt_Cont
     run->frag_count = (uint8_t)count;
     run->run_count = (uint8_t)units;
     run->zero = 0;
-    uint32_t offset = frag_payload_offset(start);
-    uint32_t length = frag_payload_offset(start + units) - offset; // every unit of a run is full: it is never the last
+    uint32_t offset = frag_payload_offset(node, start);
+    uint32_t length =
+        frag_payload_offset(node, start + units) - offset; // every unit of a run is full: it is never the last
     submessage->type = tt_SUBMESSAGE_TYPE_FRAG_RUN;
     submessage->receiver = tt_SUBMESSAGE_ID_ALL;
     submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragRunHeader) + length);
@@ -4750,12 +5038,12 @@ __attribute__((always_inline)) static inline bool send_fragments_from(struct tt_
                                                                       const uint8_t* cdr, uint32_t cdr_len,
                                                                       const struct tt_Peer* peers, uint8_t peer_count,
                                                                       uint8_t receiver) {
-    if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
+    if (cdr_len <= frag_first_payload(node) || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
         node->tx_dropped_oversize++;
         return false;
     }
-    uint32_t count = frag_count_for(cdr_len);
+    uint32_t count = frag_count_for(node, cdr_len);
 
     // Every datagram from here carries its own seq_no - frag_write_header() gives fragment i the
     // base plus i - so each one's span is 1 and the sample's span is spent by the set of them.
@@ -4777,13 +5065,13 @@ __attribute__((always_inline)) static inline bool send_fragments_from(struct tt_
         header->magic_value = NATIVE_MAGIC_VALUE;
         header->version = tt_VERSION;
         header->source = node->id;
-        uint32_t length = frag_payload_length(index, cdr_len);
+        uint32_t length = frag_payload_length(node, index, cdr_len);
         uint32_t header_length =
             frag_write_header(framing + sizeof(struct tt_Header), data_header, index, count, length, receiver);
         uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
         uint32_t skip = to_single_form(framing, framing_length, length);
         batch[index] = (struct tt_OutDatagram) {
-            framing + skip, framing_length - skip, cdr + frag_payload_offset(index), length, 0, 0};
+            framing + skip, framing_length - skip, cdr + frag_payload_offset(node, index), length, 0, 0};
     }
 
     note_reached(node, peers, peer_count);
@@ -4845,7 +5133,7 @@ static inline bool send_sample_fragments(struct tt_Context* node, struct tt_Publ
                                          const struct tt_DataHeader* data_header, const uint8_t* cdr, uint32_t cdr_len,
                                          const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
 #if tt_HYBRID_TRANSPORT
-    if (cdr_len > FRAG_FIRST_PAYLOAD + ((HYBRID_MIN_UNITS - 2U) * FRAG_CONT_PAYLOAD)) {
+    if (cdr_len > frag_first_payload(node) + ((HYBRID_MIN_UNITS - 2U) * frag_cont_payload(node))) {
         return send_first_fragments(node, pub, data_header, cdr, cdr_len, peers, peer_count, receiver);
     }
 #else
@@ -4966,8 +5254,8 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     uint32_t flush_len;
 
     // How large the datagram carrying this submessage may grow: the full tt_MAX_BUFFER_LENGTH only
-    // for a submessage that is on its own in the buffer, tt_CONTROL_MAX_LENGTH once it shares one
-    // (config.h). Identical to before whenever the two are equal, which is core's default.
+    // for a submessage that is on its own in the buffer, control_max once it shares one (tt_CONTROL_MAX_LENGTH, or
+    // less under a smaller link MTU). Identical to before whenever the two are equal, which is core's default.
     //
     // Through record_size_limit() since 2026-10-03, as the refusal at the top of this function and
     // flush_tx()'s own flush_limit already were. Without it the three disagreed: the refusal admitted a
@@ -4979,7 +5267,7 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     //
     // Only the alone case is raised. A submessage sharing a datagram cannot be a whole record bound for
     // a slot: unicast_destinations_for() requires an empty buffer before it will grant one.
-    uint32_t limit = tt_CONTROL_MAX_LENGTH;
+    uint32_t limit = node->control_max;
     if (base == sizeof(struct tt_Header)) {
         limit = record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count);
     }
@@ -6971,6 +7259,13 @@ static void node_init_locks(struct tt_Context* node) {
     node->opts.segment.dead_reader_ns = segment_dead_reader_of(&node->opts.segment, &node->opts.discovery);
 #endif
     resolve_capacity_options(&node->opts.capacity);
+    // What a context's links set for all its sends, as one ETHERNET link sets them; a created context's own follow
+    // from link_profiles_apply(). The publish path reads control_max and frag_cont with no fallback for a zero.
+    node->control_max = (uint32_t)tt_CONTROL_MAX_LENGTH;
+    node->frag_cont = (uint32_t)tt_CONTROL_MAX_LENGTH - LINK_FRAG_CONT_OVERHEAD;
+    node->batch_default = false;
+    node->piggyback_every = 0;
+    node->retry_floor_ns = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -7491,6 +7786,10 @@ tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOpt
     }
     // Copied, then resolved: what the context reads from here on is its own, whatever the caller does with theirs.
     if (opts != NULL) {
+        tt_ret_t conflict = validate_link_conflicts(opts);
+        if (conflict != tt_RET_OK) {
+            return conflict;
+        }
         node->opts = *opts;
         resolve_init_options(&node->opts);
     } else {
@@ -7517,6 +7816,7 @@ tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOpt
     if (link_ret != tt_RET_OK) {
         return link_ret;
     }
+    link_profiles_apply(node);
 
     node->entity_id_base = (uint32_t)tt_get_wall_ns();
 
@@ -8149,13 +8449,13 @@ static tt_ret_t publisher_reset(struct tt_Context* node, struct tt_Publisher* pu
     pub->topic = topic;
     pub->seq_no = 0;
     memset(&pub->qos_incompatible, 0, sizeof(pub->qos_incompatible));
-    pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
-    pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
-    pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
-    pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
-    pub->heartbeat_period_ns = 0;       // no periodic Heartbeat by default - see its own doc comment
-    pub->heartbeat_piggyback_every = 0; // no piggybacked Heartbeat by default - see its own doc comment
-    memset(pub->claims, 0, sizeof(pub->claims)); // no claimed slot (tt_Publisher_claim())
+    pub->batch = node->batch_default; // the links' default: off but where every link batches (link_profiles_apply())
+    pub->reliable_cache = NULL;       // no retained-sample storage by default - see its own doc comment
+    pub->reliable = false;            // best-effort by default - see tt_Publisher.reliable's own doc comment
+    pub->durable = false;             // volatile by default - see tt_Publisher.durable's own doc comment
+    pub->heartbeat_period_ns = 0;     // no periodic Heartbeat by default - see its own doc comment
+    pub->heartbeat_piggyback_every = node->piggyback_every; // none unless a link profile asks (link_profiles_apply())
+    memset(pub->claims, 0, sizeof(pub->claims));            // no claimed slot (tt_Publisher_claim())
     pub->claims_out = 0;
     pub->heartbeat_piggyback_count = 0;
     pub->retransmitted = 0;
@@ -9190,20 +9490,20 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         // this way, so the sample is dropped; its seq_nos are taken as a sent one's would be.
         node->tx_unmatched_dropped++;
 #if tt_FRAG_ENABLED
-        pub->seq_no += sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT ? frag_count_for(body_len) : 1U;
+        pub->seq_no += sizeof(framing) + body_len > frag_whole_limit(node) ? frag_count_for(node, body_len) : 1U;
 #else
         pub->seq_no++;
 #endif
         return tt_RET_OK;
     }
 #if tt_FRAG_ENABLED
-    if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
+    if (sizeof(framing) + body_len > frag_whole_limit(node)) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
         if (!send_sample_fragments(node, pub, data_header, body, body_len, unicast ? pub->peers : NULL,
                                    unicast ? peer_count : 0, tt_SUBMESSAGE_ID_ALL)) {
             return tt_RET_IO_ERROR;
         }
-        pub->seq_no += frag_count_for(body_len); // one seq_no per datagram
+        pub->seq_no += frag_count_for(node, body_len); // one seq_no per datagram
         return tt_RET_OK;
     }
 #endif
@@ -10191,7 +10491,7 @@ static uint32_t sample_datagram_count(const struct tt_Context* node,
 #if tt_FRAG_ENABLED
     size_t length = raw_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) > whole_limit) {
-        return frag_count_for(sample_cdr_length(node, submessage_header));
+        return frag_count_for(node, sample_cdr_length(node, submessage_header));
     }
 #else
     UNUSED(node);
@@ -10221,7 +10521,7 @@ static uint32_t sample_cache_footprint(const struct tt_Context* node,
 #if tt_FRAG_ENABLED
     uint32_t cdr_len = sample_cdr_length(node, submessage_header);
     for (uint32_t index = 0; index < count; index++) {
-        total += ROUNDUP(frag_header_length(index) + frag_payload_length(index, cdr_len));
+        total += ROUNDUP(frag_header_length(index) + frag_payload_length(node, index, cdr_len));
     }
 #endif
     return total;
@@ -10301,13 +10601,13 @@ static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCa
     reliable_cache_admit_sample(cache);
     const uint64_t now = publish_clock_or_now(node); // every fragment's lifespan from the publish's one reading
     for (uint32_t index = 0; index < count; index++) {
-        uint32_t payload_length = frag_payload_length(index, cdr_len);
+        uint32_t payload_length = frag_payload_length(node, index, cdr_len);
         uint32_t header_length = frag_header_length(index);
         uint8_t* record =
             reliable_cache_reserve(cache, first_seq_no + index, keep ? header_length + payload_length : 0, now);
         if (record != NULL) {
             frag_write_header(record, data_header, index, count, payload_length, tt_SUBMESSAGE_ID_ALL);
-            _tt_memcpy(record + header_length, cdr + frag_payload_offset(index), payload_length);
+            _tt_memcpy(record + header_length, cdr + frag_payload_offset(node, index), payload_length);
         }
         if (index == 0) {
             reliable_cache_count_sample(cache, record);
@@ -10492,7 +10792,7 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_Publisher* pub,
     // and sample_datagram_count()'s must not be able to disagree about one sample's length.
     size_t length = record_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) >
-        record_size_limit(node, FRAG_WHOLE_DATA_LIMIT, peers, peer_count)) {
+        record_size_limit(node, frag_whole_limit(node), peers, peer_count)) {
         return send_tail_as_fragments(node, pub, submessage_header, peers, peer_count);
     }
 #else
@@ -10598,11 +10898,11 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     // One datagram on the wire, so one seq_no - a sample that fragments, or goes as a whole record wider than a
     // datagram, stays with the staging path. tx_buffer is at least twice that (tt_TX_BUFFER_LENGTH), so the staging
     // path could always have encoded what passes here.
-    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {
+    if (sizeof(struct tt_Header) + record_len > frag_whole_limit(node)) {
         return false;
     }
     struct tt_SubmessageHeader probe = {tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0};
-    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, FRAG_WHOLE_DATA_LIMIT) != 0) {
+    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, frag_whole_limit(node)) != 0) {
         return false; // the staging path refuses it and records what was refused
     }
     struct tt_SegmentHeader* segment = peer_segment(node, dest.context_id, dest.ip, dest.port);
@@ -10636,7 +10936,7 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     TT_TRACE(tt_TRACE_ENCODED);
     // The padding, zeroed as end_encode() zeroes it - before the cache's copy here, which only makes it tidier.
     memset(record + raw_len, 0, record_len - raw_len);
-    if (encoded_len < 0 || !check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
+    if (encoded_len < 0 || !check_and_cache_sample(node, pub, submessage_header, raw_len, frag_whole_limit(node))) {
         segment_publish(slot, claimed, 0, own_ip, own_port, 1); // the harmless record: nothing to read, span unused
         *result = tt_RET_PROTOCOL_ERROR;
         return true;
@@ -12295,7 +12595,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 #endif
 
     // The halves of KEEP_ALL's promise that need the encoded sample (2026-09-25, 2026-09-26).
-    if (keep_all_refuses_encoded(pub, node, node->tx_tail - data_tail, submessage_header, FRAG_WHOLE_DATA_LIMIT)) {
+    if (keep_all_refuses_encoded(pub, node, node->tx_tail - data_tail, submessage_header, frag_whole_limit(node))) {
         rollback(node, old_tx_tail);
         pub->writable_pending = true;
         RSTAT_INC(publish_refused);
@@ -12314,7 +12614,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // segment is already attached, which is the only case where an unfragmented record - larger than the
     // MTU by construction - has somewhere to go. Passed rather than reached for, so the cache's footprint
     // and the sent datagram count cannot disagree about it.
-    uint32_t whole_limit = FRAG_WHOLE_DATA_LIMIT;
+    uint32_t whole_limit = frag_whole_limit(node);
     // Hoisted above the datagram count, which used to be decided before it. 6e(a) needs to know WHERE this
     // sample is going before it can say how many pieces it goes in, and deciding the destination twice is how
     // the byte bound and the count bound came apart on 2026-09-25.
@@ -12327,7 +12627,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     }
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
     // The sample's SEQ SPAN: how many seq_nos it consumes. Counted against the NETWORK form -
-    // FRAG_WHOLE_DATA_LIMIT, not whole_limit - so it is the same number whatever path the sample takes
+    // frag_whole_limit(), not whole_limit - so it is the same number whatever path the sample takes
     // (SHM_PLAN 6e). Until 2026-10-03 this used whole_limit, which comes from the destinations, so a
     // publisher's seq_no advanced at a rate that depended on who was listening and whether their segment
     // happened to be attached: the same sample consumed one seq_no for an all-local publisher and two
@@ -12335,7 +12635,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // prohibition was not even sufficient - it is evaluated at publish while retransmission happens
     // later, so a segment detaching in between left a whole record that had to go out over UDP, where it
     // exceeds a datagram by construction and was dropped (the measured tx_dropped_oversize).
-    uint32_t seq_span = sample_datagram_count(node, submessage_header, record_len, FRAG_WHOLE_DATA_LIMIT);
+    uint32_t seq_span = sample_datagram_count(node, submessage_header, record_len, frag_whole_limit(node));
     if (!check_and_cache_sample(node, pub, submessage_header, record_len, whole_limit)) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
@@ -12524,11 +12824,11 @@ static tt_ret_t publisher_claim_locked(struct tt_Publisher* pub, uint32_t capaci
     }
     const uint32_t raw_len = CLAIM_FRAMING + capacity;
     const uint32_t record_len = ROUNDUP(raw_len);
-    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {
+    if (sizeof(struct tt_Header) + record_len > frag_whole_limit(node)) {
         return tt_RET_UNSUPPORTED; // it would fragment: one record, one seq_no, or the ordinary path
     }
     struct tt_SubmessageHeader probe = {tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0};
-    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, FRAG_WHOLE_DATA_LIMIT) != 0) {
+    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, frag_whole_limit(node)) != 0) {
         return tt_RET_UNSUPPORTED; // the ordinary publish refuses it and records what was refused
     }
     struct tt_SegmentHeader* segment = peer_segment(node, dest.context_id, dest.ip, dest.port);
@@ -12656,7 +12956,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint8
     data_header->timestamp = timestamp_to_wire(wall_ns);
     data_header->entity_id = pub->endpoint.entity_id;
     memset(record + raw_len, 0, record_len - raw_len);
-    if (!check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
+    if (!check_and_cache_sample(node, pub, submessage_header, raw_len, frag_whole_limit(node))) {
         claim_release(pub, claim, false);
         node->segment_claims_abandoned++;
         return tt_RET_PROTOCOL_ERROR;
@@ -14049,7 +14349,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     if (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0)) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    if (!publisher_large_options_valid(opts)) {
+    if (!publisher_large_options_valid(opts) || opts->batching > tt_SWITCH_OFF) {
         return tt_RET_INVALID_ARGUMENT;
     }
     result = publisher_reset(node, pub, type, topic_name);
@@ -14093,8 +14393,15 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         }
     }
 
-    pub->batch = opts->batch;
-    pub->heartbeat_piggyback_every = opts->heartbeat_piggyback_every;
+    // batch and the piggyback period: the options', or where they leave it to the context, its links'
+    // (publisher_reset() put those there already).
+    if (opts->batch || opts->batching != tt_SWITCH_DEFAULT) {
+        pub->batch = opts->batch || opts->batching == tt_SWITCH_ON;
+    }
+    if (opts->heartbeat_piggyback_every != 0) {
+        pub->heartbeat_piggyback_every =
+            opts->heartbeat_piggyback_every == tt_HEARTBEAT_PIGGYBACK_NONE ? 0U : opts->heartbeat_piggyback_every;
+    }
     pub->ack_solicit_watermark_pct = opts->ack_solicit_watermark_pct;
     pub->writable_callback = opts->writable_callback;
     pub->writable_callback_param = opts->writable_callback_param;
@@ -15936,14 +16243,15 @@ static uint32_t update_entity_wire_size(struct tt_Endpoint* endpoint) {
 
 // Whether an announce submessage whose header-plus-body is `bytes` fits one datagram. The control
 // limit, not tt_MAX_BUFFER_LENGTH: an announce has to reach nodes built with the default buffer,
-// whatever this node was built with (tt_CONTROL_MAX_LENGTH, config.h).
-static bool submessage_bytes_fit_datagram(uint32_t bytes) {
-    return sizeof(struct tt_Header) + ROUNDUP(bytes) <= tt_CONTROL_MAX_LENGTH;
+// whatever this node was built with (tt_CONTROL_MAX_LENGTH, config.h), and fit its smallest link (control_max).
+static bool submessage_bytes_fit_datagram(const struct tt_Context* node, uint32_t bytes) {
+    return sizeof(struct tt_Header) + ROUNDUP(bytes) <= node->control_max;
 }
 
 // Whether this node's whole announce fits one DATA: within one datagram, and within the 255 entities
 // tt_AnnounceHeader.entity_count can say.
-static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t endpoint_count) {
+static bool update_fits_single(const struct tt_Context* node, struct tt_Endpoint* const* endpoints,
+                               uint32_t endpoint_count) {
     uint32_t bytes =
         sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + sizeof(struct tt_AnnounceHeader);
     uint32_t entities = 0;
@@ -15954,7 +16262,7 @@ static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t en
             entities++;
         }
     }
-    return entities < UINT8_MAX && submessage_bytes_fit_datagram(bytes);
+    return entities < UINT8_MAX && submessage_bytes_fit_datagram(node, bytes);
 }
 
 // Splits endpoints[] into announce fragments that each fit one datagram, in order: fragment p covers
@@ -15976,14 +16284,14 @@ static uint8_t plan_update_parts(struct tt_Context* node, struct tt_Endpoint** e
         if (size == 0) {
             continue;
         }
-        if (!submessage_bytes_fit_datagram(part_overhead + size)) {
+        if (!submessage_bytes_fit_datagram(node, part_overhead + size)) {
             TT_LOG_ERROR("Endpoint '%s' needs %u bytes to announce, more than a datagram - not announced",
                          endpoints[i]->name, size);
             node->tx_dropped_oversize++;
             endpoints[i] = NULL;
             continue;
         }
-        if (entities == UINT8_MAX || !submessage_bytes_fit_datagram(bytes + size)) {
+        if (entities == UINT8_MAX || !submessage_bytes_fit_datagram(node, bytes + size)) {
             if (++parts == tt_UPDATE_MAX_PARTS) {
                 return 0;
             }
@@ -16118,7 +16426,7 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
     endpoint_count += announced_nodes(node, endpoints + endpoint_count);
 
     // An announce too large for one datagram goes in fragments; anything that fits is one DATA.
-    if (!update_fits_single(endpoints, endpoint_count)) {
+    if (!update_fits_single(node, endpoints, endpoint_count)) {
         uint32_t part_start[tt_UPDATE_MAX_PARTS + 1];
         uint8_t part_count = plan_update_parts(node, endpoints, endpoint_count, part_start);
         if (part_count == 0) {
