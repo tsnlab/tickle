@@ -671,6 +671,10 @@ static void resolve_socket_options(struct tt_SocketOptions* socket) {
         socket->drain_holdoff_ns = tt_RX_DRAIN_HOLDOFF_NS; // NOLINT(misc-include-cleaner)
     }
 #endif
+    // The one switch whose default is off: SO_TXTIME changes how the kernel queues every datagram of the socket.
+    if (socket->txtime == tt_SWITCH_DEFAULT) {
+        socket->txtime = tt_SWITCH_OFF;
+    }
 }
 
 #if tt_HYBRID_TRANSPORT
@@ -1134,6 +1138,14 @@ static tt_ret_t validate_socket_options(const struct tt_SocketOptions* socket) {
     }
     if (socket->drain_holdoff_ns > tt_SOCKET_DRAIN_HOLDOFF_MAX) {
         return reject_option("socket.drain_holdoff_ns", "exceeds tt_SOCKET_DRAIN_HOLDOFF_MAX");
+    }
+    for (uint32_t tx_class = 0; tx_class < tt_TX_CLASS_COUNT; tx_class++) {
+        if (socket->tx_class[tx_class].dscp > tt_TX_DSCP_MAX) {
+            return reject_option("socket.tx_class[].dscp", "exceeds tt_TX_DSCP_MAX (6 bits)");
+        }
+    }
+    if (!valid_switch(socket->txtime)) {
+        return reject_option("socket.txtime", "is not a tt_SWITCH_* value");
     }
     return tt_RET_OK;
 }
@@ -2990,6 +3002,101 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     return segment_deliver_ringing(node, context_id, ip, port, hdr, hdr_len, body, body_len, reason, true);
 }
 #endif
+
+// ---- Traffic classes (network profiles item D, 2026-10-22; DESIGN.md section 2, "Traffic classes and send time")
+//
+// A datagram's class is read from what it carries, so no send path sets anything for it and a context whose classes
+// are all the same pays nothing: the Linux HAL asks tt_tx_class() only when its classes differ. The one thing the bytes
+// cannot tell is a pub/sub resend - a resent DATA is the DATA - so core marks those two loops (tx_class_enter()).
+// Calls carry their own retry count. What rides together is one datagram and goes as the most important of its
+// submessages: a user's sample with a summary or match HEARTBEAT ahead of it is DATA.
+#define TX_KIND_CONTROL 0U // nothing of a user's
+#define TX_KIND_USER 1U    // a user's sample or call
+#define TX_KIND_RETRY 2U   // a user's call sent again (its header's retry count)
+
+// One submessage's kind from its type and the first `body_len` bytes after its header. Every number in the headers
+// read here is endian-free: tt_DISCOVERY_ENTITY_ID is all ones, a retry count one byte.
+static uint8_t submessage_tx_kind(uint8_t type, const uint8_t* body, size_t body_len) {
+    uint32_t entity_id = 0;
+    switch (type) {
+    case tt_SUBMESSAGE_TYPE_HEARTBEAT:
+    case tt_SUBMESSAGE_TYPE_ACKNACK:
+        return TX_KIND_CONTROL;
+    case tt_SUBMESSAGE_TYPE_DATA:
+    case tt_SUBMESSAGE_TYPE_FRAG_FIRST: // a discovery announce is a DATA of the built-in endpoint, or its fragments
+        if (body_len >= sizeof(struct tt_DataHeader)) {
+            _tt_memcpy(&entity_id, body + offsetof(struct tt_DataHeader, entity_id), sizeof(entity_id));
+        }
+        return entity_id == tt_DISCOVERY_ENTITY_ID ? TX_KIND_CONTROL : TX_KIND_USER;
+    case tt_SUBMESSAGE_TYPE_FRAG_CONT:
+        if (body_len >= sizeof(struct tt_FragContHeader)) {
+            _tt_memcpy(&entity_id, body + offsetof(struct tt_FragContHeader, entity_id), sizeof(entity_id));
+        }
+        return entity_id == tt_DISCOVERY_ENTITY_ID ? TX_KIND_CONTROL : TX_KIND_USER;
+    case tt_SUBMESSAGE_TYPE_CALLREQUEST:
+        return body_len >= sizeof(struct tt_CallRequestHeader) &&
+                       body[offsetof(struct tt_CallRequestHeader, retry)] != 0
+                   ? TX_KIND_RETRY
+                   : TX_KIND_USER;
+    case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
+        return body_len >= sizeof(struct tt_CallResponseHeader) &&
+                       body[offsetof(struct tt_CallResponseHeader, retry)] != 0
+                   ? TX_KIND_RETRY
+                   : TX_KIND_USER;
+    default:
+        return TX_KIND_USER; // a large sample's fragments and runs, and anything not known here: a user's
+    }
+}
+
+// The datagram's kind: its one submessage in the single form; in the classic form the most important of those within
+// head_len (a retry over a user's over control); a segment's fence or bell, control. Anything else, a user's.
+static uint8_t datagram_tx_kind(const uint8_t* head, size_t head_len) {
+    if (head_len == 0 || (head_len == tt_SEGMENT_FENCE_LENGTH && head[0] == tt_SEGMENT_FENCE_MARKER)) {
+        return TX_KIND_CONTROL;
+    }
+    if (head_len >= sizeof(struct tt_SingleHeader) &&
+        (head[0] == tt_SINGLE_MARKER_LE || head[0] == tt_SINGLE_MARKER_BE)) {
+        return submessage_tx_kind(head[offsetof(struct tt_SingleHeader, type)], head + sizeof(struct tt_SingleHeader),
+                                  head_len - sizeof(struct tt_SingleHeader));
+    }
+    if (head_len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) ||
+        !((head[0] == 'K' && head[1] == 'T') || (head[0] == 'T' && head[1] == 'K'))) {
+        return TX_KIND_USER;
+    }
+    uint8_t kind = TX_KIND_CONTROL;
+    size_t offset = sizeof(struct tt_Header);
+    while (offset + sizeof(struct tt_SubmessageHeader) <= head_len) {
+        struct tt_SubmessageHeader submessage;
+        _tt_memcpy(&submessage, head + offset, sizeof(submessage)); // core sends in its own byte order
+        const size_t body = offset + sizeof(submessage);
+        uint8_t this_kind = submessage_tx_kind(submessage.type, head + body, head_len - body);
+        kind = this_kind > kind ? this_kind : kind;
+        if (submessage.length < sizeof(submessage)) {
+            break; // malformed - nothing core builds; what was read decides
+        }
+        offset += submessage.length;
+    }
+    return kind;
+}
+
+uint8_t tt_tx_class(const struct tt_Context* node, const void* head, size_t head_len) {
+    const uint8_t kind = datagram_tx_kind((const uint8_t*)head, head_len);
+    if (kind == TX_KIND_CONTROL) {
+        return tt_TX_CLASS_CONTROL;
+    }
+    return kind == TX_KIND_RETRY || node->tx_class == tt_TX_CLASS_REPAIR ? tt_TX_CLASS_REPAIR : tt_TX_CLASS_DATA;
+}
+
+// Marks what core sends from here to tx_class_leave() as `tx_class`; returns the mark to restore.
+static uint8_t tx_class_enter(struct tt_Context* node, uint8_t tx_class) {
+    const uint8_t outer = node->tx_class;
+    node->tx_class = tx_class;
+    return outer;
+}
+
+static void tx_class_leave(struct tt_Context* node, uint8_t outer) {
+    node->tx_class = outer;
+}
 
 // The four send shapes. Each tries the peer's segment first when the destination is a known peer,
 // and falls back to UDP for any reason at all - the fallback is the module's documented failure
@@ -7068,6 +7175,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->udp_gro_off8 = 0;
     node->udp_gso_sends = 0;
     node->udp_gso_datagrams = 0;
+    node->tx_class = tt_TX_CLASS_DATA; // not resending
+    node->tx_time_ns = 0;              // no send time
+
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
 #if tt_FRAG_ENABLED
@@ -12240,6 +12350,21 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     return tt_RET_OK;
 }
 
+// The send time (network profiles item E, "Traffic classes and send time"): set for the publish, under the lock the
+// publish re-enters, and cleared after it. The HAL reads it only on a socket that took SO_TXTIME.
+tt_ret_t tt_Publisher_publish_at(struct tt_Publisher* pub, struct tt_Data* data, uint64_t tx_time_ns) {
+    struct tt_Context* node = pub != NULL ? pub->node : NULL;
+    if (node == NULL) {
+        return tt_Publisher_publish(pub, data);
+    }
+    state_lock(node);
+    node->tx_time_ns = tx_time_ns;
+    tt_ret_t result = tt_Publisher_publish(pub, data);
+    node->tx_time_ns = 0;
+    state_unlock(node);
+    return result;
+}
+
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
@@ -17110,6 +17235,7 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
 #if tt_LARGE_SAMPLES
     uint32_t large_next = 0; // large records go in seq_no order among the small ones (large-message stage 2)
 #endif
+    const uint8_t outer_class = tx_class_enter(node, tt_TX_CLASS_REPAIR); // a backlog is resent ("Traffic classes")
     for (uint32_t seq_no = cache->oldest_seq_no;
          reliable_cache_retains(cache) && seq_delta(cache->newest_seq_no, seq_no) >= 0; seq_no++) {
         struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, seq_no);
@@ -17132,6 +17258,7 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
 #if tt_LARGE_SAMPLES
     large_send_backlog_before(node, pub, 0, true, &large_next, target);
 #endif
+    tx_class_leave(node, outer_class);
 }
 
 // Walks the entity_count UpdateEntity records following an UpdateHeader, advancing *head past
@@ -20159,6 +20286,7 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
 #if tt_LARGE_SHM
     large_note_acknack(node); // a descriptor is resent once per ACKNACK (large_resend())
 #endif
+    const uint8_t outer_class = tx_class_enter(node, tt_TX_CLASS_REPAIR); // what follows is resent ("Traffic classes")
     // Phase 2 - `words` is whatever the requester actually sent (validated by the caller), and the
     // inner loop walks set bits only, so a window widened to tt_RELIABLE_BITMAP_MAX_BITS costs
     // nothing here unless the gaps really are that spread out: O(words + set bits), never
@@ -20185,6 +20313,7 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
         encode_and_send_heartbeat(node, pub, reliable_cache_first_resendable_seq_no(pub, cache, depth), target, 1,
                                   tt_HEARTBEAT_FLAG_FINAL);
     }
+    tx_class_leave(node, outer_class);
 }
 
 // Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup: retransmission

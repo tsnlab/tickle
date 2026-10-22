@@ -126,6 +126,40 @@ WORSE; 1 of 88 listed, c3 client user instructions +0.04%); Array1m 30 Hz reliab
 KEEP_ALL, 0 and 1% loss (`rmw_keepall_rig.sh`, 5 reps, pre/head/aa): 100% delivered, latency equal, CPU equal at 0%
 and on the same bimodal levels at 1%.
 
+**Traffic classes and send time** (network profiles items D and E, 2026-10-22; `tt_InitOptions.socket.tx_class[]`,
+`.txtime`, Linux HAL; FreeRTOS ignores them). Every datagram is of one class, read from what it carries
+(`tt_tx_class()`): CONTROL when nothing of it is a user's (discovery announce, summary and list request, HEARTBEAT,
+ACKNACK, a segment's fence and bell), REPAIR when it is a call's retry (the header's retry count) or core is resending
+(the NACKed-resend and durability-backlog loops mark `ctx->tx_class`; a resent DATA is byte-identical to the original),
+else DATA - so a summary or match HEARTBEAT riding with a sample is DATA. Per class an SO_PRIORITY (a qdisc band;
+a VLAN PCP through the interface's `egress-qos-map`, which the user sets) and a DSCP; 0 sets nothing. All classes
+share the data socket, so, measured on Linux 7.0 (`tests/test_socket_marks.c`):
+
+| what | how it goes |
+|---|---|
+| DATA's priority and DSCP | on the socket at bind: `IP_TOS`, then `SO_PRIORITY` (IP_TOS alone sets the priority from the TOS) |
+| another class that differs | per datagram: `IP_TOS` and `SO_PRIORITY` control messages; a sendto() becomes a sendmsg() |
+| `SO_PRIORITY` per datagram | asked at bind with `MSG_PROBE`; a kernel without it (EINVAL) keeps the socket's priority, the TOS still per datagram |
+| priority 7 and above | `SO_PRIORITY` needs CAP_NET_ADMIN; refused (EPERM), the class keeps the socket's, with a warning |
+| all classes equal | per socket only, nothing per send |
+
+`txtime` on puts SO_TXTIME (CLOCK_TAI, deadline mode off) on the data socket - CAP_NET_ADMIN, else one warning and no
+times; `tt_Publisher_publish_at(pub, data, tai_ns)` then sends that publish's datagrams with SCM_TXTIME. An ETF qdisc
+releases them at their time and drops an untimed or late datagram of the socket, so only the DATA class should be
+mapped into an ETF queue. With every option 0 the HAL tests one byte per send and the syscalls are those of before
+(`test_socket_marks.c`; 41 mutants, `tests/mutants_socket_marks.py`, all killed). Cost at the defaults: user instructions
+per round trip, B vs A with A+P the placement control, every row EQUAL (`initoptions_insn_pc.sh`, A 6c355fa2, B 4a1fbda5
+before its rebase, 3 reps, ~/rig_results_safe/socket_marks_insn_pc_20261022-144615): client p1 +0.09% (P 0.00%), p3
++0.20% (+0.06%), t1 +0.07% (+0.12%), t3 +0.07% (-0.03%); server p1 +0.12%, p3 +0.23% (bound 0.30%), t1/t3 within their
+10-13% spread. A p3 rerun with perf record (2 reps) read -0.05% client and +0.03% server, and no function moved beyond
+its sampling noise. netns, the kernel's own counters (`socket_marks_netns.sh`, 400 samples at 2 ms,
+~/rig_results_safe/socket_marks_netns_20261022-144525, 4a1fbda5 before its rebase): with DATA (5, DSCP 46), REPAIR (3,
+16), CONTROL (2, 8) and 10% loss on DATA's band, the sender's prio bands carried exactly the HAL's counts (DATA 400 = 364
+sent + 36 netem drops, CONTROL 8, REPAIR 36) and the receiver saw those TOS bytes in those numbers; with the defaults
+every datagram went with priority 0 and TOS 0. A send time 2 ms ahead: under pfifo the sample arrived 1977 us before it
+(p50, sent at once), under ETF (delta 200 us) 182 us before (min/p99 192/156 us; software ETF dequeues delta ahead of
+the time), 0 ETF drops.
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |

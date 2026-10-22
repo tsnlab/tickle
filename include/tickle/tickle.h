@@ -966,6 +966,21 @@ struct tt_PollOptions {
 // The receive drain's buffers (hal_linux.h, tt_RX_DRAIN): a count is a power of two, at most this (io_uring's limit).
 #define tt_SOCKET_DRAIN_BUFFERS_MAX 32768U
 #define tt_SOCKET_DRAIN_HOLDOFF_MAX (60ULL * tt_SECOND)
+// Traffic classes (network profiles item D; DESIGN.md section 2, "Traffic classes and send time"). Every datagram a
+// context sends is of one, decided by what it carries (tt_tx_class(), hal.h):
+#define tt_TX_CLASS_DATA 0U    // a user's sample or call, first time; and anything that rides with one
+#define tt_TX_CLASS_REPAIR 1U  // a user's sample sent again: a RELIABLE resend, a durability backlog, a call's retry
+#define tt_TX_CLASS_CONTROL 2U // nothing of a user's: discovery, HEARTBEAT, ACKNACK, a segment's fence and bell
+#define tt_TX_CLASS_COUNT 3U
+#define tt_TX_DSCP_MAX 63U // a DSCP is 6 bits; the ECN bits below it stay 0
+// What the datagrams of one class carry. 0 sets nothing: the class goes as every datagram went before.
+struct tt_TxClassOptions {
+    // SO_PRIORITY, the kernel's skb->priority: picks the band of a prio/mqprio/taprio qdisc and, through the device's
+    // egress-qos-map, a VLAN PCP. 1 to 6 for anyone; 7 and above (and a classid, major:minor) need CAP_NET_ADMIN.
+    uint32_t priority;
+    // The DSCP in the IP header's TOS byte (IP_TOS = dscp << 2), at most tt_TX_DSCP_MAX.
+    uint8_t dscp;
+};
 
 // The sockets the HAL opens (bundle 6). Read once, when tt_Context_create_with() binds them. Every 0 = the default.
 struct tt_SocketOptions {
@@ -988,6 +1003,13 @@ struct tt_SocketOptions {
     uint32_t drain_buffers;
     uint32_t drain_bytes_max;
     uint64_t drain_holdoff_ns;
+    // Network profiles items D and E (DESIGN.md section 2, "Traffic classes and send time"), Linux HAL only - another
+    // HAL ignores them. tx_class[tt_TX_CLASS_*]: the priority and DSCP of each class's datagrams; all 0 (the default)
+    // sets nothing. txtime, a tt_SWITCH_* whose default is OFF: tt_SWITCH_ON puts SO_TXTIME (CLOCK_TAI, deadline mode
+    // off) on the data socket, so that tt_Publisher_publish_at()'s time goes with its datagrams. The kernel takes it
+    // only from a process with CAP_NET_ADMIN; refused, the context runs without and says so once.
+    struct tt_TxClassOptions tx_class[tt_TX_CLASS_COUNT];
+    uint8_t txtime;
 };
 // The hybrid transport's estimator and control law (config.h, "Hybrid transport"; DESIGN.md section 8), each 0 = the
 // compiled tt_HYBRID_* of the same name. Read only where the hybrid transport is built (tt_HYBRID_TRANSPORT): a build
@@ -1875,6 +1897,13 @@ struct tt_Context {
     uint64_t udp_gro_off8;
     uint64_t udp_gso_sends;
     uint64_t udp_gso_datagrams;
+    // Network profiles items D and E (DESIGN.md section 2, "Traffic classes and send time"). tx_class:
+    // tt_TX_CLASS_REPAIR while core resends a user's samples (retransmit_reliable_samples(),
+    // deliver_durability_backlog()), else tt_TX_CLASS_DATA; the HAL reads it, through tt_tx_class(), only when the
+    // context's classes differ. tx_time_ns: the CLOCK_TAI send time of the datagrams sent now
+    // (tt_Publisher_publish_at()), 0 for none.
+    uint8_t tx_class;
+    uint64_t tx_time_ns;
 #if tt_LARGE_SHM
     // Large-message step B (DESIGN.md section 8), last: it came after everything above.
     struct tt_LargeRefState large_ref;
@@ -4092,6 +4121,13 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client);
 tt_ret_t tt_Server_destroy(struct tt_Server* server);
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
+// tt_Publisher_publish() with a send time (network profiles item E, DESIGN.md section 2 "Traffic classes and send
+// time"): every datagram this publish sends itself leaves at `tx_time_ns`, CLOCK_TAI nanoseconds - on a context created
+// with opts.socket.txtime on whose kernel took SO_TXTIME, under an ETF (or taprio) qdisc that honours it. Elsewhere the
+// time is not attached and the publish is tt_Publisher_publish(). 0 = no time. A sample that stays batched (a
+// Publisher's batch option) leaves later with the batch, without the time; what the publish sends ahead of it (a
+// summary riding with it) carries the time too.
+tt_ret_t tt_Publisher_publish_at(struct tt_Publisher* pub, struct tt_Data* data, uint64_t tx_time_ns);
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
 // Claimed-slot publish (DESIGN.md section 10, "Claimed-slot publish"): the caller builds a sample's CDR straight in the

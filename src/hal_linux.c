@@ -45,8 +45,9 @@
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
 // if neither provided/needed the other; this is the correct, portable header regardless (see
 // readv(2)/writev(2)/sendmsg(2)).
-#include <linux/sock_diag.h> // SK_MEMINFO_*: socket_drops()
-#include <sys/uio.h>         // NOLINT(misc-include-cleaner)
+#include <linux/net_tstamp.h> // struct sock_txtime: "Traffic classes and send time"
+#include <linux/sock_diag.h>  // SK_MEMINFO_*: socket_drops()
+#include <sys/uio.h>          // NOLINT(misc-include-cleaner)
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
@@ -1210,6 +1211,231 @@ static __attribute__((cold, noinline)) int32_t sendmsg_again(const struct tt_Sen
     return sent;
 }
 
+// ---- Traffic classes and send time (network profiles items D and E, 2026-10-22)
+// ------------------------------------------------------------------------------
+//
+// Every datagram goes from the data socket (struct tt_hal.data_sock), so the classes (tt_TX_CLASS_*, tickle.h) share
+// one socket. What the kernel takes, measured on the PC's Linux 7.0 (tests/test_socket_marks.c holds each):
+//   - IP_TOS and SO_PRIORITY by setsockopt(): per socket. IP_TOS also sets the socket's priority from the TOS
+//     (rt_tos2priority()), so SO_PRIORITY is set after it, to the class's own value, whenever either is set.
+//   - IP_TOS as a control message of sendmsg()/sendmmsg(): per datagram.
+//   - SO_PRIORITY as a control message: per datagram on this kernel; an older one refuses the send (EINVAL, the
+//     answer to any SOL_SOCKET control message it does not know). 1-6 for anyone; 7 and above, as the option, EPERM
+//     without CAP_NET_ADMIN.
+//   - SO_TXTIME with CLOCK_TAI: EPERM without CAP_NET_ADMIN (CLOCK_MONOTONIC, sch_fq's, is the only free one).
+// So the socket carries the DATA class's TOS and priority, set once here - a user's sample, the hot path, pays nothing
+// per send - and a datagram of a class that differs carries its own as control messages, which makes a sendto() a
+// sendmsg(). Whether the kernel takes SO_PRIORITY so is asked once, here, with MSG_PROBE (checked, not sent); where it
+// does not, a class keeps the socket's priority, says so once, and only its TOS differs. Every option 0, nothing is
+// set and tx_marks is 0: a send tests one byte and is what it was.
+//
+// SO_TXTIME, with opts.socket.txtime: a datagram sent while node->tx_time_ns is set (tt_Publisher_publish_at())
+// carries the time as SCM_TXTIME, and an ETF qdisc releases it then; any other qdisc ignores it (sch_fq would read a
+// CLOCK_TAI time as monotonic: do not put the two together). ETF drops a datagram of an SO_TXTIME socket that has no
+// time or a past one, so only datagrams sent with a time may be classified into an ETF queue - by the class
+// priorities above and the qdisc's priority map.
+static_assert(TT_HAL_TX_CLASSES == tt_TX_CLASS_COUNT, "struct tt_hal's per-class arrays (hal_linux.h)");
+// The kernel's MSG_PROBE (include/linux/socket.h): the send is checked - its control messages, its route - and nothing
+// is sent. glibc names the same bit MSG_PROXY and has no MSG_PROBE.
+#define TT_MSG_PROBE 0x10
+#define TT_TX_PROBE_PORT 9 // discard: a probe's address, though nothing is sent
+// The most a datagram carries: IP_TOS (an int), SO_PRIORITY (a u32), SCM_TXTIME (a u64).
+#define TT_TX_MARKS_SPACE (CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(uint32_t)) + CMSG_SPACE(sizeof(uint64_t)))
+union tx_marks_control {
+    char bytes[TT_TX_MARKS_SPACE];
+    struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
+};
+
+static const char* const tx_class_names[TT_HAL_TX_CLASSES] = {"DATA", "REPAIR", "CONTROL"};
+
+// The kernel's answer to a datagram carrying SO_PRIORITY `priority` as a control message: 0, or the errno. Probed with
+// MSG_PROBE to the loopback address - the control messages are read before the route, so a namespace without one
+// still answers what matters here.
+static int tx_priority_probe(int socket_fd, uint32_t priority) {
+    union tx_marks_control control;
+    struct sockaddr_in dest = {.sin_family = AF_INET,
+                               .sin_port = htons(TT_TX_PROBE_PORT),
+                               .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    char byte = 0;
+    struct iovec iov = {.iov_base = &byte, .iov_len = 1}; // NOLINT(misc-include-cleaner) - <sys/uio.h>
+    struct msghdr msg = {0};
+    msg.msg_name = &dest;
+    msg.msg_namelen = sizeof(dest);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = CMSG_SPACE(sizeof(priority)); // NOLINT(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    struct cmsghdr* header = CMSG_FIRSTHDR(&msg);      // NOLINT(misc-include-cleaner)
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SO_PRIORITY; // NOLINT(misc-include-cleaner) - glibc-private header behind <sys/socket.h>
+    header->cmsg_len = CMSG_LEN(sizeof(priority));
+    memcpy(CMSG_DATA(header), &priority, sizeof(priority));
+    if (hal_sendmsg(socket_fd, &msg, TT_MSG_PROBE) >= 0) {
+        return 0;
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - EINVAL/EPERM: glibc-private headers
+    return errno == EINVAL || errno == EPERM ? errno : 0; // anything else (no route) is past the control messages
+}
+
+// The DATA class on the data socket: its TOS, then its priority - after IP_TOS, which sets the socket's priority from
+// the TOS, so that the class's own value, 0 included, is what holds.
+static void tx_marks_socket(struct tt_hal* hal, const struct tt_TxClassOptions* data) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - IP_TOS: <netinet/in.h>'s private part
+    if (data->dscp != 0 && setsockopt(hal->data_sock, IPPROTO_IP, IP_TOS, &hal->tx_tos[0], sizeof(int)) != 0) {
+        TT_LOG_WARNING("IP_TOS 0x%02x refused (%s) - DATA datagrams go with TOS 0", (unsigned)hal->tx_tos[0],
+                       strerror(errno));
+        hal->tx_tos[0] = 0;
+    }
+    if ((data->dscp != 0 || data->priority != 0) &&
+        // NOLINTNEXTLINE(misc-include-cleaner) - SO_PRIORITY: glibc-private header behind <sys/socket.h>
+        setsockopt(hal->data_sock, SOL_SOCKET, SO_PRIORITY, &hal->tx_priority[0], sizeof(uint32_t)) != 0) {
+        TT_LOG_WARNING("SO_PRIORITY %u refused (%s) - DATA datagrams go with the socket's priority",
+                       (unsigned)hal->tx_priority[0], strerror(errno));
+        hal->tx_priority[0] = 0;
+    }
+}
+
+// Class `cls`'s priority, which differs from the socket's: kept if the kernel takes it per datagram, else the
+// socket's. *unknown: the kernel was found not to know SO_PRIORITY as a control message - asked once, said once.
+static void tx_marks_priority(struct tt_hal* hal, uint32_t cls, bool* unknown) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - EINVAL: glibc-private header
+    int refused = *unknown ? EINVAL : tx_priority_probe(hal->data_sock, hal->tx_priority[cls]);
+    if (refused == 0) {
+        hal->tx_priority_cmsg = true;
+        return;
+    }
+    if (refused != EINVAL) {
+        TT_LOG_WARNING("SO_PRIORITY %u refused for %s datagrams (%s: above 6 needs CAP_NET_ADMIN) - they go with the "
+                       "socket's priority %u",
+                       (unsigned)hal->tx_priority[cls], tx_class_names[cls], strerror(refused),
+                       (unsigned)hal->tx_priority[0]);
+    } else if (!*unknown) {
+        TT_LOG_WARNING("This kernel takes no SO_PRIORITY per datagram - REPAIR and CONTROL datagrams go with the "
+                       "socket's priority %u; a TOS of their own still goes with them",
+                       (unsigned)hal->tx_priority[0]);
+        *unknown = true;
+    }
+    hal->tx_priority[cls] = hal->tx_priority[0];
+}
+
+// SO_TXTIME with opts.socket.txtime: CLOCK_TAI, deadline mode off, no error reports (nothing reads the error queue).
+static void tx_marks_txtime(struct tt_Context* node) {
+    if (node->opts.socket.txtime != tt_SWITCH_ON) {
+        return;
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct sock_txtime: <linux/net_tstamp.h>
+    struct sock_txtime txtime = {.clockid = CLOCK_TAI, .flags = 0};
+    // NOLINTNEXTLINE(misc-include-cleaner) - SO_TXTIME: glibc-private header behind <sys/socket.h>
+    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_TXTIME, &txtime, sizeof(txtime)) == 0) {
+        node->hal.tx_marks |= TT_TX_MARK_TIME;
+        return;
+    }
+    const int refused = errno;
+    // NOLINTNEXTLINE(misc-include-cleaner) - EPERM: glibc-private header
+    TT_LOG_WARNING("SO_TXTIME (CLOCK_TAI) refused (%s%s) - this context sends without send times", strerror(refused),
+                   refused == EPERM ? ": needs CAP_NET_ADMIN" : "");
+}
+
+// The classes' marks and the send time, from opts.socket (tt_bind(), once the data socket exists).
+static void tx_marks_setup(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    const struct tt_TxClassOptions* classes = node->opts.socket.tx_class;
+    hal->tx_marks = 0;
+    hal->tx_priority_cmsg = false;
+    hal->tx_timed_datagrams = 0;
+    for (uint32_t cls = 0; cls < TT_HAL_TX_CLASSES; cls++) {
+        hal->tx_tos[cls] = (int)((uint32_t)classes[cls].dscp << 2U);
+        hal->tx_priority[cls] = classes[cls].priority;
+        hal->tx_differs[cls] = false;
+        hal->tx_class_datagrams[cls] = 0;
+    }
+    tx_marks_socket(hal, &classes[tt_TX_CLASS_DATA]);
+    bool unknown = false;
+    for (uint32_t cls = 1; cls < TT_HAL_TX_CLASSES; cls++) {
+        if (hal->tx_priority[cls] != hal->tx_priority[0]) {
+            tx_marks_priority(hal, cls, &unknown);
+        }
+        hal->tx_differs[cls] = hal->tx_tos[cls] != hal->tx_tos[0] || hal->tx_priority[cls] != hal->tx_priority[0];
+        if (hal->tx_differs[cls]) {
+            hal->tx_marks |= TT_TX_MARK_CLASS;
+        }
+    }
+    tx_marks_txtime(node);
+}
+
+// One control message `used` bytes into `control` (a union with struct cmsghdr, so aligned for one: every step is a
+// CMSG_SPACE()); the bytes used after it.
+static size_t tx_cmsg_put(char* control, size_t used, int level, int type, const void* data, size_t len) {
+    // NOLINTNEXTLINE(bugprone-casting-through-void, misc-include-cleaner) - aligned, as above
+    struct cmsghdr* header = (struct cmsghdr*)(void*)(control + used);
+    header->cmsg_level = level;
+    header->cmsg_type = type;
+    header->cmsg_len = CMSG_LEN(len); // NOLINT(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    memcpy(CMSG_DATA(header), data, len);
+    return used + CMSG_SPACE(len);
+}
+
+// The control messages of a message of `datagrams` datagrams whose first one's framing is `head`: appended in
+// `control` after the `used` bytes already there (a UDP_SEGMENT message's), and the message pointed at them - or at
+// nothing, when there are none. Counts the datagrams by class.
+static void tx_marks_put(struct tt_Context* node, struct msghdr* msg, char* control, size_t used, const void* head,
+                         size_t head_len, uint32_t datagrams) {
+    struct tt_hal* hal = &node->hal;
+    size_t end = used;
+    uint8_t tx_class = tt_TX_CLASS_DATA;
+    if ((hal->tx_marks & TT_TX_MARK_CLASS) != 0) {
+        tx_class = tt_tx_class(node, head, head_len);
+        if (hal->tx_differs[tx_class]) {
+            // NOLINTNEXTLINE(misc-include-cleaner) - IP_TOS: <netinet/in.h>'s private part
+            end = tx_cmsg_put(control, end, IPPROTO_IP, IP_TOS, &hal->tx_tos[tx_class], sizeof(int));
+            if (hal->tx_priority_cmsg) {
+                // NOLINTNEXTLINE(misc-include-cleaner) - SO_PRIORITY: glibc-private header behind <sys/socket.h>
+                end = tx_cmsg_put(control, end, SOL_SOCKET, SO_PRIORITY, &hal->tx_priority[tx_class], sizeof(uint32_t));
+            }
+        }
+    }
+    hal->tx_class_datagrams[tx_class] += datagrams;
+    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && node->tx_time_ns != 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - SCM_TXTIME: glibc-private header behind <sys/socket.h>
+        end = tx_cmsg_put(control, end, SOL_SOCKET, SCM_TXTIME, &node->tx_time_ns, sizeof(uint64_t));
+        hal->tx_timed_datagrams += datagrams;
+    }
+    msg->msg_control = end != 0 ? control : NULL;
+    msg->msg_controllen = end;
+}
+
+// tt_send() and tt_send_to() with marks on: the sendto() as a sendmsg() carrying them.
+static __attribute__((cold, noinline)) int32_t sendto_marked(struct tt_Context* node, struct tt_SendAgain* again) {
+    union tx_marks_control control;
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct iovec: see <sys/uio.h>'s own include comment
+    struct iovec iov = {.iov_base = (void*)again->buf, .iov_len = again->len};
+    struct tt_SendMsgAgain message;
+    message.fd = again->fd;
+    message.msg = (struct msghdr) {0};
+    message.msg.msg_name = &again->to;
+    message.msg.msg_namelen = sizeof(again->to);
+    message.msg.msg_iov = &iov;
+    message.msg.msg_iovlen = 1;
+    tx_marks_put(node, &message.msg, control.bytes, 0, again->buf, again->len, 1);
+    int32_t sent = (int32_t)hal_sendmsg(message.fd, &message.msg, 0);
+    if (sent < 0) {
+        sent = sendmsg_again(&message);
+    }
+    return sent;
+}
+
+// tt_send_iov() with marks on: its message carrying them.
+static __attribute__((cold, noinline)) int32_t sendmsg_marked(struct tt_Context* node, struct tt_SendMsgAgain* again,
+                                                              const void* hdr, size_t hdr_len) {
+    union tx_marks_control control;
+    tx_marks_put(node, &again->msg, control.bytes, 0, hdr, hdr_len, 1);
+    int32_t sent = (int32_t)hal_sendmsg(again->fd, &again->msg, 0);
+    if (sent < 0) {
+        sent = sendmsg_again(again);
+    }
+    return sent;
+}
+
 #if TT_HAL_UDP_CSUM0
 static void csum0_setup(struct tt_Context* node); // "UDP checksum 0", beside the send path
 #endif
@@ -1237,6 +1463,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.bell_drains = 0;
 #endif
     node->hal.data_sock = -1;
+    node->hal.tx_marks = 0; // no send carries control messages until tx_marks_setup() says so
 #if tt_RX_DRAIN
     node->hal.drain_fd = -1; // set up at the first drain (drain_setup())
     node->hal.drain_running = false;
@@ -1430,6 +1657,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #if TT_HAL_UDP_CSUM0
     csum0_setup(node);
 #endif
+    tx_marks_setup(node);
 
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && node->opts.socket.rx_hint == tt_SOCKET_RX_HINT_URING) {
@@ -1593,6 +1821,11 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     again.len = len;
     again.fd = node->hal.data_sock;
     again.to = node->hal.broadcast_addr;
+    if (__builtin_expect(node->hal.tx_marks != 0, 0)) {
+        int32_t marked = sendto_marked(node, &again); // a class's or a time's control messages
+        TT_TRACE(tt_TRACE_TX_DONE);
+        return marked;
+    }
     int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
@@ -1621,6 +1854,11 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
     again.buf = buf;
     again.len = len;
     again.fd = node->hal.data_sock;
+    if (__builtin_expect(node->hal.tx_marks != 0, 0)) {
+        int32_t marked = sendto_marked(node, &again); // as tt_send()
+        TT_TRACE(tt_TRACE_TX_DONE);
+        return marked;
+    }
     int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
@@ -1666,6 +1904,9 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     }
 
     TT_TRACE(tt_TRACE_TX_START);
+    if (__builtin_expect(node->hal.tx_marks != 0, 0)) {
+        return sendmsg_marked(node, &again, hdr, hdr_len); // as tt_send()
+    }
     int32_t sent = (int32_t)hal_sendmsg(again.fd, msg, 0);
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendmsg_again(&again); // a blocking send: room, then again (struct tt_SendMsgAgain)
@@ -1881,9 +2122,10 @@ bool tt_tx_await_writable(struct tt_Context* node) {
 
 #if TT_HAL_UDP_GSO
 // One message of a sendmmsg() call: `run` datagrams from `first`, their pieces in `iov` (room for two each), to their
-// destination (`addr`, unless broadcast), with the UDP_SEGMENT cmsg in `control` when run > 1.
+// destination (`addr`, unless broadcast), with the UDP_SEGMENT cmsg in `control` when run > 1, and the run's class and
+// send time after it when the context marks its sends ("Traffic classes and send time").
 union gso_control {
-    char bytes[CMSG_SPACE(sizeof(uint16_t))];
+    char bytes[CMSG_SPACE(sizeof(uint16_t)) + TT_TX_MARKS_SPACE];
     struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
 };
 // NOLINTNEXTLINE(misc-include-cleaner) - struct iovec: see <sys/uio.h>'s own include comment
@@ -1916,13 +2158,17 @@ static void send_message_setup(struct tt_Context* node, struct mmsghdr* msg, str
     if (run > 1) {
         const uint16_t segment = (uint16_t)(first->head_len + first->body_len); // <= tt_CONTROL_MAX_LENGTH: gso_run()
         msg->msg_hdr.msg_control = control->bytes;
-        msg->msg_hdr.msg_controllen = sizeof(control->bytes);
+        msg->msg_hdr.msg_controllen = CMSG_SPACE(sizeof(segment)); // NOLINT(misc-include-cleaner) - <sys/socket.h>
         // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
         struct cmsghdr* header = CMSG_FIRSTHDR(&msg->msg_hdr);
         header->cmsg_level = SOL_UDP;
         header->cmsg_type = UDP_SEGMENT;
         header->cmsg_len = CMSG_LEN(sizeof(segment));
         memcpy(CMSG_DATA(header), &segment, sizeof(segment));
+    }
+    if (__builtin_expect(node->hal.tx_marks != 0, 0)) {
+        tx_marks_put(node, &msg->msg_hdr, control->bytes, msg->msg_hdr.msg_controllen, first->head, first->head_len,
+                     run);
     }
 }
 
@@ -2076,6 +2322,7 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
         // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
         struct iovec iov[TT_SEND_BATCH_CHUNK][2];
         struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
+        union tx_marks_control controls[TT_SEND_BATCH_CHUNK]; // "Traffic classes and send time", when marked
         memset(msgs, 0, sizeof(msgs[0]) * chunk);
         for (uint32_t i = 0; i < chunk; i++) {
             const struct tt_OutDatagram* datagram = &datagrams[sent + i];
@@ -2095,6 +2342,9 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
             } else {
                 msgs[i].msg_hdr.msg_name = &node->hal.broadcast_addr;
                 msgs[i].msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
+            }
+            if (__builtin_expect(node->hal.tx_marks != 0, 0)) {
+                tx_marks_put(node, &msgs[i].msg_hdr, controls[i].bytes, 0, datagram->head, datagram->head_len, 1);
             }
         }
         TT_TRACE(tt_TRACE_TX_START);

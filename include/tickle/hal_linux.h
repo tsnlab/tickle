@@ -256,6 +256,11 @@ static inline void tt_thread_yield(void) {
 #error "tt_RX_DRAIN_BUFFERS must be a power of two, at most 32768 (an io_uring buffer ring's limit)"
 #endif
 
+// tt_TX_CLASS_COUNT (tickle.h, which includes this header before it defines that); hal_linux.c asserts the two agree.
+#define TT_HAL_TX_CLASSES 3
+#define TT_TX_MARK_CLASS 1U // struct tt_hal.tx_marks
+#define TT_TX_MARK_TIME 2U
+
 struct tt_hal {
     // The well-known port (opts.net.port), shared with every other node on this host via
     // SO_REUSEADDR. Broadcasts are addressed here, so this is how a node is reached before anyone
@@ -525,6 +530,21 @@ struct tt_hal {
     uint16_t own_port;
     uint8_t claimed_id;
 #endif
+    // Traffic classes and send time (hal_linux.c "Traffic classes and send time"; network profiles items D and E),
+    // last, so nothing above moves. tx_marks: what a send adds as control messages - TT_TX_MARK_CLASS when a class's
+    // TOS or priority differs from the data socket's own (the DATA class's, set on the socket by tt_bind()),
+    // TT_TX_MARK_TIME when the socket took SO_TXTIME; 0 with every default, and then no send changes. Per class
+    // (tt_TX_CLASS_*): tx_tos, the TOS byte; tx_priority; tx_differs, whether its datagrams carry the two as control
+    // messages. tx_priority_cmsg: the kernel takes SO_PRIORITY as a control message (Linux 6.14) - without it a class
+    // keeps the socket's priority and only its TOS differs. tx_class_datagrams: datagrams sent per class while tx_marks
+    // is on; tx_timed_datagrams: those of them that carried a send time.
+    uint8_t tx_marks;
+    bool tx_priority_cmsg;
+    bool tx_differs[TT_HAL_TX_CLASSES];
+    int tx_tos[TT_HAL_TX_CLASSES];
+    uint32_t tx_priority[TT_HAL_TX_CLASSES];
+    uint64_t tx_class_datagrams[TT_HAL_TX_CLASSES];
+    uint64_t tx_timed_datagrams;
 };
 
 // Datagrams the kernel has dropped at this context's two receive sockets because their receive buffers were full
