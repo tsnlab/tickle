@@ -388,6 +388,51 @@ static void test_unicast_threshold_t1s_broadcasts_to_one_peer(void) {
     }
 }
 
+// The zero-copy publish (publish_zerocopy(), a topic with an in-place encoder and a sample that fills a datagram) takes
+// the link's resolved threshold, as the staging path does: a T1S link broadcasts to its one peer, ETHERNET unicasts,
+// and a T1S link given threshold 2 unicasts. Before 2026-10-22 it compared with the compiled tt_UNICAST_PEER_THRESHOLD
+// and unicast on T1S too.
+#define INPLACE_LEN 1440U // 4-aligned, and with its framing past what a second submessage could share
+static uint8_t inplace_body[INPLACE_LEN];
+
+static int32_t inplace_encode(struct tt_Data* data, const uint8_t** body) {
+    (void)data;
+    *body = inplace_body;
+    return (int32_t)INPLACE_LEN;
+}
+
+static void test_unicast_threshold_on_the_zero_copy_path(void) {
+    struct {
+        uint8_t profile;
+        uint8_t threshold;
+        bool unicast;
+    } const cases[] = {
+        {tt_LINK_PROFILE_ETHERNET, 0, true},
+        {tt_LINK_PROFILE_T1S, 0, false},
+        {tt_LINK_PROFILE_T1S, 2, true},
+        {tt_LINK_PROFILE_ETHERNET, tt_UNICAST_ALWAYS_BROADCAST, false},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct tt_InitOptions opts = one_link(cases[i].profile);
+        opts.net.links[0].unicast_threshold = cases[i].threshold;
+        create(&opts, -1);
+        topic.data_encode_inplace = inplace_encode;
+        struct tt_PublisherOptions unbatched = {.batching = tt_SWITCH_OFF};
+        create_publisher(&pubs[0], "zero_copy", &TEST_QOS_UNRELIABLE, &unbatched);
+        (void)upsert_peer(pubs[0].peers, PEER_ID, PEER_IP, PORT);
+        start_capture();
+        test_mock_send_to_ip_count = 0;
+        publish_one(&pubs[0]);
+        EXPECT_EQ_INT(1, sent_count);
+        EXPECT_TRUE(sent_longest > INPLACE_LEN); // the zero-copy datagram itself, not a batch
+        EXPECT_EQ_INT(cases[i].unicast ? 1 : 0, test_mock_send_to_call_count);
+        EXPECT_EQ_INT(cases[i].unicast ? 0 : 1, test_mock_send_call_count - test_mock_send_to_call_count);
+        EXPECT_TRUE(!cases[i].unicast || test_mock_send_to_ips[0] == PEER_IP);
+        topic.data_encode_inplace = NULL;
+        destroy();
+    }
+}
+
 static void test_batch_is_the_publishers_default(void) {
     struct {
         uint8_t profile;
@@ -624,6 +669,7 @@ int main(void) {
     test_several_links_combine();
     test_mtu_caps_a_batch_and_the_announce();
     test_unicast_threshold_t1s_broadcasts_to_one_peer();
+    test_unicast_threshold_on_the_zero_copy_path();
     test_batch_is_the_publishers_default();
     test_piggyback_divisor_piggybacks_heartbeats();
     test_retry_floor_holds_up_the_measured_g();
