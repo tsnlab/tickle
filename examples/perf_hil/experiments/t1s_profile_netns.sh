@@ -25,10 +25,11 @@
 #                   avoids. Were it 0, the t1s FragCreates 0 would not show the MTU doing anything.
 #   PASS when every arm is valid and every line above holds; FAIL otherwise, naming the line.
 #
-# First run (2026-10-22, ~/rig_results_safe/t1s_profile_netns_20261022-143124, tree 4cd989e3 + the node's shared
+# First run (2026-10-22, ~/rig_results_safe/t1s_profile_netns_20261022-143124, tree 4cd989e3 + the nodes' shared
 # endpoint name): PASS. 6000 samples each arm, received 6000 / 5988 / 6000. ethernet 6007 datagrams, 5 broadcasts,
 # FragCreates 0; ethernet-batch 607 datagrams, FragCreates 600; t1s link_mtu 1000, control_max 972, 907 datagrams
-# (762,484 bytes on the veth, 840 a packet), 908 broadcasts, FragCreates 0.
+# (762,484 bytes on the veth, 840 a packet), 908 broadcasts, FragCreates 0. Re-run on the restructured node
+# (t1s_profile_netns_20261022-145449): PASS, the same counts within 100 bytes.
 #
 # Usage: [SECONDS=3] [OUT=prefix] t1s_profile_netns.sh   OUT defaults to ~/rig_results_safe/t1s_profile_netns_<stamp>
 #   ($OUT.txt). Needs `sudo -n ip` (tc runs under `ip netns exec`). The summary always ends with
