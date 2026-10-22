@@ -147,6 +147,12 @@ and wake the poll if earlier. `tt_Context_lock()` gives consistent compound read
 - Both sockets `O_NONBLOCK`: the checksum is then made during the copy, not in a cold pass (`TT_RX_NONBLOCK`).
 - **Lazy deadline timer:** after 8 data-ended waits in a row the deadline stays in the `timerfd` and the wait has no
   timeout (`TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`).
+- **Wait ring** (`TT_RX_URING_WAIT`, default the build's `tt_RX_URING_WAIT`): the wait set held as io_uring polls and
+  the data socket's read as a recvmsg submitted with the wait - one `io_uring_enter()` for a datagram that wakes the
+  reader, where epoll took two calls. The ring is `SINGLE_ISSUER | DEFER_TASKRUN`: the first waiter owns it, a thread
+  that waits 64 times in a row while another owns it takes it over (each move doubles that run), and every other wait
+  uses epoll. A recvmsg left in flight reads only inside its owner's next wait, which keeps it (same buffer) or cancels
+  it first, so no datagram is lost or reordered across owners (`wr_check`). Linux 6.1; refused, the epoll path.
 - **io_uring receive hint** (`tt_HAL_RX_HINT`): a busy loop reads a completion queue instead of an empty `recvmmsg()`.
   AUTO (0): used if allowed, else one warning (see "Containers: allowing io_uring"); READ (1): compiled out; URING (2):
   required, else `tt_RET_UNSUPPORTED`.
@@ -769,7 +775,7 @@ context's `tt_InitOptions.reliable` (section 2).
 | `_tt_CONTEXT_BROADCAST` | 255.255.255.255 | | set the link's directed broadcast |
 
 Linux HAL switches, on by default: `TT_UDP_OFFLOAD`, `TT_UDP_CSUM0`, `TT_RX_NONBLOCK`, `TT_RX_DIRECT`,
-`TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`. Each is a context option (`tt_InitOptions.socket`, `tt_SWITCH_ON` / `_OFF`) and
+`TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`; `TT_RX_URING_WAIT` defaults to the build's `tt_RX_URING_WAIT`. Each is a context option (`tt_InitOptions.socket`, `tt_SWITCH_ON` / `_OFF`) and
 an environment variable (the A/B control): the variable, when set, decides (`0` off, anything else on); unset, the
 option does.
 

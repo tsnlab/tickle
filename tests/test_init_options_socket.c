@@ -90,9 +90,10 @@ long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-
     return real(number, a[0], a[1], a[2], a[3], a[4], a[5]);
 }
 
-static const char* const SWITCH_ENV[] = {"TT_UDP_OFFLOAD",   "TT_UDP_CSUM0",     "TT_RX_DIRECT",
-                                         "TT_RX_LAZY_TIMER", "TT_RX_LAZY_ADAPT", "TT_RX_NONBLOCK"};
-#define SWITCH_COUNT 6
+static const char* const SWITCH_ENV[] = {"TT_UDP_OFFLOAD",   "TT_UDP_CSUM0",   "TT_RX_DIRECT",    "TT_RX_LAZY_TIMER",
+                                         "TT_RX_LAZY_ADAPT", "TT_RX_NONBLOCK", "TT_RX_URING_WAIT"};
+#define SWITCH_COUNT 7
+#define SWITCH_URING_WAIT 6 // the one switch whose default is the build's (tt_RX_URING_WAIT), not on
 
 static void clear_switch_env(void) {
     for (int i = 0; i < SWITCH_COUNT; i++) {
@@ -129,6 +130,7 @@ static void test_defaults_are_the_compiled_settings(void) {
     EXPECT_EQ_U32(tt_SWITCH_ON, opts.socket.rx_lazy_timer);
     EXPECT_EQ_U32(tt_SWITCH_ON, opts.socket.rx_lazy_adapt);
     EXPECT_EQ_U32(tt_SWITCH_ON, opts.socket.rx_nonblock);
+    EXPECT_EQ_U32(tt_RX_URING_WAIT ? tt_SWITCH_ON : tt_SWITCH_OFF, opts.socket.rx_uring_wait);
     EXPECT_EQ_U32(tt_SOCKET_RX_HINT_AUTO, opts.socket.rx_hint); // this build's tt_HAL_RX_HINT
     EXPECT_EQ_U32(tt_RX_DRAIN_BYTES, opts.socket.drain_bytes);
     EXPECT_EQ_U32(tt_RX_DRAIN_BUFFERS, opts.socket.drain_buffers);
@@ -190,6 +192,8 @@ static bool switch_state(int which) {
         return ctx.hal.timer_fd_plus1 != 0;
     case 4:
         return ctx.hal.timer_adapt;
+    case SWITCH_URING_WAIT:
+        return ctx.hal.wr_fd_plus1 > 0;
     default: {
         int flags = fcntl(ctx.hal.data_sock, F_GETFL);
         return ctx.hal.nonblocking && flags >= 0 && (flags & O_NONBLOCK) != 0;
@@ -198,9 +202,9 @@ static bool switch_state(int which) {
 }
 
 static uint8_t* switch_field(struct tt_InitOptions* opts, int which) {
-    uint8_t* fields[SWITCH_COUNT] = {&opts->socket.udp_offload,   &opts->socket.udp_csum0,
-                                     &opts->socket.rx_direct,     &opts->socket.rx_lazy_timer,
-                                     &opts->socket.rx_lazy_adapt, &opts->socket.rx_nonblock};
+    uint8_t* fields[SWITCH_COUNT] = {
+        &opts->socket.udp_offload,   &opts->socket.udp_csum0,   &opts->socket.rx_direct,    &opts->socket.rx_lazy_timer,
+        &opts->socket.rx_lazy_adapt, &opts->socket.rx_nonblock, &opts->socket.rx_uring_wait};
     return fields[which];
 }
 
@@ -235,7 +239,8 @@ static void expect_state(int which, uint8_t option, const char* env, bool expect
 
 static void test_each_switch_and_its_environment_variable(void) {
     for (int which = 0; which < SWITCH_COUNT; which++) {
-        expect_state(which, tt_SWITCH_DEFAULT, NULL, true); // the default: on
+        // The default: on, but for the wait ring, whose default is the build's.
+        expect_state(which, tt_SWITCH_DEFAULT, NULL, which != SWITCH_URING_WAIT || tt_RX_URING_WAIT);
         expect_state(which, tt_SWITCH_ON, NULL, true);
         expect_state(which, tt_SWITCH_OFF, NULL, false);  // the option, unset environment
         expect_state(which, tt_SWITCH_ON, "0", false);    // the environment decides: off over on

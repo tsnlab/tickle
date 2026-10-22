@@ -980,6 +980,9 @@ struct tt_SocketOptions {
     uint8_t rx_lazy_adapt; // that timer only after a wait that ended for a datagram, TT_RX_LAZY_ADAPT
     uint8_t rx_nonblock;   // both sockets O_NONBLOCK, TT_RX_NONBLOCK
     uint8_t rx_hint;       // tt_SOCKET_RX_HINT_*
+    // tt_receive()'s wait and read in one io_uring_enter() on a ring one thread owns, TT_RX_URING_WAIT. Its default is
+    // the Linux HAL's tt_RX_URING_WAIT, not on: tt_SWITCH_DEFAULT resolves to that.
+    uint8_t rx_uring_wait;
     // The receive drain (builds with tt_RX_DRAIN; others ignore these): the bytes of buffers a drain starts with
     // (tt_RX_DRAIN_BYTES), the most buffers (tt_RX_DRAIN_BUFFERS; a power of two), the bytes an overrun may grow it
     // to (tt_RX_DRAIN_BYTES_MAX; 0 = four times drain_bytes, at least drain_bytes), and how long no drain starts

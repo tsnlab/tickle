@@ -55,10 +55,10 @@
 #if tt_HAL_IO_URING      // after hal_linux.h, which derives it from tt_HAL_RX_HINT
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
 // (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
-#include <linux/io_uring.h> // tt_rx_maybe_ready()
+#include <linux/io_uring.h>   // tt_rx_maybe_ready()
+#include <linux/time_types.h> // __kernel_timespec: the drain's stop wait, the wait ring's timeout
 #if tt_RX_DRAIN
-#include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
-#include <sys/utsname.h>      // uname(): the kernel release a refused buffer ring is reported with
+#include <sys/utsname.h> // uname(): the kernel release a refused buffer ring is reported with
 #endif
 #endif
 #if TT_HAL_UDP_GSO || TT_HAL_UDP_GRO // after hal_linux.h, which derives both: a build with neither uses none of it
@@ -723,6 +723,17 @@ static void uring_close(struct tt_Context* node);
 #else
 #define TT_HAL_EPOLL 0
 #endif
+// The wait ring ("The wait ring", beside tt_receive()): io_uring, and the epoll set it stands in for.
+#if tt_HAL_IO_URING && TT_HAL_EPOLL
+#define TT_HAL_WAIT_RING 1
+static void wr_setup(struct tt_Context* node);
+static void wr_teardown(struct tt_hal* hal);
+#if tt_LARGE_SAMPLES
+static bool wr_watch(const struct tt_hal* hal, int action, struct epoll_event* event);
+#endif
+#else
+#define TT_HAL_WAIT_RING 0
+#endif
 
 // What a wait reports, one bit per member of the set - in epoll_event.data.u32 as registered, and built from revents
 // on the ppoll() path, so the code after the wait reads one thing either way.
@@ -732,6 +743,7 @@ static void uring_close(struct tt_Context* node);
 #define RX_READY_BELL 8U
 #define RX_READY_WRITABLE 16U // data_sock has room again (tt_tx_await_writable())
 #define RX_READY_TIMER 32U    // the wait's deadline timer fired (rx_wait_lazy())
+#define RX_READY_TAKEN 64U    // the wait ring's recvmsg read a datagram into the caller's buffer (wr_wait())
 
 // The deadline timer edge-triggered: a fire needs no read() (rx_timer_take()). 0: level-triggered and read, as before
 // 2026-10-17 (the A/B control).
@@ -1262,6 +1274,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #endif
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
+    node->hal.wr_fd_plus1 = 0;
+    node->hal.wr_watch_fd_plus1 = 0;
+    node->hal.bell_epoch = 0;
 #endif
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
@@ -1437,6 +1452,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_UNSUPPORTED;
     }
 #endif
+#if TT_HAL_WAIT_RING
+    wr_setup(node); // after the wait set, whose members it polls
+#endif
     return tt_RET_OK;
 }
 
@@ -1461,6 +1479,7 @@ static const char* drain_ring_name(uint8_t ring) {
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
 #define GRO_LINE_BYTES 256U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
 #define CSUM0_LINE_BYTES 160U  // and its csum0_* fields
+#define RING_LINE_BYTES 160U   // and its ring* fields
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1504,6 +1523,21 @@ void tt_close(struct tt_Context* node) {
                    (int)node->hal.csum0, (unsigned long)node->hal.csum0_switches, (unsigned long)node->hal.csum0_calls,
                    (unsigned long)node->hal.csum0_datagrams, (unsigned long)node->hal.csum0_retries);
 #endif
+    // The wait ring (wr_wait()), on the same line: a rig arm's treatment check. ring=1 enabled by a waiter, 0 made and
+    // never used, -1 off, -2 refused.
+    char ring[RING_LINE_BYTES] = "";
+#if TT_HAL_WAIT_RING
+    int ring_state = node->hal.wr_fd_plus1 - 1; // -1 off, -2 refused
+    if (node->hal.wr_fd_plus1 > 0) {
+        ring_state = node->hal.wr_owner != 0 ? 1 : 0;
+    }
+    (void)snprintf(
+        ring, sizeof(ring),
+        " ring=%d ring_waits=%lu ring_reads=%lu ring_cancels=%lu ring_others=%lu ring_moves=%lu ring_stale=%lu",
+        ring_state, (unsigned long)node->hal.wr_waits, (unsigned long)node->hal.wr_reads,
+        (unsigned long)node->hal.wr_cancels, (unsigned long)node->hal.wr_others, (unsigned long)node->hal.wr_moves,
+        (unsigned long)node->hal.wr_stale);
+#endif
 #if tt_RX_DRAIN
     drain_stop(node);
 #if TT_HAL_UDP_GRO
@@ -1513,7 +1547,7 @@ void tt_close(struct tt_Context* node) {
 #endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
                 "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
-                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s%s%s",
+                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s%s%s%s",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
@@ -1521,18 +1555,21 @@ void tt_close(struct tt_Context* node) {
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
                 drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows, direct, gro,
-                csum0);
+                csum0, ring);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
-    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s%s%s", node->id,
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s%s%s%s", node->id,
                 (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
-                (unsigned)socket_drops(node->hal.data_sock), direct, gro, csum0);
+                (unsigned)socket_drops(node->hal.data_sock), direct, gro, csum0, ring);
 #endif
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
 #endif
 #if tt_HAL_IO_URING
     uring_close(node); // before the sockets: a poll in flight on a socket being closed is cancelled with the ring
+#endif
+#if TT_HAL_WAIT_RING
+    wr_teardown(&node->hal); // so is every request of the wait ring
 #endif
     node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
     node->hal.rx_next = 0;
@@ -1860,7 +1897,12 @@ bool tt_tx_await_writable(struct tt_Context* node) {
     if (hal->epoll_fd_plus1 > 0) {
         struct epoll_event event = {.events = EPOLLOUT | EPOLLONESHOT, .data = {.u32 = RX_READY_WRITABLE}};
         if (hal->tx_watch_fd_plus1 > 0) {
+#if TT_HAL_WAIT_RING
+            return epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_MOD, hal->tx_watch_fd_plus1 - 1, &event) == 0 &&
+                   wr_watch(hal, EPOLL_CTL_MOD, &event);
+#else
             return epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_MOD, hal->tx_watch_fd_plus1 - 1, &event) == 0;
+#endif
         }
         int watch = fcntl(hal->data_sock, F_DUPFD_CLOEXEC, 0);
         if (watch < 0) {
@@ -1871,7 +1913,11 @@ bool tt_tx_await_writable(struct tt_Context* node) {
             return false;
         }
         hal->tx_watch_fd_plus1 = watch + 1;
+#if TT_HAL_WAIT_RING
+        return wr_watch(hal, EPOLL_CTL_ADD, &event);
+#else
         return true;
+#endif
     }
 #endif
     __atomic_store_n(&hal->tx_watch_armed, true, __ATOMIC_RELEASE);
@@ -3165,6 +3211,602 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 #endif
 }
 
+// ---- The wait ring (2026-10-22)
+// ------------------------------------------------------------------------------------------------
+//
+// A datagram that wakes a sleeping reader cost two system calls: the wait (epoll_pwait2() on the wait set) and the read
+// after it (recvfrom()). On the rig (recv_wake_xhost.c, arms prod and prod_dt, Pi to Pi, n=20100 x5, A/A 0.02 us) the
+// same wait set held as io_uring polls, with the read submitted as an IORING_OP_RECV in the same io_uring_enter() as
+// the wait, returned the datagram 1.28 us earlier at p50 (10.57 -> 9.30 us from the kernel's receive stamp) for 0.75 us
+// less CPU a datagram - but only on a ring set up IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN, where the
+// copy runs in the waiting thread's own io_uring_enter(). Such a ring takes submissions from one thread only (others
+// get EEXIST), and the thread that waits in tt_receive() changes at run time: rmw's poll thread, or whichever executor
+// thread holds the poll role. So:
+//   - The ring is made at tt_bind(), disabled (IORING_SETUP_R_DISABLED); the first thread to wait in tt_receive()
+//     enables it (IORING_REGISTER_ENABLE_RINGS) and owns it (wr_owner). The owner waits and reads through it; any
+//     other thread waits on the epoll set and reads with recvfrom(), exactly as without the ring.
+//   - The ring follows the thread that keeps the poll role: once another thread has made wr_move_after waits in a row
+//     (TT_RX_RING_MOVE_WAITS, 64, at first) while the owner made none, the ring is closed and made again, enabled by
+//     that thread; each move doubles the run the next one needs (to TT_RX_RING_MOVE_MAX), so two threads that share
+//     the role turn and turn about cannot make it move often. rmw's poll thread is the first waiter of every context
+//     (it polls from the start), and the executor that then holds the role takes the ring after 64 waits.
+//   - Both paths see every event: the ring holds a one-shot poll on the well-known socket and the wake eventfd,
+//     re-armed at the next wait after each completion (a re-armed poll on a member still readable completes at once,
+//     so the two are reported as the level-triggered epoll set reports them); multishot polls on the deadline timer and
+//     the segment bell, which epoll watches edge-triggered (an io_uring poll is edge-triggered too); with large samples
+//     a poll on an epoll set of its own holding tt_tx_await_writable()'s watch; and a recvmsg on the data socket. What
+//     one path reports and the other then finds already taken is a wake-up with nothing to do, never a lost one: every
+//     member stays in both.
+//
+// No datagram lost, duplicated or reordered whichever thread waits. The recvmsg is submitted with the owner's wait and
+// may still be in flight when tt_receive() returns (a wake, a bell, a timeout). On a DEFER_TASKRUN ring the kernel does
+// not read the socket for it when a datagram arrives: it queues the work to the ring, and that work runs only inside
+// the owner's own io_uring_enter() - never in another thread, never in the owner outside wr_wait(). Meanwhile the
+// datagram stays in the socket, where a non-owner's recvfrom() (or the owner's drain) takes it in order. The owner's
+// next wait either keeps the recvmsg (same buffer and length) or cancels it ahead of the new one in the same
+// submission - the kernel takes the submissions before it runs the queued work, and a cancelled request's queued work
+// completes as cancelled without reading. So the request reads a datagram only inside a wait of the owner that was
+// given the buffer it reads into. A ring that moves is closed first, and closing cancels every request before any
+// queued work could run. platform/linux/wr_check.c passes the poll role between two threads and checks that every
+// datagram arrives once, in order.
+//
+// Off: opts.socket.rx_uring_wait / TT_RX_URING_WAIT=0 (the A/B control), a build without io_uring (tt_HAL_RX_HINT
+// READ) or without the epoll set, and a kernel that refuses the ring - io_uring refused (seccomp,
+// kernel.io_uring_disabled) or the flags (Linux < 6.1: EINVAL), said once per process as uring_refused() does. The
+// waits that need what only the epoll path does use it whatever the switch: receive offload (UDP_GRO) on or settling,
+// a direct read aimed (a large sample's run), the drain running.
+#if TT_HAL_WAIT_RING
+#define WR_ENTRIES 8U // the most one wait submits: five polls, a removal, a cancellation and the recvmsg
+// What a completion is for: user_data's low byte, the generation above it (a recvmsg's, the bell's epoch).
+#define WR_KIND_RECV 1U
+#define WR_KIND_WELL_KNOWN 2U
+#define WR_KIND_WAKE 3U
+#define WR_KIND_BELL 4U
+#define WR_KIND_TIMER 5U
+#define WR_KIND_WATCH 6U
+#define WR_KIND_CANCEL 7U // a cancellation or a removal that failed (success posts nothing: IOSQE_CQE_SKIP_SUCCESS)
+#define WR_KIND_SHIFT 8U
+#define WR_KIND_MASK 0xffU
+// struct tt_hal.wr_armed: a poll in flight for the member.
+#define WR_ARMED_WELL_KNOWN 1U
+#define WR_ARMED_WAKE 2U
+#define WR_ARMED_BELL 4U
+#define WR_ARMED_TIMER 8U
+#define WR_ARMED_WATCH 16U
+
+static void wr_unmap(struct tt_hal* hal) {
+    if (hal->wr_sqes != NULL) {
+        (void)munmap(hal->wr_sqes, hal->wr_sqes_len);
+    }
+    if (hal->wr_cq_map != NULL && hal->wr_cq_map != hal->wr_sq_map) {
+        (void)munmap(hal->wr_cq_map, hal->wr_cq_map_len);
+    }
+    if (hal->wr_sq_map != NULL) {
+        (void)munmap(hal->wr_sq_map, hal->wr_sq_map_len);
+    }
+    hal->wr_sqes = NULL;
+    hal->wr_cq_map = NULL;
+    hal->wr_sq_map = NULL;
+}
+
+// The ring and every request in it: unmapped first, since a mapping holds the ring open. Its state goes with it, the
+// counters stay. `left` says why there is none: -1 off, -2 refused (wr_fd_plus1 0 or -1).
+static void wr_close(struct tt_hal* hal, int left) {
+    if (hal->wr_fd_plus1 > 0) {
+        wr_unmap(hal);
+        (void)close(hal->wr_fd_plus1 - 1);
+    }
+    hal->wr_fd_plus1 = left + 1;
+    hal->wr_owner = 0;
+    hal->wr_now = false;
+    hal->wr_armed = 0;
+    hal->wr_recv = 0;
+    hal->wr_unsubmitted = 0;
+    hal->wr_rival = 0;
+    hal->wr_streak = 0;
+}
+
+// Said once per process, as uring_refused() says it for the readiness ring.
+static void wr_refused(const char* step, int err) {
+    static bool told = false;
+    if (!told) {
+        told = true;
+        TT_LOG_WARNING("io_uring wait ring refused (%s: %s) - tt_receive() waits with epoll and reads with recvfrom(), "
+                       "as without it. It needs Linux 6.1 (IORING_SETUP_DEFER_TASKRUN). See README.md, \"io_uring\".",
+                       step, strerror(err));
+    }
+}
+
+// A new ring, disabled until wr_enable(). False, said once and with wr_fd_plus1 -1, when the kernel refuses any of it.
+static bool wr_create(struct tt_hal* hal) {
+    hal->wr_sq_map = NULL;
+    hal->wr_cq_map = NULL;
+    hal->wr_sqes = NULL;
+    struct io_uring_params params;
+    memset(&params, 0, sizeof(params));
+    params.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_R_DISABLED;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    int ring_fd = (int)syscall(__NR_io_uring_setup, WR_ENTRIES, &params);
+    if (ring_fd < 0) {
+        wr_refused("io_uring_setup(SINGLE_ISSUER | DEFER_TASKRUN | R_DISABLED)", errno);
+        wr_close(hal, -2);
+        return false;
+    }
+    hal->wr_fd_plus1 = ring_fd + 1;
+    hal->wr_sq_map_len = params.sq_off.array + (params.sq_entries * sizeof(uint32_t));
+    hal->wr_cq_map_len = params.cq_off.cqes + (params.cq_entries * sizeof(struct io_uring_cqe));
+    const bool single = (params.features & IORING_FEAT_SINGLE_MMAP) != 0;
+    if (single && hal->wr_cq_map_len > hal->wr_sq_map_len) {
+        hal->wr_sq_map_len = hal->wr_cq_map_len;
+    }
+    void* sq_map =
+        mmap(NULL, hal->wr_sq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd, IORING_OFF_SQ_RING);
+    void* cq_map = sq_map;
+    if (sq_map != MAP_FAILED && !single) {
+        cq_map = mmap(NULL, hal->wr_cq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
+                      IORING_OFF_CQ_RING);
+    }
+    hal->wr_sqes_len = params.sq_entries * sizeof(struct io_uring_sqe);
+    void* sqes = MAP_FAILED;
+    if (sq_map != MAP_FAILED && cq_map != MAP_FAILED) {
+        sqes =
+            mmap(NULL, hal->wr_sqes_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd, IORING_OFF_SQES);
+    }
+    hal->wr_sq_map = sq_map == MAP_FAILED ? NULL : sq_map;
+    hal->wr_cq_map = cq_map == MAP_FAILED ? NULL : cq_map;
+    hal->wr_sqes = sqes == MAP_FAILED ? NULL : sqes;
+    if (sqes == MAP_FAILED) {
+        wr_refused("mmap", errno);
+        wr_close(hal, -2);
+        return false;
+    }
+    uint8_t* sq_base = (uint8_t*)sq_map;
+    uint8_t* cq_base = (uint8_t*)cq_map;
+    hal->wr_sq_tail = (uint32_t*)(sq_base + params.sq_off.tail);
+    hal->wr_sq_mask = (uint32_t*)(sq_base + params.sq_off.ring_mask);
+    hal->wr_sq_array = (uint32_t*)(sq_base + params.sq_off.array);
+    hal->wr_cq_head = (uint32_t*)(cq_base + params.cq_off.head);
+    hal->wr_cq_tail = (uint32_t*)(cq_base + params.cq_off.tail);
+    hal->wr_cq_mask = (uint32_t*)(cq_base + params.cq_off.ring_mask);
+    hal->wr_cqes = cq_base + params.cq_off.cqes;
+    hal->wr_owner = 0;
+    hal->wr_armed = 0;
+    hal->wr_recv = 0;
+    hal->wr_unsubmitted = 0;
+    return true;
+}
+
+// opts.socket.rx_uring_wait, unless TT_RX_URING_WAIT is set; a switch left at tt_SWITCH_DEFAULT (a context whose
+// options were never resolved) is the build's tt_RX_URING_WAIT.
+static bool wr_switch(const struct tt_Context* node) {
+    const char* setting = getenv("TT_RX_URING_WAIT");
+    if (setting != NULL) {
+        return strcmp(setting, "0") != 0;
+    }
+    const uint8_t option = node->opts.socket.rx_uring_wait;
+    return option == tt_SWITCH_ON || (option == tt_SWITCH_DEFAULT && tt_RX_URING_WAIT);
+}
+
+// At tt_bind(), after the wait set: the ring, disabled, where the switch, the set and the kernel allow it.
+static void wr_setup(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    hal->wr_fd_plus1 = 0;
+    hal->wr_watch_fd_plus1 = 0;
+    hal->wr_move_after = TT_RX_RING_MOVE_WAITS;
+    hal->wr_gen = 0;
+    hal->wr_bell_epoch = __atomic_load_n(&hal->bell_epoch, __ATOMIC_RELAXED);
+    hal->wr_waits = 0;
+    hal->wr_reads = 0;
+    hal->wr_cancels = 0;
+    hal->wr_others = 0;
+    hal->wr_moves = 0;
+    hal->wr_stale = 0;
+    wr_close(hal, -1);
+    if (hal->epoll_fd_plus1 == 0 || !wr_switch(node)) {
+        return; // without the epoll set there is nothing to stand in for: every wait builds its ppoll() set
+    }
+#if tt_LARGE_SAMPLES
+    hal->wr_watch_fd_plus1 = epoll_create1(EPOLL_CLOEXEC) + 1;
+    if (hal->wr_watch_fd_plus1 <= 0) {
+        wr_refused("epoll_create1 (the writable watch)", errno);
+        wr_close(hal, -2);
+        return;
+    }
+#endif
+    (void)wr_create(hal);
+}
+
+static void wr_teardown(struct tt_hal* hal) {
+    wr_close(hal, -1);
+    if (hal->wr_watch_fd_plus1 > 0) {
+        (void)close(hal->wr_watch_fd_plus1 - 1);
+        hal->wr_watch_fd_plus1 = 0;
+    }
+}
+
+#if tt_SEGMENT_ENABLED
+// A bell created or destroyed (tt_segment_bell_create(), _destroy()): the ring's next wait polls the new one and
+// removes the old one's poll (wr_arm()). A ring already enabled may have its owner asleep in it right now, which only a
+// wake ends - once per bell, and only where a ring is in use.
+static void wr_bell_moved(struct tt_Context* node) {
+    (void)__atomic_add_fetch(&node->hal.bell_epoch, 1U, __ATOMIC_RELAXED); // read by the polling thread
+    if (node->hal.wr_fd_plus1 > 0 && node->hal.wr_owner != 0) {
+        (void)tt_wake_signal(node);
+    }
+}
+#endif
+
+// The calling thread's id, asked once per thread.
+static _Thread_local int wr_self_id = 0;
+static inline int wr_self(void) {
+    if (__builtin_expect(wr_self_id == 0, 0)) {
+        wr_self_id = (int)syscall(SYS_gettid); // NOLINT(misc-include-cleaner) - <sys/syscall.h>
+    }
+    return wr_self_id;
+}
+
+// The ring is this thread's from now on: enabled by it. False (said once, the ring gone) when the kernel refuses.
+static bool wr_enable(struct tt_hal* hal, int self) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    if (syscall(__NR_io_uring_register, hal->wr_fd_plus1 - 1, IORING_REGISTER_ENABLE_RINGS, NULL, 0) < 0) {
+        wr_refused("IORING_REGISTER_ENABLE_RINGS", errno);
+        wr_close(hal, -2);
+        return false;
+    }
+    hal->wr_owner = self;
+    hal->wr_streak = 0;
+    return true;
+}
+
+// A wait by a thread that does not own the ring: the first waiter enables it; another takes it over after
+// wr_move_after waits in a row; otherwise it waits with epoll.
+static __attribute__((noinline)) bool wr_claim(struct tt_hal* hal, int self) {
+    if (hal->wr_owner == 0) {
+        return wr_enable(hal, self);
+    }
+    if (hal->wr_rival != self) {
+        hal->wr_rival = self;
+        hal->wr_streak = 0;
+    }
+    if (++hal->wr_streak < hal->wr_move_after) {
+        hal->wr_others++;
+        return false;
+    }
+    wr_close(hal, -1);
+    if (!wr_create(hal) || !wr_enable(hal, self)) {
+        return false;
+    }
+    hal->wr_moves++;
+    if (hal->wr_move_after < TT_RX_RING_MOVE_MAX) {
+        hal->wr_move_after *= 2U;
+    }
+    return true;
+}
+
+// Whether this tt_receive() waits on the ring: this thread's, and nothing in the HAL's state that only the epoll path
+// serves - receive offload on or settling (its reads need UDP_GRO's cmsg), a large sample's run aimed for a direct
+// read, the drain running.
+static inline bool wr_use(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->wr_fd_plus1 <= 0) {
+        return false;
+    }
+#if TT_HAL_UDP_GRO
+    if (hal->gro_state != TT_GRO_PLAIN) {
+        return false;
+    }
+#endif
+#if TT_HAL_RX_DIRECT
+    if (__atomic_load_n(&node->large.direct_bytes, __ATOMIC_RELAXED) != 0) {
+        return false;
+    }
+#endif
+#if tt_RX_DRAIN
+    if (hal->drain_running) {
+        return false;
+    }
+#endif
+    const int self = wr_self();
+    if (__builtin_expect(hal->wr_owner == self, 1)) {
+        hal->wr_streak = 0;
+        return true;
+    }
+    return wr_claim(hal, self);
+}
+
+// The next free submission entry, cleared; NULL when the ring is full of entries the kernel has not taken (a wait
+// whose submission failed), so the member is armed at a later wait instead.
+static struct io_uring_sqe* wr_sqe(struct tt_hal* hal, uint8_t opcode, int member, uint64_t user_data) {
+    if (hal->wr_unsubmitted >= WR_ENTRIES) {
+        return NULL;
+    }
+    uint32_t tail = *hal->wr_sq_tail; // ours to move
+    uint32_t index = tail & *hal->wr_sq_mask;
+    struct io_uring_sqe* sqe = &((struct io_uring_sqe*)hal->wr_sqes)[index];
+    memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = opcode;
+    sqe->fd = member;
+    sqe->user_data = user_data;
+    hal->wr_sq_array[index] = index;
+    __atomic_store_n(hal->wr_sq_tail, tail + 1U, __ATOMIC_RELEASE);
+    hal->wr_unsubmitted++;
+    return sqe;
+}
+
+// POLLIN on `member`, one-shot or multishot. True when queued.
+static bool wr_poll(struct tt_hal* hal, int member, uint32_t kind, uint32_t gen, bool multishot) {
+    struct io_uring_sqe* sqe =
+        wr_sqe(hal, IORING_OP_POLL_ADD, member, (uint64_t)kind | ((uint64_t)gen << WR_KIND_SHIFT));
+    if (sqe == NULL) {
+        return false;
+    }
+    uint32_t mask = POLLIN; // NOLINT(misc-include-cleaner) - <poll.h>
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    mask = (mask << 16) | (mask >> 16); // the kernel reads poll32_events half-word swapped on big-endian
+#endif
+    sqe->poll32_events = mask;
+    sqe->len = multishot ? IORING_POLL_ADD_MULTI : 0U;
+    return true;
+}
+
+// Cancels (IORING_OP_ASYNC_CANCEL) or removes (IORING_OP_POLL_REMOVE) the request whose user_data is `target`; a
+// success posts no completion.
+static bool wr_retire(struct tt_hal* hal, uint8_t opcode, uint64_t target) {
+    struct io_uring_sqe* sqe = wr_sqe(hal, opcode, -1, WR_KIND_CANCEL);
+    if (sqe == NULL) {
+        return false;
+    }
+    sqe->addr = target;
+    sqe->flags = IOSQE_CQE_SKIP_SUCCESS;
+    return true;
+}
+
+// Queues what this wait needs in flight: every member's poll not yet armed, and a recvmsg into this tt_receive()'s
+// buffer - the one in flight kept if it reads into the same buffer, cancelled ahead of a new one otherwise.
+static void wr_arm(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if ((hal->wr_armed & WR_ARMED_WELL_KNOWN) == 0 && wr_poll(hal, hal->sock, WR_KIND_WELL_KNOWN, 0, false)) {
+        hal->wr_armed |= WR_ARMED_WELL_KNOWN;
+    }
+    if ((hal->wr_armed & WR_ARMED_WAKE) == 0 && wr_poll(hal, hal->wake_fd, WR_KIND_WAKE, 0, false)) {
+        hal->wr_armed |= WR_ARMED_WAKE;
+    }
+#if tt_SEGMENT_ENABLED
+    const uint32_t bell_epoch = __atomic_load_n(&hal->bell_epoch, __ATOMIC_RELAXED);
+    if (hal->wr_bell_epoch != bell_epoch) { // a bell created or destroyed since the ring polled one
+        if ((hal->wr_armed & WR_ARMED_BELL) != 0 &&
+            !wr_retire(hal, IORING_OP_POLL_REMOVE,
+                       (uint64_t)WR_KIND_BELL | ((uint64_t)hal->wr_bell_epoch << WR_KIND_SHIFT))) {
+            return; // no room this time: the rest at the next wait
+        }
+        hal->wr_armed &= (uint8_t)~WR_ARMED_BELL;
+        hal->wr_bell_epoch = bell_epoch;
+    }
+    if ((hal->wr_armed & WR_ARMED_BELL) == 0 && hal->bell_fd_plus1 > 0 &&
+        wr_poll(hal, hal->bell_fd_plus1 - 1, WR_KIND_BELL, hal->wr_bell_epoch, true)) {
+        hal->wr_armed |= WR_ARMED_BELL;
+    }
+#endif
+    if ((hal->wr_armed & WR_ARMED_TIMER) == 0 && hal->timer_fd_plus1 > 0 &&
+        wr_poll(hal, hal->timer_fd_plus1 - 1, WR_KIND_TIMER, 0, true)) {
+        hal->wr_armed |= WR_ARMED_TIMER;
+    }
+    if ((hal->wr_armed & WR_ARMED_WATCH) == 0 && hal->wr_watch_fd_plus1 > 0 &&
+        wr_poll(hal, hal->wr_watch_fd_plus1 - 1, WR_KIND_WATCH, 0, false)) {
+        hal->wr_armed |= WR_ARMED_WATCH;
+    }
+    if (hal->wr_recv != 0) {
+        if (hal->wr_recv_buf == hal->wr_buf && hal->wr_recv_len == hal->wr_len) {
+            return; // in flight into this very buffer: it is this wait's
+        }
+        if (!wr_retire(hal, IORING_OP_ASYNC_CANCEL,
+                       (uint64_t)WR_KIND_RECV | ((uint64_t)hal->wr_recv << WR_KIND_SHIFT))) {
+            return;
+        }
+        hal->wr_recv = 0; // its completion, -ECANCELED, is passed over by its generation
+        hal->wr_cancels++;
+    }
+    uint32_t gen = hal->wr_gen + 1U;
+    if (gen > (UINT32_MAX >> WR_KIND_SHIFT)) {
+        gen = 1U; // 0 is "none in flight"
+    }
+    struct io_uring_sqe* sqe =
+        wr_sqe(hal, IORING_OP_RECVMSG, hal->data_sock, (uint64_t)WR_KIND_RECV | ((uint64_t)gen << WR_KIND_SHIFT));
+    if (sqe == NULL) {
+        return;
+    }
+    hal->wr_iov.iov_base = hal->wr_buf;
+    hal->wr_iov.iov_len = hal->wr_len;
+    memset(&hal->wr_msg, 0, sizeof(hal->wr_msg));
+    hal->wr_msg.msg_name = &hal->wr_from;
+    hal->wr_msg.msg_namelen = sizeof(hal->wr_from);
+    hal->wr_msg.msg_iov = &hal->wr_iov;
+    hal->wr_msg.msg_iovlen = 1;
+    sqe->addr = (uint64_t)(uintptr_t)&hal->wr_msg;
+    sqe->len = 1U;
+    hal->wr_gen = gen;
+    hal->wr_recv = gen;
+    hal->wr_recv_buf = hal->wr_buf;
+    hal->wr_recv_len = hal->wr_len;
+}
+
+#if tt_LARGE_SAMPLES
+// tt_tx_await_writable()'s watch put in the ring's own watch set too (EPOLL_CTL_ADD, then _MOD to arm it again): the
+// ring's poll on that set completes when the socket has room, while its owner sleeps in the ring.
+static bool wr_watch(const struct tt_hal* hal, int action, struct epoll_event* event) {
+    return hal->wr_watch_fd_plus1 <= 0 ||
+           epoll_ctl(hal->wr_watch_fd_plus1 - 1, action, hal->tx_watch_fd_plus1 - 1, event) == 0;
+}
+
+// The ring's poll on the writable watch completed: the watch's report taken off its set (it is EPOLLONESHOT there, so
+// the set stops being readable and the poll can be armed again). True when the socket has room.
+static bool wr_watch_take(const struct tt_hal* hal) {
+    struct epoll_event event;
+    const struct timespec now = {0, 0};
+    return epoll_pwait2(hal->wr_watch_fd_plus1 - 1, &event, 1, &now, NULL) == 1 &&
+           (event.events & (EPOLLOUT | EPOLLERR)) != 0;
+}
+#endif
+
+// One completion in, the RX_READY_* bits it reports out.
+static uint32_t wr_completion(struct tt_hal* hal, const struct io_uring_cqe* cqe) {
+    const uint32_t kind = (uint32_t)(cqe->user_data & WR_KIND_MASK);
+    const uint32_t gen = (uint32_t)(cqe->user_data >> WR_KIND_SHIFT);
+    const bool more = (cqe->flags & IORING_CQE_F_MORE) != 0;
+    const bool readable = cqe->res > 0;
+    switch (kind) {
+    case WR_KIND_RECV:
+        if (gen != hal->wr_recv || gen == 0) {
+            hal->wr_stale++; // a recvmsg cancelled for another buffer
+            return 0;
+        }
+        hal->wr_recv = 0;
+        hal->wr_took = cqe->res;
+        // An error is not taken: the data socket is reported, and the read after the wait says what it was.
+        return RX_READY_DATA | (cqe->res >= 0 ? RX_READY_TAKEN : 0U);
+    case WR_KIND_WELL_KNOWN:
+        hal->wr_armed &= (uint8_t)~WR_ARMED_WELL_KNOWN;
+        return readable ? RX_READY_WELL_KNOWN : 0U;
+    case WR_KIND_WAKE:
+        hal->wr_armed &= (uint8_t)~WR_ARMED_WAKE;
+        return readable ? RX_READY_WAKE : 0U;
+    case WR_KIND_BELL:
+        if (gen != hal->wr_bell_epoch) {
+            hal->wr_stale++; // the poll of a bell removed since
+            return 0;
+        }
+        if (!more) {
+            hal->wr_armed &= (uint8_t)~WR_ARMED_BELL;
+        }
+        return readable ? RX_READY_BELL : 0U;
+    case WR_KIND_TIMER:
+        if (!more) {
+            hal->wr_armed &= (uint8_t)~WR_ARMED_TIMER;
+        }
+        return readable ? RX_READY_TIMER : 0U;
+    case WR_KIND_WATCH:
+        hal->wr_armed &= (uint8_t)~WR_ARMED_WATCH;
+#if tt_LARGE_SAMPLES
+        return readable && wr_watch_take(hal) ? RX_READY_WRITABLE : 0U;
+#else
+        return 0;
+#endif
+    default:
+        hal->wr_stale++; // a cancellation or removal that found nothing: what it aimed at had completed
+        return 0;
+    }
+}
+
+// Every completion in, RX_READY_* bits out.
+static uint32_t wr_harvest(struct tt_hal* hal) {
+    uint32_t ready = 0;
+    uint32_t head = *hal->wr_cq_head; // ours to move
+    const uint32_t tail = __atomic_load_n(hal->wr_cq_tail, __ATOMIC_ACQUIRE);
+    const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->wr_cqes;
+    for (; head != tail; head++) {
+        ready |= wr_completion(hal, &cqes[head & *hal->wr_cq_mask]);
+    }
+    __atomic_store_n(hal->wr_cq_head, head, __ATOMIC_RELEASE);
+    return ready;
+}
+
+// One io_uring_enter(): what is queued submitted, and a wait for one completion, until `arg`'s timeout when there is
+// one. Its result as the library returns it (-1 and errno for a failure).
+static long wr_enter(struct tt_hal* hal, uint32_t flags, const struct io_uring_getevents_arg* arg) {
+#if TT_HAL_RAW_CALLS
+    long entered = tt_sys_result(tt_sys6(SYS_io_uring_enter, hal->wr_fd_plus1 - 1, (long)hal->wr_unsubmitted, 1, flags,
+                                         (long)arg, arg != NULL ? (long)sizeof(*arg) : 0));
+#else
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    long entered = syscall(__NR_io_uring_enter, hal->wr_fd_plus1 - 1, hal->wr_unsubmitted, 1U, flags, arg,
+                           arg != NULL ? sizeof(*arg) : 0U);
+#endif
+    if (entered > 0) {
+        hal->wr_unsubmitted -= (uint32_t)entered < hal->wr_unsubmitted ? (uint32_t)entered : hal->wr_unsubmitted;
+    }
+    return entered;
+}
+
+// A wait the kernel refused or cut short with nothing reported: rx_wait()'s return for it.
+static int wr_failed(struct tt_hal* hal, int err) {
+    if (err == ETIME) {
+        return 0;
+    }
+    if (err == EEXIST) {
+        // Not this thread's after all: its owner exited and the id came back to another thread. A new ring,
+        // disabled, for the next waiter; this wait ends as an interrupted one, which the caller polls again after.
+        wr_close(hal, -1);
+        (void)wr_create(hal);
+        err = EINTR;
+    }
+    errno = err;
+    return -1; // EINTR included: the caller treats it as a timeout and polls again
+}
+
+// rx_wait() on the ring: the same return convention (ready members, 0 on timeout, < 0 with errno) and bits, with
+// RX_READY_TAKEN when the recvmsg read a datagram into this tt_receive()'s buffer (wr_take()). One io_uring_enter()
+// submits what wr_arm() queued and waits for a completion.
+static __attribute__((noinline)) int wr_wait(struct tt_Context* node, const struct timespec* timeout_ts,
+                                             uint32_t* ready) {
+    struct tt_hal* hal = &node->hal;
+    hal->wr_waits++;
+    wr_arm(node);
+    struct __kernel_timespec wait_ts;
+    struct io_uring_getevents_arg arg;
+    const struct io_uring_getevents_arg* timed = NULL;
+    uint32_t flags = IORING_ENTER_GETEVENTS;
+    uint64_t until = 0;
+    if (timeout_ts != NULL) {
+        // A call that submits returns the submitted count whether its wait timed out or not, so the end of the wait
+        // is told from the clock - read only for a wait with a timeout.
+        until = tt_get_ns() + ((uint64_t)timeout_ts->tv_sec * (uint64_t)SEC_NS) + (uint64_t)timeout_ts->tv_nsec;
+        memset(&arg, 0, sizeof(arg));
+        arg.ts = (uint64_t)(uintptr_t)&wait_ts;
+        timed = &arg;
+        flags |= IORING_ENTER_EXT_ARG;
+        wait_ts.tv_sec = timeout_ts->tv_sec;
+        wait_ts.tv_nsec = timeout_ts->tv_nsec;
+    }
+    for (;;) {
+        const int err = wr_enter(hal, flags, timed) < 0 ? errno : 0;
+        *ready = wr_harvest(hal);
+        if (*ready != 0) {
+            return __builtin_popcount(*ready & ~RX_READY_TAKEN);
+        }
+        if (err != 0) {
+            return wr_failed(hal, err);
+        }
+        // Woken by completions that report nothing: wait on, for what is left of the timeout.
+        if (timed != NULL) {
+            const uint64_t now = tt_get_ns();
+            if (now >= until) {
+                return 0;
+            }
+            wait_ts.tv_sec = (long long)((until - now) / (uint64_t)SEC_NS);
+            wait_ts.tv_nsec = (long long)((until - now) % (uint64_t)SEC_NS);
+        }
+    }
+}
+
+// The datagram the ring's recvmsg read into this tt_receive()'s buffer, finished as rx_read_one() finishes one it read
+// itself.
+static int32_t wr_take(struct tt_Context* node, const void* buf, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    const int32_t got = hal->wr_took;
+    node->rx_via_data_port = true;
+    *ip = ntohl(hal->wr_from.sin_addr.s_addr);
+    *port = ntohs(hal->wr_from.sin_port);
+    hal->wr_reads++;
+#if TT_HAL_UDP_GRO
+    if (hal->gro_allowed && gro_large_fragment((const uint8_t*)buf, got)) {
+        gro_turn_on(node); // the rest of this sample may come merged
+    }
+#endif
+    rx_note_run(node, hal->data_sock, (const uint8_t*)buf, got);
+    return got;
+}
+#endif
+
 #if tt_SEGMENT_ENABLED
 static void bell_rung(struct tt_Context* node);
 #endif
@@ -3175,6 +3817,11 @@ static void bell_rung(struct tt_Context* node);
 static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts,
                                                          uint32_t* ready) {
     *ready = 0;
+#if TT_HAL_WAIT_RING
+    if (node->hal.wr_now) {
+        return wr_wait(node, timeout_ts, ready);
+    }
+#endif
 #if TT_HAL_EPOLL
     if (node->hal.epoll_fd_plus1 > 0) {
         struct epoll_event events[RX_WAIT_FDS];
@@ -3533,10 +4180,20 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     // relied on it, and leaving a path that reads only one of the two sockets would be a trap for
     // the next direct caller.
     int read_fd = node->hal.sock;
+#if TT_HAL_WAIT_RING
+    bool taken = false; // the wait ring's recvmsg read the datagram (wr_take())
+    node->hal.wr_buf = buf;
+    node->hal.wr_len = len;
+    node->hal.wr_now = wr_use(node);
+#endif
     {
         uint32_t ready = 0;
 #if TT_HAL_EPOLL
         int poll_ret = rx_wait_epoll(node, timeout, &ready);
+#if TT_HAL_WAIT_RING
+        node->hal.wr_now = false;
+        taken = (ready & RX_READY_TAKEN) != 0;
+#endif
 #elif TT_HAL_UDP_GRO
         int poll_ret = rx_wait_for(node, timeout, &ready);
 #else
@@ -3581,11 +4238,16 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             bell_rung(node);
         }
 #endif
+#if TT_HAL_WAIT_RING
+        if ((ready & RX_READY_WAKE) != 0 && !taken) {
+#else
         if ((ready & RX_READY_WAKE) != 0) {
+#endif
             // tt_wake_signal() - drain the counter (its value carries no meaning) and report the
             // interrupt. If the real socket also happens to be ready this same call, it's still
             // readable (both waits are level-triggered for the sockets) and gets picked up on the very next call - no
-            // data loss, just one extra round trip.
+            // data loss, just one extra round trip. A datagram the wait ring already read is handed out instead, and
+            // the counter left: the ring's poll on it, armed again at the next wait, reports it at once.
             uint64_t discard;
             (void)read(node->hal.wake_fd, &discard, sizeof(discard));
             return -3; // Interrupted
@@ -3624,6 +4286,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
         }
 #endif
+#if TT_HAL_WAIT_RING
+        if (taken) {
+            read_fd = node->hal.data_sock; // read already; the well-known socket stays reported for the drain
+        }
+#endif
     }
 
     // ppoll() said read_fd is readable: one datagram with recvfrom(), not a batch. This read is on the
@@ -3632,7 +4299,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     // then sees EAGAIN, a probe that recv_single_cost.c measured at ~0.3 us on x86 (0.99 against 0.69)
     // and that recvfrom() leaves until after processing, in the drain. Whatever else is queued, the drain
     // (tt_try_receive()) takes in batches.
+#if TT_HAL_WAIT_RING
+    int32_t ret = taken ? wr_take(node, buf, ip, port) : rx_read_one(node, read_fd, buf, len, ip, port);
+#else
     int32_t ret = rx_read_one(node, read_fd, buf, len, ip, port);
+#endif
     if (ret < 0) {
         return ret; // -1 nothing after all (Timeout), -2 I/O error
     }
@@ -4210,6 +4881,9 @@ int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
     }
     node->hal.bell_fd_plus1 = bell + 1;
     bell_join_wait_set(node, bell);
+#if TT_HAL_WAIT_RING
+    wr_bell_moved(node);
+#endif
     return 0;
 }
 
@@ -4223,6 +4897,9 @@ void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
         node->hal.bell_drain_every = 0;
         (void)close(node->hal.bell_fd_plus1 - 1);
         node->hal.bell_fd_plus1 = 0;
+#if TT_HAL_WAIT_RING
+        wr_bell_moved(node);
+#endif
     }
     (void)unlink(path);
 }

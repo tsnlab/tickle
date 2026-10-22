@@ -640,6 +640,14 @@ static void resolve_socket_options(struct tt_SocketOptions* socket) {
     resolve_switch(&socket->rx_lazy_timer);
     resolve_switch(&socket->rx_lazy_adapt);
     resolve_switch(&socket->rx_nonblock);
+    if (socket->rx_uring_wait == tt_SWITCH_DEFAULT) {
+// The Linux HAL's default (hal_linux.h, which the platform header hal.h selects); a HAL without one: off.
+#if defined(tt_RX_URING_WAIT) && tt_RX_URING_WAIT // NOLINT(misc-include-cleaner)
+        socket->rx_uring_wait = tt_SWITCH_ON;
+#else
+        socket->rx_uring_wait = tt_SWITCH_OFF;
+#endif
+    }
     if (socket->rx_hint == 0) {
 // NOLINTNEXTLINE(misc-include-cleaner) - tt_RX_HINT_URING: the platform header hal.h selects (hal_linux.h)
 #if defined(tt_HAL_RX_HINT) && tt_HAL_RX_HINT == tt_RX_HINT_URING
@@ -1115,6 +1123,9 @@ static tt_ret_t validate_socket_options(const struct tt_SocketOptions* socket) {
     }
     if (!valid_switch(socket->rx_nonblock)) {
         return reject_option("socket.rx_nonblock", "is not a tt_SWITCH_* value");
+    }
+    if (!valid_switch(socket->rx_uring_wait)) {
+        return reject_option("socket.rx_uring_wait", "is not a tt_SWITCH_* value");
     }
     if (socket->rx_hint != tt_SOCKET_RX_HINT_AUTO && socket->rx_hint != tt_SOCKET_RX_HINT_URING) {
         return reject_option("socket.rx_hint", "is not a tt_SOCKET_RX_HINT_* value");

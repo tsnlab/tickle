@@ -238,6 +238,15 @@ rx_direct_check_raw: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(RX_DIRECT_DEFS) -o $@ rx_direct_check.c $(SRC_FILES) \
 	    -lm -lpthread
 
+# The wait ring against the real HAL (wr_check.c), in the default build and in rmw's (large samples: the writable
+# watch). Built with the ring moving after 8 waits at first and 64 at most, so two threads sharing the poll role move it
+# often; the mutant sweep (tests/mutants_wait_ring.py) builds the same with a mutant HAL in place of HAL_SRC.
+WR_CHECK_DEFS = -DTT_RX_RING_MOVE_WAITS=8U -DTT_RX_RING_MOVE_MAX=64U
+wr_check: wr_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WR_CHECK_DEFS) -o $@ wr_check.c $(SRC_FILES) -lm -lpthread -ldl
+wr_check_large: wr_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WR_CHECK_DEFS) $(LARGE_DEFINES) -o $@ wr_check.c $(SRC_FILES) -lm -lpthread -ldl
+
 # A scheduled entry runs at its deadline, not 0.1% of its wait late (sched_wake_check.c). Run by test.sh (test-linux).
 sched_wake_check: sched_wake_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -lpthread
@@ -272,7 +281,7 @@ discovery_reply_check: $(DISCOVERY_REPLY_CHECK_SRC) $(wildcard $(INCLUDE)/tickle
 	    $(DISCOVERY_REPLY_CHECK_SRC) -lpthread -lm
 
 test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
-    bell_wake_check
+    bell_wake_check wr_check wr_check_large
 	./test_samehost.sh
 
 test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS) $(ONE_CALL_TEST_BINS)
@@ -650,6 +659,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f discovery_reply_check libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f discovery_reply_check libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check wr_check wr_check_large udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

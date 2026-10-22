@@ -203,6 +203,19 @@ static inline void tt_thread_yield(void) {
 #error "tt_HAL_IO_URING is derived from tt_HAL_RX_HINT; set tt_HAL_RX_HINT instead"
 #endif
 #define tt_HAL_IO_URING (tt_HAL_RX_HINT != tt_RX_HINT_READ)
+// The wait ring (hal_linux.c, "The wait ring"): what opts.socket.rx_uring_wait left at tt_SWITCH_DEFAULT means - 1 on,
+// 0 off. TT_RX_URING_WAIT in the environment decides over both. A build without io_uring has no wait ring.
+#ifndef tt_RX_URING_WAIT
+#define tt_RX_URING_WAIT 0
+#endif
+// The ring moves to a thread that waited this many times in a row while another owned it; each move doubles the run
+// the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring").
+#ifndef TT_RX_RING_MOVE_WAITS
+#define TT_RX_RING_MOVE_WAITS 64U
+#endif
+#ifndef TT_RX_RING_MOVE_MAX
+#define TT_RX_RING_MOVE_MAX 65536U
+#endif
 
 // tt_rx_drain_start() (hal.h, hal_linux.c "The drain"): while core is away from the receive sockets, an io_uring
 // multishot recvmsg on each copies what arrives into buffers of the HAL's own, which the kernel fills whenever this
@@ -452,6 +465,56 @@ struct tt_hal {
     void* uring_cqes;
     uint64_t uring_arms;    // poll submissions, each one io_uring_enter() - the cost side of the trade
     uint64_t uring_skipped; // tt_rx_maybe_ready() answers of "no", each one a read that was not made
+    // The wait ring (hal_linux.c, "The wait ring"): tt_receive()'s wait and read in one io_uring_enter(), on a ring set
+    // up IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN that one thread owns. wr_fd_plus1: the ring PLUS ONE;
+    // 0 off (the switch, no wait set, or a tt_hal only zeroed), -1 the kernel refused it; otherwise the ring, disabled
+    // until wr_owner (a thread id, 0 before the first wait) enables it. wr_now: this tt_receive() waits on it.
+    // wr_armed: the members a request is in flight for; wr_recv: the recvmsg's generation in flight (0: none), into
+    // wr_recv_buf/wr_recv_len; wr_took: what the last wait's recvmsg returned. wr_rival/wr_streak: the thread waiting
+    // in a row while another owns the ring, and how often - at wr_move_after the ring moves to it (wr_moves), and the
+    // next move waits twice as long.
+    int wr_fd_plus1;
+    int wr_owner;
+    bool wr_now;
+    uint8_t wr_armed;
+    uint32_t wr_recv;
+    uint32_t wr_gen; // the last recvmsg's generation
+    void* wr_buf;    // this tt_receive()'s buffer and length, for a recvmsg the wait submits
+    size_t wr_len;
+    uint32_t wr_bell_epoch; // the bell the ring polls (tt_segment_bell_create() and _destroy() move hal.bell_epoch)
+    uint32_t bell_epoch;
+    void* wr_recv_buf;
+    size_t wr_recv_len;
+    int32_t wr_took;
+    int wr_rival;
+    uint32_t wr_streak;
+    uint32_t wr_move_after;
+    int wr_watch_fd_plus1; // tt_tx_await_writable()'s watch for the ring: an epoll set holding its duplicate, PLUS ONE
+    void* wr_sq_map;
+    size_t wr_sq_map_len;
+    void* wr_cq_map; // == wr_sq_map when the kernel maps both rings at once
+    size_t wr_cq_map_len;
+    void* wr_sqes;
+    size_t wr_sqes_len;
+    uint32_t* wr_sq_tail;
+    uint32_t* wr_sq_mask;
+    uint32_t* wr_sq_array;
+    uint32_t* wr_cq_head;
+    uint32_t* wr_cq_tail;
+    uint32_t* wr_cq_mask;
+    void* wr_cqes;
+    uint32_t wr_unsubmitted; // SQEs queued and not yet taken by the kernel
+    struct msghdr wr_msg;    // the recvmsg's header: the kernel reads it whenever the request is issued
+    struct iovec wr_iov;     // NOLINT(misc-include-cleaner) - <sys/uio.h>
+    struct sockaddr_in wr_from;
+    // The rx line's ring= fields: waits on the ring, datagrams its recvmsg read, recvmsgs cancelled for another
+    // buffer, waits another thread made with epoll while the ring was owned, and stale completions passed over.
+    uint64_t wr_waits;
+    uint64_t wr_reads;
+    uint64_t wr_cancels;
+    uint64_t wr_others;
+    uint64_t wr_moves;
+    uint64_t wr_stale;
 #endif
 #if tt_RX_DRAIN
     // The drain (tt_rx_drain_start(), hal_linux.c): its own io_uring, set up at the first start (drain_fd -1 before,

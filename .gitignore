@@ -92,6 +92,8 @@
 /platform/linux/rx_direct_check_raw
 /platform/linux/bell_wake_check
 /platform/linux/sched_wake_check
+/platform/linux/wr_check
+/platform/linux/wr_check_large
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as
 # check-all.yml does in CI) - a local build-path artifact, not something to commit.

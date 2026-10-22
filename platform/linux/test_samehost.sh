@@ -150,6 +150,22 @@ fi
 "$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
 # The read after a lone wake-up's datagram is skipped and loses nothing (rx_lone_check.c): exit 0 only.
 "$HERE/rx_lone_check" || { echo "same-host test: FAIL - rx_lone_check" >&2; exit 1; }
+# The wait ring (wr_check.c): its owner, its moves, every member it polls, and no datagram lost or reordered while two
+# threads share the poll role - in the default build and in rmw's. Exit 2 is a kernel that refuses the ring (Linux
+# < 6.1, io_uring refused): said, not failed, as the context then runs without it.
+for check in wr_check wr_check_large; do
+    rc=0
+    "$HERE/$check" >"$SUB_LOG" 2>&1 || rc=$?
+    case $rc in
+    0) ;;
+    2) echo "same-host test: NOTE - $check: $(tail -1 "$SUB_LOG")" ;;
+    *)
+        cat "$SUB_LOG" >&2
+        echo "same-host test: FAIL - $check (exit $rc)" >&2
+        exit 1
+        ;;
+    esac
+done
 # A receive socket's drops are the kernel's count (rx_drain_check.c): exit 0 only, a setup failure is a failure here.
 "$HERE/rx_drain_check" >"$SUB_LOG" 2>&1 || { cat "$SUB_LOG" >&2; echo "same-host test: FAIL - rx_drain_check" >&2; exit 1; }
 cat "$SUB_LOG"
