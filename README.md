@@ -61,6 +61,10 @@ opts.socket.buffer_size = 4U << 20; // SO_SNDBUF and SO_RCVBUF
 tt_Context_create_with(&ctx, &opts); // tt_RET_INVALID_ARGUMENT, with a log line naming the field, if refused
 ```
 
+Each link in `net.links[]` takes a `profile` - `tt_LINK_PROFILE_ETHERNET` (0, the defaults), `_T1S`, `_TSN` or `_WIFI` -
+whose values fill the link's zero fields (MTU, batching, unicast threshold, retry floor, idle HEARTBEAT, ...; DESIGN.md
+section 2, "Link profiles").
+
 What each field does and its limits: the comments in `tickle.h` and DESIGN.md section 2. A context's discovery summary
 tells its peers its update interval and miss threshold, and they judge its silence by them (DESIGN.md section 5), so
 contexts on different intervals interoperate; a non-default value logs an INFO line. The Linux

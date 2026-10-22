@@ -161,6 +161,51 @@ every datagram went with priority 0 and TOS 0. A send time 2 ms ahead: under pfi
 (p50, sent at once), under ETF (delta 200 us) 182 us before (min/p99 192/156 us; software ETF dequeues delta ahead of
 the time), 0 ETF drops.
 
+**Link profiles** (`tt_LinkOptions.profile`, network-profiles phase 0 items B and G, 2026-10-22). A link names its
+medium, and the profile fills the link's zero fields; an explicit field always wins. ETHERNET (0) is every value a
+context had before, WIFI maps to it until the Wi-Fi stage decides its own, and discovery timing does not change per
+profile (each context's discovery summary carries its own interval since 2026-10-22, so a later profile may set it).
+
+| field | ETHERNET, WIFI | T1S | TSN | applied |
+|---|---|---|---|---|
+| `mtu` | 1500 | the interface's (1500 if unknown) | the interface's | context: the smallest |
+| `link_rate` | 1 Gbit/s | 10 Mbit/s | 1 Gbit/s | T1S's retry floor |
+| `retry_floor_ns` | none | 2 PLCA cycles: 2 x 8 nodes x one MTU frame at `link_rate` (19.7 ms at 1500) | none | context: the longest |
+| `batch` / `batch_tick_ns` | off / context's | on / context's (1 ms) | off | context: on only if every link is |
+| `idle_heartbeat_ns` | context's (250 ms) | 1 s | context's | context: the shortest |
+| `piggyback_divisor` | none | 8 (every window/8 samples) | none | context: the most frequent |
+| `unicast_threshold` | 2 | always broadcast | 2 | **per link**, on the send path |
+| `large_fragmentation` | context's | MTU units | context's | context: MTU if any link is |
+
+Only the unicast threshold is per link: the send path already resolves each destination to its link. Everything else
+is one value for the context, because a datagram is encoded once for all the links it goes to and a sample is cut once
+and cached for repair; a reader's retry timer does not know its writer's link either. Each is combined in the direction
+that is safe for the most demanding link - the smallest MTU, the longest floor, the shortest idle HEARTBEAT - and
+written where the context already kept the setting: the tick into `discovery.tx_interval_ns`, the idle HEARTBEAT into
+`reliable.idle_heartbeat_period` (each only where the context left it at 0 or its default; a contradicting explicit
+pair is refused), the floor under the measured G at its least and its cold start (a fixed `retry_granularity` is the
+caller's and stays), the batching and piggyback period into a Publisher whose options leave them to the context
+(`tt_PublisherOptions.batching`, `heartbeat_piggyback_every` 0). So no retry, publish or receive path reads a new field
+for these.
+
+The MTU (item G): below 1500 it cuts every datagram built from more than one submessage, every announce part and every
+fragment (`tt_Context.control_max`); `tt_CONTROL_MAX_LENGTH` stays the ceiling. Compatible with every reader: a reader
+learns a sample's continuation length from its fragments (`frag_learn_cont_length()`, the fast path's). Not cut: a
+large sample's units (`FRAG_*_L`; the reader places them by index at the full length, so a shorter unit is a wire change),
+a service request or response (they never fragment), and anything in a build that does not fragment (core's default,
+1472 B), which keeps sending whole what it accepted. A context cut short sends MTU units only, since a run's units are
+full-length. An MTU at which `tt_MAX_SAMPLE_LENGTH` needs more than `tt_FRAG_MAX_COUNT` fragments is refused; from
+the interface, it falls back to 1500. Known gap: the zero-copy publish's direct unicast (`publish_zerocopy()`, an in-place encoder) still compares with
+the compiled `tt_UNICAST_PEER_THRESHOLD`, not the link's (as before profiles).
+
+Cost: none measurable - the publish path reads `control_max` where it compared with a constant. User instructions per
+sample, client, B vs A (A+P the placement control), 3 reps, every row EQUAL: p1 -0.04% (P -0.04%), p3 +0.04% (-0.01%),
+t1 +0.03% (-0.01%), t3 +0.05% (-0.01%), 1% loss l1 +0.02% (0.00%), l3 +0.11% (+0.10%) (`initoptions_insn_pc.sh`,
+A 6c355fa2, B e9b6a656 before its rebase, `linkprofiles_insn_pc_20261022-141720`). Default behaviour wire-identical
+(`tests/wire_identity_link_profiles.sh`, core and fragmenting builds). T1S over a 10 Mbit/s tbf veth of MTU 1000 in two
+namespaces (`t1s_profile_netns.sh`, PASS): 907 broadcast datagrams of at most 972 bytes for 6000 samples, none
+IP-fragmented, against ETHERNET's 6007 unicasts; ETHERNET batching on that link IP-fragmented 600.
+
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
 | rule | detail |
@@ -300,7 +345,7 @@ timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is 
 |---|---|
 | RPC flushes at once | a caller is waiting |
 | publish flushes at once by default | `pub->batch = true` coalesces until the `tt_CONTEXT_TX_INTERVAL` tick |
-| shared datagrams are small | a batch or announce never exceeds `tt_CONTROL_MAX_LENGTH`, so any core build can receive it |
+| shared datagrams are small | a batch or announce never exceeds `tt_CONTROL_MAX_LENGTH`, so any core build can receive it, nor the smallest link MTU (section 2, "Link profiles") |
 | **unicast to a few, broadcast to the rest** | per-endpoint `peers[]` (`tt_MAX_PEER_COUNT`); more than `tt_UNICAST_PEER_THRESHOLD` peers, or a full table, means broadcast. A Server answers unicast; a Client with no known Server broadcasts |
 | **a Publisher with no matched reader sends nothing** (the user, 2026-10-15) | BEST_EFFORT drops (`tx_unmatched_dropped`); RELIABLE/durable keep it in history (`tx_unmatched_kept`). Matched by announce or, for RELIABLE, by ACKNACK. Covers every send path and unprompted HEARTBEAT; not local delivery, discovery or ACKNACK answers. Wait for `tt_Publisher_matched_count()` to keep first samples |
 | one system call | datagrams ready together go in one `tt_send_batch()` (`sendmmsg()`) |
