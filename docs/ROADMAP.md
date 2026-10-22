@@ -14,7 +14,8 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 - **5a. Testbed-independent constants.** The fitted values that stay are in RMW.md "Options you may tune". Open:
   - Kept off main after rig A/Bs (`ab/hotpath-split`): segment attach backoff by time, revalidate by time, timed
     receive check. Redesigned 2026-10-22 with no clock read on a send and no 64-bit atomic (DESIGN 10 "Counts made
-    times"), one commit each on `ab/segment-time-limits`; rig A/Bs pending.
+    times"), one commit each on `ab/segment-time-limits`. PC: deterministic rows equal or better, throughput servers
+    read as load (DESIGN 10); rig A/Bs (same-host gate v2, core gate v2 with c6) prepared, not run.
   - A client restarted under the same context id can get its predecessor's cached answer. Fixing it needs a per-launch
     tag in CallRequest, a wire change.
 

@@ -96,7 +96,8 @@ the reader's per-slot state); 0 keeps `tt_SEGMENT_SLOTS` slots at any slot size,
 at creation from the context's discovery timing (one update interval; `tt_SEGMENT_DEAD_READER_NS` at the defaults).
 Checked: slot holds a datagram, 4 to `tt_SEGMENT_SLOTS` slots, fence hold < dead reader < silence, `probe_every_max` a
 power of two (the window is a mask; no 64-bit modulo on rv32). `tt_PUBLISHER_CLAIMS` and `tt_SEGMENT_FENCES_SEEN` stay
-compile-time. The attach-retry and revalidation times are read only by the summary tick. Cost, corrected: this paragraph said "per-record
+compile-time. The attach-retry and revalidation times are read only by the summary tick. Cost, corrected: this
+paragraph said "per-record
 cost unchanged" for the first build, and the rig's same-host gate v2 A/B (A fab14fd9, B that build before its rebase,
 `ab_samehost_initoptions8_segment_20261022-003748`, placement control held) read +0.6% to +1.7% server and +0.6%
 client user instructions a sample on BE p1/p3, reliable p3 and latency p1/p3. The drain compared every record against the runtime bound, one live value too many on aarch64: drain_own_segment +7.8
@@ -751,15 +752,16 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 
 **Lifecycle (lazy).** Built when the first same-host peer appears, released when the last goes. **No writer uses a dead
 owner's segment:** the owner's mapping holds a `flock()`; `tt_segment_attach()` refuses an unheld file
-(`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask a missing segment after `tt_SEGMENT_ATTACH_RETRY_NS`,
-an attached one after `tt_SEGMENT_REVALIDATE_NS` (both kept by the summary tick, below). A reader idle for
-`tt_SEGMENT_DEAD_READER_NS` with records waiting is given up (UDP until recheck); a peer presumed dead is unmapped at once (`release_peer_segment()`; before 2026-10-22 a
-10 Hz writer kept a killed reader's ring mapped for as long as it ran). A wedged head warns after
-`tt_SEGMENT_STALL_PASSES`. **A dead owner's files are swept:** a context building its own segment unlinks every segment
-at its address that nobody holds the flock on, with its bell (`sweep_orphaned_segments()`). The name carries the
-ephemeral data port, so no successor ever replaced them: until 2026-10-22 every SIGKILLed context left 768 KiB and a
-FIFO in `/dev/shm`. Shown across processes by `rmw_tickle/rmw_tickle/test/test_shm_kill.c` (subscriber or publisher
-SIGKILLed mid-stream at 500 and 10 Hz, each against a run that is not killed; `test/mutants_shm_kill.py`).
+(`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask a missing segment after `tt_SEGMENT_ATTACH_RETRY_NS`, an
+attached one after `tt_SEGMENT_REVALIDATE_NS` (both kept by the summary tick, below). A reader idle for
+`tt_SEGMENT_DEAD_READER_NS` with records waiting is given up (UDP until recheck); a peer presumed dead is unmapped at
+once (`release_peer_segment()`; before 2026-10-22 a 10 Hz writer kept a killed reader's ring mapped for as long as it
+ran). A wedged head warns after `tt_SEGMENT_STALL_PASSES`. **A dead owner's files are swept:** a context building its
+own segment unlinks every segment at its address that nobody holds the flock on, with its bell
+(`sweep_orphaned_segments()`). The name carries the ephemeral data port, so no successor ever replaced them: until
+2026-10-22 every SIGKILLed context left 768 KiB and a FIFO in `/dev/shm`. Shown across processes by
+`rmw_tickle/rmw_tickle/test/test_shm_kill.c` (subscriber or publisher SIGKILLed mid-stream at 500 and 10 Hz, each
+against a run that is not killed; `test/mutants_shm_kill.py`).
 
 **Counts made times** (ROADMAP 5a; designed 2026-10-22, one commit each on `ab/segment-time-limits`). Three counts
 stood in for times, so each bound was the sender's rate. The first attempt (`ab/hotpath-split`, 2026-10-06) checked
@@ -774,6 +776,24 @@ hot paths read at its size:
 | attach backoff | a "no" (`missing`) re-asked every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) `peer_segment()` calls: one failed `open()` per 256 sends, and a late binder kept off shared memory for 256 sends - under 1 ms at max rate, four minutes at 1 Hz | due at the first summary tick `segment.attach_retry_ns` (`tt_SEGMENT_ATTACH_RETRY_NS`, one update interval) after the tick that first saw it (at most that plus two summary intervals); an announce from a peer at our address still makes it due at once (`note_same_host_peer()`) | the summary tick (`node_update()`, every summary interval) ages every cached answer with the poll's reading it is handed (`segment_recheck_sweep()`); the send reads one byte, `recheck_due`, where it decremented a count. Deadline: 32 bits in 2^20 ns units, in padding the entry already had | a test that asks at a standing clock more than once in 10,000 sends, or not at the deadline tick; rig c10 RTT or any cross-host cell's CPU WORSE (core gate v2) |
 | revalidate | a "yes" (attached) re-attached by name every `tt_SEGMENT_REVALIDATE_SENDS` (4096) calls: ~70 a second at 300 k datagrams/s, and a dead owner's ring written for over an hour at 1 Hz; a load, a decrement and a store per call | due at the first summary tick `segment.revalidate_ns` (`tt_SEGMENT_REVALIDATE_NS`, one update interval) after the stamp; the next send re-attaches, or waits while a claim holds the mapping (as before) | the same sweep; the send's fast path is one load of `recheck_due` and no store | a test that re-attaches before the deadline or misses it; same-host cells' instructions per sample WORSE beyond the placement floor (PC `initoptions8_segment_insn_pc.sh`, rig same-host gate v2) |
 | receive check | a busy poll peeks at the socket after `tt_SCHEDULER_IO_INTERLEAVE` (8) due entries back to back: 8 times an entry's cost - ~16 us on the PC, ~40-80 us on a Pi - so the ACKNACK delay it bounds was the hardware's | the poll peeks once `poll.rx_check_ns` (0 = the context's `poll.receive_timeout`, 100 us) has passed since it last looked - a peek or a wait - remembered across calls (`tt_Context.rx_looked_ns`), so a run of short polls looks too and a busy negative-timeout poll looks once per slice; and only after an entry has run since the last look, so a check never follows a check | the loop's own reading, which it already takes after every step (`time`); one store per look, in the field added at the end of `tt_Context` (no field moves) | a test whose look comes before or after `rx_check_ns` of entries, or never across short polls; rig c6 wire bytes or CPU, or c1/c8 throughput, WORSE (core gate v2) |
+
+Measured on the PC (`initoptions8_segment_insn_pc.sh`, user instructions per sample, A P B B P A, 6 runs an arm, 6
+cells, 2026-10-23; the harness first FAILed a positive control - a 4-iteration loop on the attached send path - on
+lat_p1, +2.3% client and +0.5% server, `stl_posctl_insn_pc_20261023`). Pieces 1+2 (A the design commit, B piece 2;
+`stl_segment_insn_pc_20261023`): every client and every latency server PASS - latency cells -0.10% to +0.05%, be_p4
+client -1.02% (floor 0.23%), throughput clients' kernel instructions -55% to -97% a sample (no re-attach every 4096
+sends: 0.0002-0.0005 attaches a sample to none) - and the pre-registered verdict FAIL, on the be_p3, be_p4 and rt_p3
+servers. Read as the harness says, from the runs: be_p3 and rt_p3 servers are bimodal in head stalls (B had 5 and 4 of 6
+runs in the stalling mode, A 3 and 2; within a mode B is at or below A, except rt_p3's stalling runs, whose writer sent
+6% more and stalled the reader 0.54-0.90 times a sample against 0.20-0.27); be_p4's server paid less per ring record
+(948 against A 975, P 1008) and more per delivered sample because the faster writer dropped more fragments at the full
+ring (2.55 records per delivered sample against 2.11). Piece 3 (A piece 2, B piece 3; `stl_rxcheck_insn_pc_20261023`):
+throughput clients -4.2% to -6.4% (floors 0.4-5%; one peek per 100 us instead of per 8 entries), latency clients +0.7%
+and +0.9% inside their floors (this run's A spread 2.8-4.4%), latency servers -0.1%, and every row PASS but be_p4's
+server, FAIL +12.8% for the same reason (937 per record against 951, 2.88 records per delivered sample against 2.52).
+The rig decides: the same-host gate v2 for pieces 1 and 2 (A, B and C the design commit, piece 1 and piece 2;
+`ab_samehost.sh`, the bundle 8 cells, B-A and C-B) and the core gate v2 with c6 added for pieces 1 and 3
+(`rig_queue_core_ab.sh`, `CORE_CELLS` with 6). Not run yet.
 
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring
 **drops** (`segment_full_dropped`), since rerouting to UDP would overtake queued records. UDP still carries broadcasts,
