@@ -3381,7 +3381,7 @@ static bool wr_create(struct tt_hal* hal) {
 static bool wr_switch(const struct tt_Context* node) {
     const char* setting = getenv("TT_RX_URING_WAIT");
     if (setting != NULL) {
-        return strcmp(setting, "0") != 0;
+        return setting[0] != '0' || setting[1] != '\0'; // "0" off, anything else on, as socket_switch() reads it
     }
     const uint8_t option = node->opts.socket.rx_uring_wait;
     return option == tt_SWITCH_ON || (option == tt_SWITCH_DEFAULT && tt_RX_URING_WAIT);

@@ -109,13 +109,7 @@ hal "read: rx_uring_wait ignored" "const uint8_t option = node->opts.socket.rx_u
 hal "wait ring switch: the environment ignored" "    const char* setting = getenv(\"TT_RX_URING_WAIT\");" \
     "    const char* setting = NULL;"
 hal "wait ring switch: an environment variable set to 1 reads off" \
-    "    if (setting != NULL) {
-        return strcmp(setting, \"0\") != 0;
-    }
-    const uint8_t option" "    if (setting != NULL) {
-        return false;
-    }
-    const uint8_t option"
+    "        return setting[0] != '0' || setting[1] != '\\0';" "        return false;"
 hal "read: buffer_size ignored on the well-known socket" "int buffer_size = socket_buffer_size(node);" \
     "int buffer_size = tt_SOCKET_BUFFER_SIZE;"
 hal "read: buffer_size ignored on the data socket" "    buffer_size = socket_buffer_size(node);
