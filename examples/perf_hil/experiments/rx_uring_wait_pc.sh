@@ -109,6 +109,10 @@ for a in $ARMS; do
 done
 
 EVENTS=instructions:u,instructions:k,cycles:u,cycles:k
+# RECORD=1: also `perf record -e instructions:u` (period 10007) of each process, reported by symbol into $OUT.d - for a
+# function-level diff. The perf stat counts then include perf record itself: read only the reports.
+RECORD=${RECORD:-0}
+rec_prefix() { [ "$RECORD" = 1 ] && echo "perf record -q -e instructions:u -c 10007 -o $WORK/$1.data --"; }
 NSID=0
 run_one() { # $1 rep, $2 arm, $3 cell
     local rep=$1 arm=$2 p=$3 f d
@@ -128,13 +132,13 @@ run_one() { # $1 rep, $2 arm, $3 cell
     d="$WORK/bin/$arm/$p"
     # shellcheck disable=SC2024 # the logs are this user's, written by this shell
     sudo -n ip netns exec "$nb" sh -c "mount -t tmpfs -o size=64m ruwshm /dev/shm || exit 9
-cd $d && env BENCH_IFACE=$vb nice -n 19 taskset -c $CPU_S perf stat -x, -o $WORK/s.perf -e $EVENTS -- ./server $(case $p in t*) args_of "$p" ;; esac); true" \
+cd $d && env BENCH_IFACE=$vb nice -n 19 taskset -c $CPU_S perf stat -x, -o $WORK/s.perf -e $EVENTS -- $(rec_prefix s) ./server $(case $p in t*) args_of "$p" ;; esac); chmod a+r $WORK/s.data 2>/dev/null; true" \
         >"$f.server.log" 2>&1 &
     local sp=$!
     sleep 1
     # shellcheck disable=SC2024
     sudo -n ip netns exec "$na" sh -c "mount -t tmpfs -o size=64m ruwshm /dev/shm || exit 9
-cd $d && env BENCH_IFACE=$va nice -n 19 taskset -c $CPU_C perf stat -x, -o $WORK/c.perf -e $EVENTS -- ./client $(args_of "$p"); echo client_rc=\$?; true" \
+cd $d && env BENCH_IFACE=$va nice -n 19 taskset -c $CPU_C perf stat -x, -o $WORK/c.perf -e $EVENTS -- $(rec_prefix c) ./client $(args_of "$p"); echo client_rc=\$?; chmod a+r $WORK/c.data 2>/dev/null; true" \
         >"$f.client.log" 2>&1
     sleep 1
     local pid
@@ -147,6 +151,12 @@ cd $d && env BENCH_IFACE=$va nice -n 19 taskset -c $CPU_C perf stat -x, -o $WORK
     sudo -n ip netns del "$nb"
     [ -f "$WORK/c.perf" ] && cp "$WORK/c.perf" "$f.client.perf" && rm -f "$WORK/c.perf"
     [ -f "$WORK/s.perf" ] && cp "$WORK/s.perf" "$f.server.perf" && rm -f "$WORK/s.perf"
+    local r
+    for r in c:client s:server; do
+        [ -f "$WORK/${r%%:*}.data" ] || continue
+        perf report -f -i "$WORK/${r%%:*}.data" --no-children -q -F sample,sym --stdio 2>/dev/null >"$f.${r#*:}.report"
+        rm -f "$WORK/${r%%:*}.data"
+    done
     echo "$(date +%T) r$rep $arm $p $(grep -m1 '^RESULT' "$f.client.log" | tr ' ' '\n' | grep -E '^(sent|rtt_avg_ms|rtt_p50_us)=' | tr '\n' ' ') $(grep -ho 'ring=[-0-9]* ring_waits=[0-9]* ring_reads=[0-9]*' "$f.client.log" "$f.server.log" | tr '\n' ' ')" >>"$SUM"
 }
 for rep in $(seq 1 "$REPS"); do
