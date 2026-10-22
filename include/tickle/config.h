@@ -1149,11 +1149,27 @@
 #endif
 // A Server's answered responses kept for retries, and the requests it holds deferred: tt_MAX_SERVER_CACHE_COUNT slots
 // of each. Every calling Client can have tt_CLIENT_MAX_OUTSTANDING calls in flight, so the slots cover
-// tt_MAX_SERVER_CACHE_COUNT / tt_CLIENT_MAX_OUTSTANDING Clients calling at full depth at once (16 at the defaults);
-// past that a full cache evicts the response sent longest ago, and a full deferred table drops the request, which the
-// client's retry brings back.
+// tt_MAX_SERVER_CACHE_COUNT / tt_CLIENT_MAX_OUTSTANDING Clients calling at full depth at once (16 at the defaults, 4 on
+// FreeRTOS); past that a full cache evicts the response sent longest ago, and a full deferred table drops the request,
+// which the client's retry brings back.
+//
+// 16 on FreeRTOS (2026-10-22), where every slot carries a tt_SERVER_CACHE_ENTRY_LENGTH entry inline: 64 x 2,944 bytes
+// was 188 KB of a server image's 398 KB. A smaller count never runs a callback twice - a request that finds every slot
+// live for other calls is turned away unexecuted and its retry asks again (server_cache_can_keep(), tickle.c) - it
+// only lowers how many calls a server can take. An answer is kept L = 1.25 s on the auto retry path ((count 3 + 1) x
+// tt_CALL_DEADLINE_PER_SEND + one more), so 16 slots take 16 / 1.25 s = 12.8 calls/s summed over the clients that hold
+// fewer than tt_CLIENT_CALL_WINDOW answers each, and any rate from up to 2 clients, since a server keeps at most that
+// window (8) per Client and replaces the Client's own oldest past it. Answers kept longer - an explicit
+// call_retry_interval x (count + 1), or tt_SERVER_CACHE_GAP_MULTIPLE x a late retry's gap, up to 4 s on a lossy auto
+// path - lower the rate in proportion (16 / 4 s = 4 calls/s). A server that must take more sets this with a -D; one
+// that takes less sizes its entries for its own messages (tt_ServerOptions.max_response_bytes, README.md's FreeRTOS
+// section).
 #ifndef tt_MAX_SERVER_CACHE_COUNT
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_MAX_SERVER_CACHE_COUNT 16
+#else
 #define tt_MAX_SERVER_CACHE_COUNT 64
+#endif
 #endif
 
 // The storage a server and a client carry inline, per slot. Sized for any message by default, which

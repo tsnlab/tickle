@@ -28,6 +28,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **FreeRTOS service caches sized to their use** (the user, 2026-10-22; [DESIGN.md](DESIGN.md) section 7, "Sizing a
+  server's kept answers"). The FreeRTOS set_bool and ping_pong examples keep their answers and requests in storage
+  sized for their messages (`max_response_bytes` / `max_request_bytes`) and build with the inline caches cut to 8 bytes
+  and 8 answer slots (one Client's whole call window): server images 398,244 -> 207,444 B of .data+.bss, client images
+  218,820 -> 207,140 B. `tt_MAX_SERVER_CACHE_COUNT` is 16 on FreeRTOS (was 64): a default server is 47,976 B (was
+  191,544) and takes 12.8 calls/s summed over its clients, or 2 clients at any rate; past that a request is turned away
+  and retried, never run twice (`tests/test_service_small_cache.c`).
 - **Wait ring** (Linux HAL; [DESIGN.md](DESIGN.md) section 2, "Receive path"): `tt_receive()`'s wait and read in one
   `io_uring_enter()` on a ring set up `IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN`, owned by the first thread
   that waits and moved to a thread that keeps the poll role; other threads wait with epoll as before. A context option

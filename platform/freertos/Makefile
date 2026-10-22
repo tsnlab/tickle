@@ -43,6 +43,14 @@ OBJCOPY = $(CROSS)objcopy
 # net_init.c. Each (ROLE, NODE_ID) pair gets its own obj dir/ELF name so building more than one
 # doesn't clobber another's cached objects (they're compiled with different -D flags).
 ROLE ?= selftest
+# The service roles keep their answers (server) and requests (client) in storage their main file sizes for its own
+# messages and call rate (see main_server.c / main_pong.c for the arithmetic), so the caches every struct tt_Server and
+# tt_Client carries inline are cut to 8 bytes an entry - as rmw_tickle builds them - and a server keeps
+# tt_CLIENT_CALL_WINDOW (8) answers, everything one client may still retry. Together they take the server image from
+# 398 KB of .data+.bss to 207 KB (docs/DESIGN.md section 7, "Sizing a server's kept answers").
+SMALL_SERVER_CACHE = -Dtt_MAX_SERVER_CACHE_COUNT=8 -Dtt_SERVER_CACHE_ENTRY_LENGTH=8
+SMALL_CLIENT_CACHE = -Dtt_CLIENT_CACHE_LENGTH=8
+ROLE_TT_FLAGS =
 NODE_ID ?= 1
 # RX_PATH picks how src/hal_freertos.c talks to lwIP (tt_HAL_FREERTOS_NETCONN, include/tickle/hal_freertos.h):
 #   netconn (default) - the netconn API with an arrival-counting callback, which gives tt_rx_maybe_ready() its answer
@@ -66,10 +74,12 @@ else ifeq ($(ROLE),ping)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_ping.c
 ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
 ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
+ROLE_TT_FLAGS = $(SMALL_CLIENT_CACHE)
 else ifeq ($(ROLE),pong)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_pong.c
 ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
 ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
+ROLE_TT_FLAGS = $(SMALL_SERVER_CACHE)
 else ifeq ($(ROLE),publisher)
 MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_publisher.c
 ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
@@ -82,10 +92,12 @@ else ifeq ($(ROLE),client)
 MAIN_SRC = $(ROOT)/examples/freertos/set_bool/main_client.c
 ROLE_SRCS = $(ROOT)/examples/set_bool/SetBool.c
 ROLE_INCLUDES = -I$(ROOT)/examples/set_bool
+ROLE_TT_FLAGS = $(SMALL_CLIENT_CACHE)
 else ifeq ($(ROLE),server)
 MAIN_SRC = $(ROOT)/examples/freertos/set_bool/main_server.c
 ROLE_SRCS = $(ROOT)/examples/set_bool/SetBool.c
 ROLE_INCLUDES = -I$(ROOT)/examples/set_bool
+ROLE_TT_FLAGS = $(SMALL_SERVER_CACHE)
 else ifeq ($(ROLE),perf_client)
 MAIN_SRC = $(ROOT)/examples/freertos/perf/main_perf_client.c
 ROLE_SRCS = $(ROOT)/examples/perf/Bulk.c
@@ -131,7 +143,7 @@ CFLAGS += --specs=picolibc.specs
 # TT_FLAGS: extra -D settings for TickLE itself (e.g. -Dtt_SEGMENT_ENABLED=0, test.sh's no-segment arm). Name the build
 # apart with VARIANT, since objects compiled with different TT_FLAGS are not interchangeable.
 TT_FLAGS ?=
-CFLAGS += $(TT_FLAGS)
+CFLAGS += $(ROLE_TT_FLAGS) $(TT_FLAGS)
 
 ELF = RTOSDemo-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)$(VARIANT).elf
 LDFLAGS = $(ARCH_FLAGS) -nostartfiles --specs=picolibc.specs -T board/link.ld \

@@ -374,6 +374,28 @@ later. Silent with nothing unacknowledged, no matched reader, or BEST_EFFORT rea
 | turned away | `tt_CALL_IGNORED` keeps nothing; the retry asks again |
 | size | never fragmented: bounded by `tt_MAX_BUFFER_LENGTH` |
 
+**Sizing a server's kept answers** (the user, 2026-10-22). A smaller cache never runs a callback twice: a request that
+finds every slot live for other calls is turned away before its callback, and its retry asks again. It only lowers
+how many calls a server takes. With an answer kept L (1.25 s on the auto path), N slots take N / L calls/s summed over
+Clients that hold fewer than `tt_CLIENT_CALL_WINDOW` (8) answers each, and any rate from N / 8 Clients, since a server
+keeps at most 8 per Client. Each slot must hold the CallResponse as sent, 4 + 8 bytes of headers plus the encoded
+answer, rounded to 8; an answer larger than its slot is sent and not kept, and its retry runs the callback again.
+
+| build | slots x entry | `struct tt_Server` (RV32) | takes |
+|---|---|---|---|
+| core default | 64 x 2,944 B | 191,544 B | 51 calls/s, or 8 Clients at any rate |
+| FreeRTOS default | 16 x 2,944 B | 47,976 B | 12.8 calls/s, or 2 Clients at any rate |
+| FreeRTOS examples (`set_bool`, `ping_pong`) | 8 x 24 B, caller storage | 560 B + 192 B | 6.4 calls/s, or 1 Client at any rate; they make 2 |
+
+A slower answer lifetime lowers the rate in proportion: an explicit `call_retry_interval` keeps answers `(count + 1) x`
+it, and a server that has seen late retries keeps them `tt_SERVER_CACHE_GAP_MULTIPLE` x the gap (up to ~4 s on a lossy
+auto path: 16 slots then take 4 calls/s). The client's default stays: its four slots must fit any request
+(`tt_CLIENT_MAX_OUTSTANDING` must match the servers'), and they are 11.8 KB, not 188. The examples cut it too
+(`max_request_bytes`, 64-96 B). `tests/test_service_small_cache.c` runs the examples' build: one Client at 2 and at 200
+calls/s with answers lost, each call run once and none turned away; 3 Clients at 6 calls/s, none turned away; 4 at 8
+calls/s, 32 of 160 calls turned away and timed out, none run twice; with 7 slots the 6 calls/s arm turns calls away
+too, and with 16 the 8 calls/s arm does not, so the limit sits where the arithmetic puts it.
+
 ## 8. Fragmentation and large samples
 
 TickLE splits, not IP, so fragments are repaired one at a time. Up to 65507 B: the small path. Larger: stage 2,
@@ -760,7 +782,7 @@ context's `tt_InitOptions.reliable` (section 2).
 | `tt_CALL_RETRY_COUNT` | 3 | | retries |
 | `tt_SERVER_CACHE_GAP_MULTIPLE` | 4 | | answer lifetime in observed retry gaps |
 | `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` | 5 s | | deferred slot lifetime |
-| `tt_MAX_SERVER_CACHE_COUNT` | 64 | | 16 Clients at full depth |
+| `tt_MAX_SERVER_CACHE_COUNT` | 64 (16 FreeRTOS) | | answers kept; FreeRTOS: 12.8 calls/s shared, or 2 Clients at any rate (section 7) |
 | `tt_SERVER_CACHE_ENTRY_LENGTH`, `tt_CLIENT_CACHE_LENGTH` | 2 x buffer | 8 | inline storage (rmw attaches its own) |
 | `tt_MAX_SCHEDULER_LENGTH` | 128 | 512 | scheduler entries |
 | `tt_SCHED_INBOX_LENGTH` | 32 | | cross-thread timer inbox |

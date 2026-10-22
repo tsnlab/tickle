@@ -28,6 +28,15 @@
 #define PING_INTERVAL_NS (500LL * tt_MILLISECOND)
 #define PING_TASK_STACK_WORDS 1024
 
+// The requests this client keeps for its retries, in storage sized for this example (platform/freertos/Makefile builds
+// this role with the inline cache cut to 8 bytes a call; the default is tt_CLIENT_MAX_OUTSTANDING 4 x 2,944 bytes).
+// One share per call slot, each the CallRequest as sent: 4 (SubmessageHeader) + 8 (CallRequestHeader) +
+// 12 (PingPongRequest: seq 4 + timestamp 8) = 24, rounded up to 8 = 24 bytes; 4 x 24 = 96 bytes. A larger request would
+// be refused by tt_Client_call() (tt_RET_OUT_OF_BUFFER), never sent unkept.
+#define MAX_REQUEST_BYTES 12U
+#define CLIENT_SLOT_BYTES \
+    ((sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader) + MAX_REQUEST_BYTES + 7U) & ~(size_t)7U)
+
 // 5s warm-up + 60s of real measured pinging + 5s cool-down = 70s total, matching
 // examples/linux/ping_pong/ping.c's own -w/-W/-d defaults exactly (see its own comment on why -W
 // extends past the stop trigger there) - just as compile-time constants instead of CLI flags,
@@ -42,6 +51,7 @@
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
 static struct tt_Context node;
 static struct tt_Client client;
+static uint64_t client_storage[(tt_CLIENT_MAX_OUTSTANDING * CLIENT_SLOT_BYTES) / sizeof(uint64_t)];
 static uint32_t next_seq = 0;
 static uint64_t g_start_time = 0; // set once in ping_task() - anchors warm-up/cool-down tagging
 
@@ -101,10 +111,11 @@ static void ping_task(void* param) {
     }
     printf("ping: node created, id=%u\n", node.id);
 
-    // A NULL profile: the services default (RELIABLE, VOLATILE); no storage beyond the inline cache.
-    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)ping_callback};
+    // A NULL profile: the services default (RELIABLE, VOLATILE). The kept requests go in client_storage (see above).
+    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)ping_callback,
+                                              .max_request_bytes = MAX_REQUEST_BYTES};
     ret = tt_Node_create_client(tt_Context_default_node(&node), &client, &PingPongService, "ping_pong_server", NULL,
-                                &client_options, NULL, 0);
+                                &client_options, client_storage, sizeof(client_storage));
     if (ret != tt_RET_OK) {
         printf("ping: tt_Node_create_client failed: %d\n", ret);
         for (;;) {
