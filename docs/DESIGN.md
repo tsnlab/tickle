@@ -153,6 +153,10 @@ and wake the poll if earlier. `tt_Context_lock()` gives consistent compound read
   that waits 64 times in a row while another owns it takes it over (each move doubles that run), and every other wait
   uses epoll. A recvmsg left in flight reads only inside its owner's next wait, which keeps it (same buffer) or cancels
   it first, so no datagram is lost or reordered across owners (`wr_check`). Linux 6.1; refused, the epoll path.
+  Rig A/B (2026-10-22, base 6c355fa2, `rig_queue_rx_uring_wait.sh`): core gate v2 PASS (0 CPU/latency WORSE; user
+  instructions +2% to +6% on 16 of 88 rows, listed); rmw BEST_EFFORT cross-host, 5 reps of 100 round trips, the pong's
+  tap to receive return p50 -2.59 us (14.9-16.7 against 17.9-18.6 us epoll, libc builds), wire control equal, round trip
+  not slower; a two-thread executor's round trip not slower.
 - **io_uring receive hint** (`tt_HAL_RX_HINT`): a busy loop reads a completion queue instead of an empty `recvmmsg()`.
   AUTO (0): used if allowed, else one warning (see "Containers: allowing io_uring"); READ (1): compiled out; URING (2):
   required, else `tt_RET_UNSUPPORTED`.
