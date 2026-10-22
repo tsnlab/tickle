@@ -104,7 +104,9 @@ int main(void) {
             probe_in);
     assert(probe_pages > 500);
     assert(probe_in >= 1 && probe_in <= 3);
-    allocator.deallocate(probe, allocator.state);
+    // Freed at the end, not here: freeing an mmap()ed block raises glibc's mmap threshold to its size, and the
+    // context's calloc() of the same size then comes from the heap, which clears the part of it that was used before -
+    // 19 pages of tx_buffer written by the allocator, not by core (2026-10-22).
 
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
@@ -139,6 +141,7 @@ int main(void) {
     printf("  tickle_context.tx_buffer (written as datagrams are built): %zu of %zu\n", tx_in, tx_pages);
     printf("  tickle_context.rx_buffer (written as datagrams arrive): %zu of %zu\n", rx_in, rx_pages);
     printf("  discovery.entities (nothing writes it with no peer): %zu of %zu\n", ent_in, ent_pages);
+    fflush(stdout); // the figures, before an assert below can end the process
 
     // Control 2: the context's mapping is visible - core wrote the page holding its id, and it reads resident.
     assert(id_page_in != 0);
@@ -154,6 +157,7 @@ int main(void) {
     assert(RMW_RET_OK == rmw_shutdown(&context));
     assert(RMW_RET_OK == rmw_context_fini(&context));
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
+    allocator.deallocate(probe, allocator.state);
     printf("context impl resident only where written: PASS\n");
     return 0;
 }
