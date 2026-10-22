@@ -449,6 +449,27 @@ peers or a longer silence; (3) the reader's ACKNACK retry under jitter - timer A
 in the median rep (101x under `tv`), 2-4 resends per loss; (4) the hybrid estimator under bursts - at 1%B8 it kept 2-unit runs, 5.2 resends per lost frame
 against 2.0 at 1%B2 in MTU units. Batching was not exercised.
 
+### Wi-Fi discovery against ETHERNET, PC netns (`WW`, network profiles phase 3)
+
+The WIFI profile's discovery (DESIGN "Wi-Fi discovery": unicast summary copies, miss threshold 6, announce repeats),
+build `ca540c2c` (af4ca9ab before its rebase; core unchanged by the rebase), against ETHERNET from the same build, both
+run at once: the WB harness amended before the run (the large bench takes the profile, each node reports its treatment),
+all nine arms, the three cells, 3 reps, `TT_UDP_OFFLOAD=0`. Load per rep: median 1.7 on both, 12 of 81 runs per profile
+above nproc/2 (at most 18.8). Treatment as named: WIFI nodes sent 612-666 summary copies and 27 announce repeats a
+cell, ETHERNET none.
+
+| | ETHERNET | WIFI |
+|---|---|---|
+| R5 false peer deaths (27 cells x 3 reps) | 81, all in pairs with no data: `bc` 51, ge10b4 15, ge5b* 13, `tv` 2 | **0** |
+| R6 ping join, max (54 joins) | 1.01 s in at least 5 (ge5b2, ge10b4), PASS | 1.05 s once (ge10b4), the rest <= 24 ms, PASS |
+| wire bytes per delivered sample, ctl be_small | 169 | 171 |
+
+R5: FAIL -> **PASS**; R6 PASS on both (the baseline's 4.0 s join did not recur on ETHERNET). The controls delivered 100%
+on both; ETHERNET's ctl rel_large overflowed netem's queue (1,814 tc drops, as the baseline's), which voids its R1-R4,
+not R5/R6. WIFI's other rules, as coded: R1 PASS, R2 FAIL (ge5b2 40.5 > 34.2 ms, ge5b4 61.5 > 44.6 ms, 8,698 and
+8,681 latencies), R3 PASS, R4 FAIL at ge10b4 (p50 84.6 > 74.7 ms, reverse bytes 0.24%: a local value), R7 FAIL (1,498
+of 8,558). The discovery values do not touch repair; R2's pre-registered reading is the FEC lift, a decision for the user.
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -485,6 +506,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SP | the same, `s11_publisher_cpu.py` | `228da18d` | 2026-10-17 | `fair_samehost_228da18d_20261017-144159.*` |
 | SC | the same, read at `a89aefe2` (R4 of `f2127ec3`) | `2579e822` | 2026-10-18 | `creation_rtt_samehost_2579e822_20261018-092008.*` |
 | WB | `wifi_burst_loss_netns.sh`, `wifi_burst_read.py` (PC netns; -O2, segment off) | `9c503bc1` | 2026-10-22 | `wifi_baseline/base_20261022/`, `wifi_baseline/large_nogso_20261023/` (`final_reading.txt`) |
+| WW | the same, amended 2026-10-23 (PROFILE=ethernet and wifi, `TT_UDP_OFFLOAD=0`) | `ca540c2c` (af4ca9ab before its rebase) | 2026-10-23 | `wifi_live/eth_af4ca9ab/`, `wifi_live/wifi_af4ca9ab/` (`summary.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
