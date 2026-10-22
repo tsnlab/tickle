@@ -477,7 +477,6 @@ static void resolve_net_options(struct tt_NetOptions* net) {
 }
 
 // One resolver and one validator per group, each later bundle editing only its own pair (ROADMAP "Context options").
-// A placeholder group resolves nothing, and its reserved byte must be 0.
 static void resolve_discovery_options(struct tt_DiscoveryOptions* discovery) {
     if (discovery->cycle_ns == 0) {
         discovery->cycle_ns = tt_CONTEXT_CYCLE;
