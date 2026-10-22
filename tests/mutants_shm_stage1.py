@@ -37,7 +37,7 @@ MUTANTS = [
     (
         "revalidation of an attached segment",
         "src/tickle.c",
-        "        if (same_owner && entry->recheck_in > 0) {",
+        "        if (same_owner && !entry->recheck_due) {",
         "        if (same_owner) {",
         "test_a_segment_left_by_a_dead_owner_is_reclaimed",
     ),

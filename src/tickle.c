@@ -846,8 +846,8 @@ static void resolve_segment_options(struct tt_SegmentOptions* segment) {
     if (segment->attach_retry_ns == 0) {
         segment->attach_retry_ns = (uint64_t)tt_SEGMENT_ATTACH_RETRY_NS;
     }
-    if (segment->revalidate_sends == 0) {
-        segment->revalidate_sends = (uint32_t)tt_SEGMENT_REVALIDATE_SENDS;
+    if (segment->revalidate_ns == 0) {
+        segment->revalidate_ns = (uint64_t)tt_SEGMENT_REVALIDATE_NS;
     }
 }
 
@@ -2875,9 +2875,8 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
         // clone however it is written out.
         const bool same_address = entry->ip == ip && entry->port == port;
         const bool same_owner = same_address && entry->mapping->incarnation == entry->incarnation;
-        if (same_owner && entry->recheck_in > 0) {
-            entry->recheck_in--;
-            return entry->mapping; // the common case, and the only one that costs nothing
+        if (same_owner && !entry->recheck_due) {
+            return entry->mapping; // the common case, and the only one that costs nothing: one byte read
         }
         if (same_address && !same_owner) {
             // Replaced in place by an owner holding the same id at the same address. Counted,
@@ -2896,8 +2895,8 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
         // the same one, or the successor's, and the attach below answers all three.
         // The dead-reader clock survives this, and that is the whole of a defect shipped in
         // f938461e. A revalidation is bookkeeping about the MAPPING; it says nothing about whether
-        // the reader is consuming. Clearing it here - and the entry is recomputed every
-        // tt_SEGMENT_REVALIDATE_SENDS sends - restarted the clock about seventy times a second on a
+        // the reader is consuming. Clearing it here - and the entry was recomputed every
+        // tt_SEGMENT_REVALIDATE_SENDS sends then - restarted the clock about seventy times a second on a
         // writer sending three hundred thousand datagrams a second, so it could never reach
         // tt_SEGMENT_DEAD_READER_NS and the rule was unreachable on every writer that matters.
         // Measured: a writer against a reader killed with SIGKILL reported shm_gave_up=0 for the
@@ -2934,10 +2933,11 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     entry->port = port;
     entry->incarnation = header->incarnation;
     entry->missing = false;
+    entry->recheck_due = false; // a new answer, which the next summary tick stamps (segment_recheck_sweep())
+    entry->recheck_stamped = false;
     // last_progress_ns is NOT cleared here: a fresh entry has it at zero from the memset, and a
     // re-attach carries the reader's own clock across (above). Setting it here was the other half of
     // the same defect.
-    entry->recheck_in = node->opts.segment.revalidate_sends;
     // Only ever raised: a ceiling too high costs the walk record_size_limit() skips; one too low would cap a record
     // below what a peer can take.
     if (header->slot_bytes > node->segment_slot_ceiling) {
@@ -3099,7 +3099,8 @@ static uint32_t segment_recheck_span(uint64_t span_ns) {
 //
 // An answer is stamped by the first tick after it was given (recheck_stamped), and falls due at the first tick its
 // interval after that stamp: so a "no" stands at least segment.attach_retry_ns and at most that plus two summary
-// intervals. Only answers given are aged: an entry set up and never asked (missing false, no mapping) is not one.
+// intervals; a "yes" (a mapping) after segment.revalidate_ns the same way. Only answers given are aged: an entry set up
+// and never asked (missing false, no mapping) is not one.
 static void segment_recheck_sweep(struct tt_Context* node, uint64_t now) {
     const uint32_t tick = segment_recheck_units(now);
     for (uint32_t id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
@@ -3107,11 +3108,13 @@ static void segment_recheck_sweep(struct tt_Context* node, uint64_t now) {
             continue;
         }
         struct tt_SegmentPeer* entry = &node->segment_peers[id];
-        if (entry->recheck_due || !entry->missing) {
+        if (entry->recheck_due || (entry->mapping == NULL && !entry->missing)) {
             continue;
         }
         if (!entry->recheck_stamped) {
-            entry->recheck_at = tick + segment_recheck_span(node->opts.segment.attach_retry_ns);
+            const uint64_t stands =
+                entry->mapping != NULL ? node->opts.segment.revalidate_ns : node->opts.segment.attach_retry_ns;
+            entry->recheck_at = tick + segment_recheck_span(stands);
             entry->recheck_stamped = true;
         }
         if ((int32_t)(tick - entry->recheck_at) >= 0) {
@@ -3290,8 +3293,8 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
 
 // A dead peer's ring, handed back: discovery has presumed it dead (or it said goodbye and fell silent), so nothing
 // will be sent to it and nobody drains its ring. Without this the mapping stayed for as long as this context ran - a
-// writer leaves a ring only from its send path (the dead-reader rule needs a full ring, the revalidation
-// tt_SEGMENT_REVALIDATE_SENDS sends), and a peer that is gone is sent nothing. At 10 Hz a publisher kept a SIGKILLed
+// writer leaves a ring only from its send path (the dead-reader rule needs a full ring, the revalidation a send after
+// segment.revalidate_ns), and a peer that is gone is sent nothing. At 10 Hz a publisher kept a SIGKILLed
 // subscriber's 768 KiB ring mapped indefinitely (rmw_tickle/rmw_tickle/test/test_shm_kill.c, K2, 2026-10-22), and
 // with it the pages of a file that, unlinked or not, nothing else reads. Not while a publisher of ours holds a claimed
 // slot in it (peer_segment()): an application is writing into that slot; the entry stays, as the revalidation does.
@@ -11252,9 +11255,10 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 //   local subscribers    deliver_locally() wants its own copy of the CDR (g9) - left to the path that makes one.
 //   not one peer's slot  a broadcast, several destinations, or one whose segment we hold nothing of.
 // Only the conditions no later step would refuse are asked here; each is one a test removes (test_encode_in_slot.c).
-// The segment itself is not looked up here: peer_segment() counts down its revalidation on every call, and this is
-// asked before the cheaper size checks that can still send the publish down the staging path. Whether this context
-// has ever attached a segment at all is asked first, from segment_slot_ceiling, which counts nothing down.
+// The segment itself is not looked up here: peer_segment() counted down its revalidation on every call when this was
+// written, and this is asked before the cheaper size checks that can still send the publish down the staging path.
+// Whether this context has ever attached a segment at all is asked first, from segment_slot_ceiling, which counts
+// nothing down.
 static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx_tail, struct tx_destination* out) {
     struct tt_Context* node = pub->node;
     // An unempty tx_buffer is refused by unicast_destinations_for() below, as it refuses a whole record for it.

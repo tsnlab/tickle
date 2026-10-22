@@ -156,8 +156,13 @@ static enum tt_SegmentAttach header_verdict_bypassing_ownership(uint32_t* incarn
 }
 
 // Sends until peer_segment() gives a different answer from `current`, at most `bound` times, a summary tick aging the
-// cached answer by a retry interval after each send (segment_recheck_sweep()). Returns the new answer (or `current` if
+// cached answer by its interval after each send (segment_recheck_sweep()). Returns the new answer (or `current` if
 // none came).
+#if tt_SEGMENT_ATTACH_RETRY_NS > tt_SEGMENT_REVALIDATE_NS
+#define TICK_STEP_NS tt_SEGMENT_ATTACH_RETRY_NS
+#else
+#define TICK_STEP_NS tt_SEGMENT_REVALIDATE_NS
+#endif
 static uint64_t tick_ns = 1;
 static struct tt_SegmentHeader* send_until_changed(struct tt_Context* writer, struct tt_SegmentHeader* current,
                                                    uint32_t bound) {
@@ -166,7 +171,7 @@ static struct tt_SegmentHeader* send_until_changed(struct tt_Context* writer, st
         if (now != current) {
             return now;
         }
-        tick_ns += tt_SEGMENT_ATTACH_RETRY_NS;
+        tick_ns += TICK_STEP_NS;
         segment_recheck_sweep(writer, tick_ns);
     }
     return current;
@@ -205,8 +210,7 @@ static void test_a_dead_owners_segment_is_never_written(void) {
 
     // The writer attached before the death leaves at its next revalidation rather than re-attaching to the corpse,
     // whose header would have matched it again.
-    struct tt_SegmentHeader* after =
-        send_until_changed(&attached_before, mapping, (uint32_t)tt_SEGMENT_REVALIDATE_SENDS + 2U);
+    struct tt_SegmentHeader* after = send_until_changed(&attached_before, mapping, 4U);
     EXPECT_TRUE(after == NULL);
     EXPECT_EQ_U32(1, attached_before.segment_attach[tt_SEGMENT_ORPHANED]);
 

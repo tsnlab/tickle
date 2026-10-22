@@ -262,7 +262,7 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
         const struct tt_SegmentPeer* entry = segment_peer(&node, (uint8_t)id);
         EXPECT_TRUE(entry->mapping == NULL);
         EXPECT_TRUE(!entry->missing);
-        EXPECT_EQ_U32(0, entry->recheck_in);
+        EXPECT_TRUE(!entry->recheck_due);
         EXPECT_EQ_U32(0, (uint32_t)entry->last_progress_ns);
         EXPECT_EQ_INT(0, entry->bell_fd_plus1);
     }
@@ -1416,12 +1416,17 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == old_mapping);
 
     // What closes the window is asking the name again, which is the only question that has a
-    // different answer now. Past tt_SEGMENT_REVALIDATE_SENDS the entry is dropped and re-attached,
-    // and the file at that name is the successor's.
+    // different answer now. Once the summary tick finds the answer due (tt_SEGMENT_REVALIDATE_NS after the tick that
+    // stamped it) the entry is dropped and re-attached, and the file at that name is the successor's. Not before:
+    // ten thousand sends at the stamp's tick still write into the orphan.
+    segment_recheck_sweep(&writer, test_mock_now);
     struct tt_SegmentHeader* new_mapping = old_mapping;
-    for (uint32_t i = 0; i < tt_SEGMENT_REVALIDATE_SENDS; i++) {
+    for (uint32_t i = 0; i < 10000; i++) {
         new_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     }
+    EXPECT_TRUE(new_mapping == old_mapping);
+    segment_recheck_sweep(&writer, test_mock_now + tt_SEGMENT_REVALIDATE_NS);
+    new_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_TRUE(new_mapping != NULL);
     EXPECT_TRUE(new_mapping != old_mapping);
     EXPECT_TRUE(new_mapping == reborn.own_segment);

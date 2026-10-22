@@ -683,7 +683,7 @@
 // Since tt_InitOptions bundle 8 a context sets its own (struct tt_SegmentOptions, tickle.h), and the constants here are
 // its defaults: tt_SEGMENT_BYTES (bytes; this one is also the build's most, through tt_SEGMENT_SLOTS, which sizes the
 // reader's per-slot state), tt_SEGMENT_SLOT_BYTES, tt_SEGMENT_FENCE_HOLD_NS, tt_SEGMENT_DRAIN_PER_POLL,
-// tt_SEGMENT_PROBE_EVERY_MAX, tt_SEGMENT_STALL_PASSES, tt_SEGMENT_ATTACH_RETRY_NS, tt_SEGMENT_REVALIDATE_SENDS and
+// tt_SEGMENT_PROBE_EVERY_MAX, tt_SEGMENT_STALL_PASSES, tt_SEGMENT_ATTACH_RETRY_NS, tt_SEGMENT_REVALIDATE_NS and
 // tt_SEGMENT_DEAD_READER_NS. tt_PUBLISHER_CLAIMS and tt_SEGMENT_FENCES_SEEN size arrays and stay compile-time.
 #ifndef tt_SEGMENT_BYTES
 #if defined(TT_PLATFORM_FREERTOS)
@@ -785,14 +785,19 @@
 #define tt_SEGMENT_ATTACH_RETRY_NS tt_CONTEXT_UPDATE_INTERVAL // nanosecond
 #endif
 
-// Sends over an attached segment before the peer asks the name again. This is not paranoia about
-// the mapping going bad: an owner killed between one datagram and the next leaves its region mapped
-// and unchanged, incarnation included, so re-reading the header can never reveal it. Re-attaching
-// by name can - the file is either gone or has been replaced by the successor's. Larger than the
-// negative interval because a working segment is the common case and this costs an open() and a
-// remap, not just an open().
-#ifndef tt_SEGMENT_REVALIDATE_SENDS
-#define tt_SEGMENT_REVALIDATE_SENDS 4096
+// How long an attached segment is written before the peer asks the name again. This is not paranoia about the mapping
+// going bad: an owner killed between one datagram and the next leaves its region mapped and unchanged, incarnation
+// included, so re-reading the header can never reveal it. Re-attaching by name can - the file is either gone or has
+// been replaced by the successor's. A time, not a count (2026-10-22): it was tt_SEGMENT_REVALIDATE_SENDS (4096 sends),
+// about seventy re-attaches a second at 300,000 datagrams a second and over an hour into a dead owner's ring at 1 Hz,
+// and its countdown was a load, a decrement and a store on every send. Kept by the summary tick, as
+// tt_SEGMENT_ATTACH_RETRY_NS is: a send reads one byte. One discovery update interval, against which a writer whose
+// reader died is also given up (tt_SEGMENT_DEAD_READER_NS): an open(), a flock() and a remap a second per peer.
+#ifdef tt_SEGMENT_REVALIDATE_SENDS
+#error "tt_SEGMENT_REVALIDATE_SENDS was removed: an attached segment is checked again after tt_SEGMENT_REVALIDATE_NS"
+#endif
+#ifndef tt_SEGMENT_REVALIDATE_NS
+#define tt_SEGMENT_REVALIDATE_NS tt_CONTEXT_UPDATE_INTERVAL // nanosecond
 #endif
 
 // How long a reader may take nothing at all from its ring, while we have records for it, before the

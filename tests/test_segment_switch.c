@@ -625,18 +625,21 @@ static void test_a_fence_whose_datagram_came_first_passes_at_once(void) {
     teardown(false);
 }
 
-// Revalidation (every tt_SEGMENT_REVALIDATE_SENDS sends) re-attaches the same mapping with nothing sent over UDP in
+// Revalidation (tt_SEGMENT_REVALIDATE_NS after the summary tick stamped the answer) re-attaches the same mapping with
+// nothing sent over UDP in
 // between: no fence, so the steady state never holds its ring.
 static void test_a_revalidation_sends_no_fence(void) {
     setup(false);
     (void)switch_writer(&node_a, &pub_a, 0);
     drain_reader();
     const uint32_t attaches = node_a.segment_attach[tt_SEGMENT_ATTACHED];
-    for (uint32_t i = 0; i < 2 * tt_SEGMENT_REVALIDATE_SENDS + 8; i++) {
-        publish(&pub_a, 0);
+    for (uint32_t i = 0; i < 3 * 64; i++) {
         if (i % 64 == 0) {
             drain_reader();
+            segment_recheck_sweep(&node_a, now_ns); // the attached answer stamped, and due one interval later
+            segment_recheck_sweep(&node_a, now_ns + tt_SEGMENT_REVALIDATE_NS);
         }
+        publish(&pub_a, 0);
     }
     drain_reader();
     printf("revalidation: %u attaches, %lu fences sent\n", node_a.segment_attach[tt_SEGMENT_ATTACHED] - attaches,

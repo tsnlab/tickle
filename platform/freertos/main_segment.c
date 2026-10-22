@@ -313,13 +313,13 @@ static bool both_attached(void) {
 }
 
 // Which direction is missing, and what its entry holds, when the warm-up ends without both: so a failure names the
-// side and the state (never set up, cached "absent" with its countdown) instead of only saying that one is missing.
+// side and the state (never set up, cached "absent", due to be asked again) instead of only saying that one is missing.
 static void print_attach(const char* who, const struct tt_Context* ctx, uint8_t peer) {
 #if tt_SEGMENT_ENABLED
     const struct tt_SegmentPeer* entry = &ctx->segment_peers[peer];
     const bool live = ctx->segment_peer_live[peer] != 0;
-    printf("segment: %s: set up %d, mapped %d, cached absent %d, asked again in %lu sends\n", who, live,
-           live && entry->mapping != NULL, live && entry->missing, live ? (unsigned long)entry->recheck_in : 0UL);
+    printf("segment: %s: set up %d, mapped %d, cached absent %d, due to be asked again %d\n", who, live,
+           live && entry->mapping != NULL, live && entry->missing, live && entry->recheck_due);
 #else
     (void)who;
     (void)ctx;

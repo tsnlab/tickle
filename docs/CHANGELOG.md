@@ -25,10 +25,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   the window less one, other than `tt_QOS_REORDER_NONE`, are refused: they storm with re-requests under loss. A zero
   `reorder_slots` is the window, not 16; `tt_QOS_REORDER_SLOTS_DEFAULT` is removed. rmw_tickle holds none where its
   budget pays for fewer, which an unbounded or large type's 8192-sample window always is.
-- **A missing peer segment is asked again after a time, not 256 sends** (ROADMAP 5a; [DESIGN.md](DESIGN.md) section 10,
-  "Counts made times"). `tt_SEGMENT_ATTACH_RETRY_SENDS` and `segment.attach_retry_sends` are
-  `tt_SEGMENT_ATTACH_RETRY_NS` and `segment.attach_retry_ns` (one update interval); the old name stops the build. The
-  summary tick ages the answer; a send reads no clock.
+- **A missing peer segment is asked again after a time, not 256 sends, and an attached one revalidated after a time,
+  not 4096** (ROADMAP 5a; [DESIGN.md](DESIGN.md) section 10, "Counts made times"). `tt_SEGMENT_ATTACH_RETRY_SENDS`,
+  `_REVALIDATE_SENDS` and `segment.attach_retry_sends`, `.revalidate_sends` are `tt_SEGMENT_ATTACH_RETRY_NS`,
+  `_REVALIDATE_NS` and `segment.attach_retry_ns`, `.revalidate_ns` (one update interval each); the old names stop the
+  build. The summary tick ages the answers; a send reads one byte and no clock.
 
 ### Added
 
