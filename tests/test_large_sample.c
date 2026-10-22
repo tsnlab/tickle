@@ -338,6 +338,9 @@ static void teardown_pair(void) {
 #define PAIR_DURABLE_WRITER 1U
 #define PAIR_DURABLE_READER 2U
 #define PAIR_REORDER 4U
+// The reader is the writer's one known peer, so the writer unicasts to it (tt_UNICAST_PEER_THRESHOLD) - without it
+// two more peers keep the broadcast most cases were written against.
+#define PAIR_UNICAST 8U
 
 // `options`: the writer's (NULL: none).
 static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
@@ -434,7 +437,7 @@ static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
     // A Publisher with no matched reader sends nothing (2026-10-15): the reader is matched as its announce would match
     // it, and two more known peers keep the broadcast these cases were written against.
     (void)upsert_peer(pub.peers, RECEIVER_ID, RECEIVER_IP, PORT);
-    for (uint8_t i = 1; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
+    for (uint8_t i = 1; (flags & PAIR_UNICAST) == 0 && i <= tt_UNICAST_PEER_THRESHOLD; i++) {
         (void)upsert_peer(pub.peers, (uint8_t)(100U + i), 0x0a000100U + i, PORT);
     }
     pair_up = true;
@@ -452,6 +455,7 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
 
 struct sim_datagram {
     uint8_t from;
+    uint32_t to_ip; // 0: broadcast (test_mock_send_hook_ip)
     uint32_t len;
     uint8_t bytes[SIM_DATAGRAM_MAX];
 };
@@ -486,6 +490,10 @@ static struct sim_datagram* sim_late;
 static uint64_t sim_late_due[SIM_HELD];
 static uint32_t sim_late_head;
 static uint32_t sim_late_tail;
+// The writer's unicast datagrams take this long to reach the reader (0: none), its broadcast ones none: a queue the
+// broadcast path does not cross - a netem band of its own, a Wi-Fi AP's multicast queue, another NIC queue. Not with
+// sim_reverse_delay, which shares the late queue and would leave it out of due order.
+static uint64_t sim_unicast_delay;
 
 // The fragment header of a captured datagram, whichever form it went in: its type, and for FRAG_CONT_L its index,
 // count and seq_no.
@@ -528,6 +536,7 @@ static void sim_capture(const void* buf, size_t len) {
     EXPECT_TRUE(sim_tail - sim_head < SIM_QUEUE);
     struct sim_datagram* d = &sim_queue[sim_tail % SIM_QUEUE];
     d->from = sim_acting;
+    d->to_ip = test_mock_send_hook_ip;
     d->len = (uint32_t)len;
     memcpy(d->bytes, buf, len);
     sim_tail++;
@@ -556,11 +565,13 @@ static bool sim_writer_sending(void) {
 static void sim_deliver_now(struct sim_datagram* d);
 
 static void sim_deliver(struct sim_datagram* d) {
-    if (sim_reverse_delay != 0 && d->from == RECEIVER_ID) {
+    if ((sim_reverse_delay != 0 && d->from == RECEIVER_ID) ||
+        (sim_unicast_delay != 0 && d->from == SENDER_ID && d->to_ip != 0)) {
         EXPECT_TRUE(sim_late_tail - sim_late_head < SIM_HELD);
         if (sim_late_tail - sim_late_head < SIM_HELD) {
             sim_late[sim_late_tail % SIM_HELD] = *d;
-            sim_late_due[sim_late_tail % SIM_HELD] = test_mock_now + sim_reverse_delay;
+            sim_late_due[sim_late_tail % SIM_HELD] =
+                test_mock_now + (d->from == RECEIVER_ID ? sim_reverse_delay : sim_unicast_delay);
             sim_late_tail++;
         }
         return;
@@ -687,6 +698,7 @@ static void sim_start(uint32_t loss_per_mille) {
         sim_late = (struct sim_datagram*)calloc(SIM_HELD, sizeof(struct sim_datagram));
     }
     sim_reverse_delay = 0;
+    sim_unicast_delay = 0;
     sim_late_head = sim_late_tail = 0;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -1516,6 +1528,52 @@ static void test_a_sending_writer_is_not_asked_for_repairs_on_their_way(void) {
     EXPECT_TRUE(duplicates * 400 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB)); // 0.25%: 28; no transit rule: 80
 }
 
+// `samples` 1 MiB samples at 0% loss from a writer whose one reader it unicasts to over a path that holds its unicast
+// datagrams 40 ms - a 1 MiB sample draining through a ~200 Mbit/s link - and its broadcast ones not at all; with
+// `summary_batched`, a discovery summary is batched in tx_buffer, waiting for its flush tick, just after each sample
+// went out (send_discovery_summary()), as the polling thread leaves it when the summary's timer comes first - here
+// before the sample's first ack chase (large_ack_chase()). Answers the datagrams the writer resent.
+static uint32_t resent_on_a_split_path(int samples, bool summary_batched) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_unicast_delay = 40 * tt_MILLISECOND;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once, into the path's queue
+    uint32_t before = pub.retransmitted;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        if (summary_batched) {
+            send_discovery_summary(&sender); // batched after the sample went out, before its first ack chase
+        }
+        sim_settle(i + 2, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(samples + 1, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    return pub.retransmitted - before;
+}
+
+static void test_a_heartbeat_takes_the_path_of_its_data(void) {
+    // A RELIABLE writer's HEARTBEAT announcing what it unicast must go to the same peers. Sent from a tx_buffer that
+    // held a batched discovery summary - broadcast-only content - it went broadcast with it (unicast only from an empty
+    // buffer), took a path the data's queue was not on, and reached the reader while the sample was still draining:
+    // the reader asked for every datagram not yet arrived, the writer resent them, and the reader asked again each
+    // retry interval while the originals drained. The 1 MiB control of the WB netns baseline (RESULTS.md) resent 4,995
+    // to 127,131 units a 30 s rep with nothing lost; traced, one broadcast HEARTBEAT, one revealed gap, 7,404 resends
+    // (2026-10-23). The batched content now goes first, as its flush tick would send it, and the HEARTBEAT to the
+    // peers. Control: the same path with no summary waiting resends nothing - the summary's company, not the delay,
+    // sent the HEARTBEAT ahead. Mutant (mutants_large_sample.py): the batched content not flushed first.
+    enum { SAMPLES = 3 };
+    uint32_t control = resent_on_a_split_path(SAMPLES, false);
+    uint32_t batched = resent_on_a_split_path(SAMPLES, true);
+    printf("test_large_sample: %d x 1 MiB at 0%% loss, unicast path 40 ms, broadcast 0 - resent %u without a batched "
+           "summary, %u with one\n",
+           SAMPLES, control, batched);
+    EXPECT_EQ_U32(0, control);
+    EXPECT_EQ_U32(0, batched);
+}
+
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
     // Three samples published back to back while the first is still going out: the second waits behind it and the
     // third replaces it before any of it has gone. The reader sees samples 1 and 3, in order, with no gap in between -
@@ -2317,6 +2375,7 @@ int main(void) {
     test_a_busy_writers_send_is_not_timed_as_the_path();
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
+    test_a_heartbeat_takes_the_path_of_its_data();
     teardown_pair();
 
     allocator_reset(&sender_alloc);

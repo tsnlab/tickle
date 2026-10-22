@@ -5480,6 +5480,8 @@ static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_Su
 // boundary of the clock, as the old tick started cycle-aligned and rescheduled from its own due time - so
 // a batched submessage waits exactly as long as it did before: 0 to one interval, not a full interval.
 static void node_flush(struct tt_Context* node, uint64_t time, void* param);
+static void flush_batched(struct tt_Context* node);
+static uint8_t heartbeat_unicast_count(struct tt_Context* node, const struct tt_Publisher* pub);
 
 static void ensure_flush_scheduled(struct tt_Context* node) {
     if (node->flush_scheduled || node->tx_tail <= sizeof(struct tt_Header)) {
@@ -12260,14 +12262,13 @@ static void large_send_end_heartbeat(struct tt_Context* node, struct tt_Publishe
     if (!publisher_oldest_seq_no(pub, &first)) {
         return;
     }
-    uint8_t count = count_peers(pub->peers);
-    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);
+    uint8_t count = heartbeat_unicast_count(node, pub);
     uint32_t owed = 0;
     if (match_point_owed(pub, &owed)) {
         encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
     }
-    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,
-                           unicast ? count : 0, 0);
+    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, count != 0 ? pub->peers : NULL,
+                           count, 0);
 }
 
 #if tt_LARGE_END_HEARTBEAT
@@ -13665,6 +13666,28 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
                            tt_HEARTBEAT_FLAG_FINAL);
 }
 
+// How many of pub's peers a HEARTBEAT announcing what pub sent goes to: all of them, unicast, while there are few
+// enough (tt_UNICAST_PEER_THRESHOLD), as its DATA went - else 0, broadcast. Whatever is batched in tx_buffer goes
+// first, on its own, as its flush tick would send it (flush_batched()). The HEARTBEAT used to be unicast only from an
+// empty buffer and otherwise rode the batched content: with a discovery summary waiting there - broadcast-only - it
+// went broadcast, on a path the unicast data's queue was not on (a netem band of its own, a Wi-Fi AP's multicast queue,
+// another NIC queue), and reached the reader while the sample it announced was still draining. The reader asked for
+// every datagram not yet arrived, the writer resent each, and the reader asked again each retry interval while the
+// originals drained: the 1 MiB control of the WB netns baseline resent 4,995 to 127,131 datagrams a 30 s rep with
+// nothing lost, and traced, 7,404 from one such HEARTBEAT (RESULTS.md, 2026-10-23; test_large_sample.c, a HEARTBEAT
+// takes the path of its data). The cost: a summary that would have shared the HEARTBEAT's datagram goes in one of its
+// own.
+static uint8_t heartbeat_unicast_count(struct tt_Context* node, const struct tt_Publisher* pub) {
+    uint8_t count = count_peers(pub->peers);
+    if (count < 1 || count > tt_UNICAST_PEER_THRESHOLD) {
+        return 0;
+    }
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        flush_batched(node);
+    }
+    return node->tx_tail == sizeof(struct tt_Header) ? count : 0; // a failed flush leaves it there: ride it, as before
+}
+
 // QoS roadmap #5 (RELIABILITY) follow-up - runs once per pub->heartbeat_period_ns (armed by tt_
 // Publisher_set_heartbeat_period()), announcing pub->reliable_cache's own currently-retained
 // range - see struct tt_HeartbeatHeader's own doc comment (tickle.h) for what this buys over the
@@ -13683,15 +13706,10 @@ static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) 
     // Not with no matched reader: nothing is sent to nobody (publisher_unmatched()), as tt_Publisher_request_ack() and
     // the watermark solicitation already held.
     if (!publisher_unmatched(pub) && publisher_oldest_seq_no(pub, &first_seq_no)) {
-        // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA - made before the match
-        // Heartbeat goes into tx_buffer, as large_send_end_heartbeat() makes it.
-        const struct tt_Peer* peers = NULL;
-        uint8_t peer_count = 0;
-        uint8_t count = count_peers(pub->peers);
-        if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header)) {
-            peers = pub->peers;
-            peer_count = count;
-        }
+        // To the peers the DATA went to (heartbeat_unicast_count()) - decided before the match Heartbeat goes into
+        // tx_buffer, as large_send_end_heartbeat() decides it.
+        uint8_t peer_count = heartbeat_unicast_count(node, pub);
+        const struct tt_Peer* peers = peer_count != 0 ? pub->peers : NULL;
         uint32_t owed = 0;
         if (match_point_owed(pub, &owed)) {
             encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
@@ -13811,14 +13829,13 @@ static void idle_heartbeat_on_publish(struct tt_Publisher* pub, uint64_t now) {
 // one acknowledging everything, after which the writer has nothing more to say.
 static void send_idle_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
     uint32_t first = publisher_unacked_from(pub);
-    uint8_t count = count_peers(pub->peers);
-    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);
+    uint8_t count = heartbeat_unicast_count(node, pub);
     uint32_t owed = 0;
     if (match_point_owed(pub, &owed)) {
         encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
     }
-    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,
-                           unicast ? count : 0, 0);
+    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, count != 0 ? pub->peers : NULL,
+                           count, 0);
     pub->idle_heartbeats++;
 }
 
@@ -17957,7 +17974,14 @@ static void node_flush(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
     UNUSED(time);
     node->flush_scheduled = false;
+    flush_batched(node);
+    // Re-armed only if something is still waiting - a send that failed - never just to tick.
+    ensure_flush_scheduled(node);
+}
 
+// node_flush()'s send without its tick: whatever is batched in tx_buffer goes now, where the tick would send it. Also
+// what heartbeat_unicast_count() sends ahead of a HEARTBEAT; the tick, still armed, then finds nothing to send.
+static void flush_batched(struct tt_Context* node) {
     const struct tt_Peer* peers = NULL;
     uint8_t peer_count = 0;
 
@@ -17983,9 +18007,6 @@ static void node_flush(struct tt_Context* node, uint64_t time, void* param) {
 
     // flush_tx() already logs its own reason on failure, so nothing to add here.
     flush_tx(node, node->tx_tail, peers, peer_count);
-
-    // Re-armed only if something is still waiting - a send that failed - never just to tick.
-    ensure_flush_scheduled(node);
 }
 
 // Sends every currently-retained sample (oldest first) straight to a Subscriber this Publisher's
