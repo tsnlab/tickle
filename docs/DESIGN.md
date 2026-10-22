@@ -838,6 +838,31 @@ default), the same samples over UDP. The `freertos link` gate links an RV32 imag
   large-buffer callbacks. Core holds pointers only.
 - rmw_tickle allocates with the application's `rcl` allocator.
 
+### What a context writes at creation
+
+A context lives in the caller's storage, which need not be zeroed, so `reset_node_state()` must leave each field either
+set or never read. Since 2026-10-22 (bundle 10 item 2) it no longer writes the large tables in full: a page of storage
+becomes resident when it is first written, and writing a whole table made all of it resident in every context. Each
+table is now written where it is used, and read only there:
+
+| Table | Read only | First written |
+|---|---|---|
+| `tx_buffer`, `rx_buffer` | up to `tx_tail` / what a receive put there | as a datagram is built / received |
+| `scheduler` | below `scheduler_tail` | by the heap's push |
+| `endpoints` | below `endpoint_count` | by the endpoint's creation |
+| `endpoint_index` | where its `endpoint_index_used` bit is set | by the rebuild, O(size / 64 + endpoints) |
+| `update_part_received[source]` | while `update_part_count[source]` is set | zeroed when that count is set |
+| `frag_slots` | below `frag_slots_used` | when a slot is first claimed; the claim order is unchanged |
+
+A lookup in the endpoint index tests the slot's bit before it reads the slot. `platform/linux/garbage_ctx_check.c`
+(test-linux) runs contexts created in storage holding a pattern, and again reset over their last state, through
+pub/sub, reliable under loss, fragments, a service and the same-host path; its `_msan` builds run it under
+MemorySanitizer from unwritten storage, and `bundle10_rss/msan_mutants.sh` shows that a read of each table put back
+is reported. Resident, measured with `bundle10_rss/before_after.sh` (its scenarios, 2 reps each, on this PC): an
+rmw_tickle context fell from 369-441 KiB to 70-150 KiB in every scenario (tx_buffer 128 -> 36 KiB at most, rx_buffer
+128 -> 68, frag_slots 32 -> 4, endpoint_index 32 -> 4, endpoints 16 -> 4, scheduler 12 -> 4, fragment bitmaps 8 -> 4).
+A core default context stays at 38.7 KiB: its tables share pages with fields that are written anyway.
+
 ## 12. Context ids and same-host peers
 
 Per-peer tables are indexed by the 8-bit context id, unique per link.

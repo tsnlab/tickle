@@ -9,7 +9,8 @@
 #
 # Usage: BEFORE=<tree> AFTER=<tree> OUT=<dir> [SCENARIOS=...] [REPS=2] [DUR=10] before_after.sh
 #   Each tree must hold this directory (copy it into a tree that predates it). OUT/<before|after>/ holds each arm's
-#   build (ws/, core_host, layouts), results/ and report.txt. Ends with "=== before_after ended".
+#   build (ws/, core_host, layouts), results/ and report.txt; OUT/compare.md puts the two side by side (compare.py).
+#   Ends with "=== before_after ended".
 set -uo pipefail
 BEFORE=${BEFORE:?a source tree}
 AFTER=${AFTER:?a source tree}
@@ -38,3 +39,5 @@ for arm in before after; do
     python3 "$tree/$EXP/read.py" "$dir/results" >"$dir/report.txt" 2>&1
     echo "  done $(date +%T): $dir/report.txt"
 done
+python3 "$(dirname "$0")/compare.py" "$OUT/before/report.txt" "$OUT/after/report.txt" >"$OUT/compare.md"
+echo "compare: $OUT/compare.md"

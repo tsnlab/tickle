@@ -136,6 +136,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `coreAB_5de951a7_20261022-234808`): PASS; client user instructions -1.4% to -4.1% on all 8 throughput cells, server
   +0.06% to +0.19% on 8 rows (listed), no CPU or latency row WORSE.
 
+### Changed
+
+- **A context no longer writes its large tables at creation** (bundle 10 item 2, the user, 2026-10-22;
+  [DESIGN.md](DESIGN.md) section 11): `tx_buffer`, `rx_buffer`, the scheduler heap, `endpoints[]`, the endpoint index,
+  the announce-fragment bitmaps and the reassembly slots are written where they are used and read only there, so their
+  untouched pages stay out of memory: an rmw_tickle context's resident 369-441 KiB fell to 70-150 KiB. The endpoint
+  index keeps an occupancy bitmap (`endpoint_index_used`) and a rebuild no longer stores to every slot. The wire is
+  unchanged. `platform/linux/garbage_ctx_check.c` (test-linux, and under MemorySanitizer) runs contexts from unzeroed
+  storage.
+
 ### Fixed
 
 - A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a
