@@ -55,7 +55,9 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - rmw receive return on the Pi ~4-5 us behind the vendors' (RESULTS `KH`: the wait returns level with them; the gap is
   between it and the receive call's return). The poll-to-executor hand-off (~21 us) is gone: executor-driven receive,
   3.3 us receive -> callback on the PC (`rmw_wake_split.py`, `9d87885c`), 8.3-10.5 us on the Pi against 25.5-40.9 for
-  the vendors (`KH`). A C++ subscriber segfault seen once in ~370 runs.
+  the vendors (`KH`). A C++ subscriber segfault seen once in ~370 runs (2026-09-25), not reproduced since: 0 in
+  1,200 runs of the same `-r` shape on 2026-10-22, in a netns, half under ASan + UBSan and half pinned to one CPU
+  (`flaky_repeat_netns.sh`, `rclcpp_r_shape_once.sh`).
 - Measurement debt: none left (2026-10-20: c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG, M3, row 47 and
   rows 43-44 with the reshaped scenario 6 harness; RESULTS `D`, `D2`, `LS`, `X2`).
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
