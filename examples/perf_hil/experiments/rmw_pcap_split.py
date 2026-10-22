@@ -472,9 +472,6 @@ def wake_summary():
                       f" (diff {statistics.median(xs) - statistics.median(ys):+.1f}) -> {verdict}")
 
 
-if __name__ == "__main__":
-    main()
-
 
 def ring_summary():
     """The wait ring's rig A/B (rig_queue_rx_uring_wait.sh, written 2026-10-22 before the run and enforced here): the
@@ -533,3 +530,7 @@ def ring_summary():
                   f"{[round(y, 1) for y in plain['ringoff']]} us: {rule}, median {diff:+.1f} us -> {ring3}")
     print(f"RING_VERDICT {'PASS' if ring2 == 'IMPROVED' and ring3 == 'PASS' else 'FAIL'} (RING2 {ring2}, RING3 {ring3})")
     print(f"RING_RTT_VERDICT {ring3 if ring3 != 'NOT READ' else 'NOT_READ'}")
+
+
+if __name__ == "__main__":
+    main()
