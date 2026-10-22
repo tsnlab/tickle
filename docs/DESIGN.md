@@ -21,7 +21,7 @@ TickLE targets controlled links (10BASE-T1S, TSN, one trusted L2 segment), on Fr
 | No threads of its own (the user's rule) | work runs on callers' threads, from the poll loop or in the kernel |
 | Own wire, not DDS | UDP/IPv4, RTPS-like ideas, smaller framing, not DDS-compatible |
 | Every drop is counted | a silent drop looks like network loss |
-| Wire changes leave every test better (the user, 2026-09-26) | targeted metrics improve beyond 2xSE, none regress; each bumps `tt_VERSION` |
+| Wire changes leave every test better (the user, 2026-09-26) | targeted metrics improve beyond 2xSE, none regress; each bumps `tt_VERSION`, except a reserved field given a meaning whose zero is the old one (section 3) |
 
 ## 2. Context, nodes, endpoints and the poll loop
 
@@ -59,8 +59,9 @@ are the context's own: cycle, update interval, tx interval, lease divisor, longe
 attempts, liveliness deferral and its cap, miss threshold (the silence is derived per context), the full-scheduler
 warning interval. The config.h constants are their defaults. Checked at creation: every duration at most a day and the
 tx interval at most the update interval (the silence against the segment's dead-reader time moved to bundle 8). The
-peers judge a context's silence by their own update interval and miss threshold, which no announce carries, so a context
-created with either different from the default logs a WARNING. The lease floor (`lease_divisor` x tx interval) is the
+summary carries the update interval and miss threshold (section 5), and the peers judge the context's silence by them,
+so a context created with either different from the default logs one INFO line, not the WARNING it logged until
+2026-10-22: only a peer built before then still judges it by its own. The lease floor (`lease_divisor` x tx interval) is the
 context's at an endpoint's creation; `tt_QosProfile_resolve()` and `tt_*_storage_size()`, which have no context, keep
 the default's. rmw_tickle reads its watchdog period, stall threshold, MANUAL_BY_TOPIC default lease and lease floor
 from its core context.
@@ -206,7 +207,7 @@ source. `source` is the context id (1-254); `receiver` an id or `tt_SUBMESSAGE_I
 | 3 | `ACKNACK` | endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] - 20 + 8/word B | reader's cumulative ack + missing bitmap |
 | 4 | `CALLREQUEST` | endpoint_id, seq_no (u16), retry, client_tag - 8 B | service request; client_tag: which Client of its context (0 = untold) |
 | 5 | `CALLRESPONSE` | endpoint_id, seq_no, retry, return_code - 8 B | service response |
-| 6 | `HEARTBEAT` | endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags - 20 B | writer's range; `tt_HEARTBEAT_FLAG_LIVELINESS` = manual liveliness assertion |
+| 6 | `HEARTBEAT` | endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, summary_interval (2 B), summary_miss_threshold - 20 B | writer's range; `tt_HEARTBEAT_FLAG_LIVELINESS` = manual liveliness assertion; the last 3 B are the sender's discovery timing on a summary (section 5), zero elsewhere |
 | 8 | `FRAG_FIRST` | `tt_DataHeader` + frag_count (u8) - 17 B | first fragment of a sample |
 | 9 | `FRAG_CONT` | entity_id, seq_no, frag_index, frag_count (u8) - 10 B | later fragments |
 | 10 | `SHM_DATA` | - | reserved for good; nothing produces it; refused from a socket |
@@ -251,6 +252,14 @@ callback. Structs use `#pragma pack(push, 4)`, so fixed-size messages decode in 
 KEEP_ALL bit on Subscribers (QoS D1, D8, D9: announce only, nothing per sample). `LARGE_REF` never crosses the network.
 Mixed versions refuse each other's every datagram (`tests/version_mix.sh`).
 
+**Reserved bytes given a meaning, without a version** (the user's decision, 2026-10-22, network-profiles item C). The
+rule above has one documented exception: a field that was reserved - written zero by every build and read by none, on
+every receive path, Linux and FreeRTOS alike (both run the same `process_heartbeat()`) - may be defined so that zero
+keeps the old meaning. An old peer then sends zero, which a new one reads as before, and ignores what a new one sends;
+the two interoperate and a default context's bytes do not change, so the version stays. Used so far: the summary's
+timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is `client_tag` (a zero pad byte until
+2026-10-09). `tt_AnnounceHeader`'s 2 reserved bytes stay zero and unread.
+
 ## 4. Sending: flush, batching and unicast peers
 
 | rule | detail |
@@ -278,12 +287,22 @@ one ~28-byte summary per node per second.
 
 | role | submessage | addressed | contents |
 |---|---|---|---|
-| summary, every `tt_CONTEXT_UPDATE_INTERVAL` or a sixth of the shortest own lease | HEARTBEAT | broadcast | the context's **generation** |
+| summary, every `tt_CONTEXT_UPDATE_INTERVAL` or a sixth of the shortest own lease | HEARTBEAT | broadcast | the context's **generation**, and its update interval and miss threshold |
 | request for the list | ACKNACK | unicast to the summary's sender | the generation wanted |
 | the list (announce) | DATA, or FRAG_FIRST + FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
 | a change | the list | broadcast, after `tt_CONTEXT_TX_INTERVAL` of quiet | the new generation |
 
 - The generation changes exactly when the endpoint list does, and across restarts. A known generation is liveliness only.
+- **The summary carries the sender's timing** (2026-10-22): `summary_interval`, 2 bytes, most significant first - 0 = the
+  default, else 3 bits of unit (1, 10, 100 us, 1, 10, 100 ms, 1 s, 100 s) and a 13-bit count, rounded up, so a step is
+  at most 1.2% of the value and never shortens it, up to a day - and `summary_miss_threshold`, 1 byte, 0 = the default.
+  A receiver judges that sender's silence by them, (2 x threshold + 1) x interval / 2, from every summary; until the
+  first one, and again after the sender is presumed dead, by its own. So contexts on different intervals (a T1S or
+  Wi-Fi profile beside Ethernet) do not presume each other dead. Default contexts send zeros: their bytes are the
+  parent's (`tests/wire_identity_discovery_timing.sh`). A peer built before the change sends zeros, judged as the
+  default, and judges by its own as it always did. Two contexts at 1 s and 4 s over a veth pair for 30 s: no death
+  either way; with the receiver's use of the value removed, the 1 s side presumes the 4 s side dead
+  (`examples/perf_hil/experiments/discovery_interval_netns.sh`).
 - An unknown generation draws a request, retried after RTT + `tt_CONTEXT_TX_INTERVAL` (seed `tt_DISCOVERY_REQUEST_RETRY`),
   up to `tt_DISCOVERY_REQUEST_ATTEMPTS`, in `tt_DISCOVERY_PENDING_REQUESTS` slots.
 - Up to `tt_UNICAST_PEER_THRESHOLD` requests per tick are answered unicast, more by one broadcast.
@@ -530,7 +549,7 @@ first failing policy) and fires `tt_Context_set_qos_incompatible_callback()` (D2
 |---|---|
 | sign of life | AUTOMATIC: any datagram from the context; MANUAL_BY_TOPIC: that writer's DATA or a liveliness HEARTBEAT (`tt_Publisher_assert_liveliness()`) |
 | timer | one `check_liveliness()` entry at the earliest expiry; a lapsed entity is tombstoned and revives on its next sign |
-| context silence | `tt_LIVELINESS_SILENCE_NS` = 3.5 summary intervals, or the longest announced lease up to `tt_CONTEXT_MAX_LEASE_NS`; its state is then dropped |
+| context silence | the sender's 3.5 summary intervals as its summary says (`tt_LIVELINESS_SILENCE_NS` at the defaults; our own before its first summary), or the longest announced lease up to `tt_CONTEXT_MAX_LEASE_NS`; its state is then dropped |
 | summaries | every interval or lease / `tt_LIVELINESS_LEASE_DIVISOR`; extra ones skipped when every peer heard us |
 | descheduled host | the check defers up to `tt_LIVELINESS_MAX_DEFERRALS` x `tt_LIVELINESS_DEFER_NS` while datagrams wait |
 

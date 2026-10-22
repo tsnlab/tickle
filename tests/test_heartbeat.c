@@ -180,9 +180,9 @@ static uint32_t write_heartbeat(struct tt_Context* node, uint32_t endpoint_id, u
     heartbeat_header->entity_id = 0; // explicit, like write_data()'s own: offset 12 overlaps a prior
                                      // write_data()'s timestamp, which would pick a different writer
     heartbeat_header->flags = flags;
-    heartbeat_header->reserved[0] = 0;
-    heartbeat_header->reserved[1] = 0;
-    heartbeat_header->reserved[2] = 0;
+    heartbeat_header->summary_interval[0] = 0;
+    heartbeat_header->summary_interval[1] = 0;
+    heartbeat_header->summary_miss_threshold = 0;
     return sizeof(struct tt_HeartbeatHeader);
 }
 
@@ -198,7 +198,7 @@ static uint32_t write_data(struct tt_Context* node, uint32_t seq_no, uint64_t ti
     data_header->timestamp = timestamp;
     // Explicit, not left to whatever's already in rx_buffer - this file's own tests reuse the same
     // buffer across write_heartbeat()/write_data() calls, and tt_DataHeader.entity_id's own byte
-    // offset (16) overlaps tt_HeartbeatHeader.flags/reserved[] from an earlier write_heartbeat()
+    // offset (16) overlaps tt_HeartbeatHeader.flags/summary bytes from an earlier write_heartbeat()
     // call, so leaving it unset here would silently pick up stale, nonzero bytes - a real bug found
     // writing this exact helper, matching REMOTE_NODE_ID/entity_id 0's own doc comment below.
     data_header->entity_id = 0;

@@ -15,8 +15,9 @@
 //     and never read) - each test compares the default against the changed value, so the default arm is the control;
 //   - every check refuses a bad value with tt_RET_INVALID_ARGUMENT and accepts the boundary beside it
 //     (tests/mutants_init_options_discovery.sh removes each check, and each field's reading, and expects a failure);
-//   - a context whose update interval or miss threshold differs from the default says so, once, in a WARNING: the
-//     peers judge its silence by their own values and the announce does not carry these.
+//   - a context whose update interval or miss threshold differs from the default says so, once, at INFO and not at
+//     WARNING: since 2026-10-22 its summary carries both and its peers judge its silence by them
+//     (tests/test_discovery_timing.c); only a peer built before then judges by its own.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -531,15 +532,17 @@ static void test_validation(void) {
 #endif
 }
 
-// The interop WARNING: logged when update_interval_ns or miss_threshold differs from the default, and not otherwise.
-static int warnings_creating(const struct tt_InitOptions* opts) {
+// The interop line: logged when update_interval_ns or miss_threshold differs from the default, and not otherwise; at
+// INFO, which a WARNING level hides (it was a WARNING until the summary carried the two, 2026-10-22). The count of
+// lines that `level` lets through.
+static int lines_creating(const struct tt_InitOptions* opts, tt_LogLevel at) {
     FILE* log = tmpfile();
     EXPECT_TRUE(log != NULL);
     if (log == NULL) {
         return -1;
     }
     tt_LogLevel level = tt_current_log_level;
-    tt_current_log_level = TT_LOG_WARNING;
+    tt_current_log_level = at;
     tt_log_set_output(log);
     reset_mock();
     EXPECT_EQ_INT(tt_RET_OK, create_with(opts));
@@ -558,18 +561,20 @@ static int warnings_creating(const struct tt_InitOptions* opts) {
     return found;
 }
 
-static void test_interop_warning(void) {
-    EXPECT_EQ_INT(0, warnings_creating(NULL));
+static void test_interop_line(void) {
+    EXPECT_EQ_INT(0, lines_creating(NULL, TT_LOG_INFO));
     struct tt_InitOptions opts = defaults();
-    opts.discovery.tx_interval_ns = 2 * tt_MILLISECOND; // not judged by the peers: no warning
+    opts.discovery.tx_interval_ns = 2 * tt_MILLISECOND; // not judged by the peers: no line
     opts.discovery.max_lease_ns = 20 * tt_SECOND;
-    EXPECT_EQ_INT(0, warnings_creating(&opts));
+    EXPECT_EQ_INT(0, lines_creating(&opts, TT_LOG_INFO));
     opts = defaults();
     opts.discovery.update_interval_ns = 2 * tt_SECOND;
-    EXPECT_EQ_INT(1, warnings_creating(&opts));
+    EXPECT_EQ_INT(1, lines_creating(&opts, TT_LOG_INFO));
+    EXPECT_EQ_INT(0, lines_creating(&opts, TT_LOG_WARNING));
     opts = defaults();
     opts.discovery.miss_threshold = 5;
-    EXPECT_EQ_INT(1, warnings_creating(&opts));
+    EXPECT_EQ_INT(1, lines_creating(&opts, TT_LOG_INFO));
+    EXPECT_EQ_INT(0, lines_creating(&opts, TT_LOG_WARNING));
 }
 
 int main(void) {
@@ -586,7 +591,7 @@ int main(void) {
     test_liveliness_deferral();
     test_sched_full_warn_interval();
     test_validation();
-    test_interop_warning();
+    test_interop_line();
 
     if (test_result() != 0) {
         return 1;

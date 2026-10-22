@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tt_InitOptions bundle 2 (ROADMAP "Context options"), the discovery group: every check tt_Context_create_with() makes on
-# tt_DiscoveryOptions, the interop WARNING, and every field's reading are decided by tests/test_init_options_discovery.c.
-# Each mutant replaces one piece of src/tickle.c (a refusal becomes a log line that lets creation go on, the WARNING's
+# tt_DiscoveryOptions, the interop INFO line, and every field's reading are decided by tests/test_init_options_discovery.c.
+# Each mutant replaces one piece of src/tickle.c (a refusal becomes a log line that lets creation go on, the INFO line's
 # condition becomes false, a field's reader reads 0 and so the default), rebuilds the test against the mutant, and
 # expects it to FAIL. A mutant that survives is a check or a field no test can tell from its absence.
 #
@@ -62,7 +62,7 @@ refusal() {
 }
 refusal 'durations[i].field'
 refusal '"discovery.tx_interval_ns"'
-mutant "the interop WARNING" \
+mutant "the interop INFO line" \
     "    if (discovery->update_interval_ns != tt_CONTEXT_UPDATE_INTERVAL ||
         discovery->miss_threshold != tt_LIVELINESS_MISS_THRESHOLD) {" \
     "    if (false) {"

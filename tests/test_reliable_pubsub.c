@@ -3183,9 +3183,9 @@ static uint32_t write_heartbeat(struct tt_Context* node, uint32_t endpoint_id, u
     heartbeat_header->last_seq_no = last_seq_no;
     heartbeat_header->entity_id = 0; // explicit: offset 12 overlaps a prior write_data()'s timestamp
     heartbeat_header->flags = flags;
-    heartbeat_header->reserved[0] = 0;
-    heartbeat_header->reserved[1] = 0;
-    heartbeat_header->reserved[2] = 0;
+    heartbeat_header->summary_interval[0] = 0;
+    heartbeat_header->summary_interval[1] = 0;
+    heartbeat_header->summary_miss_threshold = 0;
     return sizeof(struct tt_HeartbeatHeader);
 }
 

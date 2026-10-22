@@ -417,6 +417,40 @@ static uint64_t discovery_silence_ns(const struct tt_Context* node) {
     return discovery_silence_of(discovery_update_interval_ns(node), discovery_miss_threshold(node));
 }
 
+// tt_HeartbeatHeader.summary_interval's units (tickle.h), indexed by its top 3 bits.
+static const uint64_t summary_interval_units[tt_SUMMARY_INTERVAL_UNITS] = {
+    tt_MICROSECOND, 10U * tt_MICROSECOND, 100U * tt_MICROSECOND,
+    tt_MILLISECOND, 10U * tt_MILLISECOND, 100U * tt_MILLISECOND,
+    tt_SECOND,      100U * tt_SECOND,
+};
+
+// An update interval as a discovery summary carries it: 0 for the default, else the smallest unit whose count,
+// rounded up, fits 13 bits - so the receiver never reads it shorter than it is. The largest code past the last unit,
+// which no interval validate_discovery_options() accepts reaches (and the receiver holds to a day).
+static uint16_t summary_interval_encode(uint64_t interval_ns) {
+    if (interval_ns == (uint64_t)tt_CONTEXT_UPDATE_INTERVAL) {
+        return 0;
+    }
+    for (uint32_t u = 0; u < tt_SUMMARY_INTERVAL_UNITS; u++) {
+        uint64_t count = (interval_ns + summary_interval_units[u] - 1U) / summary_interval_units[u];
+        if (count <= tt_SUMMARY_INTERVAL_MANTISSA_MAX) { // never 0: a resolved interval is never 0
+            return (uint16_t)((u << tt_SUMMARY_INTERVAL_MANTISSA_BITS) | (uint32_t)count);
+        }
+    }
+    return UINT16_MAX;
+}
+
+// The inverse: 0, and a code counting no units, are the default; a value past tt_DISCOVERY_MAX_DURATION_NS, which no
+// context sends, is held to it.
+static uint64_t summary_interval_decode(uint16_t code) {
+    uint64_t count = code & tt_SUMMARY_INTERVAL_MANTISSA_MAX;
+    if (count == 0) {
+        return (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    }
+    uint64_t interval = count * summary_interval_units[code >> tt_SUMMARY_INTERVAL_MANTISSA_BITS];
+    return interval < tt_DISCOVERY_MAX_DURATION_NS ? interval : tt_DISCOVERY_MAX_DURATION_NS;
+}
+
 #if tt_SEGMENT_ENABLED
 // The dead-reader time a context uses (tt_SegmentOptions.dead_reader_ns): its own when set; else config.h's
 // tt_SEGMENT_DEAD_READER_NS at the default discovery timing, which is what that constant is derived from, and the same
@@ -991,13 +1025,16 @@ static tt_ret_t validate_discovery_options(const struct tt_DiscoveryOptions* dis
         return reject_option("discovery.tx_interval_ns", "is longer than discovery.update_interval_ns");
     }
     // The silence against the segment's dead-reader time is checked with the segment (validate_segment_options()).
+    // The summary carries both values (fill_summary()), so a peer of this build judges this context's silence by them
+    // and this is INFO, not the WARNING it was before 2026-10-22: only a peer built before then still judges by its
+    // own.
     if (discovery->update_interval_ns != tt_CONTEXT_UPDATE_INTERVAL ||
         discovery->miss_threshold != tt_LIVELINESS_MISS_THRESHOLD) {
-        TT_LOG_WARNING(
-            "tt_InitOptions.discovery: update_interval_ns %llu and miss_threshold %u differ from the defaults "
-            "(%llu, %u); peers judge this context's silence by their own and are not told these",
-            (unsigned long long)discovery->update_interval_ns, (unsigned)discovery->miss_threshold,
-            (unsigned long long)tt_CONTEXT_UPDATE_INTERVAL, (unsigned)tt_LIVELINESS_MISS_THRESHOLD);
+        TT_LOG_INFO("tt_InitOptions.discovery: update_interval_ns %llu and miss_threshold %u differ from the defaults "
+                    "(%llu, %u); the summary tells peers these, and a peer built before 2026-10-22 judges this "
+                    "context's silence by its own",
+                    (unsigned long long)discovery->update_interval_ns, (unsigned)discovery->miss_threshold,
+                    (unsigned long long)tt_CONTEXT_UPDATE_INTERVAL, (unsigned)tt_LIVELINESS_MISS_THRESHOLD);
     }
     return tt_RET_OK;
 }
@@ -6901,6 +6938,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->update_seen[i] = false;
         node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
+        node->peer_silence_ns[i] = 0;
         node->update_part_generation[i] = 0;
         memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
         node->update_part_count[i] = 0;
@@ -12708,9 +12746,9 @@ static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher*
     heartbeat_header->last_seq_no = last_seq_no;
     heartbeat_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
     heartbeat_header->flags = flags;
-    heartbeat_header->reserved[0] = 0;
-    heartbeat_header->reserved[1] = 0;
-    heartbeat_header->reserved[2] = 0;
+    heartbeat_header->summary_interval[0] = 0; // a discovery summary's only (tickle.h)
+    heartbeat_header->summary_interval[1] = 0;
+    heartbeat_header->summary_miss_threshold = 0;
 
     if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
@@ -16026,7 +16064,13 @@ static void fill_summary(const struct tt_Context* node, struct tt_HeartbeatHeade
     summary->last_seq_no = generation;
     summary->entity_id = tt_DISCOVERY_ENTITY_ID;
     summary->flags = tt_HEARTBEAT_FLAG_FINAL;
-    memset(summary->reserved, 0, sizeof(summary->reserved));
+    // This context's timing, by which its peers judge its silence (2026-10-22); zero for each default, so a default
+    // context's summary is the bytes it was before.
+    uint16_t interval = summary_interval_encode(discovery_update_interval_ns(node));
+    uint64_t miss = discovery_miss_threshold(node);
+    summary->summary_interval[0] = (uint8_t)(interval >> 8);
+    summary->summary_interval[1] = (uint8_t)interval;
+    summary->summary_miss_threshold = miss == (uint64_t)tt_LIVELINESS_MISS_THRESHOLD ? 0 : (uint8_t)miss;
 }
 
 // The summary as a datagram of its own, built apart from tx_buffer, which may hold the very send it goes
@@ -16852,6 +16896,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->update_reprocess[source] = false;
     node->update_generation[source] = 0;
     node->update_last_seen[source] = 0;
+    node->peer_silence_ns[source] = 0; // its next summary says again
     node->traffic_last_seen[source] = 0;
     update_parts_clear(node, source);
     node->liveliness_flags[source] = 0;
@@ -16866,7 +16911,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
 // lowers *next to the earliest limit still ahead.
 static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t unobserved_ns, uint64_t* next) {
-    uint64_t silence = discovery_silence_ns(node);
+    uint64_t own_silence = discovery_silence_ns(node);
     uint64_t max_lease = discovery_max_lease_ns(node);
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         if (!node->update_seen[i] && !update_parts_any(node, (uint8_t)i)) {
@@ -16880,6 +16925,8 @@ static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t 
         // silence we observed, and counting it is how a live peer gets declared dead on a loaded
         // machine. Added once per run and not accumulated: the next run is late only by its own
         // lateness, so a peer that really has gone is reported one ordinary interval later at worst.
+        // The node's own silence, as its summaries tell it (2026-10-22); ours until one has.
+        uint64_t silence = node->peer_silence_ns[i] != 0 ? node->peer_silence_ns[i] : own_silence;
         uint64_t limit = silence + unobserved_ns;
         if (time > last && time - last > limit) {
             // Only for a node already that quiet. Capped as a DDS participant lease caps its writers': an
@@ -20359,6 +20406,16 @@ static void request_discovery_list(struct tt_Context* node, uint8_t source, uint
     arm_discovery_request_retry(node, now + discovery_retry_after(node, source));
 }
 
+// The silence a discovery summary from `source` names for it (tt_HeartbeatHeader.summary_interval): its update interval
+// and miss threshold, each 0 for the default, as its own (2 x threshold + 1) x interval / 2. Single bytes, read as
+// sent whatever the byte order. Taken from every summary: a node restarted with other timing is judged by the new.
+static void note_peer_timing(struct tt_Context* node, uint8_t source, const struct tt_HeartbeatHeader* summary) {
+    uint16_t code = (uint16_t)(((uint32_t)summary->summary_interval[0] << 8) | summary->summary_interval[1]);
+    uint8_t miss = summary->summary_miss_threshold;
+    node->peer_silence_ns[source] = discovery_silence_of(
+        summary_interval_decode(code), miss != 0 ? (uint64_t)miss : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD);
+}
+
 // A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -
 // exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
 // other - a change missed, a node never heard in full - is asked for (rule 3), and asked again within
@@ -20786,6 +20843,7 @@ static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header,
         return true; // an assertion only - see the flag's comment (tickle.h)
     }
     if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
+        note_peer_timing(node, header->source, heartbeat_header);
         return process_discovery_summary(node, header->source, last_seq_no, sender_ip, sender_port);
     }
     struct heartbeat_ctx ctx = {header, sender_ip, sender_port, entity_id, first_available_seq_no, last_seq_no, flags};

@@ -848,10 +848,11 @@ struct tt_NetOptions {
 // Discovery and liveliness timing (bundle 2). Each 0 is the config.h constant named beside it, so a zeroed group is
 // what every build before it compiled in. Durations are in nanoseconds and at most tt_DISCOVERY_MAX_DURATION_NS.
 //
-// update_interval_ns and miss_threshold are judged by the peers too: a peer presumes this context dead after ITS OWN
-// miss_threshold and a half of ITS OWN update interval without a word, and the announce does not carry either value.
-// A context created with either one different from the default therefore logs a WARNING once - peers built with the
-// defaults may presume it dead (a longer interval) or hear from it more often than they need (a shorter one).
+// update_interval_ns and miss_threshold are judged by the peers too: each discovery summary carries both
+// (tt_HeartbeatHeader.summary_interval, 2026-10-22), and a peer presumes this context dead after miss_threshold and a
+// half of update_interval_ns without a word - this context's values, not its own. Until its first summary from here
+// arrives a peer judges by its own. A peer built before 2026-10-22 ignores the bytes and judges by its own throughout,
+// so a context with either value off the default says so once at creation, at INFO.
 struct tt_DiscoveryOptions {
     uint64_t cycle_ns;           // the grid the first summary and liveliness check are aligned to; tt_CONTEXT_CYCLE
     uint64_t update_interval_ns; // the summary period, and the liveliness check's; tt_CONTEXT_UPDATE_INTERVAL
@@ -1151,6 +1152,11 @@ struct tt_Context {
     // whose endpoints never change still has to be heard from periodically, or it's presumed
     // gone once tt_LIVELINESS_MISS_THRESHOLD announce intervals pass with nothing heard.
     uint64_t update_last_seen[tt_MAX_CONTEXT_IDS];
+    // Per remote node, the silence after which it is presumed dead, from the timing its latest discovery summary
+    // carried (tt_HeartbeatHeader.summary_interval, 2026-10-22): its own (2 x miss_threshold + 1) x update interval
+    // / 2. 0 until a summary from it arrives, and again once it is presumed dead: judged by this context's own silence
+    // then.
+    uint64_t peer_silence_ns[tt_MAX_CONTEXT_IDS];
 
     // The same index, but the most recent time ANY validated packet was received from that node -
     // DATA, ACKNACK, Heartbeat, UPDATE, anything whose header passed validate_packet_header().
@@ -4840,10 +4846,26 @@ struct tt_HeartbeatHeader {
     // reasoning as struct tt_DataHeader.entity_id's own doc comment (this is the same Publisher,
     // just announcing instead of publishing).
     uint32_t entity_id;
-    uint8_t flags;       // tt_HEARTBEAT_FLAG_FINAL - see its own doc comment above
-    uint8_t reserved[3]; // pad 17 -> 20 - same "pad the CDR payload to 4-byte alignment"
-                         // convention as tt_CallRequestHeader's own reserved byte
+    uint8_t flags; // tt_HEARTBEAT_FLAG_FINAL - see its own doc comment above
+    // The sender's discovery timing, on a discovery summary only (endpoint_id tt_DISCOVERY_ENDPOINT_ID); zero on every
+    // other HEARTBEAT, where no receiver reads them. These three bytes were `reserved[3]`, written zero and never read,
+    // until 2026-10-22, so a peer built before then sends zero here and ignores what it receives; zero is the default
+    // (the user's decision of 2026-10-22, DESIGN.md section 3: a reserved field defined with zero as its old meaning is
+    // the documented exception to "each wire change bumps tt_VERSION").
+    //   summary_interval: tt_DiscoveryOptions.update_interval_ns, two bytes, most significant first (no byte swap):
+    //     0 = tt_CONTEXT_UPDATE_INTERVAL; else the top 3 bits u pick one of the units below and the
+    //     low 13 bits m (1..8191) count them, rounded up, so the value is never shorter than the sender's interval.
+    //   summary_miss_threshold: tt_DiscoveryOptions.miss_threshold; 0 = tt_LIVELINESS_MISS_THRESHOLD.
+    // A receiver judges the sender's silence by them (check_node_silence(), tickle.c): (2 x threshold + 1) x interval
+    // / 2, as the sender would judge its own peers'.
+    uint8_t summary_interval[2];
+    uint8_t summary_miss_threshold;
 } __attribute__((packed));
+// tt_HeartbeatHeader.summary_interval's units, u = 0..7: 1, 10, 100 us, 1, 10, 100 ms, 1 s, then 100 s, so 13 bits
+// reach past tt_DISCOVERY_MAX_DURATION_NS (8191 x 100 s); a step is at most 1.2% of the value it rounds.
+#define tt_SUMMARY_INTERVAL_MANTISSA_BITS 13
+#define tt_SUMMARY_INTERVAL_MANTISSA_MAX ((1U << tt_SUMMARY_INTERVAL_MANTISSA_BITS) - 1U)
+#define tt_SUMMARY_INTERVAL_UNITS 8
 
 struct tt_CallRequestHeader {
     uint32_t endpoint_id; // endpoint id for service server lookup

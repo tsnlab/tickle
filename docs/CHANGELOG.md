@@ -84,6 +84,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 - A reader is held to the shorter of its writer's lifespan and its own (D1, `c138def7`); the rmw graph reports a remote
   endpoint's history, depth and lifespan (D8, `cfeef643`).
 - A BEST_EFFORT service Client sends each request once; `tt_Client_end_oldest_call()` frees a slot (D6, `d33bcb52`).
+- **The discovery summary carries its sender's update interval and miss threshold** (the user's decision, 2026-10-22,
+  network-profiles item C; [DESIGN.md](DESIGN.md) sections 3 and 5). `tt_HeartbeatHeader`'s 3 reserved bytes became
+  `summary_interval` (2 B, unit + count, 0 = default) and `summary_miss_threshold` (0 = default); a receiver judges
+  each peer's silence by what that peer's summary says, and by its own until the first one. 0 extra bytes and no
+  `tt_VERSION` bump - the documented exception for a reserved field whose zero keeps the old meaning: older peers send
+  zeros and ignore the bytes, and a default context's datagrams are unchanged. A non-default interval or threshold at
+  creation is now an INFO line, not a WARNING.
 
 ### Fixed
 
