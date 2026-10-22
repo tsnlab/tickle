@@ -66,14 +66,17 @@ of 150; campaign `T` (FastDDS `maxMessageSize` 1472) 18 / 2 / 0 of 20; QoS row 4
 - **L4, 21 letters:** delivered % where everyone delivered 100% (13); against FastDDS as shipped, CPU per MB at I1,
   I1 best effort, I4 RELIABLE and I4s (8).
 
-**Behind inside a lead (not scored):** on the pong Pi, rmw_tickle's receive call returns ~4-5 us after the vendors'
-(`KH`, Bench BEST_EFFORT, 3 reps x 101 round trips an rmw, wire control PASS: tap -> receive return p50 18.0 against
-CycloneDDS 12.8 and FastDDS 13.8 us, SLOWER against both by the range rule; RELIABLE NOT READ, wire control failed). Its
-wait returns at 12.9 us (rep p50s 12.5-13.3), level with the vendors' blocking receive; the gap lies between that and
-its receive call's return. Measured on the `TT_HAL_LIBC_CALLS` build (the shipped build's raw syscalls are invisible to
-`sysstamp`, which adds 8-10 us to its round trip). The whole tap -> callback is still shorter: p50 23.5-24.0 against
-34.0-37.7 / 48.4-50.4 us. Corrected 2026-10-21: this line read "kernel wake ~6 us slower" (September, 18.2 against 12.6
-us), not split further.
+**Behind inside a lead (not scored):** on the pong Pi, rmw_tickle's receive returns ~1.3-2.4 us after the vendors'
+(`KH2`, `132548dd`, after the wait ring; Bench BEST_EFFORT, 3 reps x 101 round trips an rmw, wire control PASS: tap ->
+receive return p50 15.1 (reps 14.9-16.0) against CycloneDDS 12.7 (12.7-13.0) and FastDDS 13.8 (12.9-13.9) us, SLOWER
+against both by the range rule; RELIABLE NOT READ, wire control failed). Read against `KH` (`430ae86d`, the same harness:
+18.0 against 12.8 and 13.8): the vendors moved -0.1 and +0.0 us, rmw_tickle -2.9, so the gap NARROWED from +5.2/+4.3 to
++2.4/+1.3 us (`s1_kh_rig_read.py --kh`), as the wait ring's own A/B predicted (-2.59 us). The wait ring waits and reads
+in one `io_uring_enter()`, so there is no separate wait return any more. Measured on the `TT_HAL_LIBC_CALLS` build (the
+shipped build's raw syscalls are invisible to `sysstamp`, which adds 6-8 us to its round trip). The whole tap ->
+callback is still shorter: p50 24.9-26.4 (default build 22.3-23.4) against 38.8-39.7 / 49.4-53.6 us. Corrected
+2026-10-21: this line read "kernel wake ~6 us slower" (September, 18.2 against 12.6 us), not split further; corrected
+2026-10-23 from `KH`'s ~4-5 us to `KH2`'s.
 zenoh-pico (reference) has the better figure in rows 5-7, 18-19, 24 and 35. Hybrid AUTO's p99 is above forced MTU at
 0.01% and 0.1% loss ([Hybrid](#hybrid-transport-large-samples-rig)).
 
@@ -446,6 +449,16 @@ peers or a longer silence; (3) the reader's ACKNACK retry under jitter - timer A
 in the median rep (101x under `tv`), 2-4 resends per loss; (4) the hybrid estimator under bursts - at 1%B8 it kept 2-unit runs, 5.2 resends per lost frame
 against 2.0 at 1%B2 in MTU units. Batching was not exercised.
 
+### Shared-memory module on but unused, cross-host (rig, `S1R`)
+
+Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
+arm, cells 1-4 (RELIABLE KEEP_ALL p1-p4); A = segment and lending compiled out, B = the default build, whose segment is
+never found across two Pis (0 shm samples, attach attempts in every B run and none in A or P). CPU per sample: no
+client cell WORSE (-0.2% to +1.7%); server WORSE at p4 only (+0.98% against a 0.79% floor), so a CANDIDATE, not a cost
+(WIRE 8.3: 2 of 4 cells needed). Rate equal. Instructions: user +330-530 a sample on the publisher (+11-13% of its user,
+~+2% of user + kernel), +70-90 on the subscriber (+2-5%), kernel unchanged - the residual the PC found (+1.7-1.9% total
+at p4, `stage1_payg.sh` full5), not yet visible as CPU time.
+
 ## 3. Sources
 
 Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results/`; harnesses in
@@ -464,6 +477,8 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | Wc, Jc | `rmw_crosshost_rtt.sh`, `rmw_crosshost_creation.py` | `29826912` | 2026-10-18 | `creation_rtt_rmw{W,J}_29826912_20261018-111338.*` |
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
 | WH, KH | `rmw_holdover_rig.sh` (WH: `rmw_crosshost_creation.py`; KH: `rmw_pcap_split.py`, capture + `sysstamp`) | `430ae86d` | 2026-10-21 | `holdover_rmw{W,K}_430ae86d_20261021-185529.*` (`.creation.txt`, `.split.txt`) |
+| KH2 | `rig_queue_s1_kh.sh` part KH (KH's call), `rmw_pcap_split.py`, `s1_kh_rig_read.py --kh` | `132548dd` | 2026-10-23 | `s1kh_rmwK_132548dd_20261022-230208.*`, `s1kh/132548dd_20261022-230208/kh_reading.txt` |
+| S1R | `rig_queue_s1_kh.sh` part S1 (`campaign_ab_chain.sh` GATE=v2, cells 1-4), `s1_kh_rig_read.py --s1` | `132548dd` | 2026-10-22 | `s1kh/132548dd_20261022-230208/` (`s1_reading.txt`, `s1rig_*`) |
 | K, Ke | `rmw_keepall_rig.sh` (Ke: equal bounds) | `ae724688`, `29dff630` | 2026-10-06, -08 | `rmw_keepall_rig_O2_20261006-123017.txt`, `rmw_keepall_equal_main_29dff630_20261008-134901.*` |
 | Ctl | perf_test ping-pong | `4fca013b` | 2026-10-17 | `creation_latency_ctl_20261017-094944.*` |
 | SF | `fair_samehost_remeasure.sh`, `fair_samehost_summary.py` | `e521bbba` | 2026-10-09 | `fair_samehost_e521bbba_20261009-033254.*` |

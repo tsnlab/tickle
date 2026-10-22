@@ -45,19 +45,20 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 
 - **Zero-copy slot loans**: a segment ring that skips held slots; off by default (the user, 2026-10-10).
 - **Large samples step B on the rig**: done 2026-10-20, every B2 rule PASS with a control that held (RESULTS `SB2`).
-- **Stage 1 / S1 CPU-time half on the rig** (PC half done, `d131d82e`).
+- **Stage 1 / S1 CPU-time half on the rig**: done 2026-10-22 (RESULTS `S1R`): no CPU-time cost shown, one server cell
+  (p4, +0.98%) a CANDIDATE; the instruction residual (publisher user +11-13%) stays open.
 - **FreeRTOS segment**: done 2026-10-21 (`23064e69`), off by default, README says when and how to turn it on.
 - **rmw shared-memory kill test**: done 2026-10-22 (`test_shm_kill`, in the rmw suite); it found two leaks, both fixed
   (DESIGN.md section 10, "Lifecycle").
 
 ### Other open items
 
-- rmw receive return on the Pi ~4-5 us behind the vendors' (RESULTS `KH`: the wait returns level with them; the gap is
-  between it and the receive call's return). The poll-to-executor hand-off (~21 us) is gone: executor-driven receive,
-  3.3 us receive -> callback on the PC (`rmw_wake_split.py`, `9d87885c`), 8.3-10.5 us on the Pi against 25.5-40.9 for
-  the vendors (`KH`). A C++ subscriber segfault seen once in ~370 runs (2026-09-25), not reproduced since: 0 in
-  1,200 runs of the same `-r` shape on 2026-10-22, in a netns, half under ASan + UBSan and half pinned to one CPU
-  (`flaky_repeat_netns.sh`, `rclcpp_r_shape_once.sh`).
+- rmw receive return on the Pi ~1.3-2.4 us behind the vendors' (RESULTS `KH2`, after the wait ring; ~4-5 us in `KH`).
+  The poll-to-executor hand-off (~21 us) is gone: executor-driven receive, 3.3 us receive -> callback on the PC
+  (`rmw_wake_split.py`, `9d87885c`), 8.3-10.5 us on the Pi against 25.5-40.9 for the vendors (`KH`). A C++ subscriber
+  segfault seen once in ~370 runs (2026-09-25), not reproduced since: 0 in 1,200 runs of the same `-r` shape on
+  2026-10-22, in a netns, half under ASan + UBSan and half pinned to one CPU (`flaky_repeat_netns.sh`,
+  `rclcpp_r_shape_once.sh`).
 - Measurement debt: none left (2026-10-20: c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG, M3, row 47 and
   rows 43-44 with the reshaped scenario 6 harness; RESULTS `D`, `D2`, `LS`, `X2`).
 - Throughput: reuse the poll loop's clock in scheduled publishes; the unmerged `experiment/poll-loop-io-interleave-v2`;
