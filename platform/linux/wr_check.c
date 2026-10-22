@@ -26,7 +26,8 @@
 //   7. deadline   - a wait with a timeout ends at it (not early, not 5 ms late); a long wait for a scheduler entry,
 //                   which takes the deadline timer (the ring's multishot poll on it), ends at the entry.
 //   8. bell       - the segment bell rung from another thread ends the owner's wait (0, the doorbell); after the bell
-//                   is destroyed and made again, the new one is the one that rings.
+//                   is destroyed and made again, the new one is the one that rings; and one made on another thread
+//                   while the owner sleeps (as a send can make it) rings it too, with no interrupt on the way.
 //   9. stolen id  - the ring's owner gone and its id now another thread's (EEXIST from the kernel): the wait ends as
 //                   interrupted, and the next one makes the ring that thread's.
 //  10. alternate  - two threads take the poll role in turn, each for a random run of waits with short timeouts, two
@@ -460,8 +461,15 @@ static void check_deadline(void) {
 
 #if tt_SEGMENT_ENABLED
 static char bell_path[BELL_PATH_BYTES];
+static bool bell_made_by_ringer = false; // ring_later() also makes the bell first, while the owner sleeps
+
 static void* ring_later(void* arg) {
     (void)arg;
+    usleep(PAUSE_US);
+    if (bell_made_by_ringer && tt_segment_bell_create(&ctx, bell_path) != 0) {
+        fail("cannot create the bell on another thread", errno);
+        return NULL;
+    }
     usleep(PAUSE_US);
     int32_t bell = tt_segment_bell_open(bell_path);
     if (bell < 0) {
@@ -473,18 +481,18 @@ static void* ring_later(void* arg) {
     return NULL;
 }
 
-static bool rung(void) {
+// The owner waits with no timeout until the bell rings: true when that is what ended the wait (no interrupt on the
+// way: a bell made while it sleeps nudges the ring, it does not wake the poll).
+static bool rung(bool made_by_ringer) {
     static uint8_t buf[BUFFER_BYTES];
     const uint64_t waits = ctx.hal.wr_waits;
+    bell_made_by_ringer = made_by_ringer;
     pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
     pthread_create(&thread, NULL, ring_later, NULL);
     uint32_t seq = 0;
     uint32_t ip = 0;
     uint16_t port = 0;
-    enum outcome what = GOT_WAKE;
-    while (what == GOT_WAKE) { // a bell made while the ring is owned wakes the owner once (wr_bell_moved())
-        what = receive(buf, 0, &seq, &ip, &port);
-    }
+    enum outcome what = receive(buf, 0, &seq, &ip, &port);
     pthread_join(thread, NULL);
     return what == GOT_BELL && ctx.hal.wr_waits != waits;
 }
@@ -502,7 +510,7 @@ static void check_bell(void) {
         fail("cannot create a bell", errno);
         return;
     }
-    if (!rung()) {
+    if (!rung(false)) {
         fail("the bell rung did not end the owner's wait", 0);
     }
     tt_segment_bell_destroy(&ctx, bell_path);
@@ -510,8 +518,12 @@ static void check_bell(void) {
         fail("cannot create the bell again", errno);
         return;
     }
-    if (!rung()) {
+    if (!rung(false)) {
         fail("the bell made again did not end the owner's wait", 0);
+    }
+    tt_segment_bell_destroy(&ctx, bell_path);
+    if (!rung(true)) {
+        fail("a bell made on another thread while the owner slept did not end its wait", 0);
     }
     tt_segment_bell_destroy(&ctx, bell_path);
 #endif
@@ -724,10 +736,7 @@ static void check_writable(void) {
         uint32_t seq = 0;
         uint32_t ip = 0;
         uint16_t port = 0;
-        enum outcome what = GOT_WAKE;
-        while (what == GOT_WAKE) { // the wake check 8's bell left (wr_bell_moved())
-            what = receive(buf, 0, &seq, &ip, &port);
-        }
+        enum outcome what = receive(buf, 0, &seq, &ip, &port);
         pthread_join(thread, NULL);
         if (what != GOT_TIMEOUT || !ctx.large.tx_writable) {
             fail("the owner's wait did not end when the socket had room (round x 10 + outcome)", (round * 10) + what);

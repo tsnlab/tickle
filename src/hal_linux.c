@@ -1276,6 +1276,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
     node->hal.wr_fd_plus1 = 0;
     node->hal.wr_watch_fd_plus1 = 0;
+    node->hal.wr_nudge_fd_plus1 = 0;
     node->hal.bell_epoch = 0;
 #endif
     node->hal.rx_prefer_data = false;
@@ -3256,7 +3257,7 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 // waits that need what only the epoll path does use it whatever the switch: receive offload (UDP_GRO) on or settling,
 // a direct read aimed (a large sample's run), the drain running.
 #if TT_HAL_WAIT_RING
-#define WR_ENTRIES 8U // the most one wait submits: five polls, a removal, a cancellation and the recvmsg
+#define WR_ENTRIES 16U // the most one wait submits: six polls, a removal, a cancellation and the recvmsg
 // What a completion is for: user_data's low byte, the generation above it (a recvmsg's, the bell's epoch).
 #define WR_KIND_RECV 1U
 #define WR_KIND_WELL_KNOWN 2U
@@ -3264,6 +3265,7 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 #define WR_KIND_BELL 4U
 #define WR_KIND_TIMER 5U
 #define WR_KIND_WATCH 6U
+#define WR_KIND_NUDGE 8U  // the nudge eventfd: arm again (wr_bell_moved())
 #define WR_KIND_CANCEL 7U // a cancellation or a removal that failed (success posts nothing: IOSQE_CQE_SKIP_SUCCESS)
 #define WR_KIND_SHIFT 8U
 #define WR_KIND_MASK 0xffU
@@ -3273,6 +3275,7 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 #define WR_ARMED_BELL 4U
 #define WR_ARMED_TIMER 8U
 #define WR_ARMED_WATCH 16U
+#define WR_ARMED_NUDGE 32U
 
 static void wr_unmap(struct tt_hal* hal) {
     if (hal->wr_sqes != NULL) {
@@ -3392,6 +3395,7 @@ static void wr_setup(struct tt_Context* node) {
     struct tt_hal* hal = &node->hal;
     hal->wr_fd_plus1 = 0;
     hal->wr_watch_fd_plus1 = 0;
+    hal->wr_nudge_fd_plus1 = 0;
     hal->wr_move_after = TT_RX_RING_MOVE_WAITS;
     hal->wr_gen = 0;
     hal->wr_bell_epoch = __atomic_load_n(&hal->bell_epoch, __ATOMIC_RELAXED);
@@ -3404,6 +3408,12 @@ static void wr_setup(struct tt_Context* node) {
     wr_close(hal, -1);
     if (hal->epoll_fd_plus1 == 0 || !wr_switch(node)) {
         return; // without the epoll set there is nothing to stand in for: every wait builds its ppoll() set
+    }
+    hal->wr_nudge_fd_plus1 = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) + 1;
+    if (hal->wr_nudge_fd_plus1 <= 0) {
+        wr_refused("eventfd (the nudge)", errno);
+        wr_close(hal, -2);
+        return;
     }
 #if tt_LARGE_SAMPLES
     hal->wr_watch_fd_plus1 = epoll_create1(EPOLL_CLOEXEC) + 1;
@@ -3418,6 +3428,10 @@ static void wr_setup(struct tt_Context* node) {
 
 static void wr_teardown(struct tt_hal* hal) {
     wr_close(hal, -1);
+    if (hal->wr_nudge_fd_plus1 > 0) {
+        (void)close(hal->wr_nudge_fd_plus1 - 1);
+        hal->wr_nudge_fd_plus1 = 0;
+    }
     if (hal->wr_watch_fd_plus1 > 0) {
         (void)close(hal->wr_watch_fd_plus1 - 1);
         hal->wr_watch_fd_plus1 = 0;
@@ -3425,13 +3439,16 @@ static void wr_teardown(struct tt_hal* hal) {
 }
 
 #if tt_SEGMENT_ENABLED
-// A bell created or destroyed (tt_segment_bell_create(), _destroy()): the ring's next wait polls the new one and
-// removes the old one's poll (wr_arm()). A ring already enabled may have its owner asleep in it right now, which only a
-// wake ends - once per bell, and only where a ring is in use.
+// A bell created or destroyed (tt_segment_bell_create(), _destroy(); a send on another thread can make one): the ring's
+// next wait polls the new one and removes the old one's poll (wr_arm()). An owner asleep in the ring right now is
+// nudged to arm again (wr_wait()), not woken: tt_wake_signal() would end its poll as an interrupt, which an application
+// takes as tt_Context_interrupt()'s (2026-10-22: the same-host example subscriber exited on it).
 static void wr_bell_moved(struct tt_Context* node) {
     (void)__atomic_add_fetch(&node->hal.bell_epoch, 1U, __ATOMIC_RELAXED); // read by the polling thread
-    if (node->hal.wr_fd_plus1 > 0 && node->hal.wr_owner != 0) {
-        (void)tt_wake_signal(node);
+    const int nudge = __atomic_load_n(&node->hal.wr_nudge_fd_plus1, __ATOMIC_RELAXED) - 1;
+    if (nudge >= 0) {
+        const uint64_t one = 1;
+        (void)!write(nudge, &one, sizeof(one));
     }
 }
 #endif
@@ -3571,6 +3588,10 @@ static void wr_arm(struct tt_Context* node) {
     if ((hal->wr_armed & WR_ARMED_WAKE) == 0 && wr_poll(hal, hal->wake_fd, WR_KIND_WAKE, 0, false)) {
         hal->wr_armed |= WR_ARMED_WAKE;
     }
+    if ((hal->wr_armed & WR_ARMED_NUDGE) == 0 && hal->wr_nudge_fd_plus1 > 0 &&
+        wr_poll(hal, hal->wr_nudge_fd_plus1 - 1, WR_KIND_NUDGE, 0, false)) {
+        hal->wr_armed |= WR_ARMED_NUDGE;
+    }
 #if tt_SEGMENT_ENABLED
     const uint32_t bell_epoch = __atomic_load_n(&hal->bell_epoch, __ATOMIC_RELAXED);
     if (hal->wr_bell_epoch != bell_epoch) { // a bell created or destroyed since the ring polled one
@@ -3684,6 +3705,12 @@ static uint32_t wr_completion(struct tt_hal* hal, const struct io_uring_cqe* cqe
             hal->wr_armed &= (uint8_t)~WR_ARMED_TIMER;
         }
         return readable ? RX_READY_TIMER : 0U;
+    case WR_KIND_NUDGE: {
+        hal->wr_armed &= (uint8_t)~WR_ARMED_NUDGE;
+        uint64_t nudges = 0;
+        (void)!read(hal->wr_nudge_fd_plus1 - 1, &nudges, sizeof(nudges));
+        return 0; // nothing to report: the wait arms again and goes on (wr_wait())
+    }
     case WR_KIND_WATCH:
         hal->wr_armed &= (uint8_t)~WR_ARMED_WATCH;
 #if tt_LARGE_SAMPLES
@@ -3750,7 +3777,6 @@ static __attribute__((noinline)) int wr_wait(struct tt_Context* node, const stru
                                              uint32_t* ready) {
     struct tt_hal* hal = &node->hal;
     hal->wr_waits++;
-    wr_arm(node);
     struct __kernel_timespec wait_ts;
     struct io_uring_getevents_arg arg;
     const struct io_uring_getevents_arg* timed = NULL;
@@ -3768,6 +3794,7 @@ static __attribute__((noinline)) int wr_wait(struct tt_Context* node, const stru
         wait_ts.tv_nsec = timeout_ts->tv_nsec;
     }
     for (;;) {
+        wr_arm(node); // again after a nudge: a bell made since
         const int err = wr_enter(hal, flags, timed) < 0 ? errno : 0;
         *ready = wr_harvest(hal);
         if (*ready != 0) {

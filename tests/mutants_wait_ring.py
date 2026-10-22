@@ -23,6 +23,9 @@ Not mutated, and why - each decides no outcome wr_check can observe:
     is how long a wait woken only by stale completions goes on, a window no check can aim at.
   - wr_completion()'s recvmsg error left to the read after the wait (`cqe->res >= 0 ?`): the kernel fails a UDP read on
     an unconnected socket only for a bad buffer, the caller's misuse (survived the first sweep, 2026-10-22, as it must).
+  - wr_wait()'s wr_arm() on every round of its loop rather than once: a single-edit mutant cannot move it out of the
+    loop; "bell moved: the sleeping owner not nudged" covers the nudge it serves, and wr_check's check 8 hangs (alarm)
+    when the round after a nudge does not arm the new bell (run by hand, 2026-10-22).
   - wr_sqe()'s full-ring refusal: the ring has room for every request one wait needs (WR_ENTRIES), so it decides
     nothing unless a submission fails.
 
@@ -94,6 +97,8 @@ MUTANTS = [
      "    if ((hal->wr_armed & WR_ARMED_BELL) == 0 && false &&", DEFAULT),
     ("arm: a bell made again not polled", "    if (hal->wr_bell_epoch != bell_epoch) {", "    if (false) {",
      DEFAULT),
+    ("bell moved: the sleeping owner not nudged", "        (void)!write(nudge, &one, sizeof(one));",
+     "        (void)one;", DEFAULT),
     ("arm: the writable watch not polled", "    if ((hal->wr_armed & WR_ARMED_WATCH) == 0 && hal->wr_watch_fd_plus1 > 0 &&",
      "    if ((hal->wr_armed & WR_ARMED_WATCH) == 0 && false &&", LARGE),
     ("watch: the ring's watch set not given the watch", "        return wr_watch(hal, EPOLL_CTL_ADD, &event);",

@@ -490,6 +490,7 @@ struct tt_hal {
     int wr_rival;
     uint32_t wr_streak;
     uint32_t wr_move_after;
+    int wr_nudge_fd_plus1; // an eventfd the ring polls: a bell made or destroyed asks its next wait to arm again
     int wr_watch_fd_plus1; // tt_tx_await_writable()'s watch for the ring: an epoll set holding its duplicate, PLUS ONE
     void* wr_sq_map;
     size_t wr_sq_map_len;
