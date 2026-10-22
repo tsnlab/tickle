@@ -14052,8 +14052,11 @@ static bool qos_storage_fits(const void* storage, size_t storage_size, size_t ne
 }
 
 // tt_PublisherOptions' large-sample settings: a known fragmentation, and a region as tt_Publisher_set_large_region()
-// checks it (none at all without the segment's large samples).
+// checks it (none at all without the segment's large samples). And a known batching switch (link profiles).
 static bool publisher_large_options_valid(const struct tt_PublisherOptions* opts) {
+    if (opts->batching > tt_SWITCH_OFF) {
+        return false;
+    }
     if (opts->large_fragmentation > tt_LARGE_FRAGMENTATION_IP) {
         return false;
     }
@@ -14195,7 +14198,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
     if (!layout.cached && (opts->heartbeat_period_ns != 0 || opts->ack_solicit_period_ns != 0)) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    if (!publisher_large_options_valid(opts) || opts->batching > tt_SWITCH_OFF) {
+    if (!publisher_large_options_valid(opts)) {
         return tt_RET_INVALID_ARGUMENT;
     }
     result = publisher_reset(node, pub, type, topic_name);
