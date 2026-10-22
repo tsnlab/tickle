@@ -288,7 +288,7 @@ static bool publish(struct tt_Publisher* pub, uint64_t value) {
 
 // Arms 1-2: whether each context has the other's segment attached, read from its peer table - the state the window's
 // claim is about. A first send to a peer whose segment is not built yet goes over UDP and is not asked again for a
-// while (tt_SEGMENT_ATTACH_RETRY_SENDS), so the window starts only once both directions are on the ring.
+// while (segment.attach_retry_ns), so the window starts only once both directions are on the ring.
 //
 // A context attaches a peer's segment on its first send to that peer, never at discovery. A sends B every sample; B
 // sends A only ACKNACKs, and a stream of samples a tick apart asks for none (each publish pushes the idle HEARTBEAT

@@ -910,7 +910,7 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     node.hal.own_port = PEER_PORT;
 
     // No segment exists at the owner's address, which is every peer on another host.
-    const int sends = 64; // well inside tt_SEGMENT_ATTACH_RETRY_SENDS, so one ask must cover them all
+    const int sends = 64; // with no summary tick between them, so one ask must cover them all
     for (int i = 0; i < sends; i++) {
         EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
     }
@@ -919,11 +919,13 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     // and the per-datagram count is segment_unattached_to_udp, which the caller keeps.
     EXPECT_EQ_U32(1, node.segment_attach[tt_SEGMENT_ABSENT]);
 
-    // And it is not permanent. Past the countdown the question is asked again, which is what makes
-    // a peer that binds later reachable rather than written off.
-    for (uint32_t i = 0; i < tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
-        (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    }
+    // And it is not permanent. Once the summary tick finds it due the question is asked again, which is what makes
+    // a peer that binds later reachable rather than written off. The tick that stamps the answer does not make it due.
+    segment_recheck_sweep(&node, test_mock_now);
+    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
+    EXPECT_EQ_INT(1, test_mock_segment_attach_calls);
+    segment_recheck_sweep(&node, test_mock_now + tt_SEGMENT_ATTACH_RETRY_NS);
+    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
 
     // A different address behind the same context id is asked about at once - the cached "no" was
@@ -983,10 +985,11 @@ static void test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwr
     node.hal.own_ip = PEER_IP;
     node.hal.own_port = PEER_PORT;
 
-    for (uint32_t i = 0; i < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
-        EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
-    }
-    EXPECT_TRUE(node.segment_attach[tt_SEGMENT_ABSENT] >= 2); // asked, answered, and asked again past the countdown
+    EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
+    segment_recheck_sweep(&node, test_mock_now);
+    segment_recheck_sweep(&node, test_mock_now + tt_SEGMENT_ATTACH_RETRY_NS);
+    EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
+    EXPECT_TRUE(node.segment_attach[tt_SEGMENT_ABSENT] >= 2); // asked, answered, and asked again once due
     const struct tt_SegmentPeer* own_entry = segment_peer_if_live(&node, OWNER_ID);
     EXPECT_TRUE(own_entry != NULL && own_entry->missing);
 
@@ -1088,9 +1091,10 @@ static void test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory(voi
     node->id = 1;
     node->hal.own_ip = PEER_IP;
     node->hal.own_port = PEER_PORT;
-    for (uint32_t i = 0; i < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
-        (void)peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    }
+    (void)peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT);
+    segment_recheck_sweep(node, test_mock_now);
+    segment_recheck_sweep(node, test_mock_now + tt_SEGMENT_ATTACH_RETRY_NS);
+    (void)peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT);
     size_t pages = 0;
     size_t in_core = 0;
     resident_pages(node->segment_peers, sizeof(node->segment_peers), &pages, &in_core);

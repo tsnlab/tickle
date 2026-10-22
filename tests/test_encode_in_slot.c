@@ -518,12 +518,13 @@ static void test_what_stays_on_the_staging_path(void) {
 // no segment, then the staging path ran them again: +790 user instructions a sample measured on a p1-p4 RELIABLE
 // publisher (experiments/stage1_payg.sh). The instruction count is not a unit-test observable; this is: the second
 // peer_segment() per publish spent the "absent" answer's countdown twice as fast, so a peer on another host was asked
-// about in /dev/shm every tt_SEGMENT_ATTACH_RETRY_SENDS / 2 publishes instead of every tt_SEGMENT_ATTACH_RETRY_SENDS.
+// about in /dev/shm every 128 publishes instead of every 256. Since the answer ages on the summary tick and no longer
+// per call (tt_SEGMENT_ATTACH_RETRY_NS), any number of publishes between two ticks asks once.
 // The control is the same publisher pointed back at the same-host owner, which must take the slot path - so the
 // remote arm's publisher was one the slot path would have accepted, and its refusal came from the destination.
 static void test_a_peer_on_another_host_costs_the_slot_path_nothing(void) {
     struct arm* arm = &arms[ONE_COPY];
-    const uint32_t publishes = 4U * tt_SEGMENT_ATTACH_RETRY_SENDS;
+    const uint32_t publishes = 1024U; // with no summary tick between them
 
     setup(arm, ONE_COPY); // control: the owner's segment, attached
     for (uint32_t i = 0; i < 8; i++) {
@@ -544,12 +545,7 @@ static void test_a_peer_on_another_host_costs_the_slot_path_nothing(void) {
     EXPECT_EQ_U64(0, arm->sender.segment_encoded_in_slot);
     EXPECT_EQ_U64(publishes, arm->sender.tx_datagrams_by_transport[tt_TRANSPORT_UDP]); // every publish went, by UDP
     const int asked = test_mock_segment_attach_calls - attaches_before;
-    EXPECT_TRUE(asked >= 1); // asked at all: the absent answer is what is being counted down
-    EXPECT_TRUE(asked <= (int)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1);
-    if (asked > (int)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1) {
-        printf("  asked about the remote peer %d times in %u publishes, want <= %u\n", asked, (unsigned)publishes,
-               (unsigned)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1U);
-    }
+    EXPECT_EQ_INT(1, asked); // asked once: the absent answer covers every publish until a tick ages it
     teardown(arm);
     test_mock_segments_free();
 }

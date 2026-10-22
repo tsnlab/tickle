@@ -683,7 +683,7 @@
 // Since tt_InitOptions bundle 8 a context sets its own (struct tt_SegmentOptions, tickle.h), and the constants here are
 // its defaults: tt_SEGMENT_BYTES (bytes; this one is also the build's most, through tt_SEGMENT_SLOTS, which sizes the
 // reader's per-slot state), tt_SEGMENT_SLOT_BYTES, tt_SEGMENT_FENCE_HOLD_NS, tt_SEGMENT_DRAIN_PER_POLL,
-// tt_SEGMENT_PROBE_EVERY_MAX, tt_SEGMENT_STALL_PASSES, tt_SEGMENT_ATTACH_RETRY_SENDS, tt_SEGMENT_REVALIDATE_SENDS and
+// tt_SEGMENT_PROBE_EVERY_MAX, tt_SEGMENT_STALL_PASSES, tt_SEGMENT_ATTACH_RETRY_NS, tt_SEGMENT_REVALIDATE_SENDS and
 // tt_SEGMENT_DEAD_READER_NS. tt_PUBLISHER_CLAIMS and tt_SEGMENT_FENCES_SEEN size arrays and stay compile-time.
 #ifndef tt_SEGMENT_BYTES
 #if defined(TT_PLATFORM_FREERTOS)
@@ -768,14 +768,21 @@
 #define tt_SEGMENT_STALL_PASSES 1000
 #endif
 
-// Sends to a peer with no segment before asking /dev/shm about it again. The answer for a peer on
-// another host never changes, so asking per datagram is pure cost - measured at roughly 87,000
-// failed open() calls a second per sender, which halved cross-host throughput. It must not become
-// permanent either: a peer that binds after we first sent to it, or that restarts, has to become
-// attachable. 256 sends costs about 0.4% of the failed calls and bounds the delay at 256 datagrams,
-// which on a link busy enough for the cost to matter is well under a millisecond.
-#ifndef tt_SEGMENT_ATTACH_RETRY_SENDS
-#define tt_SEGMENT_ATTACH_RETRY_SENDS 256
+// How long a "no" stands - a peer with no segment for us - before /dev/shm is asked about it again. The answer for a
+// peer on another host never changes, so asking per datagram is pure cost - measured at roughly 87,000 failed open()
+// calls a second per sender, which halved cross-host throughput. It must not become permanent either: a peer that
+// binds after we first sent to it, or that restarts, has to become attachable. A time, not a count (2026-10-22): it was
+// tt_SEGMENT_ATTACH_RETRY_SENDS (256 sends), which bounded the cost per datagram and the delay in datagrams, so the
+// delay was the sender's rate - well under a millisecond at the rates where the cost mattered, four minutes at 1 Hz.
+// Kept by the summary tick (segment_recheck_sweep(), tickle.c), which reads no clock of its own, so a send reads one
+// byte and nothing else. One discovery update interval: a peer at our own address clears the "no" with every announce
+// it sends (note_same_host_peer()), so this bounds only what no announce reports - a peer behind another address on
+// this host, a segment refused or given up - at about one failed open() a second per such peer.
+#ifdef tt_SEGMENT_ATTACH_RETRY_SENDS
+#error "tt_SEGMENT_ATTACH_RETRY_SENDS was removed: a missing segment is asked again after tt_SEGMENT_ATTACH_RETRY_NS"
+#endif
+#ifndef tt_SEGMENT_ATTACH_RETRY_NS
+#define tt_SEGMENT_ATTACH_RETRY_NS tt_CONTEXT_UPDATE_INTERVAL // nanosecond
 #endif
 
 // Sends over an attached segment before the peer asks the name again. This is not paranoia about

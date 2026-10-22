@@ -12,7 +12,7 @@
 // from UDP").
 //
 // Found 2026-10-11 as test_thread_safety's "unaccounted" loss: node A reaches B over UDP while B's segment is absent
-// or still being built (attach ABSENT or BAD_HEADER, asked again only every tt_SEGMENT_ATTACH_RETRY_SENDS sends),
+// or still being built (attach ABSENT or BAD_HEADER, asked again only once the summary tick ages the answer),
 // then attaches and writes to the ring. B drains its ring before its socket, so it delivered the first ring record
 // and then discarded every UDP datagram still queued behind it as older - BEST_EFFORT ordering, counted in
 // tt_Subscriber.out_of_order_discarded. 1-224 samples a run there, and only when the thread timing put the switch
@@ -470,6 +470,13 @@ static void teardown(bool with_c) {
     free_segments();
 }
 
+// The cached segment answers aged past their deadline, as two summary ticks a retry interval apart do it (the stamp,
+// then the deadline; segment_recheck_sweep()), without moving the clock the rest of the test reads.
+static void age_segment_answers(struct tt_Context* node) {
+    segment_recheck_sweep(node, now_ns);
+    segment_recheck_sweep(node, now_ns + tt_SEGMENT_ATTACH_RETRY_NS);
+}
+
 // Publishes over UDP, with the attach refused, then lets the attach through and publishes until the writer has put
 // RING_SAMPLES in the ring. Returns how many samples went over UDP. The reader does not poll meanwhile, so all of
 // them are still in its socket when the ring records arrive - the order the defect needs.
@@ -483,8 +490,9 @@ static uint32_t switch_writer(struct tt_Context* node, struct tt_Publisher* pub,
     EXPECT_EQ_U64(UDP_SAMPLES, node->segment_unattached_to_udp - udp_before);
     attach_refused = false;
     uint32_t guard = 0;
-    while (node->tx_datagrams_by_transport[tt_TRANSPORT_SHM] == 0 && guard++ < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS) {
-        publish(pub, writer); // over UDP until the absent answer expires and the attach is asked again
+    while (node->tx_datagrams_by_transport[tt_TRANSPORT_SHM] == 0 && guard++ < 4) {
+        age_segment_answers(node); // the absent answer expires, and the attach is asked again
+        publish(pub, writer);
     }
     const uint32_t over_udp = (uint32_t)(node->segment_unattached_to_udp - udp_before);
     for (int i = 1; i < RING_SAMPLES; i++) {
@@ -543,7 +551,8 @@ static void test_control_a_reader_that_drained_its_socket_first(void) {
     attach_refused = false;
     const uint64_t udp_before = node_a.segment_unattached_to_udp;
     uint32_t guard = 0;
-    while (node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM] == 0 && guard++ < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS) {
+    while (node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM] == 0 && guard++ < 4) {
+        age_segment_answers(&node_a);
         publish(&pub_a, 0);
         drain_reader();
     }
@@ -678,14 +687,14 @@ static void test_a_late_fence_does_not_pass_a_newer_one(void) {
     drop_fences = true;
     drain_reader(); // read now, and remembered
     struct tt_SegmentPeer* entry = &node_a.segment_peers[node_b.id];
-    remember_absent(&node_a, entry, entry->ip, entry->port);
+    remember_absent(entry, entry->ip, entry->port);
     attach_refused = true;
     const uint64_t shm_before = node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM];
     for (int i = 0; i < UDP_SAMPLES; i++) {
         publish(&pub_a, 0);
     }
     attach_refused = false;
-    entry->recheck_in = 0;
+    entry->recheck_due = true;
     for (int i = 0; i < RING_SAMPLES; i++) {
         publish(&pub_a, 0);
     }
@@ -719,8 +728,8 @@ static void test_a_full_ring_refuses_the_switch(void) {
         segment_publish(slot, claimed, 0, TEST_HOST_IP, 20009, 1); // filler, never drained
     }
     struct tt_SegmentPeer* entry = &node_a.segment_peers[node_b.id];
-    remember_absent(&node_a, entry, entry->ip, entry->port); // as after a dead-reader give-up
-    entry->recheck_in = 0;
+    remember_absent(entry, entry->ip, entry->port); // as after a dead-reader give-up
+    entry->recheck_due = true;
     const uint64_t fences = node_a.segment_fences_sent;
     EXPECT_TRUE(peer_segment(&node_a, node_b.id, entry->ip, entry->port) == NULL);
     EXPECT_EQ_U64(fences + 1, node_a.segment_fences_sent); // the datagram went; the record found no room

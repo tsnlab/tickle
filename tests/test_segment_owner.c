@@ -155,8 +155,10 @@ static enum tt_SegmentAttach header_verdict_bypassing_ownership(uint32_t* incarn
     return verdict;
 }
 
-// Sends until peer_segment() gives a different answer from `current`, at most `bound` times. Returns the new answer
-// (or `current` if none came).
+// Sends until peer_segment() gives a different answer from `current`, at most `bound` times, a summary tick aging the
+// cached answer by a retry interval after each send (segment_recheck_sweep()). Returns the new answer (or `current` if
+// none came).
+static uint64_t tick_ns = 1;
 static struct tt_SegmentHeader* send_until_changed(struct tt_Context* writer, struct tt_SegmentHeader* current,
                                                    uint32_t bound) {
     for (uint32_t i = 0; i < bound; i++) {
@@ -164,6 +166,8 @@ static struct tt_SegmentHeader* send_until_changed(struct tt_Context* writer, st
         if (now != current) {
             return now;
         }
+        tick_ns += tt_SEGMENT_ATTACH_RETRY_NS;
+        segment_recheck_sweep(writer, tick_ns);
     }
     return current;
 }
@@ -210,10 +214,10 @@ static void test_a_dead_owners_segment_is_never_written(void) {
     pid_t second = spawn_owner();
     EXPECT_TRUE(second > 0);
     if (second > 0) {
-        struct tt_SegmentHeader* found = send_until_changed(&fresh, NULL, (uint32_t)tt_SEGMENT_ATTACH_RETRY_SENDS + 2U);
+        struct tt_SegmentHeader* found = send_until_changed(&fresh, NULL, 4U);
         EXPECT_TRUE(found != NULL);
         EXPECT_EQ_U32((uint32_t)second, found != NULL ? found->incarnation : 0U);
-        found = send_until_changed(&attached_before, NULL, (uint32_t)tt_SEGMENT_ATTACH_RETRY_SENDS + 2U);
+        found = send_until_changed(&attached_before, NULL, 4U);
         EXPECT_TRUE(found != NULL);
         EXPECT_EQ_U32((uint32_t)second, found != NULL ? found->incarnation : 0U);
         kill_owner(second);

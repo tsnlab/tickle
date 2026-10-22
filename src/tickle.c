@@ -843,8 +843,8 @@ static void resolve_segment_options(struct tt_SegmentOptions* segment) {
     if (segment->stall_passes == 0) {
         segment->stall_passes = (uint32_t)tt_SEGMENT_STALL_PASSES;
     }
-    if (segment->attach_retry_sends == 0) {
-        segment->attach_retry_sends = (uint32_t)tt_SEGMENT_ATTACH_RETRY_SENDS;
+    if (segment->attach_retry_ns == 0) {
+        segment->attach_retry_ns = (uint64_t)tt_SEGMENT_ATTACH_RETRY_NS;
     }
     if (segment->revalidate_sends == 0) {
         segment->revalidate_sends = (uint32_t)tt_SEGMENT_REVALIDATE_SENDS;
@@ -2688,13 +2688,15 @@ static void segment_peer_clear(struct tt_Context* node, uint8_t context_id) {
     node->segment_peer_live[context_id] = 0;
 }
 
-static void remember_absent(const struct tt_Context* node, struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
+// A "no" stands until the summary tick finds it due (segment_recheck_sweep()) or a same-host announce clears it.
+static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
     entry->mapping = NULL;
     entry->incarnation = 0;
     entry->ip = ip;
     entry->port = port;
     entry->missing = true;
-    entry->recheck_in = node->opts.segment.attach_retry_sends;
+    entry->recheck_due = false;
+    entry->recheck_stamped = false;
 }
 
 // The peer's segment, attached on first use and kept. NULL when this peer is not reachable that way
@@ -2713,8 +2715,8 @@ static void remember_absent(const struct tt_Context* node, struct tt_SegmentPeer
 // fails, and it cost half of TickLE's cross-host throughput and doubled CPU per sample between
 // 9dbffd40 and d4413383 - with CycloneDDS flat across the same runs, so it was ours. The comment
 // was the specification and the code was the bug. A miss is now remembered for
-// tt_SEGMENT_ATTACH_RETRY_SENDS sends: long enough that the cost disappears, short enough that a
-// peer which binds later still becomes attachable.
+// segment.attach_retry_ns (tt_SEGMENT_ATTACH_RETRY_NS), kept by the summary tick: long enough that the cost
+// disappears, short enough that a peer which binds later still becomes attachable.
 static void ensure_own_segment(struct tt_Context* node);
 
 // Maps a peer's segment in two steps, because the length to map is inside the thing being mapped: the header
@@ -2807,7 +2809,7 @@ static void segment_claims_note(struct tt_Context* node, uint8_t context_id, int
 // (note_head_stall()). The two may meet in either order: an owner that read the datagram first remembers it
 // (tt_Context.segment_fences_seen). A failed send writes no record - there is nothing to wait for - and a ring with no
 // room for the record refuses the attach: the next datagram goes over UDP, as it would have, and the attach is asked
-// again after tt_SEGMENT_ATTACH_RETRY_SENDS. Only an attach that follows UDP pays for this, never a datagram.
+// again after segment.attach_retry_ns. Only an attach that follows UDP pays for this, never a datagram.
 static bool segment_fence(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t ip, uint16_t port) {
     node->segment_fence_generation++;
     const uint8_t fence[tt_SEGMENT_FENCE_LENGTH] = {tt_SEGMENT_FENCE_MARKER, node->id, node->segment_fence_generation};
@@ -2863,8 +2865,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
         if (entry->ip != ip || entry->port != port) {
             peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry)); // a different peer behind this id: ask about that one now
-        } else if (entry->recheck_in > 0) {
-            entry->recheck_in--;
+        } else if (!entry->recheck_due) {
             return NULL; // asked recently; the answer does not change between two datagrams
         }
     }
@@ -2914,7 +2915,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     char path[tt_SEGMENT_PATH_LENGTH];
     if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
         note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
-        remember_absent(node, entry, ip, port);
+        remember_absent(entry, ip, port);
         return NULL;
     }
     size_t bytes = 0;
@@ -2923,7 +2924,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     header = segment_attach_fenced(node, entry, header, bytes, ip, port, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
-        remember_absent(node, entry, ip, port);
+        remember_absent(entry, ip, port);
         return NULL;
     }
     entry->mapped_bytes = bytes;
@@ -3048,10 +3049,10 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
 #if tt_SAMPLE_LENDING
     node->lend.segment_release_deferred = false; // a same-host peer again: the segment is wanted after all
 #endif
-    // And let a cached "no" about this peer expire now rather than in tt_SEGMENT_ATTACH_RETRY_SENDS
-    // sends. Measured 2026-10-02 (COMPARISON 2.2c): in a same-host ping/pong every repetition read
-    // shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach lost a race with
-    // the peer building its own segment, and the countdown then held the answer for 256 more sends. An
+    // And let a cached "no" about this peer expire now rather than after segment.attach_retry_ns (it was
+    // tt_SEGMENT_ATTACH_RETRY_SENDS sends when this was written). Measured 2026-10-02 (COMPARISON 2.2c): in a same-host
+    // ping/pong every repetition read shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach
+    // lost a race with the peer building its own segment, and the countdown then held the answer for 256 more sends. An
     // exchange shorter than that never used shared memory at all, which is the shape of a request/reply
     // service. The countdown is right for the case it was built for, a peer on another host that will
     // never have a segment; it is wrong here, because this function is reached only for a peer at our
@@ -3070,7 +3071,51 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
     if (node->segment_peer_live[context_id] != 0) {
         struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
         if (entry->mapping == NULL && entry->missing) {
-            entry->recheck_in = 0;
+            entry->recheck_due = true;
+        }
+    }
+}
+
+// A cached segment answer's deadline is kept in units of 2^SEGMENT_RECHECK_SHIFT ns (about 1.05 ms) in 32 bits
+// (tt_SegmentPeer.recheck_at): the summary tick that keeps it is a millisecond-scale clock at its finest, and a 32-bit
+// field kept the entry at its size and needs no 64-bit compare on RV32. A span is rounded down - so a tick one interval
+// after the stamp, which is how the summary ticks are spaced, finds the answer due whatever the stamp's phase in a
+// unit - and held to 2^30 units (about 13 days), so a signed difference always orders a deadline against the tick.
+#define SEGMENT_RECHECK_SHIFT 20U
+#define SEGMENT_RECHECK_SPAN_MAX (1UL << 30U)
+static uint32_t segment_recheck_units(uint64_t time_ns) {
+    return (uint32_t)(time_ns >> SEGMENT_RECHECK_SHIFT);
+}
+
+static uint32_t segment_recheck_span(uint64_t span_ns) {
+    const uint64_t units = span_ns >> SEGMENT_RECHECK_SHIFT;
+    return units < SEGMENT_RECHECK_SPAN_MAX ? (uint32_t)units : (uint32_t)SEGMENT_RECHECK_SPAN_MAX;
+}
+
+// The cached segment answers, aged by the summary tick (node_update()) at the poll's own reading `now`: it costs no
+// clock read and nothing per send, where a deadline checked by the send itself needed a clock on the send path - a
+// 64-bit one written by every poll and every publish, which cost the rig's P1 cross-host latency +2.7% and did not
+// link on RV32 FreeRTOS (ROADMAP 5a, ab/hotpath-split). A send reads tt_SegmentPeer.recheck_due and nothing else.
+//
+// An answer is stamped by the first tick after it was given (recheck_stamped), and falls due at the first tick its
+// interval after that stamp: so a "no" stands at least segment.attach_retry_ns and at most that plus two summary
+// intervals. Only answers given are aged: an entry set up and never asked (missing false, no mapping) is not one.
+static void segment_recheck_sweep(struct tt_Context* node, uint64_t now) {
+    const uint32_t tick = segment_recheck_units(now);
+    for (uint32_t id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        if (node->segment_peer_live[id] == 0) {
+            continue;
+        }
+        struct tt_SegmentPeer* entry = &node->segment_peers[id];
+        if (entry->recheck_due || !entry->missing) {
+            continue;
+        }
+        if (!entry->recheck_stamped) {
+            entry->recheck_at = tick + segment_recheck_span(node->opts.segment.attach_retry_ns);
+            entry->recheck_stamped = true;
+        }
+        if ((int32_t)(tick - entry->recheck_at) >= 0) {
+            entry->recheck_due = true;
         }
     }
 }
@@ -3431,7 +3476,7 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
             tt_segment_detach(entry->mapping, entry->mapped_bytes);
             peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry));
-            remember_absent(node, entry, ip, port);
+            remember_absent(entry, ip, port);
             note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says
         }
         if (node->segment_full_warnings == 0) {
@@ -17458,6 +17503,9 @@ static void hybrid_announce(struct tt_Context* node, uint64_t now) {
 
 static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
+#if tt_SEGMENT_ENABLED
+    segment_recheck_sweep(node, time); // the cached segment answers age here, not per send
+#endif
 #if tt_HYBRID_TRANSPORT
     if (hybrid_rx_capable(node)) { // never in a build that cannot receive a run (core's default): compiled out there
         hybrid_reader_tick(node, time);

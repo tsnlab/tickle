@@ -90,7 +90,7 @@ runs in the high mode on each (Fisher p 0.71) and low-mode CPU +0.77% sub, -0.04
 
 **Segment options** (`tt_InitOptions.segment`, bundle 8; section 10). The ring's bytes and slot size (`slot_bytes`, moved
 from `net.segment_slot_bytes`, which no release carried), the fence hold, the dead-reader time, the drain bound per poll,
-the reader's re-measure bound, the stall report and the attach-retry and revalidation counts; each 0 = its config.h
+the reader's re-measure bound, the stall report, the attach-retry time and the revalidation count; each 0 = its config.h
 constant. `bytes` sets the slot count (largest power of two that fits, 4 to the build's `tt_SEGMENT_SLOTS`, which sizes
 the reader's per-slot state); 0 keeps `tt_SEGMENT_SLOTS` slots at any slot size, as before. `dead_reader_ns` 0 is derived
 at creation from the context's discovery timing (one update interval; `tt_SEGMENT_DEAD_READER_NS` at the defaults).
@@ -751,9 +751,9 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 
 **Lifecycle (lazy).** Built when the first same-host peer appears, released when the last goes. **No writer uses a dead
 owner's segment:** the owner's mapping holds a `flock()`; `tt_segment_attach()` refuses an unheld file
-(`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask every `tt_SEGMENT_ATTACH_RETRY_SENDS` sends when absent,
-`tt_SEGMENT_REVALIDATE_SENDS` when attached. A reader idle for `tt_SEGMENT_DEAD_READER_NS` with records waiting is
-given up (UDP until recheck); a peer presumed dead is unmapped at once (`release_peer_segment()`; before 2026-10-22 a
+(`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask a missing segment after `tt_SEGMENT_ATTACH_RETRY_NS`
+(below), an attached one every `tt_SEGMENT_REVALIDATE_SENDS` sends. A reader idle for `tt_SEGMENT_DEAD_READER_NS` with
+records waiting is given up (UDP until recheck); a peer presumed dead is unmapped at once (`release_peer_segment()`; before 2026-10-22 a
 10 Hz writer kept a killed reader's ring mapped for as long as it ran). A wedged head warns after
 `tt_SEGMENT_STALL_PASSES`. **A dead owner's files are swept:** a context building its own segment unlinks every segment
 at its address that nobody holds the flock on, with its bell (`sweep_orphaned_segments()`). The name carries the
@@ -1005,7 +1005,8 @@ context's `tt_InitOptions.reliable` (section 2).
 | `tt_SEGMENT_BELL_FIFO` | 1 | | FIFO doorbell (0 = UDP) |
 | `tt_SEGMENT_DRAIN_PER_POLL` | 4 x slots | | sockets not starved |
 | `tt_SEGMENT_DEAD_READER_NS` | 1 s | | 2/7 of the silence, kept below it |
-| `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` | 256 / 4096 | | counted in sends (ROADMAP 5a) |
+| `tt_SEGMENT_ATTACH_RETRY_NS` | 1 s | | a missing segment asked again, by the summary tick; per context `segment.attach_retry_ns` |
+| `tt_SEGMENT_REVALIDATE_SENDS` | 4096 | | counted in sends (ROADMAP 5a) |
 | `tt_SEGMENT_STALL_PASSES` | 1000 | | wedged-head warning |
 | `tt_SEGMENT_FENCE_HOLD_NS` / `_FENCES_SEEN` | 1 ms / 8 | | fence wait / remembered |
 | `tt_SEGMENT_PROBE_EVERY_MAX` | 512 | | spin re-probe ceiling, epochs |
