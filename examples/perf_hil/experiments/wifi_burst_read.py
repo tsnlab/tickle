@@ -27,6 +27,7 @@ SMALL_MIN_REP = 2000
 # baseline (2026-10-22), whose reps other sessions' builds loaded past nproc/2; the header fixed only the 2000 a rep.
 POOLED_MIN = 2 * SMALL_MIN_REP
 LARGE_MIN_REP = 100
+SMALL_HZ = 100  # the small cells' offered rate (wifi_burst_loss_netns.sh SMALL_HZ)
 PERIOD_MS = 10.0  # one sample period at 100 Hz: detection by the next sample
 ROUND_FACTOR = 1.5  # a repair round: a round trip and half a round trip of retry timer
 P99_TARGET = 0.01
@@ -153,8 +154,10 @@ def load_runs(out, profile="ethernet"):
             for line in ping + echo:
                 if line.startswith("RSTATS:"):
                     d2 = kv(line)
+                    # A histogram line's buckets are named alike in every histogram: keyed by its name too.
+                    pre = d2.get("role", "?") + "." + (d2["hist"] + "." if "hist" in d2 else "")
                     for k, v in d2.items():
-                        r["rstats"][d2.get("role", "?") + "." + k] = v
+                        r["rstats"][pre + k] = v
         for res in (r["ping"], r["echo"], r["idle"]):
             if res is not None and "ctx" in res and "end_ns" in res:
                 r["ends"][res["ctx"]] = int(res["end_ns"])
@@ -215,7 +218,14 @@ def per_run(r, dur):
         offered = max(0, published - int(num(p, "warmup")))
         delivered = int(num(e, "scored"))
         m.update(offered=offered, delivered=delivered, pongs=int(num(p, "scored")), retx=int(num(p, "retransmitted")),
-                 cpu_ms=num(p, "cpu_ms") + num(e, "cpu_ms"), join_ms=num(p, "join_ms"))
+                 cpu_ms=num(p, "cpu_ms") + num(e, "cpu_ms"), join_ms=num(p, "join_ms"), published=published)
+        # The echo's (the one-way reader's) detect-to-recover histogram: gaps recovered within 8 ms, and all of them -
+        # R2's falsifier (header, AMENDED 2026-10-23 for R2).
+        rs0 = r.get("rstats", {})
+        hist = {k.rsplit(".", 1)[1]: int(num(rs0, k)) for k in rs0 if k.startswith("echo.detect_to_recover.")
+                and re.fullmatch(r"(lt|ge)\d+us", k.rsplit(".", 1)[1])}
+        m["d2r_all"] = sum(hist.values())
+        m["d2r_fast"] = sum(v for k, v in hist.items() if k.startswith("lt") and int(k[2:-2]) <= 8192)
         # Copies that reached the receiver after the sample (core's own count, RSTATS): the echo's decode never sees
         # them - a RELIABLE reader drops a copy below its acknowledged sequence before decoding - so the node's own
         # "duplicates" is always 0 for RELIABLE and cannot decide R7 (found on the first baseline, 2026-10-22).
@@ -310,6 +320,11 @@ def pool(runs, dur):
         c["p50s"] = [x.get("p50") for x in ms if "p50" in x and not x["loaded"]]
         c["p99s"] = [x.get("p99") for x in ms if "p99" in x and not x["loaded"]]
         c["u_drops"] = ud
+        # R2's detection term (header, AMENDED 2026-10-23): ping's unicast skbs, sent and dropped, a second of samples.
+        pub = sum(x.get("published", 0) for x in ms)
+        c["egress_pps"] = (us + ud) / (pub / SMALL_HZ) if ms and pub else float("nan")
+        c["d2r_all"] = sum(x.get("d2r_all", 0) for x in ms)
+        c["d2r_fast"] = sum(x.get("d2r_fast", 0) for x in ms)
         # Frames per skb on ping's unicast band: tc counts a multi-frame (GSO) skb's segments, the veth its skbs.
         c["segs_per_skb"] = tot("u_segs") / (us + ud) if ms and us + ud else float("nan")
     return cells
@@ -410,6 +425,14 @@ def rounds_needed(loss_pct, burst):
     return k
 
 
+def detection_ms(burst, egress_pps):
+    """R2's detection term (header, AMENDED 2026-10-23): the rest of a burst after a lost datagram, B - 1 packets on
+    average, at the writer's egress packet rate."""
+    if math.isnan(egress_pps) or egress_pps <= 0:
+        return float("nan")
+    return 1000.0 * (burst - 1) / egress_pps
+
+
 def rules(cells, void, campaign_void, treat_void=()):
     out = []
 
@@ -432,7 +455,10 @@ def rules(cells, void, campaign_void, treat_void=()):
 
     for arm, (lp, b) in DECISION_LOSS.items():
         if not cell_ok(arm, "rel_small"):
-            out.append(("R1/R2", "VOID", f"{arm} rel_small: {'; '.join(void.get((arm, 'rel_small'), ['missing']))}"))
+            why = void.get((arm, "rel_small"), ["missing"]) + campaign_void
+            out.append(("R1/R2", "VOID", f"{arm} rel_small: {'; '.join(why)}"))
+            # Until 2026-10-23 this VOID did not reach the READING, which then said "R1/R2 pass" (WW's ETHERNET run).
+            fails.setdefault("VOID", []).append("R1/R2")
             continue
         c = cells[(arm, "rel_small")]
         if len(c["owd"]) < POOLED_MIN:
@@ -442,10 +468,27 @@ def rules(cells, void, campaign_void, treat_void=()):
             continue
         verdict("R1", c["goodput"] >= 0.995, f"{arm} rel_small delivered {100 * c['goodput']:.2f}% (>= 99.5%)", arm)
         k = rounds_needed(lp, b)
-        limit = base_owd + PERIOD_MS + k * ROUND_FACTOR * base_rtt
+        limit0 = base_owd + PERIOD_MS + k * ROUND_FACTOR * base_rtt
         p99 = quantile(c["owd"], 0.99) / 1000.0
+        # As registered on 2026-10-22, printed beside the amended rule; it no longer feeds the READING.
+        ok0 = p99 <= limit0
+        out.append(("R2-as-registered", "PASS" if ok0 else "FAIL", f"{arm} rel_small one-way p99 {p99:.2f} ms (<= "
+                    f"{limit0:.2f} ms: base_owd + T + {k} x 1.5 x base_rtt)"))
+        if not ok0:
+            fails.setdefault("R2-as-registered", []).append(arm)
+        det = detection_ms(b, c["egress_pps"])
+        if math.isnan(det):
+            out.append(("R2", "VOID", f"{arm} rel_small: no egress packet rate for the detection term"))
+            fails.setdefault("VOID", []).append("R1/R2")
+            continue
+        limit = limit0 + det
         verdict("R2", p99 <= limit, f"{arm} rel_small one-way p99 {p99:.2f} ms (<= {limit:.2f} ms: base_owd + T + "
-                f"{k} x 1.5 x base_rtt), {len(c['owd'])} latencies", arm)
+                f"D {det:.2f} + {k} x 1.5 x base_rtt; D = (B - 1) / R, R {c['egress_pps']:.1f} pkt/s), "
+                f"{len(c['owd'])} latencies", arm)
+        if p99 > limit and c["d2r_all"] and c["d2r_fast"] >= 0.5 * c["d2r_all"]:
+            out.append(("R2-falsifier", "info", f"{arm}: {c['d2r_fast']} of {c['d2r_all']} gaps recovered within 8 ms "
+                        "of detection and the p99 still over the amended limit - the excess is neither detection nor "
+                        "repair rounds: the amendment explains nothing here"))
         out.append(("R2-all", "info", f"{arm} rel_small one-way p99 over every rep, loaded ones included: "
                     f"{quantile(c['owd_all'], 0.99) / 1000.0:.2f} ms of {len(c['owd_all'])}"))
     ctl_l = cells.get(("ctl", "rel_large"))
@@ -511,6 +554,8 @@ def reading(fails_cells):
         lines.append("R3/R4 VOID: the large decision cells cannot be read - neither a pass nor a lift")
     elif not large:
         lines.append("R3/R4 pass: large-sample repair within budget -> no range NACK lift")
+    if "ge5b2" in fails.get("R2-as-registered", []) and "ge5b2" not in small:
+        lines.append("R2 as registered on 2026-10-22 (no detection term) fails at ge5b2: it would have read 'lift FEC'")
     for name, what in (("R5", "false peer deaths -> discovery silence / unicast summary repeat (local values)"),
                        ("R6", "slow joins -> announce/summary repeat (local values)"),
                        ("R7", "spurious repairs after a delay step -> the RTT estimator (local value)")):
