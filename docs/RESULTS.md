@@ -443,10 +443,27 @@ skb carried up to 9.2 frames on average, so slot and loss act per skb (p50 5 ms 
 4,995-127,131 units resent a rep, p99 up to 503 ms) - 45-unit IP runs, a lost frame resending the run. Delivered 100% in
 every 1 MiB cell; p50 47-99 ms, p99 58-651 ms.
 
+Corrected 2026-10-23 (`WBS`): the storm was neither the queue nor the IP runs. One variant per hypothesis, the control
+offload off, 3 reps: netem limit 100,000 stormed 2 of 3 with 0 drops (the drops were the storm's own overflow); MTU
+units (`-F mtu`) 3 of 3; no `slot` 0 of 3 (0-151 resent, for DATA gaps); broadcast in the unicast band 0 of 3 (0-112
+resent, no timer ACKNACK); the base 3 of 3 at load 47-51 and 0 of 3 at load 2. The cause, in core: a reliable HEARTBEAT
+was unicast only from an empty `tx_buffer`, so one sent while a discovery summary was batched there rode it broadcast -
+through the empty broadcast band, while the unicast band still held the sample's ~45 ms drain - and announced a sample
+still arriving. The reader asked for all of it, and asked again every 1 ms (`retry_initial`: nothing timed yet on a
+lossless path) while it drained, each request resent in full. Traced: one broadcast HEARTBEAT, one revealed gap, 7,404
+resends; runs with none resent nothing. The fix sends the batched content first and the HEARTBEAT to the peers
+(`heartbeat_unicast_count()`). The control with every node pinned to one CPU (their own contention, no load generator),
+parent and fix in alternation, 20 reps each: the parent stormed in 7 (5,025-78,840 resent), the fix in 0. Rerun per
+frame with the fix (3 reps, ctl 0 resent, load 1-7): R3 PASS at 5%B4 and 10%B4 (100% delivered); R4 PASS at 5%B4 (p50
+54.1 <= 74.2 ms) and FAIL at 10%B4 (111.2 ms), reverse bytes 0.25% of forward: by the rule a timer or pacing value, no
+wire lift. 1.15 and 1.21 resends per lost unit.
+
 Levers for the Wi-Fi profile, by evidence: (1) the large-sample retry against the link's serialization (`link_rate`, the
-retry floor) and pacing - the lossless control storms; (2) liveliness of pairs with no data - unicast summaries to known
-peers or a longer silence; (3) the reader's ACKNACK retry under jitter - timer ACKNACKs outnumber immediate ones 4.7x
-in the median rep (101x under `tv`), 2-4 resends per loss; (4) the hybrid estimator under bursts - at 1%B8 it kept 2-unit runs, 5.2 resends per lost frame
+retry floor) and pacing - the lossless control storms (corrected above: the storm was a HEARTBEAT on the broadcast path,
+fixed in core; R4 at 10%B4 is what is left of this lever, and the 1 ms first retry is what made one false gap 10 samples
+of resends); (2) liveliness of pairs with no data - unicast summaries to known peers or a longer silence; (3) the
+reader's ACKNACK retry under jitter - timer ACKNACKs outnumber immediate ones 4.7x in the median rep (101x under `tv`),
+2-4 resends per loss; (4) the hybrid estimator under bursts - at 1%B8 it kept 2-unit runs, 5.2 resends per lost frame
 against 2.0 at 1%B2 in MTU units. Batching was not exercised.
 
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
@@ -485,6 +502,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SP | the same, `s11_publisher_cpu.py` | `228da18d` | 2026-10-17 | `fair_samehost_228da18d_20261017-144159.*` |
 | SC | the same, read at `a89aefe2` (R4 of `f2127ec3`) | `2579e822` | 2026-10-18 | `creation_rtt_samehost_2579e822_20261018-092008.*` |
 | WB | `wifi_burst_loss_netns.sh`, `wifi_burst_read.py` (PC netns; -O2, segment off) | `9c503bc1` | 2026-10-22 | `wifi_baseline/base_20261022/`, `wifi_baseline/large_nogso_20261023/` (`final_reading.txt`) |
+| WBS | `large_storm_netns.sh`, `large_storm_ab_netns.sh`, the WB harness (offload off) | `25dd0fb0` core, and with the HEARTBEAT fix | 2026-10-23 | `large_storm/variants_20261023/`, `ab_pinned_20261023/`, `ab_pinned2_20261023/`, `r34_fix_20261023/` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
