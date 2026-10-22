@@ -55,7 +55,8 @@
 #     R2 rel_small one-way p99 <= base_owd + T + K x 1.5 x base_rtt, K = 2 at ge5b2 and 3 at ge5b4 - the repair
 #        rounds an ideal ARQ needs at that arm's p99 (wifi_burst_read.py derives K: a lost sample needs another round
 #        while the burst lasts, ~(1 - 1/B)^2 a round at these rates, and K is the least k with L x that^k <= 1%), each
-#        round a round trip and half a round trip of retry timer.
+#        round a round trip and half a round trip of retry timer. (Since 2026-10-23 plus a detection term D: AMENDED
+#        below.)
 #     R3 rel_large delivers >= 95% of offered at ge5b4 and ge10b4.
 #     R4 rel_large one-way p50 <= ctl p50 + 4 x base_rtt at ge5b4 and ge10b4 (one bitmap ACKNACK names every unit of
 #        a 1 MiB sample - 723 bits, inside the 8192-bit window - so an ideal repair takes a few rounds).
@@ -91,6 +92,27 @@
 #     announce_repeats sent). A wifi run's cell is VOID where any node ran the default miss threshold or the idle node
 #     sent no summary copy or ping no announce repeat; an ethernet run's where any node sent either or ran another
 #     threshold. The reader prints each cell's totals beside R5 and R6.
+#
+# AMENDED 2026-10-23, BEFORE THE WIFI REPAIR RUNS (R2 only; K, T, the 1.5 factor and every other threshold unchanged):
+#   - R2's limit gains a DETECTION term: base_owd + T + D + K x 1.5 x base_rtt, D = (B - 1) / R. A lost sample cannot
+#     be asked for before the reader sees the gap, and it sees it only when a later datagram of the writer gets
+#     through. netem's Gilbert-Elliott burst is counted in packets on the writer's egress (1-h = 100%: the bad state
+#     loses every packet, and leaves it with probability r = 1/B a packet), so after a lost datagram the burst goes
+#     on, memoryless, for (1 - r) / r = B - 1 more packets on average, and those packets take (B - 1) / R seconds,
+#     R being the egress's packet rate. T already holds the wait for the one next sample after the burst (an
+#     ACKNACK getting through first reveals nothing). R is the arm's own realized rate: ping's unicast skbs, sent and
+#     dropped (tc), over its published samples / 100 Hz, pooled over the cell's reps - the arm's repair traffic
+#     included, which makes R larger and D smaller than at the offered rate (~101/s), so a profile that sends more
+#     gets a tighter limit, never a looser one. D is the mean, as K's per-round continuation is: a quantile of the
+#     burst would count the tail twice, K already giving a lost sample more rounds while the burst lasts.
+#   - Why: on the first baseline and on WW, core's detect-to-recover was under 8 ms for ~90% of gaps at ge5b2/ge5b4,
+#     yet the p99 exceeded the limit by 4-17 ms; the round count left out the time before detection (corrected
+#     above). This is written AFTER those runs failed R2, so their re-reading under it is a control of the formula,
+#     not a test of anything: the test is a run made after this line. The reader prints both readings, the rule as
+#     registered on 2026-10-22 (R2-as-registered) and as amended (R2, which the READING uses).
+#   - What would show the term wrong: in a run made after it, the reader's own detect-to-recover (RSTATS) staying
+#     under 8 ms for most gaps while the p99 still exceeds the amended limit - the excess is then neither detection
+#     nor repair rounds, and the amendment explains nothing.
 #
 # Usage: [REPS=3] [REP_FIRST=1] [DUR=30] [ARMS="ctl ge1b2 ..."] [CELLS="be_small rel_small rel_large"] [PROFILE=ethernet|wifi]
 #        [OUT=dir] wifi_burst_loss_netns.sh
