@@ -850,11 +850,17 @@ table is now written where it is used, and read only there:
 | `tx_buffer`, `rx_buffer` | up to `tx_tail` / what a receive put there | as a datagram is built / received |
 | `scheduler` | below `scheduler_tail` | by the heap's push |
 | `endpoints` | below `endpoint_count` | by the endpoint's creation |
-| `endpoint_index` | where its `endpoint_index_used` bit is set | by the rebuild, O(size / 64 + endpoints) |
+| `endpoint_index` | below `endpoint_index_mask` + 1 | by the rebuild, O(slots in use + endpoints) |
 | `update_part_received[source]` | while `update_part_count[source]` is set | zeroed when that count is set |
 | `frag_slots` | below `frag_slots_used` | when a slot is first claimed; the claim order is unchanged |
 
-A lookup in the endpoint index tests the slot's bit before it reads the slot. `platform/linux/garbage_ctx_check.c`
+The endpoint index uses the smallest power of two of slots at least twice its endpoints (16 at least), NULLed by the
+rebuild, and every lookup masks with that size. The mask doubles as the staleness flag, so a lookup loads one field and
+a probe is one load and a NULL test; a probe ends at an empty slot (the slots always outnumber the endpoints), and
+`for_each_endpoint()` reads the mask again after each visit rather than holding it across the visit's calls. The
+change's first form, an occupancy bitmap tested on every probe, cost the rig's core cells +0.4..+0.8% user
+instructions per sample (core gate v2); counted exactly on aarch64 (`aarch64_insn/crosshost_qemu.sh`), this form takes
+35 fewer per received sample than the full-table index did, in `dispatch_submessage()`. `platform/linux/garbage_ctx_check.c`
 (test-linux) runs contexts created in storage holding a pattern, and again reset over their last state, through
 pub/sub, reliable under loss, fragments, a service and the same-host path; its `_msan` builds run it under
 MemorySanitizer from unwritten storage, and `bundle10_rss/msan_mutants.sh` shows that a read of each table put back

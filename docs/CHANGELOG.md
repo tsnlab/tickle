@@ -142,7 +142,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   [DESIGN.md](DESIGN.md) section 11): `tx_buffer`, `rx_buffer`, the scheduler heap, `endpoints[]`, the endpoint index,
   the announce-fragment bitmaps and the reassembly slots are written where they are used and read only there, so their
   untouched pages stay out of memory: an rmw_tickle context's resident 369-441 KiB fell to 70-150 KiB. The endpoint
-  index keeps an occupancy bitmap (`endpoint_index_used`) and a rebuild no longer stores to every slot. The wire is
+  index puts in use only the smallest power of two of slots at least twice its endpoints, and a rebuild NULLs only
+  those (`endpoint_index_mask`, which is also the staleness flag, so a lookup loads one field and tests no bitmap). The wire is
   unchanged. `platform/linux/garbage_ctx_check.c` (test-linux, and under MemorySanitizer) runs contexts from unzeroed
   storage.
 
