@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rss_tables_rmw</name>
+  <version>0.0.1</version>
+  <description>bundle10_rss: one rclcpp node per role (pub, sub, server, client, idle) whose process hosts an rmw_tickle
+    context, for measuring which of the context's tables become resident (rss_tables_preload.so).</description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rosidl_typesupport_tickle_c</depend>
+  <depend>rosidl_typesupport_tickle_cpp</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
