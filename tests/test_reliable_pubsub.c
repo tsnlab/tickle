@@ -1883,6 +1883,80 @@ static void test_a_backed_off_recovery_is_not_timed(void) {
     }
 }
 
+// One gap on `proxy` asked for at once and then `retries` times by the timer 1 ms apart, its repair arriving 1 ms after
+// the last ask; `busy` marks the writer's large sample as still arriving meanwhile. Returns how long the recovery took.
+static uint64_t recover_after(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
+                              uint32_t seq, int retries, bool busy) {
+    struct tt_WriterProxy* proxy = remote_writer_proxy(sub);
+    uint64_t asked = test_mock_now + tt_MILLISECOND;
+    test_mock_now = asked;
+    uint32_t tail = write_data(node, seq + 1, 100 * (seq + 1), seq + 1); // seq is missing: an immediate ACKNACK
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    proxy->probe_busy = busy;
+    for (int i = 0; i < retries; i++) {
+        test_mock_now += tt_MILLISECOND;
+        tt_Context_unschedule(node, acknack_retry, proxy);
+        acknack_retry(node, tt_get_ns(), proxy);
+    }
+    test_mock_now += tt_MILLISECOND;
+    tail = write_data(node, seq, 100 * seq, seq);
+    node->rx_targeted = true;
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node->rx_targeted = false;
+    EXPECT_EQ_U64(0, proxy->probe_ns);
+    tt_Context_unschedule(node, acknack_retry, proxy);
+    return test_mock_now - asked;
+}
+
+// A WIFI link's readers time their recoveries by repair_timing_times() (tt_LinkOptions.repair_timing, 2026-10-23): the
+// first recovery whatever the back-off, after it only one its first request answered. Without it, the rule as before
+// (test_a_backed_off_recovery_is_not_timed). Each arm on a fresh proxy, gaps in order:
+//   arm 0, repair_timing: a recovery past the back-off (5 retries) seeds the estimate; then one with 1 retry is not
+//   timed;
+//          then one with none is.
+//   arm 1, the default: the same gaps - the first is not timed (srtt stays 0), the second is (1 retry is under the
+//          back-off), the third is.
+//   arm 2, repair_timing, the writer's large sample still arriving at the first: it seeds nothing; the next, not busy
+//          and with 1 retry, seeds.
+static void test_wifi_repair_timing_times_the_first_recovery_and_then_karns(void) {
+    for (int arm = 0; arm < 3; arm++) {
+        test_mock_reset();
+
+        struct tt_Context node;
+        struct tt_TypeSupport topic;
+        struct tt_Subscriber sub;
+        init_node_and_topic(&node, &topic);
+        init_subscriber_registered_on_node(&sub, &node, &topic);
+        node.repair_timing = arm != 1;
+        struct tt_Header header;
+        init_header(&header);
+
+        uint32_t tail = write_data(&node, 1, 100, 1);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+        EXPECT_TRUE(proxy != NULL);
+        proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+
+        uint32_t srtt = 0;
+        uint32_t rttvar = 0;
+        uint64_t took = recover_after(&node, &sub, &header, 2, 5, arm == 2);
+        if (arm == 0) {
+            rtt_estimate_fold(&srtt, &rttvar, took); // the seed, past the back-off
+        }
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        took = recover_after(&node, &sub, &header, 4, 1, false);
+        if (arm != 0) {
+            rtt_estimate_fold(&srtt, &rttvar, took); // arm 1: under the back-off; arm 2: the seed
+        }
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
+        took = recover_after(&node, &sub, &header, 6, 0, false);
+        rtt_estimate_fold(&srtt, &rttvar, took); // answered at the first request: timed in every arm
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
+    }
+}
+
 // Karn's ambiguity. The requested sample can come back as the retransmission its ACKNACK caused, or as
 // the original, which was only late - on the rig, microseconds after the request. Timing the original
 // put 12.6 us into the estimate under 20 ms of injected delay. Only a copy addressed to this node (a
@@ -5180,6 +5254,7 @@ int main(void) {
     test_retry_interval_estimate_converges_and_is_bounded();
     test_recovery_probe_times_from_the_first_request();
     test_a_backed_off_recovery_is_not_timed();
+    test_wifi_repair_timing_times_the_first_recovery_and_then_karns();
     test_recovery_probe_ignores_a_late_original();
     test_recovery_probe_only_times_the_watermark();
     test_recovery_estimate_resets_when_a_slot_is_reused();

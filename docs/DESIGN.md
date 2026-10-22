@@ -164,7 +164,8 @@ the time), 0 ETF drops.
 
 **Link profiles** (`tt_LinkOptions.profile`, network-profiles phase 0 items B and G, 2026-10-22). A link names its
 medium, and the profile fills the link's zero fields; an explicit field always wins. ETHERNET (0) is every value a
-context had before. WIFI is ETHERNET's values but for discovery ("Wi-Fi discovery" below, 2026-10-23); the update
+context had before. WIFI is ETHERNET's values but for discovery ("Wi-Fi discovery" below, 2026-10-23) and its
+readers' retry estimate ("Wi-Fi repair timing" below); the update
 interval does not change per profile (each context's summary carries its own timing since 2026-10-22).
 
 | field | ETHERNET, WIFI | T1S | TSN | applied |
@@ -181,6 +182,7 @@ interval does not change per profile (each context's summary carries its own tim
 | `summary_unicast` | off; **WIFI on** | off | off | **per link**: copies to the peers on it |
 | `announce_repeats` | none; **WIFI 3** | none | none | context: the most |
 | `discovery.miss_threshold` (context's, where 0 or default) | 3; **WIFI 6** | 3 | 3 | context: WIFI's if any link is WIFI |
+| `repair_timing` | off; **WIFI on** | off | off | context: on if any link is |
 
 Only the unicast threshold is per link: the send path already resolves each destination to its link. Everything else
 is one value for the context, because a datagram is encoded once for all the links it goes to and a sample is cut once
@@ -234,6 +236,18 @@ WIFI adds three things, each for one failure:
 Off the per-sample path: one round a second, a scheduler entry per change, the summary's source address recorded.
 ETHERNET's wire is unchanged (`tests/wire_identity_link_profiles.sh` and `_discovery_timing.sh`, the former with a
 mutant giving every link WIFI's copies and repeats, which differs).
+
+**Wi-Fi repair timing** (`repair_timing`, network-profiles phase 3, local values, 2026-10-23). Which recoveries a
+reliable reader times for its retry interval (section 6). The default times those answered within `tt_RELIABLE_RETRY`
+retries, none the back-off reached, and waits `retry_initial` (1 ms) until the first. On the WB Wi-Fi arms a recovery
+takes 6-50 ms, so every one reached the back-off, none was ever timed, and the reader asked every 1 ms for good: 2-3
+resends per lost datagram, copies after delivery of 18-36% of samples under the time-varying arm. With `repair_timing`
+the first recovery is timed whatever the back-off (with no estimate the waits were `retry_initial`'s, not an interval
+the back-off doubled), and after it only one its first request answered (Karn's rule): a retried recovery spans its
+retry's wait, and timed (the default rule once seeded) it grew the interval with the loss and put a doubly lost
+sample's second round late - one-way p99 38-40 ms against 22-23 ms at 5% loss, bursts of 4. A busy recovery (the
+writer's large sample still arriving) seeds nothing. Read on the recovery path only (`end_watermark_probe()`); the
+retry, publish and send paths are unchanged, and ETHERNET's recoveries are timed as before. Measured in RESULTS `WR`.
 
 **Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
 link averages at most `pacing_rate` bits per second on the wire (IP, UDP and Ethernet framing counted, a datagram's
