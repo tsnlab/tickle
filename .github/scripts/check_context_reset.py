@@ -95,6 +95,8 @@ SURVIVES_RESET = {
                  "does reset",
     "update_part_received": "process_announce(), which zeroes a source's row when it sets update_part_count[source]; "
                             "update_parts_any() reads no row whose count is 0, and reset_node_state() zeroes the counts",
+    "frag_slots": "frag_slot_for(), which claims slot frag_slots_used and writes its header; nothing reads a slot at or "
+                  "past frag_slots_used, which reset_node_state() does reset",
     "rx_buffer": "the receive (the HAL) or a segment record copied in; nothing reads past what was put there",
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
                    "does initialise that, so the payload never needs to be",

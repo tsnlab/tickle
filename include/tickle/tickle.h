@@ -1905,6 +1905,9 @@ struct tt_Context {
 #if tt_FRAG_ENABLED
     // DATA_FRAG reassembly - struct tt_FragSlot above.
     struct tt_FragSlot frag_slots[tt_FRAG_REASSEMBLY_SLOTS];
+    // Slots [0, frag_slots_used) have been claimed since the reset and are the only ones read; the others are free
+    // and their headers unwritten, so a context that never reassembles writes none of the slots' pages (2026-10-22).
+    uint32_t frag_slots_used;
     uint32_t frag_clock; // counts claims, so the oldest slot can be found without a clock read
     // Samples put back together and handed on; reassemblies given up to make room for a newer sample (a
     // fragment lost, or a sender outrunning tt_FRAG_REASSEMBLY_SLOTS); and fragments refused as
