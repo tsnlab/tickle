@@ -782,40 +782,40 @@ static int broadcasts(void) {
 static void test_wifi_announce_repeats(void) {
     struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
     create(&opts, -1);
-    run_until(test_mock_now + 2 * tt_SECOND); // whatever the creation announced, and its repeats
+    run_until(test_mock_now + (2 * tt_SECOND)); // whatever the creation announced, and its repeats
     // A change: its announce once the tick is quiet, then the repeats at 100, 300 and 700 ms after it.
     uint64_t sent = node.announce_repeats_sent;
     create_publisher(&pubs[0], "changes_the_list", &TEST_QOS_UNRELIABLE, NULL);
     uint64_t change = test_mock_now + tt_CONTEXT_TX_INTERVAL; // announce_soon: the change's broadcast, once quiet
     start_capture();
-    run_until(change + 99 * tt_MILLISECOND);
+    run_until(change + (99 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent, node.announce_repeats_sent);
     int before = broadcasts();
-    run_until(change + 101 * tt_MILLISECOND);
-    run_until(change + 103 * tt_MILLISECOND); // its flush tick
+    run_until(change + (101 * tt_MILLISECOND));
+    run_until(change + (103 * tt_MILLISECOND)); // its flush tick
     EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
     EXPECT_TRUE(broadcasts() > before); // a broadcast went
-    run_until(change + 299 * tt_MILLISECOND);
+    run_until(change + (299 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
-    run_until(change + 301 * tt_MILLISECOND);
+    run_until(change + (301 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent);
-    run_until(change + 699 * tt_MILLISECOND);
+    run_until(change + (699 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent);
-    run_until(change + 701 * tt_MILLISECOND);
+    run_until(change + (701 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 3U, node.announce_repeats_sent);
-    run_until(change + 3 * tt_SECOND);
+    run_until(change + (3 * tt_SECOND));
     EXPECT_EQ_U64(sent + 3U, node.announce_repeats_sent);
     // A change while they run starts them again, for the newer list: the first chain's 300 ms repeat does not go.
     sent = node.announce_repeats_sent;
     create_publisher(&pubs[1], "changes_it_again", &TEST_QOS_UNRELIABLE, NULL);
     change = test_mock_now + tt_CONTEXT_TX_INTERVAL;
-    run_until(change + 101 * tt_MILLISECOND);
+    run_until(change + (101 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
     create_publisher(&pubs[2], "and_again", &TEST_QOS_UNRELIABLE, NULL);
-    run_until(change + 104 * tt_MILLISECOND); // the second change's announce; its repeats from ~204 ms
-    run_until(change + 301 * tt_MILLISECOND);
+    run_until(change + (104 * tt_MILLISECOND)); // the second change's announce; its repeats from ~204 ms
+    run_until(change + (301 * tt_MILLISECOND));
     EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent); // the second chain's first, not the first chain's second
-    run_until(change + 3 * tt_SECOND);
+    run_until(change + (3 * tt_SECOND));
     EXPECT_EQ_U64(sent + 1U + tt_LINK_WIFI_ANNOUNCE_REPEATS, node.announce_repeats_sent);
     destroy();
 
@@ -823,9 +823,9 @@ static void test_wifi_announce_repeats(void) {
     opts = one_link(tt_LINK_PROFILE_ETHERNET);
     create(&opts, -1);
     create_publisher(&pubs[0], "changes_the_list", &TEST_QOS_UNRELIABLE, NULL);
-    run_until(test_mock_now + 5 * tt_MILLISECOND);
+    run_until(test_mock_now + (5 * tt_MILLISECOND));
     EXPECT_TRUE(!tt_Context_unschedule(&node, announce_repeat, NULL));
-    run_until(test_mock_now + 3 * tt_SECOND);
+    run_until(test_mock_now + (3 * tt_SECOND));
     EXPECT_EQ_U64(0, node.announce_repeats_sent);
     destroy();
 }

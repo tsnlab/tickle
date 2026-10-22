@@ -7617,7 +7617,10 @@ static uint16_t advertised_ip_reassembly_max(uint32_t setting) {
 
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
+    node->summary_copies = false; // until link_profiles_apply() says which links take copies and repeats
+    node->announce_repeats = 0;
     node->announce_repeats_left = 0;
+    node->announce_repeat_gap_ns = 0;
     node->summary_copy_next = 0;
     node->summary_copy_ns = 0;
     node->summary_copies_sent = 0;
@@ -7651,6 +7654,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
         node->peer_silence_ns[i] = 0;
+        node->summary_peer_ip[i] = 0;
         node->summary_peer_port[i] = 0;
         node->update_part_generation[i] = 0;
         memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
