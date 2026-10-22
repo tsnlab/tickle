@@ -316,7 +316,9 @@ none is missed). `tt_receive()` waits on the semaphore, which `tt_wake_signal()`
 | `tt_get_ns()` | `CLOCK_MONOTONIC` / CLINT | every deadline and duration |
 | `tt_get_wall_ns()` | `CLOCK_REALTIME` / same counter (or SNTP) | DATA timestamp, source timestamp, per-launch id draws |
 
-Dates are the monotonic reading plus `wall_offset_ns`, re-read every second. A publish reads one clock. The 32-bit
+Dates are the monotonic reading plus `wall_offset_ns`, re-read every second. A publish reads one clock, and the first publish of a scheduler
+entry none: it takes the reading the poll ran the entry at, so its stamp is early by the entry's own work before it, as
+a received sample's is by the callbacks before it. The 32-bit
 stamp is rebuilt within a 71.6-minute span, so clocks must agree within +-35.8 min. rmw_tickle's lifespan takes a
 sample's age once on arrival, then counts on the monotonic clock.
 

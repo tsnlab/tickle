@@ -51,6 +51,50 @@ MUTANTS = [
         "    return tt_get_ns();",
         "core",
     ),
+    # A scheduled publish takes the poll's reading (2026-10-22): the first publish of an entry the poll ran at a fresh
+    # reading, once. test_clock_step.c's scheduled case counts the reads and checks each stamp.
+    (
+        "a scheduled publish reads the clock again (the core before 2026-10-22)",
+        "src/tickle.c",
+        "    uint64_t now = node->entry_clock_ns;\n    if (now != 0) {",
+        "    uint64_t now = 0;\n    if (now != 0) {",
+        "core",
+    ),
+    (
+        "the poll's reading not consumed: a second publish in the entry stamps it too",
+        "src/tickle.c",
+        "    if (now != 0) {\n        node->entry_clock_ns = 0;\n    } else {",
+        "    if (now != 0) {\n    } else {",
+        "core",
+    ),
+    (
+        "the reading left set after the entry: a publish outside the poll takes it",
+        "src/tickle.c",
+        "        node->entry_clock_ns = 0; // the entry is over: its reading is not the next one's\n",
+        "",
+        "core",
+    ),
+    (
+        "every entry of a non-blocking poll at the first's reading",
+        "src/tickle.c",
+        "        fresh = false;\n    }",
+        "    }",
+        "core",
+    ),
+    (
+        "an entry handed a reading it was not run at",
+        "src/tickle.c",
+        "        node->entry_clock_ns = fresh ? now : 0;",
+        "        node->entry_clock_ns = now;",
+        "core",
+    ),
+    (
+        "the blocking poll's entries not at a fresh reading",
+        "src/tickle.c",
+        "            ran = run_due_entry_reading(node, time, true, &has_next, &next);",
+        "            ran = run_due_entry_reading(node, time, false, &has_next, &next);",
+        "core",
+    ),
     (
         "the receiver rebuilds against the deadline clock",
         "src/tickle.c",

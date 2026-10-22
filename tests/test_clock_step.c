@@ -765,10 +765,149 @@ static void test_a_zero_copy_publish_reads_one_clock(void) {
     teardown();
 }
 
+// ---- A publish from a scheduler entry takes the poll's reading (2026-10-22, publish_clock() in tickle.c).
+//
+// The poll reads the clock just before it runs an entry and hands that reading to the entry's first publish, which
+// then reads no clock: the throughput clients' send_one(), a self-rescheduling entry under tt_Context_poll(-1). Only
+// the first: a second publish in the same entry reads the clock as before, and a non-blocking poll that runs several
+// due entries one after another runs only the first at a fresh reading. Each entry moves the clock by ENTRY_WORK_NS
+// before each publish, as its own work would, so a stamp that is the poll's reading and one that is a new read differ
+// by microseconds the wire carries: the first publish stamps the date the entry started at, a later one the date it
+// was published at. The core before the change fails this case (1 read, the later stamp): that is its control.
+
+#define ENTRY_WORK_NS (50ULL * tt_MICROSECOND)
+#define ENTRY_PUBLISHES_MAX 2
+#define ENTRY_RUNS 20
+
+struct entry_run {
+    uint32_t publishes;
+    uint32_t reads[ENTRY_PUBLISHES_MAX];
+    uint32_t seq[ENTRY_PUBLISHES_MAX];
+    bool fresh; // the entry should run at the poll's reading: the first publish reads 0 clocks and stamps it
+};
+
+static struct entry_run entry_runs[ENTRY_RUNS * 2];
+static uint32_t entry_run_count;
+static uint32_t entry_publishes; // publishes per run of scheduled_publish()
+static bool entry_runs_fresh;    // whether the next run of scheduled_publish() is expected at a fresh reading
+static uint64_t entry_poll_ns;   // the reading the poll took before its entries: now_ns as the poll was called
+
+static void record_published(uint32_t seq, uint64_t mono_ns) {
+    if (seq < MAX_SAMPLES) {
+        published_date_ns[seq] = ((mono_ns + date_offset_ns) / tt_MICROSECOND) * tt_MICROSECOND;
+#if tt_LOCAL_DELIVERY
+        published_date_exact_ns[seq] = mono_ns + date_offset_ns;
+#endif
+        published_mono_ns[seq] = mono_ns;
+    }
+}
+
+// `entry_publishes` publishes, each after ENTRY_WORK_NS of the entry's own work. Only the first publish of an entry
+// run at a fresh reading stamps the poll's reading; every other one the clock at its publish.
+static void scheduled_publish(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    if (entry_run_count >= ENTRY_RUNS * 2) {
+        return;
+    }
+    struct entry_run* run = &entry_runs[entry_run_count++];
+    run->publishes = entry_publishes;
+    run->fresh = entry_runs_fresh;
+    entry_runs_fresh = false; // a second entry in the same poll runs after this one
+    for (uint32_t k = 0; k < entry_publishes; k++) {
+        now_ns += ENTRY_WORK_NS;
+        struct sample s = {++published};
+        run->seq[k] = published;
+        record_published(published, run->fresh && k == 0 ? entry_poll_ns : now_ns);
+        const uint64_t reads_before = clock_reads;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&s));
+        run->reads[k] = (uint32_t)(clock_reads - reads_before);
+    }
+}
+
+// Every publish of the runs [first, end): its clock reads and the stamp its reader was handed.
+static void read_entry_runs(const char* name, uint32_t first, uint32_t end) {
+    uint32_t publishes = 0;
+    uint32_t reads_wrong = 0;
+    uint32_t stamps_seen = 0;
+    uint32_t stamps_wrong = 0;
+    for (uint32_t i = first; i < end; i++) {
+        const struct entry_run* run = &entry_runs[i];
+        for (uint32_t k = 0; k < run->publishes; k++) {
+            publishes++;
+            reads_wrong += run->reads[k] == (run->fresh && k == 0 ? 0U : 1U) ? 0U : 1U;
+            uint32_t seq = run->seq[k];
+            if (seq < MAX_SAMPLES && delivered_stamp_ns[seq] != 0) {
+                stamps_seen++;
+                stamps_wrong += delivered_stamp_ns[seq] == published_date_ns[seq] ? 0U : 1U;
+            }
+        }
+    }
+    printf("%s: %u entry runs, %u publishes (the first run's first publish read %u clocks), %u read other than 0 for "
+           "an entry's first at a fresh reading and 1 otherwise; %u stamps delivered, %u other than expected\n",
+           name, end - first, publishes, entry_runs[first].reads[0], reads_wrong, stamps_seen, stamps_wrong);
+    EXPECT_TRUE(publishes > 0);
+    EXPECT_EQ_U32(0, reads_wrong);
+    EXPECT_EQ_U32(publishes, stamps_seen); // the treatment: every stamp was delivered and read
+    EXPECT_EQ_U32(0, stamps_wrong);
+}
+
+static void test_a_scheduled_publish_takes_the_polls_reading(void) {
+    setup();
+    for (int round = 0; round < 100; round++) {
+        run_round(true); // the stream as above: the reader matched and acknowledging
+    }
+    entry_run_count = 0;
+
+    // tt_Context_poll(-1): one due entry, run at the reading the loop took just before it; two publishes in it.
+    entry_publishes = ENTRY_PUBLISHES_MAX;
+    for (uint32_t i = 0; i < ENTRY_RUNS; i++) {
+        now_ns += STEP_NS;
+        EXPECT_TRUE(tt_Context_schedule(&writer, now_ns, scheduled_publish, NULL));
+        entry_poll_ns = now_ns;
+        entry_runs_fresh = true;
+        (void)tt_Context_poll(&writer, -1);
+        (void)tt_Context_poll(&reader, 0);
+        (void)tt_Context_poll(&writer, 0);
+    }
+    const uint32_t blocking_end = entry_run_count;
+
+    // tt_Context_poll(0) with two entries due at once, one publish each: the first at the poll's reading, the second
+    // after it, reading the clock.
+    entry_publishes = 1;
+    for (uint32_t i = 0; i < ENTRY_RUNS / 2; i++) {
+        now_ns += STEP_NS;
+        (void)tt_Context_poll(&writer, 0); // the core's own entries due now (tick, HEARTBEAT) run first, apart
+        EXPECT_TRUE(tt_Context_schedule(&writer, now_ns, scheduled_publish, NULL));
+        EXPECT_TRUE(tt_Context_schedule(&writer, now_ns, scheduled_publish, NULL));
+        entry_poll_ns = now_ns;
+        entry_runs_fresh = true;
+        (void)tt_Context_poll(&writer, 0);
+        (void)tt_Context_poll(&reader, 0);
+        (void)tt_Context_poll(&writer, 0);
+    }
+    for (int round = 0; round < SETTLE_ROUNDS; round++) {
+        run_round(false);
+    }
+
+    EXPECT_EQ_U32(ENTRY_RUNS, blocking_end);
+    EXPECT_EQ_U32(ENTRY_RUNS * 2, entry_run_count);
+    EXPECT_EQ_U32(published, delivered);
+    read_entry_runs("scheduled, poll(-1), two publishes an entry", 0, blocking_end);
+    read_entry_runs("scheduled, poll(0), two entries due at once", blocking_end, entry_run_count);
+#if tt_LOCAL_DELIVERY
+    EXPECT_EQ_U32(published, local_delivered);
+    EXPECT_EQ_U32(0, local_stamps_wrong); // the writer's own subscriber is handed the same date, to the nanosecond
+#endif
+    teardown();
+}
+
 int main(void) {
     test_a_date_step_forward_changes_only_the_stamps();
     test_a_date_step_back_changes_only_the_stamps();
     test_a_zero_copy_publish_reads_one_clock();
+    test_a_scheduled_publish_takes_the_polls_reading();
     if (test_result() != 0) {
         return 1;
     }

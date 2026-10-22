@@ -7401,7 +7401,10 @@ static bool sched_next_time(struct tt_Context* node, uint64_t* time) {
 // afterwards, which was safe only while nothing else could reorder the heap during the call; with other
 // threads scheduling it no longer is. The state lock is held across the run, so tt_Context_unschedule() on
 // another thread either removes the entry before it is taken or waits until it has finished.
-static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next, uint64_t* next) {
+//
+// `fresh` (2026-10-22): `now` was read just before this call, with no other entry run since, so the entry's first
+// publish takes it as its own reading (publish_clock(), tt_Context.entry_clock_ns) instead of reading the clock again.
+static bool run_due_entry_reading(struct tt_Context* node, uint64_t now, bool fresh, bool* has_next, uint64_t* next) {
     state_lock(node);
     sched_drain_inbox(node);
     const struct tt_TCB* head = peek_scheduler(node);
@@ -7411,12 +7414,19 @@ static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next,
     if (due) {
         tcb = *head;
         pop_scheduler(node);
+        node->entry_clock_ns = fresh ? now : 0;
         tcb.function(node, now, tcb.param);
+        node->entry_clock_ns = 0; // the entry is over: its reading is not the next one's
     } else if (head != NULL) {
         *next = head->time;
     }
     state_unlock(node);
     return due;
+}
+
+// An entry at a `now` that is not a fresh reading (every publish it makes reads the clock).
+static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next, uint64_t* next) {
+    return run_due_entry_reading(node, now, false, has_next, next);
 }
 
 static void node_update(struct tt_Context* node, uint64_t time, void* param);
@@ -7626,6 +7636,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->summary_copies_sent = 0;
     node->announce_repeats_sent = 0;
     node->publish_clock_ns = 0; // outside a publish (publish_clock_or_now())
+    node->entry_clock_ns = 0;   // outside a scheduler entry (run_due_entry_reading())
     node->pacing_waits = 0;
     node->pacing_repairs_deferred = 0;
 #if tt_LOCAL_DELIVERY
@@ -9752,8 +9763,19 @@ static uint64_t rx_wall_now(const struct tt_Context* node) {
 // within tt_CONTEXT_UPDATE_INTERVAL: the window a receiver already has (DESIGN.md section 2, "Time"). The reading is
 // kept in publish_clock_ns for the rest of the publish - the reliable cache's lifespan stamp, and the liveliness the
 // caller asserts after it returns - which the entry points set back to 0 when it ends.
+//
+// A publish made from a scheduler entry the poll has just read the clock for (run_due_entry_reading()) takes that
+// reading instead of its own (2026-10-22): the first publish of the entry only, which consumes it, so a second publish
+// in the same entry reads the clock as before and a burst's stamps stay apart. The stamp is then early by what the
+// entry did before that publish - as a received sample is stamped with the poll's reading (rx_now()), which the
+// callbacks before it delay in the same way.
 static inline uint64_t publish_clock(struct tt_Context* node, uint64_t* wall_ns) {
-    const uint64_t now = tt_get_ns();
+    uint64_t now = node->entry_clock_ns;
+    if (now != 0) {
+        node->entry_clock_ns = 0;
+    } else {
+        now = tt_get_ns();
+    }
     *wall_ns = now + node->wall_offset_ns;
     node->publish_clock_ns = now;
     return now;
@@ -25554,7 +25576,10 @@ static bool handle_receive_result(struct tt_Context* node, int32_t len, uint32_t
 static tt_ret_t poll_once_nonblocking(struct tt_Context* node, uint64_t time) {
     bool has_next = false;
     uint64_t next = 0;
-    while (run_due_entry(node, time, &has_next, &next)) {
+    // Only the first entry runs at a fresh reading: each one after it runs later than `time` by those before it.
+    bool fresh = true;
+    while (run_due_entry_reading(node, time, fresh, &has_next, &next)) {
+        fresh = false;
     }
 
 #if tt_SEGMENT_ENABLED
@@ -25857,7 +25882,8 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         bool ran = false;
         // opts.poll's two bounds are compared where they are, as the constants were: no copy to make per call.
         if (consecutive_scheduler_runs < node->opts.poll.scheduler_io_interleave) {
-            ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
+            // Runs one if due, else says when. `time` is fresh: read at the top of the call or after the last step.
+            ran = run_due_entry_reading(node, time, true, &has_next, &next);
         } else {
             has_next = sched_next_time(node, &next);
         }
