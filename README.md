@@ -50,8 +50,9 @@ bind address, `-p` port, `-I` context id, `-n` name, `-l` log level.
 
 Every setting a context reads at run time is in `struct tt_InitOptions` (`include/tickle/tickle.h`): one group each
 for `net`, `discovery`, `reliable`, `service`, `qos` (defaults for new endpoints), `poll`, `socket`,
-`hybrid_transport` and `segment`. A zero field means the default, the `config.h` constant of the same name, so a
-zeroed struct gives the context `tt_Context_create()` gives.
+`hybrid_transport`, `segment` and `capacity` (how much of each fixed table a context uses, at most its compiled size).
+A zero field means the default, the `config.h` constant of the same name, so a zeroed struct gives the context
+`tt_Context_create()` gives.
 
 ```c
 struct tt_InitOptions opts = {0};
