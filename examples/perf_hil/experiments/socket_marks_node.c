@@ -34,7 +34,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
-#include "UInt64.h"
+#include "../../uint64/UInt64.h" // the generated codec by its path: CI's clang-tidy has no -I for it
 
 #define MAX_SAMPLES 100000U
 #define NS_PER_US 1000ULL
