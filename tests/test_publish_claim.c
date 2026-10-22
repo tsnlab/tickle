@@ -617,10 +617,10 @@ static void test_a_claimed_mapping_stays_mapped(void) {
     struct tt_SegmentHeader* mapping = entry->mapping;
     uint8_t* payload = NULL;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
-    entry->recheck_in = 0; // the revalidation is due
+    entry->recheck_due = true; // the revalidation is due
     EXPECT_TRUE(peer_segment(&arm->sender, OWNER_ID, OWNER_IP, OWNER_PORT) == mapping);
     EXPECT_TRUE(entry->mapping == mapping);
-    EXPECT_EQ_U32(0, entry->recheck_in); // put off, not done
+    EXPECT_TRUE(entry->recheck_due); // put off, not done
     uint64_t attached = arm->sender.segment_attach[tt_SEGMENT_ATTACHED];
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     EXPECT_TRUE(peer_segment(&arm->sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);

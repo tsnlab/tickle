@@ -5168,7 +5168,7 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     // A file nobody owns: refused before it is mapped, and not unlinked. Removing it by name could remove a
     // successor's file instead - one created at this name between this check and the unlink - and nothing in
     // unlink() can be made conditional on which file the name holds. The successor's own create replaces it.
-    // One flock() per attach and per revalidation (every tt_SEGMENT_REVALIDATE_SENDS sends), none per datagram.
+    // One flock() per attach and per revalidation (every segment.revalidate_ns), none per datagram.
     if (segment_owner_gone(segment_fd)) {
         *why = (uint8_t)tt_SEGMENT_ORPHANED;
         (void)close(segment_fd);

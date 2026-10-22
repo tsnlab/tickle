@@ -87,9 +87,7 @@ mutant "reading probe_every_max" "node->segment_probe_every < node->opts.segment
     "node->segment_probe_every < tt_SEGMENT_PROBE_EVERY_MAX"
 mutant "reading stall_passes" "node->segment_head_stall_passes == node->opts.segment.stall_passes" \
     "node->segment_head_stall_passes == tt_SEGMENT_STALL_PASSES"
-mutant "reading attach_retry_ns" "segment_recheck_span(node->opts.segment.attach_retry_ns)" \
-    "segment_recheck_span(tt_SEGMENT_ATTACH_RETRY_NS)"
-mutant "reading revalidate_sends" "entry->recheck_in = node->opts.segment.revalidate_sends;" \
-    "entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;"
+mutant "reading attach_retry_ns" ": node->opts.segment.attach_retry_ns;" ": tt_SEGMENT_ATTACH_RETRY_NS;"
+mutant "reading revalidate_ns" "? node->opts.segment.revalidate_ns :" "? tt_SEGMENT_REVALIDATE_NS :"
 
 exit "$failed"

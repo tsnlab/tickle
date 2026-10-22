@@ -10,12 +10,14 @@
 
 // ROADMAP 5a: the counts that stood in for times, as times kept off the hot path (DESIGN.md section 10, "Lifecycle").
 //
-// A writer's cached answer about a peer's segment - "no segment" - is asked again after a time, not after a count of
-// sends: tt_SEGMENT_ATTACH_RETRY_SENDS (256) bounded the delay in datagrams, which is the sender's rate, and held a
-// late binder off shared memory for four minutes at 1 Hz. The time is kept by the context's summary tick
-// (node_update() -> segment_recheck_sweep()) at the poll's own reading, so a send reads one byte (recheck_due) and no
-// clock: the version on ab/hotpath-split checked the deadline on the send path against a 64-bit clock every poll and
-// every publish wrote, cost the rig's P1 cross-host latency +2.7% and did not link on RV32 FreeRTOS.
+// A writer's cached answer about a peer's segment - "no segment", or an attached one - is asked again after a time,
+// not after a count of sends: tt_SEGMENT_ATTACH_RETRY_SENDS (256) bounded the delay in datagrams, which is the
+// sender's rate, and held a late binder off shared memory for four minutes at 1 Hz; tt_SEGMENT_REVALIDATE_SENDS
+// (4096) wrote a dead owner's ring for over an hour at 1 Hz and cost every send a decrement and a store. The time is
+// kept by the context's summary tick (node_update() -> segment_recheck_sweep()) at the poll's own reading, so a send
+// reads one byte (recheck_due) and no clock: the version on ab/hotpath-split checked the deadline on the send path
+// against a 64-bit clock every poll and every publish wrote, cost the rig's P1 cross-host latency +2.7% and did not
+// link on RV32 FreeRTOS.
 //
 // Each test drives the clock by hand (the sweep takes its `now`), and each condition it decides is removed by one
 // mutant in tests/mutants_segment_time_limits.py, which must make this file fail:
@@ -24,7 +26,10 @@
 //     does not; the tick at the deadline does (the stamp, the comparison, the due flag);
 //   - the summary tick is what ages the answers (node_update() calls the sweep);
 //   - an answer asked again and refused again stands again, from a new stamp (remember_absent() resets both flags);
-//   - an announce from a peer at our own address makes a "no" due at once (note_same_host_peer()).
+//   - an announce from a peer at our own address makes a "no" due at once (note_same_host_peer());
+//   - the same for a "yes": ten thousand sends at a standing clock re-attach nothing, the deadline tick re-attaches,
+//     at segment.revalidate_ns and not at the "no"'s interval, and the sweep ages attached entries at all;
+//   - an attach that follows a "no" is a new answer, stamped by the next tick, not the "no"'s due flag or deadline.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -72,6 +77,27 @@ static void writer_with(struct tt_Context* node, const struct tt_InitOptions* op
 
 static int asks(void) {
     return test_mock_segment_attach_calls;
+}
+
+// An owner whose segment the writer can attach, at OWNER_IP (whitebox, as tests/test_transport_seam.c builds one).
+static void make_owner(struct tt_Context* owner, const struct tt_InitOptions* opts) {
+    memset(owner, 0, sizeof(*owner));
+    owner->opts = *opts;
+    node_init_locks(owner);
+    owner->id = OWNER_ID;
+    owner->entity_id_base = 0x12345678U;
+    owner->hal.own_ip = OWNER_IP;
+    owner->hal.own_port = OWNER_PORT;
+    create_own_segment(owner);
+    EXPECT_TRUE(owner->own_segment != NULL);
+}
+
+static uint32_t attaches(const struct tt_Context* writer) {
+    return writer->segment_attach[tt_SEGMENT_ATTACHED];
+}
+
+static void send_to_attached(struct tt_Context* writer, const struct tt_Context* owner) {
+    EXPECT_TRUE(peer_segment(writer, OWNER_ID, OWNER_IP, OWNER_PORT) == owner->own_segment);
 }
 
 static void send_to_owner(struct tt_Context* node, uint32_t owner_ip) {
@@ -166,11 +192,89 @@ static void test_a_same_host_announce_makes_a_no_due(void) {
     test_mock_segments_free();
 }
 
+// ---- A "yes" (an attached segment).
+
+// Ten thousand sends at a standing clock re-attach nothing: a count of 4096 would have re-attached twice.
+static void test_a_yes_stands_however_many_sends(void) {
+    struct tt_InitOptions opts = defaults();
+    struct tt_Context writer;
+    struct tt_Context owner;
+    writer_with(&writer, &opts, WRITER_IP);
+    make_owner(&owner, &opts);
+    for (int i = 0; i < 10000; i++) {
+        send_to_attached(&writer, &owner);
+    }
+    EXPECT_EQ_U32(1, attaches(&writer));
+    release_segments(&writer);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
+// The deadline of a "yes" is segment.revalidate_ns (32 units here), not the "no"'s (64): the stamp tick and the tick a
+// unit short re-attach nothing, the tick at 32 units does, and once.
+static void test_a_yes_falls_due_on_the_tick_at_its_deadline(void) {
+    struct tt_InitOptions opts = defaults();
+    opts.segment.attach_retry_ns = 64U * UNIT_NS;
+    opts.segment.revalidate_ns = 32U * UNIT_NS;
+    struct tt_Context writer;
+    struct tt_Context owner;
+    writer_with(&writer, &opts, WRITER_IP);
+    make_owner(&owner, &opts);
+    send_to_attached(&writer, &owner);
+    const uint64_t stamp = 8192U * UNIT_NS;
+    segment_recheck_sweep(&writer, stamp);
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(1, attaches(&writer)); // stamped
+    segment_recheck_sweep(&writer, stamp + (31U * UNIT_NS));
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(1, attaches(&writer)); // a unit short
+    segment_recheck_sweep(&writer, stamp + (32U * UNIT_NS));
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(2, attaches(&writer)); // revalidated
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(2, attaches(&writer)); // and the new answer stands
+    release_segments(&writer);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
+// A "no" that falls due and is then answered "yes" - the owner appeared meanwhile - is a new answer: not due (no
+// re-attach on the next send), and stamped by the next tick rather than holding the "no"'s passed deadline.
+static void test_an_attach_after_a_no_is_a_new_answer(void) {
+    struct tt_InitOptions opts = defaults();
+    opts.segment.attach_retry_ns = 16U * UNIT_NS;
+    opts.segment.revalidate_ns = 32U * UNIT_NS;
+    struct tt_Context writer;
+    writer_with(&writer, &opts, WRITER_IP);
+    send_to_owner(&writer, OWNER_IP);
+    const uint64_t stamp = 1024U * UNIT_NS;
+    segment_recheck_sweep(&writer, stamp);
+    segment_recheck_sweep(&writer, stamp + (16U * UNIT_NS)); // the "no" is due
+    struct tt_Context owner;
+    make_owner(&owner, &opts);
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(1, attaches(&writer));
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(1, attaches(&writer));                     // not re-attached at once
+    segment_recheck_sweep(&writer, stamp + (16U * UNIT_NS)); // the tick at the "no"'s deadline, again: only a stamp
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(1, attaches(&writer));
+    segment_recheck_sweep(&writer, stamp + (48U * UNIT_NS)); // the "yes" deadline, from that stamp
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(2, attaches(&writer));
+    release_segments(&writer);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_a_no_stands_however_many_sends();
     test_a_no_falls_due_on_the_tick_at_its_deadline();
     test_the_summary_tick_ages_the_answers();
     test_a_same_host_announce_makes_a_no_due();
+    test_a_yes_stands_however_many_sends();
+    test_a_yes_falls_due_on_the_tick_at_its_deadline();
+    test_an_attach_after_a_no_is_a_new_answer();
     if (test_result() != 0) {
         return 1;
     }

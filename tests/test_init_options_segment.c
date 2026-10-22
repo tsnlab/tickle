@@ -146,7 +146,7 @@ static void test_defaults_are_the_compiled_settings(void) {
     EXPECT_EQ_U32(tt_SEGMENT_PROBE_EVERY_MAX, opts.segment.probe_every_max);
     EXPECT_EQ_U32(tt_SEGMENT_STALL_PASSES, opts.segment.stall_passes);
     EXPECT_EQ_U64(tt_SEGMENT_ATTACH_RETRY_NS, opts.segment.attach_retry_ns);
-    EXPECT_EQ_U32(tt_SEGMENT_REVALIDATE_SENDS, opts.segment.revalidate_sends);
+    EXPECT_EQ_U64(tt_SEGMENT_REVALIDATE_NS, opts.segment.revalidate_ns);
 
     // A created context: the dead-reader time the build's constant, and the ring the build always built.
     struct tt_InitOptions created = resolved(&opts);
@@ -431,8 +431,9 @@ static void test_attach_retry_ns_is_when_a_missing_segment_is_asked_again(void) 
     expect_about(50U * tt_MILLISECOND, ns_between_attach_attempts(&opts));
 }
 
-// Sends over an attached segment until its name is asked again (the attach is two calls: header, then region).
-static uint32_t sends_before_revalidation(const struct tt_InitOptions* opts) {
+// How long after the summary tick that first sees an attached segment the writer asks its name again (the attach is two
+// calls: header, then region): summary ticks every 2^20 ns, a send after each.
+static uint64_t ns_before_revalidation(const struct tt_InitOptions* opts) {
     struct tt_InitOptions created = resolved(opts);
     struct tt_Context owner;
     struct tt_Context writer;
@@ -441,22 +442,25 @@ static uint32_t sends_before_revalidation(const struct tt_InitOptions* opts) {
     create_own_segment(&owner);
     EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
     const int attached = test_mock_segment_attach_calls;
-    uint32_t sends = 0;
-    while (test_mock_segment_attach_calls == attached && sends < 100000U) {
+    const uint64_t stamp = (5U * tt_SECOND) + 12345U;
+    segment_recheck_sweep(&writer, stamp);
+    uint64_t now = stamp;
+    while (test_mock_segment_attach_calls == attached && now - stamp < 100U * tt_SECOND) {
+        now += AGE_STEP_NS;
+        segment_recheck_sweep(&writer, now);
         EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
-        sends++;
     }
     release_segments(&writer);
     release_own_segment(&owner);
     test_mock_segments_free();
-    return sends;
+    return now - stamp;
 }
 
-static void test_revalidate_sends_is_when_an_attached_segment_is_asked_again(void) {
+static void test_revalidate_ns_is_when_an_attached_segment_is_asked_again(void) {
     struct tt_InitOptions opts = defaults();
-    EXPECT_EQ_U32(tt_SEGMENT_REVALIDATE_SENDS + 1U, sends_before_revalidation(&opts)); // control
-    opts.segment.revalidate_sends = 7;
-    EXPECT_EQ_U32(8, sends_before_revalidation(&opts));
+    expect_about(tt_SEGMENT_REVALIDATE_NS, ns_before_revalidation(&opts)); // control
+    opts.segment.revalidate_ns = 30U * tt_MILLISECOND;
+    expect_about(30U * tt_MILLISECOND, ns_before_revalidation(&opts));
 }
 
 // ---- The checks.
@@ -556,7 +560,7 @@ int main(void) {
 #endif
     test_stall_passes_is_when_a_stall_is_reported();
     test_attach_retry_ns_is_when_a_missing_segment_is_asked_again();
-    test_revalidate_sends_is_when_an_attached_segment_is_asked_again();
+    test_revalidate_ns_is_when_an_attached_segment_is_asked_again();
     test_validation();
     test_legacy_slot_bytes_reach_the_segment_group();
 #else

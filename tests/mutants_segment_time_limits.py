@@ -34,7 +34,7 @@ MUTANTS = [
     (
         "a no due at the tick that stamps it",
         "src/tickle.c",
-        "            entry->recheck_at = tick + segment_recheck_span(node->opts.segment.attach_retry_ns);",
+        "            entry->recheck_at = tick + segment_recheck_span(stands);",
         "            entry->recheck_at = tick;",
     ),
     (
@@ -78,6 +78,43 @@ MUTANTS = [
         "src/tickle.c",
         "        if (entry->mapping == NULL && entry->missing) {\n            entry->recheck_due = true;",
         "        if (entry->mapping == NULL && entry->missing) {\n            (void)entry;",
+    ),
+    # A "yes" (an attached segment).
+    (
+        "an attached send never revalidating",
+        "src/tickle.c",
+        "        if (same_owner && !entry->recheck_due) {",
+        "        if (same_owner) {",
+    ),
+    (
+        "an attached send revalidating every time",
+        "src/tickle.c",
+        "        if (same_owner && !entry->recheck_due) {",
+        "        if (same_owner && false) {",
+    ),
+    (
+        "the sweep not aging a yes",
+        "src/tickle.c",
+        "        if (entry->recheck_due || (entry->mapping == NULL && !entry->missing)) {",
+        "        if (entry->recheck_due || !entry->missing) {",
+    ),
+    (
+        "a yes kept for the no's interval",
+        "src/tickle.c",
+        "entry->mapping != NULL ? node->opts.segment.revalidate_ns : node->opts.segment.attach_retry_ns;",
+        "entry->mapping != NULL ? node->opts.segment.attach_retry_ns : node->opts.segment.attach_retry_ns;",
+    ),
+    (
+        "an attach keeping the no's due flag",
+        "src/tickle.c",
+        "    entry->recheck_due = false; // a new answer, which the next summary tick stamps (segment_recheck_sweep())\n",
+        "",
+    ),
+    (
+        "an attach keeping the no's stamp",
+        "src/tickle.c",
+        "(segment_recheck_sweep())\n    entry->recheck_stamped = false;\n",
+        "(segment_recheck_sweep())\n",
     ),
 ]
 
