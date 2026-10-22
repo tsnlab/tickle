@@ -7,7 +7,8 @@
 #   frag_slots    frag_slot_for() walks every slot, not only the claimed ones
 #   frag_pool     frag_pool_has() does
 #   update_parts  update_parts_any() reads a row whatever its source's count
-#   endpoint_idx  a lookup takes a slot's pointer without its occupancy bit
+#   endpoint_idx  a rebuild does not NULL the slots it puts in use
+#   endpoint_mask find_endpoint() homes an id with the array's full mask, not the index's (a slot past those in use)
 #
 # Runs in rmw_tickle's build (garbage_ctx_check_large_msan), fill "none", in the namespace pair given.
 # Usage: msan_mutants.sh <ns_a> <ns_b> <broadcast>     Needs clang with MemorySanitizer and `sudo -n ip`.
@@ -74,8 +75,19 @@ mutant update_parts "    if (node->update_part_count[source] == 0) {
         return false;
     }
     for (uint32_t word = 0;" "    for (uint32_t word = 0;"
-mutant endpoint_idx "    if (((used >> (slot % tt_ENDPOINT_INDEX_WORD_BITS)) & 1U) == 0) {
-        return NULL;
-    }" "    (void)used;"
+mutant endpoint_idx "    for (uint32_t i = 0; i <= mask; i++) {
+        node->endpoint_index[i] = NULL;
+    }" "    (void)0;"
+mutant endpoint_mask "    uint32_t slot = endpoint_id & mask;
+    for (uint32_t probe = 0; probe <= mask; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            return NULL;
+        }" "    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
+    for (uint32_t probe = 0; probe <= mask; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            return NULL;
+        }"
 echo "msan_mutants: $([ "$failed" = 0 ] && echo PASS || echo FAIL)"
 exit "$failed"

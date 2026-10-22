@@ -543,10 +543,9 @@
 #ifndef tt_ENDPOINT_INDEX_SIZE
 #define tt_ENDPOINT_INDEX_SIZE 512
 #endif
-// Bits in one word of tt_Context.endpoint_index_used, the index's occupancy bitmap, and the words it takes.
-#define tt_ENDPOINT_INDEX_WORD_BITS 64U
-#define tt_ENDPOINT_INDEX_WORDS \
-    ((tt_ENDPOINT_INDEX_SIZE + tt_ENDPOINT_INDEX_WORD_BITS - 1U) / tt_ENDPOINT_INDEX_WORD_BITS)
+// The fewest slots of tt_Context.endpoint_index a rebuild puts in use (it uses the smallest power of two at least
+// twice the context's endpoints, and at least this many).
+#define tt_ENDPOINT_INDEX_MIN_SLOTS 16U
 #ifndef tt_MAX_NAME_LENGTH
 #define tt_MAX_NAME_LENGTH 255 // Maximum length of endpoint name
 #endif
@@ -1568,7 +1567,8 @@ static_assert(tt_RELIABLE_REQUEST_HISTORY >= 1 && tt_RELIABLE_REQUEST_HISTORY <=
               "a Subscriber remembers at least one request, and its ring index is a uint8_t");
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
-static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
+static_assert(tt_ENDPOINT_INDEX_SIZE > tt_MAX_ENDPOINT_COUNT,
+              "the endpoint index must have room for every endpoint and an empty slot, which ends every probe");
 // Structural, not a performance depth: a ring of fewer than four slots cannot usefully separate a
 // writer from a reader at all. The depth stage 1 actually needs is a measured criterion (about one
 // poll period of output - roughly 25 datagrams at the 4.1 us a datagram S2 measured), and asserting
@@ -1600,6 +1600,7 @@ static_assert(tt_LARGE_ASSEMBLIES >= 1, "receiving large samples needs at least 
 static_assert(tt_LARGE_PEER_REGIONS >= 1, "taking same-host large samples needs one mapped region at least");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
+static_assert(tt_ENDPOINT_INDEX_SIZE >= 2, "a mask of 0 marks the endpoint index stale, so one in use is never 0");
 static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
 static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");

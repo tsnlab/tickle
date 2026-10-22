@@ -85,10 +85,9 @@ SURVIVES_RESET = {
     # 2026-10-22, bundle 10 item 2: the tables the reset used to write in full, which made every page of them resident
     # in every context (418 KB of an rmw_tickle context's 2.26 MB). Each is now read only where something wrote it;
     # platform/linux/garbage_ctx_check.c runs contexts created in unzeroed storage (and under MemorySanitizer) to say so.
-    "endpoint_index": "rebuild_endpoint_index(), which places each endpoint and sets its endpoint_index_used bit; "
-                      "an empty slot is never read (endpoint_index_at())",
-    "endpoint_index_used": "rebuild_endpoint_index(), which clears it before placing anything; every lookup rebuilds "
-                           "first while endpoint_index_valid, which reset_node_state() does reset, is false",
+    "endpoint_index": "rebuild_endpoint_index(), which NULLs the slots it puts in use before placing anything; every "
+                      "lookup masks with endpoint_index_mask and rebuilds first while it is 0, which "
+                      "reset_node_state() does reset",
     "endpoints": "add_endpoint_to_node(), entry by entry; every read is below endpoint_count, which reset_node_state() "
                  "does reset",
     "scheduler": "the heap's push (tt_Context_schedule()); every read is below scheduler_tail, which reset_node_state() "

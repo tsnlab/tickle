@@ -215,7 +215,7 @@ static void init_subscriber(struct tt_Subscriber* sub, bool reliable, tt_SUBSCRI
         sub->tracking_words = WIDE_WORDS;
     }
     owner.endpoints[owner.endpoint_count++] = (struct tt_Endpoint*)sub;
-    owner.endpoint_index_valid = false;
+    owner.endpoint_index_mask = 0;
 }
 
 enum rig_subs { RIG_BEST_EFFORT = 1, RIG_RELIABLE = 2, RIG_BOTH = 3 };

@@ -239,7 +239,7 @@ static void rig_up_with(bool dirty) {
         sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     owner.endpoints[owner.endpoint_count++] = (struct tt_Endpoint*)&sub;
-    owner.endpoint_index_valid = false;
+    owner.endpoint_index_mask = 0;
 
     node_init_locks(&sender);
     sender.id = SENDER_ID;
