@@ -652,8 +652,8 @@ static void resolve_poll_options(struct tt_PollOptions* poll) {
     if (poll->receive_timeout == 0) {
         poll->receive_timeout = (uint64_t)tt_RECEIVE_TIMEOUT;
     }
-    if (poll->scheduler_io_interleave == 0) {
-        poll->scheduler_io_interleave = tt_SCHEDULER_IO_INTERLEAVE;
+    if (poll->rx_check_ns == 0) {
+        poll->rx_check_ns = poll->receive_timeout; // a busy poll looks at its socket once per slice
     }
 }
 
@@ -1385,8 +1385,8 @@ static tt_ret_t validate_poll_options(const struct tt_PollOptions* poll) {
     if (poll->receive_timeout > tt_POLL_RECEIVE_TIMEOUT_MAX) {
         return reject_option("poll.receive_timeout", "exceeds tt_POLL_RECEIVE_TIMEOUT_MAX");
     }
-    if (poll->scheduler_io_interleave > tt_POLL_COUNT_MAX) {
-        return reject_option("poll.scheduler_io_interleave", "exceeds tt_POLL_COUNT_MAX");
+    if (poll->rx_check_ns > tt_POLL_RECEIVE_TIMEOUT_MAX) {
+        return reject_option("poll.rx_check_ns", "exceeds tt_POLL_RECEIVE_TIMEOUT_MAX");
     }
     return tt_RET_OK;
 }
@@ -7996,6 +7996,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->sched_peak = 0;
     node->sched_full = 0;
     node->sched_full_warned_ns = 0;
+    node->rx_looked_ns = 0; // never looked: a busy first poll checks its socket at once
 }
 
 // Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_CONTEXT_CYCLE boundary.
@@ -25814,13 +25815,15 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
     uint64_t woke = 0;
     if (len >= 0) {
-        node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
+        node->rx_clock_ns = tt_get_ns();        // the wait may have been long: what arrived is stamped from here
+        node->rx_looked_ns = node->rx_clock_ns; // and it looked at the socket until then (node_poll(), rx_check_ns)
     } else if (len == -1) {
         // Timed out. A wait for a retry timer that ran to its deadline is a sample of how late this host runs that
         // timer: G, the retry timers' granularity (timer_lateness_fold()). Earlier than the deadline is a wait cut
         // short; a wait that ended at a budget or another entry's deadline says nothing about a retry timer's; and
         // one that came back later than it was long never slept on a timer at all.
         woke = tt_get_ns();
+        node->rx_looked_ns = woke; // the wait looked at the socket until it ended
         if (retry_deadline && woke_for_scheduler && woke >= until && woke <= until + (uint64_t)rest) {
             timer_lateness_fold(node, woke - until);
         }
@@ -25943,20 +25946,24 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         return poll_once_nonblocking(node, time);
     }
 
-    // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
-    // latency research" section) - counts scheduler entries run back-to-back without a receive
-    // check, so a continuously-rescheduling task (a max-rate Publisher's own send loop) can't
-    // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
-    // own doc comment (config.h) for the full reasoning.
-    uint32_t consecutive_scheduler_runs = 0;
-    bool did_work = false; // a scheduler entry has run during this call
+    // Scheduler entries run back to back until opts.poll.rx_check_ns has passed since the poll last looked at its
+    // socket (tt_Context.rx_looked_ns: a receive check or a wait, in this call or an earlier one), so a
+    // continuously-rescheduling task (a max-rate Publisher's own send loop) cannot starve tt_receive(), and ACKNACKs
+    // with it. A time on the loop's own reading, which it takes after every step anyway: the bound was a count of
+    // entries (tt_SCHEDULER_IO_INTERLEAVE, 8), whose time was the hardware's (2026-10-22, ROADMAP 5a). Kept across
+    // calls, so a caller polling with short timeouts is looked for too, and a busy negative-timeout poll looks once per
+    // slice at the default (rx_check_ns = receive_timeout). And only once an entry has run since the last check
+    // (ran_since_look), so however short rx_check_ns is against the loop's own step, checks never follow one another
+    // with the due entries starved instead - the count of 1 alternated the two, and so does this.
+    bool did_work = false;       // a scheduler entry has run during this call
+    bool ran_since_look = false; // ... since the last receive check, in this call
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
         // opts.poll's two bounds are compared where they are, as the constants were: no copy to make per call.
-        if (consecutive_scheduler_runs < node->opts.poll.scheduler_io_interleave) {
+        if (!ran_since_look || time - node->rx_looked_ns < node->opts.poll.rx_check_ns) {
             // Runs one if due, else says when. `time` is fresh: read at the top of the call or after the last step.
             ran = run_due_entry_reading(node, time, true, &has_next, &next);
         } else {
@@ -25964,21 +25971,19 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
 
         if (ran) {
-            // Run scheduler first
-            consecutive_scheduler_runs++;
             did_work = true;
+            ran_since_look = true;
         } else if (has_next && next <= time) {
-            // A scheduler entry is still due, but opts.poll.scheduler_io_interleave consecutive ones have
-            // already run without a receive check - force one non-blocking peek before letting more
-            // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
-            // there, fall straight back into scheduler processing next iteration.
-            consecutive_scheduler_runs = 0;
+            // A scheduler entry is still due, but opts.poll.rx_check_ns has passed without a receive check - force
+            // one non-blocking peek before letting more scheduler work run. Not the caller's own real wait (never
+            // blocks): if nothing's there, fall straight back into scheduler processing next iteration.
+            node->rx_looked_ns = time;
+            ran_since_look = false;
             tt_ret_t peeked = tt_RET_TIMEOUT;
             if (busy_peek(node, &peeked)) {
                 return peeked;
             }
         } else {
-            consecutive_scheduler_runs = 0;
             tt_ret_t result;
             if (poll_wait_io(node, has_next, next, time, timeout, until_next_event, did_work, &result)) {
                 return result;

@@ -502,17 +502,13 @@
 #ifndef tt_RECEIVE_TIMEOUT
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // nanosecond
 #endif
-// EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
-// latency research" section) - tt_Context_poll()'s own inner loop favors an already-due scheduler
-// entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
-// I/O check happens. A continuously-rescheduling task (e.g. a max-rate Publisher's own send loop,
-// interval_s=0) can then starve tt_receive() for a whole call's own tt_RECEIVE_TIMEOUT budget,
-// meaning ACKNACK responsiveness ends up bounded by how rarely the scheduler queue goes idle, not
-// by real network RTT. This bounds how many scheduler entries may run back-to-back before a
-// forced, non-blocking tt_try_receive() peek is squeezed in between them - unvalidated on real HIL
-// yet, this specific value (8) is a first guess, not yet tuned.
-#ifndef tt_SCHEDULER_IO_INTERLEAVE
-#define tt_SCHEDULER_IO_INTERLEAVE 8
+// tt_Context_poll()'s inner loop favors an already-due scheduler entry over calling tt_receive(), so a
+// continuously-rescheduling task (a max-rate Publisher's own send loop) would starve the socket, and ACKNACKs with it.
+// Until 2026-10-22 tt_SCHEDULER_IO_INTERLEAVE (8, "a first guess, not yet tuned") bounded how many entries ran back to
+// back before a forced non-blocking peek - a time of 8 entries' cost, ~16 us on the PC and ~40-80 us on a Pi. Now the
+// bound is a time, poll.rx_check_ns (struct tt_PollOptions), by default the poll's own receive_timeout.
+#ifdef tt_SCHEDULER_IO_INTERLEAVE
+#error "tt_SCHEDULER_IO_INTERLEAVE was removed: a busy poll checks its socket after poll.rx_check_ns (tt_PollOptions)"
 #endif
 // Whether TickLE core may be called from more than one thread (2026-09-25). 1: every public tt_*
 // function is safe to call from any thread, concurrently with tt_Context_poll() on another - see

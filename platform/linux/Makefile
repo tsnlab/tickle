@@ -322,9 +322,10 @@ CONFIG_RENAMED = tt_NODE_CYCLE tt_NODE_UPDATE_INTERVAL tt_NODE_TX_INTERVAL tt_NO
                  tt_NODE_ID_BROADCAST _tt_NODE_ADDRESS _tt_NODE_PORT _tt_NODE_BROADCAST
 # Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept;
 # tt_QOS_REORDER_SLOTS_DEFAULT's 16 slots stormed under loss, and the default is now the window;
-# tt_SEGMENT_ATTACH_RETRY_SENDS and _REVALIDATE_SENDS counted sends for what is a time (tt_SEGMENT_*_NS).
+# tt_SEGMENT_ATTACH_RETRY_SENDS and _REVALIDATE_SENDS counted sends, and tt_SCHEDULER_IO_INTERLEAVE scheduler entries,
+# for what is a time (tt_SEGMENT_*_NS, poll.rx_check_ns).
 CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH tt_QOS_REORDER_SLOTS_DEFAULT tt_SEGMENT_ATTACH_RETRY_SENDS \
-                 tt_SEGMENT_REVALIDATE_SENDS
+                 tt_SEGMENT_REVALIDATE_SENDS tt_SCHEDULER_IO_INTERLEAVE
 config-renames:
 	@printf '#include <tickle/config.h>\nint main(void){return 0;}\n' > /tmp/tt_cfg_$$$$.c; \
 	 fail=0; \
