@@ -957,6 +957,14 @@ static void resolve_link_discovery(struct tt_LinkOptions* link) {
     }
 }
 
+// A link's repair_timing left 0 (tt_LinkOptions.repair_timing): on for WIFI, whose bursts and jitter make a retried
+// recovery's time say more about the retry than the path; off on every other profile.
+static void resolve_link_repair_timing(struct tt_LinkOptions* link) {
+    if (link->repair_timing == tt_SWITCH_DEFAULT) {
+        link->repair_timing = link->profile == tt_LINK_PROFILE_WIFI ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;
+    }
+}
+
 // The context's miss threshold where it left it at 0 or the default: WIFI's when any link is WIFI - the silence the
 // most lossy link needs, carried to the peers by the summary.
 static void resolve_link_miss_threshold(struct tt_InitOptions* opts, bool any_wifi) {
@@ -995,6 +1003,7 @@ static void resolve_link_profile(struct tt_LinkOptions* link) {
         link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
     }
     resolve_link_discovery(link);
+    resolve_link_repair_timing(link);
 }
 
 // Every link's profile, and the context-wide settings its links decide where the context left them 0: the batch tick
@@ -1186,6 +1195,9 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     }
     if (link->summary_unicast > tt_SWITCH_OFF) {
         return reject_option("net.links[].summary_unicast", "is not a tt_SWITCH_* value");
+    }
+    if (link->repair_timing > tt_SWITCH_OFF) {
+        return reject_option("net.links[].repair_timing", "is not a tt_SWITCH_* value");
     }
     if (link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE && link->announce_repeats > tt_ANNOUNCE_REPEATS_MAX) {
         return reject_option("net.links[].announce_repeats", "is above tt_ANNOUNCE_REPEATS_MAX");
@@ -1900,6 +1912,7 @@ static void link_profiles_apply(struct tt_Context* node) {
     bool batch = net->link_count != 0;
     bool pacing = false;
     bool copies = false;
+    bool repair_timing = false;
     uint8_t repeats = 0;
     for (uint8_t i = 0; i < link_count(node); i++) {
         uint32_t mtu = LINK_ETHERNET_MTU;
@@ -1914,6 +1927,7 @@ static void link_profiles_apply(struct tt_Context* node) {
             batch = batch && link->batch == tt_SWITCH_ON;
             copies = copies || link_takes_summary_copies(link, &node->links[i]);
             repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;
+            repair_timing = repair_timing || link->repair_timing == tt_SWITCH_ON;
         }
         link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);
@@ -1923,6 +1937,7 @@ static void link_profiles_apply(struct tt_Context* node) {
     node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD;
     node->pacing = pacing;
     node->summary_copies = copies;
+    node->repair_timing = repair_timing;
     node->announce_repeats = repeats;
     node->batch_default = batch;
     node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
@@ -7580,6 +7595,7 @@ static void node_init_locks(struct tt_Context* node) {
     node->pacing = false; // no link paced: the send path's one branch (docs/DESIGN.md "Send pacing")
     memset(node->pacers, 0, sizeof(node->pacers));
     node->summary_copies = false; // nor a WIFI link's discovery (link_profiles_apply())
+    node->repair_timing = false;  // nor its readers' retry estimate
     node->announce_repeats = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
@@ -7630,6 +7646,7 @@ static uint16_t advertised_ip_reassembly_max(uint32_t setting) {
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
     node->summary_copies = false; // until link_profiles_apply() says which links take copies and repeats
+    node->repair_timing = false;
     node->announce_repeats = 0;
     node->announce_repeats_left = 0;
     node->announce_repeat_gap_ns = 0;
@@ -15919,20 +15936,45 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either. One whose wait saw
 // the writer's large sample still arriving (tt_WriterProxy.probe_busy) measures the writer's send: it goes into the
 // sending estimate only, not the path's (2026-10-16).
+//
+// On a link with repair_timing (WIFI's, tt_LinkOptions.repair_timing, 2026-10-23) the path's estimate is timed by
+// repair_timing_times() instead; the sending estimate as above.
+static bool repair_timing_times(const struct tt_WriterProxy* proxy);
+
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
     }
-    if (node->rx_targeted && proxy->retry <= node->opts.reliable.retry) {
+    bool plain = proxy->retry <= node->opts.reliable.retry;
+    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(proxy) : plain;
+    if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
-        if (!proxy->probe_busy) {
+        if (path && !proxy->probe_busy) {
             note_recovery_sample(proxy, took);
         }
 #if tt_LARGE_SAMPLES
-        rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
+        if (plain) {
+            rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
+        }
 #endif
     }
     proxy->probe_ns = 0;
+}
+
+// Which recoveries time the path on a repair_timing link (tt_LinkOptions.repair_timing): the first one, back-off or
+// not, and after it only one the first request answered (no retry). Measured in the WB netns Wi-Fi arms (2026-10-23):
+// - The default rule times recoveries up to tt_RELIABLE_RETRY retries and none the back-off reached, and before the
+//   first sample the interval is retry_initial (1 ms). A recovery there takes 6-50 ms, so every one reached the
+//   back-off: none was timed, the reader asked every 1 ms for good (traced: srtt 0 for the first ~13 s), 2-3 resends
+//   per lost datagram and copies after delivery of 18-36% of samples under the time-varying arm (R7).
+// - Timing the first one past the back-off (the seed) fixes that, but then the default rule times retried recoveries:
+//   each spans its retry's wait, the estimate grows with the loss, and the interval with it (14-113 ms traced) - the
+//   second round of a doubly lost sample came that much later: one-way p99 at 5% loss, bursts of 4, 38-40 ms against
+//   22-23 ms (bursts in time, CLOCK_PPS=1000), and a second unlucky round runs into KEEP_LAST's eviction.
+// - Karn's rule after the seed kept the p99 within 10% of the 1 ms reader's (24.1 / 24.5 against 22.5 / 22.4 ms at
+//   ge5b2 / ge5b4) with a quarter of its resends; copies after delivery under `tv` 6.8% against 18.5%.
+static bool repair_timing_times(const struct tt_WriterProxy* proxy) {
+    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;
 }
 
 // An ACKNACK naming the watermark just went out. Starts a probe on it unless one is already running

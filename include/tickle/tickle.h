@@ -902,6 +902,12 @@ struct tt_LinkOptions {
     // The bucket's depth in bytes on the wire: what a paced link may send back to back. 0 = tt_PACING_BURST_FRAMES
     // frames of the link MTU. At least tt_PACING_BURST_MIN; only on a paced link.
     uint32_t pacing_burst;
+    // A RELIABLE reader's retry estimate for a lossy, jittery link (tt_SWITCH_*; 0 = the profile's: WIFI on, the rest
+    // off; docs/DESIGN.md "Link profiles"). On: a writer proxy's first recovery is timed even past the back-off, and
+    // after it only a recovery its first request answered (Karn's rule) - on such a link a recovery that needed a
+    // retry spans that retry's wait, and timed it lengthens the interval for every later gap. Context: on if any link
+    // is.
+    uint8_t repair_timing;
 };
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
@@ -2057,6 +2063,9 @@ struct tt_Context {
     uint64_t announce_repeats_sent;
     uint32_t summary_peer_ip[tt_MAX_CONTEXT_IDS];
     uint16_t summary_peer_port[tt_MAX_CONTEXT_IDS];
+    // The reliable readers' retry estimate on a lossy link (tt_LinkOptions.repair_timing, 2026-10-23), set by
+    // link_profiles_apply(); off on a hand-built context. After every other field, as peer_silence_ns is.
+    bool repair_timing;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s

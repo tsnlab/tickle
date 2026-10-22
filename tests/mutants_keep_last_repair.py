@@ -30,6 +30,55 @@ DIFF = "test_ack_bitmap_diff"
 # (name, file, old, new, test binary that must fail)
 MUTANTS = [
     (
+        "reader, repair_timing: ignored (the default rule on a WIFI link)",
+        "src/tickle.c",
+        "    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(proxy) : plain;",
+        "    bool path = plain;",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: no seed past the back-off",
+        "src/tickle.c",
+        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
+        "    return proxy->retry == 0;",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: retried recoveries timed after the seed (no Karn)",
+        "src/tickle.c",
+        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
+        "    return proxy->retry <= 3U || proxy->recovery_srtt_ns == 0;",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: only the seed timed",
+        "src/tickle.c",
+        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
+        "    return proxy->recovery_srtt_ns == 0;",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: a recovery the rule leaves out still timed when plain",
+        "src/tickle.c",
+        "        if (path && !proxy->probe_busy) {",
+        "        if (!proxy->probe_busy) {",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: a busy recovery seeds",
+        "src/tickle.c",
+        "        if (path && !proxy->probe_busy) {",
+        "        if (path) {",
+        PUBSUB,
+    ),
+    (
+        "reader, repair_timing: a seed past the back-off never reached (plain gate only)",
+        "src/tickle.c",
+        "    if (node->rx_targeted && (plain || path)) {",
+        "    if (node->rx_targeted && plain) {",
+        PUBSUB,
+    ),
+    (
         "writer: the per-sample resend cap put back",
         "src/tickle.c",
         "    // Same \"as if it had never been sent\" rule deliver_durability_backlog() applies, here for a",

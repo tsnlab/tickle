@@ -639,6 +639,50 @@ static void test_wifi_discovery_values(void) {
     destroy();
 }
 
+// WIFI's reliable readers' retry estimate (tt_LinkOptions.repair_timing, 2026-10-23): on for WIFI, off for the rest;
+// explicit fields win either way; the context's is on if any link's is. What it does is test_reliable_pubsub's.
+static void test_wifi_repair_timing(void) {
+    static const uint8_t others[] = {tt_LINK_PROFILE_ETHERNET, tt_LINK_PROFILE_T1S, tt_LINK_PROFILE_TSN};
+    for (size_t i = 0; i < sizeof(others); i++) {
+        struct tt_InitOptions opts = one_link(others[i]);
+        create(&opts, -1);
+        EXPECT_EQ_U32(tt_SWITCH_OFF, node.opts.net.links[0].repair_timing);
+        EXPECT_TRUE(!node.repair_timing);
+        destroy();
+    }
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    create(&opts, -1);
+    EXPECT_EQ_U32(tt_SWITCH_ON, node.opts.net.links[0].repair_timing);
+    EXPECT_TRUE(node.repair_timing);
+    destroy();
+    opts.net.links[0].repair_timing = tt_SWITCH_OFF;
+    create(&opts, -1);
+    EXPECT_TRUE(!node.repair_timing);
+    destroy();
+    opts = one_link(tt_LINK_PROFILE_ETHERNET);
+    opts.net.links[0].repair_timing = tt_SWITCH_ON;
+    create(&opts, -1);
+    EXPECT_TRUE(node.repair_timing);
+    destroy();
+    // Two links, WIFI second or first: on. No links at all: off (a context with no link options is ETHERNET's).
+    memset(&opts, 0, sizeof(opts));
+    opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = "10.0.0.255", .profile = tt_LINK_PROFILE_ETHERNET};
+    opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = "10.0.1.255", .profile = tt_LINK_PROFILE_WIFI};
+    opts.net.link_count = 2;
+    create(&opts, -1);
+    EXPECT_TRUE(node.repair_timing);
+    destroy();
+    opts.net.links[0].profile = tt_LINK_PROFILE_WIFI; // and first
+    opts.net.links[1].profile = tt_LINK_PROFILE_ETHERNET;
+    create(&opts, -1);
+    EXPECT_TRUE(node.repair_timing);
+    destroy();
+    memset(&opts, 0, sizeof(opts));
+    create(&opts, -1);
+    EXPECT_TRUE(!node.repair_timing);
+    destroy();
+}
+
 // The unicast copies: what went to which address, and the copy's bytes.
 static int copy_count;
 static uint32_t copy_ips[32];
@@ -896,6 +940,11 @@ static void test_validation(void) {
     expect_created(&opts, tt_RET_OK, "summary_unicast tt_SWITCH_OFF");
     opts.net.links[0].summary_unicast = tt_SWITCH_OFF + 1U;
     expect_created(&opts, tt_RET_INVALID_ARGUMENT, "summary_unicast past tt_SWITCH_OFF");
+    opts.net.links[0].summary_unicast = tt_SWITCH_DEFAULT;
+    opts.net.links[0].repair_timing = tt_SWITCH_OFF;
+    expect_created(&opts, tt_RET_OK, "repair_timing tt_SWITCH_OFF");
+    opts.net.links[0].repair_timing = tt_SWITCH_OFF + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "repair_timing past tt_SWITCH_OFF");
 
     opts = one_link(0);
     opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_MAX;
@@ -962,6 +1011,7 @@ int main(void) {
     test_retry_floor_holds_up_the_measured_g();
     test_tick_idle_heartbeat_and_mode_set_the_context();
     test_wifi_discovery_values();
+    test_wifi_repair_timing();
     test_wifi_summary_copies();
     test_wifi_announce_repeats();
     test_validation();

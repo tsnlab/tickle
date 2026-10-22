@@ -40,6 +40,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   that waits and moved to a thread that keeps the poll role; other threads wait with epoll as before. A context option
   (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT` (1). A
   kernel that refuses it (seccomp, Linux < 6.1) leaves the epoll path, said once.
+- **Wi-Fi repair timing** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2):
+  `tt_LinkOptions.repair_timing` (0 = the profile's: WIFI on, the rest off). A reliable reader's first recovery is timed
+  even past the back-off, and after it only one its first request answered. Without it the WB Wi-Fi arms never timed a
+  recovery and retried every 1 ms for good. Every other profile resolves it off: recoveries timed as before.
 - **Wi-Fi discovery** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2): a WIFI link sends each
   discovery summary also by unicast to its known peers (`tt_LinkOptions.summary_unicast`, at most 16 a round, one round
   per update interval), repeats a change's broadcast announce 3 times at 100/200/400 ms gaps
