@@ -38,7 +38,9 @@ open(path, "w").write(text.replace(old, new))
 EOF
     (cd "$dir/platform/linux" && clang -fsanitize=memory -fsanitize-recover=memory -fsanitize-memory-track-origins \
         -fno-omit-frame-pointer -O1 -g -Dtt_HAL_RX_HINT=1 -DTT_RX_DROP_PERCENT=10 -Dtt_MAX_BUFFER_LENGTH=65507 \
-        -Dtt_LARGE_SAMPLES=1 -I../../include -I../../src -I../../examples/set_bool -o gc_mutant garbage_ctx_check.c \
+        -Dtt_LARGE_SAMPLES=1 -Dtt_LOCAL_DELIVERY=1 -Dtt_DISCOVERY_OPTIONS=1 \
+        -Dtt_ENDPOINT_INDEX_SIZE=4096 -Dtt_MAX_ENDPOINT_COUNT=2048 -Dtt_MAX_SCHEDULER_LENGTH=512 -Dtt_UPDATE_MAX_PARTS=255 \
+        -Dtt_MAX_NODES=256 -I../../include -I../../src -I../../examples/set_bool -o gc_mutant garbage_ctx_check.c \
         ../../examples/set_bool/SetBool.c ../../src/encoding.c ../../src/log.c ../../src/tickle.c ../../src/hal_linux.c \
         -lm -lpthread 2>"$dir/build.log") || {
         echo "FAIL  $name: does not build"
@@ -72,9 +74,8 @@ mutant update_parts "    if (node->update_part_count[source] == 0) {
         return false;
     }
     for (uint32_t word = 0;" "    for (uint32_t word = 0;"
-mutant endpoint_idx "    if (((node->endpoint_index_used[slot / 64U] >> (slot % 64U)) & 1U) == 0) {
+mutant endpoint_idx "    if (((used >> (slot % tt_ENDPOINT_INDEX_WORD_BITS)) & 1U) == 0) {
         return NULL;
-    }
-    return node->endpoint_index[slot];" "    return node->endpoint_index[slot];"
+    }" "    (void)used;"
 echo "msan_mutants: $([ "$failed" = 0 ] && echo PASS || echo FAIL)"
 exit "$failed"

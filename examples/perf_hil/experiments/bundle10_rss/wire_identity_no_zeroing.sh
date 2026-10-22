@@ -21,6 +21,7 @@ ROOT=$(cd "$(dirname "$0")/../../../.." && pwd)
 BASE=${1:-$(git -C "$ROOT" merge-base HEAD origin/main)}
 CC=${CC:-gcc}
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/wire_identity_no_zeroing.XXXXXX")
+# shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
     git -C "$ROOT" worktree remove --force "$TMP/base" >/dev/null 2>&1 || true
     rm -rf "$TMP"
