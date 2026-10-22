@@ -1117,7 +1117,7 @@ int main(void) {
     // newer than one already delivered and counts it in out_of_order_discarded. Left out of this sum until
     // 2026-10-11, and that was the "loss with no mechanism" the gate reported then: a sample arriving behind a
     // newer one is what A's switch from UDP to B's segment produces. A sends over UDP while B's segment is absent or
-    // still being built (attach ABSENT or BAD_HEADER, rechecked only after tt_SEGMENT_ATTACH_RETRY_SENDS sends), then
+    // still being built (attach ABSENT or BAD_HEADER, rechecked only once the summary tick ages the answer), then
     // writes to the ring; B drains the ring ahead of the UDP datagrams still queued, and those arrive old. Measured
     // over 240 runs under 4x parallel load: 9 of 240 failed without this term; with it, every run with no
     // datagram dropped had delivered + discarded equal to produced exactly (190 runs), and the 50 with drops never

@@ -30,7 +30,7 @@ MUTANTS = [
     (
         "negative attach caching",
         "src/tickle.c",
-        "        note_attach(node, verdict);\n        remember_absent(node, entry, ip, port);\n",
+        "        note_attach(node, verdict);\n        remember_absent(entry, ip, port);\n",
         "        note_attach(node, verdict);\n",
         "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
     ),

@@ -145,7 +145,7 @@ static void test_defaults_are_the_compiled_settings(void) {
     EXPECT_EQ_U32(tt_SEGMENT_DRAIN_PER_POLL, opts.segment.drain_per_poll);
     EXPECT_EQ_U32(tt_SEGMENT_PROBE_EVERY_MAX, opts.segment.probe_every_max);
     EXPECT_EQ_U32(tt_SEGMENT_STALL_PASSES, opts.segment.stall_passes);
-    EXPECT_EQ_U32(tt_SEGMENT_ATTACH_RETRY_SENDS, opts.segment.attach_retry_sends);
+    EXPECT_EQ_U64(tt_SEGMENT_ATTACH_RETRY_NS, opts.segment.attach_retry_ns);
     EXPECT_EQ_U32(tt_SEGMENT_REVALIDATE_SENDS, opts.segment.revalidate_sends);
 
     // A created context: the dead-reader time the build's constant, and the ring the build always built.
@@ -395,25 +395,40 @@ static void test_stall_passes_is_when_a_stall_is_reported(void) {
     EXPECT_EQ_U32(10, passes_to_report_a_stall(&opts));
 }
 
-// Sends to a peer with no segment between the first attach attempt and the second.
-static uint32_t sends_between_attach_attempts(const struct tt_InitOptions* opts) {
+// How long after the summary tick that first sees a "no" the writer asks about the peer again: summary ticks every
+// 2^20 ns (the deadline's own unit), a send after each, until the second attach attempt.
+#define AGE_STEP_NS (1ULL << 20U)
+static uint64_t ns_between_attach_attempts(const struct tt_InitOptions* opts) {
     struct tt_InitOptions created = resolved(opts);
     struct tt_Context writer;
     whitebox(&writer, &created, WRITER_ID, WRITER_IP, WRITER_PORT);
     test_mock_segments_free();
-    uint32_t sends = 0;
-    while (test_mock_segment_attach_calls < 2 && sends < 100000U) {
+    EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL); // asked, and answered "no"
+    const int asked = test_mock_segment_attach_calls;
+    const uint64_t stamp = (5U * tt_SECOND) + 12345U; // any phase within a unit
+    segment_recheck_sweep(&writer, stamp);
+    uint64_t now = stamp;
+    while (test_mock_segment_attach_calls == asked && now - stamp < 100U * tt_SECOND) {
+        now += AGE_STEP_NS;
+        segment_recheck_sweep(&writer, now);
         EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
-        sends++;
     }
-    return sends - 1U; // the first send asked
+    return now - stamp;
 }
 
-static void test_attach_retry_sends_is_when_a_missing_segment_is_asked_again(void) {
+// The deadline is the option's, to within the unit it is kept in (rounded down) and the step of the ticks above.
+static void expect_about(uint64_t want, uint64_t got) {
+    EXPECT_TRUE(got <= want + AGE_STEP_NS && got + 2U * AGE_STEP_NS > want);
+    if (got > want + AGE_STEP_NS || got + 2U * AGE_STEP_NS <= want) {
+        printf("  want about %llu ns, got %llu ns\n", (unsigned long long)want, (unsigned long long)got);
+    }
+}
+
+static void test_attach_retry_ns_is_when_a_missing_segment_is_asked_again(void) {
     struct tt_InitOptions opts = defaults();
-    EXPECT_EQ_U32(tt_SEGMENT_ATTACH_RETRY_SENDS + 1U, sends_between_attach_attempts(&opts)); // control
-    opts.segment.attach_retry_sends = 5;
-    EXPECT_EQ_U32(6, sends_between_attach_attempts(&opts));
+    expect_about(tt_SEGMENT_ATTACH_RETRY_NS, ns_between_attach_attempts(&opts)); // control
+    opts.segment.attach_retry_ns = 50U * tt_MILLISECOND;
+    expect_about(50U * tt_MILLISECOND, ns_between_attach_attempts(&opts));
 }
 
 // Sends over an attached segment until its name is asked again (the attach is two calls: header, then region).
@@ -540,7 +555,7 @@ int main(void) {
     test_probe_every_max_bounds_the_reader_re_measures();
 #endif
     test_stall_passes_is_when_a_stall_is_reported();
-    test_attach_retry_sends_is_when_a_missing_segment_is_asked_again();
+    test_attach_retry_ns_is_when_a_missing_segment_is_asked_again();
     test_revalidate_sends_is_when_an_attached_segment_is_asked_again();
     test_validation();
     test_legacy_slot_bytes_reach_the_segment_group();

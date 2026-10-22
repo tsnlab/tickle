@@ -1151,13 +1151,15 @@ struct tt_SegmentOptions {
     // default discovery timing, else derived as it is (one update interval of discovery). Below the silence after
     // which the reader's node is presumed dead.
     uint64_t dead_reader_ns;
-    uint32_t drain_per_poll;     // records taken from the ring in one poll at most; tt_SEGMENT_DRAIN_PER_POLL
-    uint32_t probe_every_max;    // a power of two: epochs between two re-measures, at most; tt_SEGMENT_PROBE_EVERY_MAX
-    uint32_t stall_passes;       // drain passes over a claimed head before it is reported; tt_SEGMENT_STALL_PASSES
-    uint32_t attach_retry_sends; // sends to a peer with no segment before it is looked for again;
-                                 // tt_SEGMENT_ATTACH_RETRY_SENDS
-    uint32_t revalidate_sends;   // sends over an attached segment before its name is checked again;
-                                 // tt_SEGMENT_REVALIDATE_SENDS
+    // How long a "no" (a peer with no segment for us) stands before it is asked again; tt_SEGMENT_ATTACH_RETRY_NS. Kept
+    // by the context's summary tick, so it falls due at the first tick this long after the first tick following the
+    // answer: at most this plus two summary intervals. At most about 13 days (2^30 units of 2^20 ns).
+    uint64_t attach_retry_ns;
+    uint32_t drain_per_poll;   // records taken from the ring in one poll at most; tt_SEGMENT_DRAIN_PER_POLL
+    uint32_t probe_every_max;  // a power of two: epochs between two re-measures, at most; tt_SEGMENT_PROBE_EVERY_MAX
+    uint32_t stall_passes;     // drain passes over a claimed head before it is reported; tt_SEGMENT_STALL_PASSES
+    uint32_t revalidate_sends; // sends over an attached segment before its name is checked again;
+                               // tt_SEGMENT_REVALIDATE_SENDS
 };
 // How much of a fixed table this context uses (bundle 9). Each table keeps its compiled size - the config.h constant
 // named beside each field, the most the field may be and what its 0 stands for - so no struct layout and no
@@ -1766,12 +1768,23 @@ struct tt_Context {
         // throughput and doubled CPU per sample when it shipped. `missing` says this (ip, port) was
         // asked about and had nothing for us.
         bool missing;
-        // Sends before this entry is asked about again, whichever way it was answered. A "no" must
-        // expire so a peer that binds later becomes reachable. A "yes" must expire too, and that is
+        // A "no" (`missing`) is asked about again once this is set - by the summary tick once the answer has stood
+        // segment.attach_retry_ns (segment_recheck_sweep(), tickle.c), or at once by an announce from a peer at our own
+        // address (note_same_host_peer()) - so a peer that binds later becomes reachable. A send reads this byte and
+        // nothing else: no clock, no count (2026-10-22; it counted tt_SEGMENT_ATTACH_RETRY_SENDS sends, which held a
+        // late binder off shared memory for four minutes at 1 Hz).
+        bool recheck_due;
+        // Whether recheck_at holds the answer's deadline: the first summary tick after the answer sets it.
+        bool recheck_stamped;
+        // Sends before an attached entry is asked about again. A "yes" must expire too, and that is
         // less obvious: an owner that was killed leaves its region mapped, intact, with the same
         // incarnation in it, so nothing *inside* the mapping can ever say it is orphaned - only
         // asking the name again can, and a peer that never asks writes into a ring no one drains.
         uint32_t recheck_in;
+        // When the cached answer falls due, on the poll's clock in units of 2^20 ns (about 1.05 ms;
+        // SEGMENT_RECHECK_SHIFT, tickle.c): 32 bits, so no 64-bit compare, and compared by signed difference, so the
+        // wrap after 52 days is harmless. Written and read by the summary tick, under the state lock.
+        uint32_t recheck_at;
         // When we last managed to put anything in this peer's ring, or 0 if we have just managed it.
         // A reader that has taken nothing for tt_SEGMENT_DEAD_READER_NS, while we have had records
         // for it the whole time, has stopped; one that is merely behind still frees a slot now and
