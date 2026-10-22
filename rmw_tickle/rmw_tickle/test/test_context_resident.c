@@ -57,7 +57,8 @@ enum {
 static int page_resident(const void* address) {
     const size_t page = (size_t)sysconf(_SC_PAGESIZE);
     unsigned char vec = 0;
-    int ret = mincore((void*)((uintptr_t)address - ((uintptr_t)address % page)), page, &vec);
+    const unsigned char* start = (const unsigned char*)address - ((uintptr_t)address % page); // its page's first byte
+    int ret = mincore((void*)start, page, &vec);
     assert(0 == ret);
     return (int)(vec & 1U);
 }
