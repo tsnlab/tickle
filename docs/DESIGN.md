@@ -860,7 +860,9 @@ a probe is one load and a NULL test; a probe ends at an empty slot (the slots al
 `for_each_endpoint()` reads the mask again after each visit rather than holding it across the visit's calls. The
 change's first form, an occupancy bitmap tested on every probe, cost the rig's core cells +0.4..+0.8% user
 instructions per sample (core gate v2); counted exactly on aarch64 (`aarch64_insn/crosshost_qemu.sh`), this form takes
-35 fewer per received sample than the full-table index did, in `dispatch_submessage()`. `platform/linux/garbage_ctx_check.c`
+35 fewer per received sample than the full-table index did, in `dispatch_submessage()`. On the rig (core gate v2, A 71ed68f4,
+B 064de602 before its rebase, `coreAB_064de602_20261023-012715`) it PASSes with 1/88 rows listed: c15 p4 server user
+instructions +0.55%. `platform/linux/garbage_ctx_check.c`
 (test-linux) runs contexts created in storage holding a pattern, and again reset over their last state, through
 pub/sub, reliable under loss, fragments, a service and the same-host path; its `_msan` builds run it under
 MemorySanitizer from unwritten storage, and `bundle10_rss/msan_mutants.sh` shows that a read of each table put back
