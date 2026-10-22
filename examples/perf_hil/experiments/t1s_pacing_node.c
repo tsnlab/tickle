@@ -19,12 +19,17 @@
 //
 // Usage: t1s_pacing_node pub|sub on|off CONTEXT_ID BROADCAST SECONDS LARGE_BYTES
 
+// The build the harness gives it (-D), and what a bare compile - a linter's - takes.
+#ifndef tt_LARGE_SAMPLES
+#define tt_MAX_BUFFER_LENGTH 65507
+#define tt_LARGE_SAMPLES 1
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -40,12 +45,15 @@
 #define PERCENT 100U
 #define P99 99U
 #define P50 50U
-
-static uint64_t wall_ns(void) {
-    struct timespec ts;
-    (void)clock_gettime(CLOCK_REALTIME, &ts);
-    return ((uint64_t)ts.tv_sec * tt_SECOND) + (uint64_t)ts.tv_nsec;
-}
+#define LARGE_PATTERN_STEP 13U
+#define STORAGE_BYTES ((size_t)4U << 20U) // a RELIABLE large endpoint's storage: room for KEEP_LAST 2
+// argv: role, arm, context id, broadcast, seconds, large bytes
+#define ARG_ROLE 1
+#define ARG_ARM 2
+#define ARG_CONTEXT_ID 3
+#define ARG_BROADCAST 4
+#define ARG_SECONDS 5
+#define ARG_LARGE 6
 
 // ---- The two topics. A small sample is its publish date and padding; a large one is `large_len` patterned bytes.
 
@@ -83,7 +91,7 @@ static int32_t large_encode_size(struct tt_Data* data) {
 static int32_t large_encode(struct tt_Data* data, uint8_t* payload, uint32_t len) {
     (void)data;
     for (uint32_t i = 0; i < len; i++) {
-        payload[i] = (uint8_t)(i * 13U);
+        payload[i] = (uint8_t)(i * LARGE_PATTERN_STEP);
     }
     return (int32_t)len;
 }
@@ -105,7 +113,7 @@ static void on_small(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, 
     (void)seq_no;
     uint64_t sent = 0;
     memcpy(&sent, data, sizeof(sent));
-    uint64_t now = wall_ns();
+    uint64_t now = tt_get_wall_ns();
     if (small_received < LATENCY_MAX) {
         latencies[small_received] = now > sent ? now - sent : 0;
     }
@@ -143,8 +151,8 @@ static struct tt_Publisher small_pub;
 static struct tt_Publisher large_pub;
 static struct tt_Subscriber small_sub;
 static struct tt_Subscriber large_sub;
-static uint64_t large_pub_storage[(size_t)4U * 1024U * 1024U / sizeof(uint64_t)];
-static uint64_t large_sub_storage[(size_t)4U * 1024U * 1024U / sizeof(uint64_t)];
+static uint64_t large_pub_storage[STORAGE_BYTES / sizeof(uint64_t)];
+static uint64_t large_sub_storage[STORAGE_BYTES / sizeof(uint64_t)];
 static const struct tt_QosProfile small_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
                                                .reliability = {.kind = tt_QOS_RELIABILITY_BEST_EFFORT}};
 static const struct tt_QosProfile large_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = 2},
@@ -232,7 +240,7 @@ static int run_publisher(uint64_t seconds) {
     uint64_t end = start + (seconds * tt_SECOND);
     uint64_t next_large = start;
     for (uint64_t next = start; next < end; next += SMALL_PERIOD_NS) {
-        uint64_t sent = wall_ns();
+        uint64_t sent = tt_get_wall_ns();
         small_published += tt_Publisher_publish(&small_pub, (struct tt_Data*)&sent) == tt_RET_OK ? 1U : 0U;
         if (large_len != 0 && next >= next_large) {
             uint64_t unused = 0;
@@ -267,10 +275,10 @@ static int run_subscriber(uint64_t seconds) {
     return 0;
 }
 
-static int compare_u64(const void* a, const void* b) {
-    uint64_t x = *(const uint64_t*)a;
-    uint64_t y = *(const uint64_t*)b;
-    return x < y ? -1 : (x > y ? 1 : 0);
+static int compare_u64(const void* left, const void* right) {
+    uint64_t lhs = *(const uint64_t*)left;
+    uint64_t rhs = *(const uint64_t*)right;
+    return (lhs > rhs) - (lhs < rhs);
 }
 
 // The small stream's latency at `pct` percent (nearest rank), in us; 0 with no samples.
@@ -287,11 +295,11 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s pub|sub on|off CONTEXT_ID BROADCAST SECONDS LARGE_BYTES\n", argv[0]);
         return 2;
     }
-    bool publisher = strcmp(argv[1], "pub") == 0;
-    bool paced = strcmp(argv[2], "on") == 0;
-    uint64_t seconds = strtoull(argv[5], NULL, 10);
-    large_len = (uint32_t)strtoul(argv[6], NULL, 10);
-    if (create_context(paced, atoi(argv[3]), argv[4]) != tt_RET_OK) {
+    bool publisher = strcmp(argv[ARG_ROLE], "pub") == 0;
+    bool paced = strcmp(argv[ARG_ARM], "on") == 0;
+    uint64_t seconds = strtoull(argv[ARG_SECONDS], NULL, 10);
+    large_len = (uint32_t)strtoul(argv[ARG_LARGE], NULL, 10);
+    if (create_context(paced, atoi(argv[ARG_CONTEXT_ID]), argv[ARG_BROADCAST]) != tt_RET_OK) {
         return 1;
     }
     int status = publisher ? run_publisher(seconds) : run_subscriber(seconds);
@@ -305,16 +313,15 @@ int main(int argc, char** argv) {
            "small_published=%u large_published=%u large_refused=%u small_received=%u large_received=%u "
            "small_p50_us=%llu small_p99_us=%llu small_max_us=%llu pacing_waits=%llu repairs_deferred=%llu "
            "retransmitted=%u send_waits=%llu tx_datagrams=%llu\n",
-           publisher ? "pub" : "sub", argv[2],
+           publisher ? "pub" : "sub", argv[ARG_ARM],
            (unsigned long long)(link->pacing_rate == tt_PACING_OFF ? 0 : link->pacing_rate),
            (unsigned)link->pacing_burst, (unsigned)link->mtu, (unsigned)small_matched, (unsigned)large_matched,
            (unsigned)small_published, (unsigned)large_published, (unsigned)large_refused, (unsigned)small_received,
            (unsigned)large_received, (unsigned long long)latency_us(kept, P50),
-           (unsigned long long)latency_us(kept, P99),
-           (unsigned long long)(kept != 0 ? latencies[kept - 1U] / 1000U : 0), (unsigned long long)ctx.pacing_waits,
-           (unsigned long long)ctx.pacing_repairs_deferred,
-           (unsigned)(large_len != 0 && publisher ? large_pub.retransmitted : 0U),
-           (unsigned long long)ctx.large.send_waits, (unsigned long long)ctx.tx_datagrams);
+           (unsigned long long)latency_us(kept, P99), kept != 0 ? latencies[kept - 1U] / tt_MICROSECOND : 0ULL,
+           (unsigned long long)ctx.pacing_waits, (unsigned long long)ctx.pacing_repairs_deferred,
+           large_len != 0 && publisher ? large_pub.retransmitted : 0U, (unsigned long long)ctx.large.send_waits,
+           (unsigned long long)ctx.tx_datagrams);
     (void)tt_Context_destroy(&ctx);
     return 0;
 }
