@@ -204,7 +204,7 @@ static void rig_up(bool reliable, uint16_t a_depth, int b_depth) {
         init_sub(&rig.sub_b, TOPIC_B_ID, &rig.topic_b, callback_b, false, (uint16_t)b_depth);
         owner->endpoints[owner->endpoint_count++] = (struct tt_Endpoint*)&rig.sub_b;
     }
-    owner->endpoint_index_valid = false;
+    owner->endpoint_index_mask = 0;
 
     struct tt_Context* sender = &rig.sender;
     node_init_locks(sender);

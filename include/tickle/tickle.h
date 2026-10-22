@@ -1097,14 +1097,16 @@ struct tt_Context {
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
     // Open-addressed index into endpoints[] keyed by endpoint id, for O(1) find_endpoint()
     // instead of an O(endpoint_count) scan. Rebuilt lazily from endpoints[] on the next lookup
-    // after any add/remove (endpoint_index_valid = false marks it stale) - endpoints change
-    // rarely, lookups happen per received packet. A slot holds an endpoint only when its bit in
-    // endpoint_index_used is set; an empty slot is never read, so it is never written either -
-    // only the pages holding an endpoint are (2026-10-22: the rebuild NULLed every slot, which made
-    // the whole index resident and cost tt_ENDPOINT_INDEX_SIZE stores for every endpoint added).
+    // after any add/remove (endpoint_index_mask = 0 marks it stale) - endpoints change rarely,
+    // lookups happen per received packet. Only its first endpoint_index_mask + 1 slots are in use:
+    // the smallest power of two at least twice endpoint_count (16 at least, the array's size at
+    // most), so the load stays <= 0.5. A rebuild NULLs those slots and nothing reads past them, so
+    // the rest of the array is never written (2026-10-22: the rebuild NULLed every slot, which made
+    // the whole index resident - 32 KB in rmw_tickle's build - and cost tt_ENDPOINT_INDEX_SIZE
+    // stores for every endpoint added). The mask is the staleness flag too, so a lookup loads one
+    // field, as it did for the flag alone, and tests no per-slot occupancy.
     struct tt_Endpoint* endpoint_index[tt_ENDPOINT_INDEX_SIZE];
-    uint64_t endpoint_index_used[tt_ENDPOINT_INDEX_WORDS];
-    bool endpoint_index_valid;
+    uint32_t endpoint_index_mask;
     uint64_t last_modified; // Last modified timestamp in ns to announce other nodes e.g. server, publisher
 
     // Milestone 47 - together, this node's own launch-scoped identity source for every locally-

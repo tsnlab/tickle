@@ -4912,36 +4912,48 @@ static uint64_t rd64(struct tt_Header* header, uint64_t value) {
     return tt_is_reverse_endian(header) ? _tt_bswap_64(value) : value;
 }
 
-// The endpoint in index slot `slot`, or NULL when the slot is empty. Occupancy is endpoint_index_used's bit, not a NULL
-// in the slot: an empty slot is never read, so neither the reset nor a rebuild writes it, and the index's pages are
-// written only where an endpoint is (struct tt_Context.endpoint_index).
-static inline struct tt_Endpoint* endpoint_index_at(const struct tt_Context* node, uint32_t slot) {
-    uint64_t used = node->endpoint_index_used[slot / tt_ENDPOINT_INDEX_WORD_BITS];
-    if (((used >> (slot % tt_ENDPOINT_INDEX_WORD_BITS)) & 1U) == 0) {
-        return NULL;
+// The slots a rebuild puts in use for `count` endpoints: the smallest power of two at least twice the count, so the
+// load stays <= 0.5, and at least tt_ENDPOINT_INDEX_MIN_SLOTS - capped at the array's size.
+static uint32_t endpoint_index_slots(uint32_t count) {
+    uint32_t slots = tt_ENDPOINT_INDEX_MIN_SLOTS;
+    while (slots < tt_ENDPOINT_INDEX_SIZE && slots < 2 * count) {
+        slots *= 2;
     }
-    return node->endpoint_index[slot];
+    return slots < tt_ENDPOINT_INDEX_SIZE ? slots : tt_ENDPOINT_INDEX_SIZE;
 }
 
-// O(tt_ENDPOINT_INDEX_WORDS + endpoint_count): the bitmap cleared a word at a time, then each endpoint placed.
+// O(slots in use + endpoint_count): the slots in use NULLed, then each endpoint placed. Only those slots are written,
+// and every lookup masks with endpoint_index_mask, so nothing reads the rest of the array (struct
+// tt_Context.endpoint_index). The slots outnumber the endpoints (config.h asserts tt_ENDPOINT_INDEX_SIZE >
+// tt_MAX_ENDPOINT_COUNT), so one is always empty and every probe ends at it.
 static void rebuild_endpoint_index(struct tt_Context* node) {
-    for (uint32_t i = 0; i < tt_ENDPOINT_INDEX_WORDS; i++) {
-        node->endpoint_index_used[i] = 0;
+    uint32_t mask = endpoint_index_slots(node->endpoint_count) - 1;
+    for (uint32_t i = 0; i <= mask; i++) {
+        node->endpoint_index[i] = NULL;
     }
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
             continue;
         }
-        uint32_t slot = endpoint->id & (tt_ENDPOINT_INDEX_SIZE - 1);
-        while (endpoint_index_at(node, slot) != NULL) {
-            slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        uint32_t slot = endpoint->id & mask;
+        while (node->endpoint_index[slot] != NULL) {
+            slot = (slot + 1) & mask;
         }
         node->endpoint_index[slot] = endpoint;
-        uint64_t bit = (uint64_t)1 << (slot % tt_ENDPOINT_INDEX_WORD_BITS);
-        node->endpoint_index_used[slot / tt_ENDPOINT_INDEX_WORD_BITS] |= bit;
     }
-    node->endpoint_index_valid = true;
+    node->endpoint_index_mask = mask;
+}
+
+// The index's mask, rebuilding the index first when it is stale (a mask of 0). One load, the one the staleness flag
+// alone used to take, so a lookup costs what it did before the index was sized to its endpoints.
+static inline uint32_t endpoint_index_ready(struct tt_Context* node) {
+    uint32_t mask = node->endpoint_index_mask;
+    if (mask == 0) {
+        rebuild_endpoint_index(node);
+        mask = node->endpoint_index_mask;
+    }
+    return mask;
 }
 
 // Milestone 35 (rmw_tickle/PLAN.md) - more than one local endpoint may now share a (kind, id)
@@ -4960,23 +4972,21 @@ static void rebuild_endpoint_index(struct tt_Context* node) {
 // Subscriber delivery, so N local Subscriptions on one topic each get every sample - use
 // for_each_endpoint() below instead.
 static struct tt_Endpoint* find_endpoint(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id) {
-    if (!node->endpoint_index_valid) {
-        rebuild_endpoint_index(node);
-    }
+    uint32_t mask = endpoint_index_ready(node);
 
     // Linear probe from the id's home slot; a NULL slot means "not present" (load is kept <= 0.5,
     // so the probe is short). Distinct endpoints sharing an id (different kind, or now the same
     // kind too) just land in adjacent slots and the kind check below picks the right one(s).
-    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
-    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
+    uint32_t slot = endpoint_id & mask;
+    for (;;) { // ends at an empty slot: the slots in use always outnumber the endpoints
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             return NULL;
         }
         if (endpoint->kind == kind && endpoint->id == endpoint_id) {
             return endpoint;
         }
-        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        slot = (slot + 1) & mask;
     }
 
     return NULL;
@@ -4993,14 +5003,12 @@ static struct tt_Endpoint* find_endpoint(struct tt_Context* node, uint8_t kind, 
 // this narrowing at all.
 static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id,
                                                    uint32_t entity_id) {
-    if (!node->endpoint_index_valid) {
-        rebuild_endpoint_index(node);
-    }
+    uint32_t mask = endpoint_index_ready(node);
 
     struct tt_Endpoint* first_match = NULL;
-    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
-    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
+    uint32_t slot = endpoint_id & mask;
+    for (;;) { // ends at an empty slot: the slots in use always outnumber the endpoints
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             break;
         }
@@ -5012,7 +5020,7 @@ static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Context* node, uint
                 first_match = endpoint;
             }
         }
-        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        slot = (slot + 1) & mask;
     }
     return first_match;
 }
@@ -5027,20 +5035,19 @@ static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Context* node, uint
 static void for_each_endpoint(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id,
                               void (*visit)(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx),
                               void* ctx) {
-    if (!node->endpoint_index_valid) {
-        rebuild_endpoint_index(node);
-    }
-
-    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
-    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
+    uint32_t slot = endpoint_id & endpoint_index_ready(node);
+    for (;;) { // ends at an empty slot: the slots in use always outnumber the endpoints
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             return;
         }
         if (endpoint->kind == kind && endpoint->id == endpoint_id) {
             visit(node, endpoint, ctx);
         }
-        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        // Read again, not kept: a visit may add or remove an endpoint (a callback may), and the walk then goes on in
+        // the rebuilt index, whose empty slot ends it. Keeping it live across the visit also cost the inlined walk a
+        // spill and a reload around every call in it.
+        slot = (slot + 1) & endpoint_index_ready(node);
     }
 }
 
@@ -6097,7 +6104,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
 
     endpoint->node_index = owner_node->index;
     node->endpoints[node->endpoint_count++] = endpoint;
-    node->endpoint_index_valid = false;
+    node->endpoint_index_mask = 0;
     arm_announce_soon(node);
 #if tt_LOCAL_DELIVERY
     count_local_pairs(node, endpoint, 1);
@@ -6118,7 +6125,7 @@ static bool remove_endpoint_from_node(struct tt_Context* node, struct tt_Endpoin
                             sizeof(struct tt_Endpoint*) * (node->endpoint_count - i));
             }
             node->endpoints[node->endpoint_count] = NULL;
-            node->endpoint_index_valid = false;
+            node->endpoint_index_mask = 0;
             return true;
         }
     }
@@ -6899,9 +6906,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->local_delivery_depth = 0;
 #endif
     // Neither endpoints[] nor the index is written here: nothing reads endpoints[] past endpoint_count, and the index
-    // is rebuilt - its occupancy bitmap first - before any lookup reads it (rebuild_endpoint_index()).
+    // is rebuilt - the slots it will use NULLed first - before any lookup reads it (endpoint_index_ready()).
     node->endpoint_count = 0;
-    node->endpoint_index_valid = false;
+    node->endpoint_index_mask = 0;
     // No nodes hosted, and the default node not in use (CONTEXT_NODE_PLAN.md stage 2).
     for (int i = 0; i < tt_MAX_NODES; i++) {
         node->nodes[i] = NULL;
@@ -19887,12 +19894,10 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
 // find_endpoint()'s single match, until 2026-10-09, and the answers to every other one were dropped as answers to
 // someone else's call.
 static struct tt_ClientCall* find_calling_call(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no) {
-    if (!node->endpoint_index_valid) {
-        rebuild_endpoint_index(node);
-    }
-    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
-    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
+    uint32_t mask = endpoint_index_ready(node);
+    uint32_t slot = endpoint_id & mask;
+    for (;;) { // ends at an empty slot: the slots in use always outnumber the endpoints
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             break;
         }
@@ -19907,7 +19912,7 @@ static struct tt_ClientCall* find_calling_call(struct tt_Context* node, uint32_t
                 }
             }
         }
-        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        slot = (slot + 1) & mask;
     }
     return NULL;
 }

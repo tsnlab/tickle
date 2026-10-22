@@ -224,7 +224,7 @@ static void init_sub(struct tt_Subscriber* sub, struct tt_Context* node, uint32_
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     node->endpoints[node->endpoint_count++] = (struct tt_Endpoint*)sub;
-    node->endpoint_index_valid = false;
+    node->endpoint_index_mask = 0;
 }
 
 static void init_owner(struct tt_Context* owner, uint8_t id, uint32_t ip, bool with_ring) {

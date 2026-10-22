@@ -139,7 +139,7 @@ static void rig_up(uint16_t depth) {
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     owner->endpoints[owner->endpoint_count++] = (struct tt_Endpoint*)sub;
-    owner->endpoint_index_valid = false;
+    owner->endpoint_index_mask = 0;
 
     struct tt_Context* sender = &rig.sender;
     node_init_locks(sender);
