@@ -543,6 +543,10 @@
 #ifndef tt_ENDPOINT_INDEX_SIZE
 #define tt_ENDPOINT_INDEX_SIZE 512
 #endif
+// Bits in one word of tt_Context.endpoint_index_used, the index's occupancy bitmap, and the words it takes.
+#define tt_ENDPOINT_INDEX_WORD_BITS 64U
+#define tt_ENDPOINT_INDEX_WORDS \
+    ((tt_ENDPOINT_INDEX_SIZE + tt_ENDPOINT_INDEX_WORD_BITS - 1U) / tt_ENDPOINT_INDEX_WORD_BITS)
 #ifndef tt_MAX_NAME_LENGTH
 #define tt_MAX_NAME_LENGTH 255 // Maximum length of endpoint name
 #endif
