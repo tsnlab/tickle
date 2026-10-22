@@ -120,6 +120,14 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   zeros and ignore the bytes, and a default context's datagrams are unchanged. A non-default interval or threshold at
   creation is now an INFO line, not a WARNING.
 
+### Changed
+
+- **A scheduled publish reads no clock** ([DESIGN.md](DESIGN.md) section 2): the first publish of a scheduler entry
+  takes the reading the poll ran the entry at (`tt_Context.entry_clock_ns`), so its stamp is early by the entry's own
+  work before it. A second publish in the entry, and every entry after the first of a non-blocking poll, reads the
+  clock as before. PC: -4% to -7% user instructions per sample on the throughput clients
+  (`poll_clock_insn_pc.sh`); the rig A/B is pending.
+
 ### Fixed
 
 - The zero-copy publish (`publish_zerocopy()`, an in-place encoder) compared its peers with the compiled
