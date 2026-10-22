@@ -30,6 +30,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `_REVALIDATE_SENDS` and `segment.attach_retry_sends`, `.revalidate_sends` are `tt_SEGMENT_ATTACH_RETRY_NS`,
   `_REVALIDATE_NS` and `segment.attach_retry_ns`, `.revalidate_ns` (one update interval each); the old names stop the
   build. The summary tick ages the answers; a send reads one byte and no clock.
+- **A busy poll checks its socket after a time, not after 8 scheduler entries** (ROADMAP 5a; [DESIGN.md](DESIGN.md)
+  section 10). `poll.scheduler_io_interleave` is `poll.rx_check_ns` (0 = `poll.receive_timeout`), counted from the
+  poll's last look at its socket across calls; `tt_SCHEDULER_IO_INTERLEAVE` stops the build.
 
 ### Added
 

@@ -15,7 +15,8 @@
 //       rx_clock_refresh         how old the last datagram's stamp is at the end of a long drain,
 //       rx_lock_chunk            how many times a backlog takes the state lock,
 //       receive_timeout          how much back-to-back scheduler work a negative-timeout poll runs before it returns,
-//       scheduler_io_interleave  how many scheduler entries run before the poll looks at the socket;
+//       rx_check_ns              how long scheduler entries run before the poll looks at the socket, since it last
+//                                looked - a check or a wait, in this call or an earlier one;
 //   - every check refuses the value past its bound with tt_RET_INVALID_ARGUMENT and accepts the bound itself
 //     (tests/mutants_init_options_poll.sh removes each check and expects this test to fail).
 // The Linux HAL's reading of receive_timeout (the idle-socket recheck) is tests/test_init_options_socket.c's.
@@ -97,7 +98,7 @@ static void test_defaults_are_the_compiled_constants(void) {
     EXPECT_EQ_U32(tt_RX_CLOCK_REFRESH, opts.poll.rx_clock_refresh);
     EXPECT_EQ_U32(tt_RX_LOCK_CHUNK, opts.poll.rx_lock_chunk);
     EXPECT_EQ_U64(tt_RECEIVE_TIMEOUT, opts.poll.receive_timeout);
-    EXPECT_EQ_U32(tt_SCHEDULER_IO_INTERLEAVE, opts.poll.scheduler_io_interleave);
+    EXPECT_EQ_U64(tt_RECEIVE_TIMEOUT, opts.poll.rx_check_ns); // the slice
 
     // Created with options: the context holds them, resolved, and a zero where a value was not given.
     reset_mock_for_create();
@@ -111,7 +112,7 @@ static void test_defaults_are_the_compiled_constants(void) {
     EXPECT_EQ_U32(tt_RX_CLOCK_REFRESH, created.opts.poll.rx_clock_refresh);
     EXPECT_EQ_U32(3, created.opts.poll.rx_lock_chunk);
     EXPECT_EQ_U64(LONG_SLICE, created.opts.poll.receive_timeout);
-    EXPECT_EQ_U32(tt_SCHEDULER_IO_INTERLEAVE, created.opts.poll.scheduler_io_interleave);
+    EXPECT_EQ_U64(LONG_SLICE, created.opts.poll.rx_check_ns); // the slice it was given
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&created));
 }
 
@@ -175,7 +176,7 @@ static void test_rx_lock_chunk_is_the_datagrams_under_one_lock(void) {
     EXPECT_TRUE(whole.locks < standard.locks);
 }
 
-// ---- receive_timeout and scheduler_io_interleave: an entry that is due again as soon as it has run.
+// ---- receive_timeout and rx_check_ns: an entry that is due again as soon as it has run.
 
 static void busy_entry(struct tt_Context* context, uint64_t time, void* param) {
     (void)param;
@@ -209,32 +210,108 @@ static void test_receive_timeout_is_the_busy_slice(void) {
     EXPECT_EQ_INT(10, shorter);
 }
 
-// Scheduler runs before the poll's forced look at the socket finds the one datagram waiting there and returns.
+// Scheduler runs, at BUSY_RUN_NS each, before the poll's forced look at the socket finds the one datagram waiting there
+// and returns - the poll having last looked just before it began (a look `looked_ago` before the poll; 0: at its
+// start). A long positive timeout, so the busy slice of a negative one does not end the poll first.
 static int runs_before_a_look(const struct tt_PollOptions* poll) {
     setup(poll);
     node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = test_mock_now;
     int32_t len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
     test_mock_try_receive_remaining = 1; // what the look reads; tt_receive() is never reached
     test_mock_try_receive_len = len;
     EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Context_poll(&node, -1));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_poll(&node, 100 * (int64_t)tt_MILLISECOND));
     EXPECT_EQ_INT(0, test_mock_try_receive_remaining);
     return entry_runs;
 }
 
-static void test_scheduler_io_interleave_is_the_runs_before_a_look(void) {
+static void test_rx_check_ns_is_the_time_before_a_look(void) {
     struct tt_PollOptions poll = defaults().poll;
     const int fallback = runs_before_a_look(NULL);
     const int standard = runs_before_a_look(&poll);
-    poll.scheduler_io_interleave = 3;
+    poll.rx_check_ns = 3U * BUSY_RUN_NS;
     const int sooner = runs_before_a_look(&poll);
-    poll.scheduler_io_interleave = 50; // within the default 100 us slice at 1 us a run
+    poll.rx_check_ns = 250U * BUSY_RUN_NS; // past the 100 us slice: a positive timeout has none
     const int later = runs_before_a_look(&poll);
 
     EXPECT_EQ_INT(fallback, standard);
-    EXPECT_EQ_INT(tt_SCHEDULER_IO_INTERLEAVE, standard);
+    EXPECT_EQ_INT((int)(tt_RECEIVE_TIMEOUT / BUSY_RUN_NS), standard); // the slice, in runs
     EXPECT_EQ_INT(3, sooner);
-    EXPECT_EQ_INT(50, later);
+    EXPECT_EQ_INT(250, later);
+}
+
+// The look is kept across calls: a caller polling with timeouts shorter than rx_check_ns, an entry always due, is
+// looked for once the calls together have run rx_check_ns - here the default 100 us, in polls of 20 us. A look counted
+// from each call's start would never come (the count of entries it replaced did, after 8). Polls until the datagram is
+// read.
+static void test_short_polls_look_across_calls(void) {
+    setup(NULL);
+    node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = test_mock_now;
+    int32_t len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_try_receive_remaining = 1;
+    test_mock_try_receive_len = len;
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
+    int polls = 0;
+    while (test_mock_try_receive_remaining > 0 && polls < 50) {
+        (void)tt_Context_poll(&node, 20 * (int64_t)tt_MICROSECOND);
+        polls++;
+    }
+    EXPECT_EQ_INT(0, test_mock_try_receive_remaining);
+    // The fifth call ends at the 100 us its timeout and the look reach together, and the sixth runs one entry before
+    // its first check (an entry between two looks): 101.
+    EXPECT_EQ_INT((int)(tt_RECEIVE_TIMEOUT / BUSY_RUN_NS) + 1, entry_runs);
+    EXPECT_EQ_INT(6, polls);
+}
+
+// A wait is a look, and so is a check that finds nothing: after a poll that waited, a busy poll runs a whole
+// rx_check_ns before it checks; and a busy poll with nothing ever arriving checks once per rx_check_ns, not on every
+// step after the first. The control for both is the first assertion of the test above (a look just before).
+static void test_a_wait_and_an_empty_check_are_looks(void) {
+    setup(NULL);
+    node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = 0;                                                               // long ago
+    EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Context_poll(&node, 20 * (int64_t)tt_MICROSECOND)); // nothing scheduled: waits
+    int32_t len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_try_receive_remaining = 1;
+    test_mock_try_receive_len = len;
+    entry_runs = 0;
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_poll(&node, 100 * (int64_t)tt_MILLISECOND));
+    EXPECT_EQ_INT((int)(tt_RECEIVE_TIMEOUT / BUSY_RUN_NS), entry_runs); // counted from the wait's end, not long ago
+
+    // The same after a wait that ended with a datagram (20 us in): counted from the datagram, not from long ago.
+    setup(NULL);
+    node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = 0;
+    test_mock_receive_return = write_datagram_from(RX_LANDING(&node), STAMP_SOURCE);
+    test_mock_receive_data_advance_ns = 20U * tt_MICROSECOND;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_poll(&node, tt_MILLISECOND)); // nothing scheduled: waits, and the datagram
+    test_mock_receive_return = -1;
+    test_mock_receive_data_advance_ns = 0;
+    len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_try_receive_remaining = 1;
+    test_mock_try_receive_len = len;
+    entry_runs = 0;
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_poll(&node, 100 * (int64_t)tt_MILLISECOND));
+    EXPECT_EQ_INT((int)(tt_RECEIVE_TIMEOUT / BUSY_RUN_NS), entry_runs);
+
+    // Nothing arrives: 1,000 runs at 1 us check about ten times at 100 us.
+    setup(NULL);
+    node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = test_mock_now;
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
+    (void)tt_Context_poll(&node, 1000 * (int64_t)tt_MICROSECOND);
+    printf("  busy poll of 1 ms, nothing arriving: %d runs, %d checks\n", entry_runs, test_mock_try_receive_calls);
+    EXPECT_TRUE(entry_runs >= 900);
+    EXPECT_TRUE(test_mock_try_receive_calls >= 9 && test_mock_try_receive_calls <= 11);
 }
 
 // ---- The checks: each bound refused one past it and accepted at it.
@@ -273,10 +350,29 @@ static void test_validation(void) {
     expect_created(&opts, tt_RET_OK, "poll.receive_timeout at the bound");
 
     opts = defaults();
-    opts.poll.scheduler_io_interleave = tt_POLL_COUNT_MAX + 1U;
-    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "poll.scheduler_io_interleave above the bound");
-    opts.poll.scheduler_io_interleave = tt_POLL_COUNT_MAX;
-    expect_created(&opts, tt_RET_OK, "poll.scheduler_io_interleave at the bound");
+    opts.poll.rx_check_ns = tt_POLL_RECEIVE_TIMEOUT_MAX + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "poll.rx_check_ns above the bound");
+    opts.poll.rx_check_ns = tt_POLL_RECEIVE_TIMEOUT_MAX;
+    expect_created(&opts, tt_RET_OK, "poll.rx_check_ns at the bound");
+}
+
+// However short rx_check_ns is against the loop's own step, an entry runs between two checks: 1 ns, each clock read
+// 10 ns later than the last, nothing arriving, a poll of 100 us. Without the entry between, every step past the first
+// is a check and the due entry never runs again.
+static void test_an_entry_runs_between_two_checks(void) {
+    struct tt_PollOptions poll = defaults().poll;
+    poll.rx_check_ns = 1;
+    setup(&poll);
+    node.id = 1;
+    test_mock_now = 10U * tt_MILLISECOND;
+    node.rx_looked_ns = test_mock_now;
+    test_mock_clock_step_ns = 10;
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
+    (void)tt_Context_poll(&node, 100 * (int64_t)tt_MICROSECOND);
+    test_mock_clock_step_ns = 0;
+    printf("  rx_check_ns 1, poll of 100 us: %d runs, %d checks\n", entry_runs, test_mock_try_receive_calls);
+    EXPECT_TRUE(entry_runs >= 50);
+    EXPECT_TRUE(test_mock_try_receive_calls <= entry_runs + 1);
 }
 
 int main(void) {
@@ -285,7 +381,10 @@ int main(void) {
     test_rx_clock_refresh_is_how_often_a_drain_reads_the_clock();
     test_rx_lock_chunk_is_the_datagrams_under_one_lock();
     test_receive_timeout_is_the_busy_slice();
-    test_scheduler_io_interleave_is_the_runs_before_a_look();
+    test_rx_check_ns_is_the_time_before_a_look();
+    test_short_polls_look_across_calls();
+    test_a_wait_and_an_empty_check_are_looks();
+    test_an_entry_runs_between_two_checks();
     test_validation();
 
     if (test_result() != 0) {

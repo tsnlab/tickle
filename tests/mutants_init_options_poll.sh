@@ -73,7 +73,7 @@ check() {
 check '"poll.rx_clock_refresh"'
 check '"poll.rx_lock_chunk"'
 check '"poll.receive_timeout"'
-check '"poll.scheduler_io_interleave"'
+check '"poll.rx_check_ns"'
 
 replace "read: drain_rx() ignores rx_clock_refresh" \
     "const uint32_t refresh = node->opts.poll.rx_clock_refresh;" "const uint32_t refresh = tt_RX_CLOCK_REFRESH;"
@@ -81,9 +81,38 @@ replace "read: drain_rx() ignores rx_lock_chunk" \
     "const uint32_t chunk = node->opts.poll.rx_lock_chunk;
     if (len >= 0) {" "const uint32_t chunk = tt_RX_LOCK_CHUNK;
     if (len >= 0) {"
-replace "read: node_poll() ignores scheduler_io_interleave" \
-    "consecutive_scheduler_runs < node->opts.poll.scheduler_io_interleave" \
-    "consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE"
+replace "read: node_poll() ignores rx_check_ns" \
+    "time - node->rx_looked_ns < node->opts.poll.rx_check_ns" "time - node->rx_looked_ns < tt_RECEIVE_TIMEOUT"
+# The receive check by time (2026-10-22, ROADMAP 5a): each condition of it removed.
+replace "check: a busy poll never checking its socket" \
+    "time - node->rx_looked_ns < node->opts.poll.rx_check_ns" "true"
+replace "check: a busy poll checking on every step" \
+    "time - node->rx_looked_ns < node->opts.poll.rx_check_ns" "false"
+replace "check: an empty check not counted as a look" \
+    "            node->rx_looked_ns = time;
+            ran_since_look = false;" "            ran_since_look = false;"
+replace "check: a check not ending the entries' run" \
+    "            node->rx_looked_ns = time;
+            ran_since_look = false;" "            node->rx_looked_ns = time;"
+replace "check: a wait that timed out not counted as a look" \
+    "        node->rx_looked_ns = woke; // the wait looked at the socket until it ended
+" ""
+replace "check: a wait that timed out counted from its start" \
+    "        node->rx_looked_ns = woke; // the wait looked at the socket until it ended" \
+    "        node->rx_looked_ns = time;"
+replace "check: a wait that brought a datagram not counted as a look" \
+    "        node->rx_looked_ns = node->rx_clock_ns; // and it looked at the socket until then (node_poll(), rx_check_ns)
+" ""
+replace "check: the look forgotten at each call" \
+    "    bool ran_since_look = false; // ... since the last receive check, in this call
+" "    bool ran_since_look = false; // ... since the last receive check, in this call
+    node->rx_looked_ns = time;
+"
+replace "check: two checks with no entry between" \
+    "        if (!ran_since_look || time - node->rx_looked_ns < node->opts.poll.rx_check_ns) {" \
+    "        if (time - node->rx_looked_ns < node->opts.poll.rx_check_ns) {"
+replace "resolve: a zero rx_check_ns is not the slice" \
+    "poll->rx_check_ns = poll->receive_timeout;" "poll->rx_check_ns = tt_POLL_RECEIVE_TIMEOUT_MAX;"
 replace "read: node_poll() ignores receive_timeout" \
     "time - poll_start >= node->opts.poll.receive_timeout" "time - poll_start >= tt_RECEIVE_TIMEOUT"
 # The line alone: the groups node_init_locks() resolves after it changed with bundles 7 and 8, and an anchor that took

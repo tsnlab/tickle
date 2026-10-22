@@ -1028,8 +1028,11 @@ struct tt_PollOptions {
     // Nanoseconds: the most back-to-back scheduler work a negative-timeout poll runs before it returns, and how long
     // the Linux HAL goes on reading one busy socket while the other is skipped as idle (tt_RECEIVE_TIMEOUT).
     uint64_t receive_timeout;
-    // Scheduler entries a poll runs back to back before it squeezes in a receive check (tt_SCHEDULER_IO_INTERLEAVE).
-    uint32_t scheduler_io_interleave;
+    // Nanoseconds a busy poll runs due scheduler entries back to back before it squeezes in a receive check, counted
+    // from when it last looked at the socket - a check or a wait, in this call or an earlier one
+    // (tt_Context.rx_looked_ns); 0 = receive_timeout. At most tt_POLL_RECEIVE_TIMEOUT_MAX. Was scheduler_io_interleave,
+    // a count of entries (tt_SCHEDULER_IO_INTERLEAVE, 8), whose time was whatever 8 entries cost on the hardware.
+    uint64_t rx_check_ns;
 };
 
 // A switch of struct tt_SocketOptions: 0 = the default (on), or one of these. The Linux HAL's environment variable of
@@ -2070,6 +2073,11 @@ struct tt_Context {
     uint64_t announce_repeats_sent;
     uint32_t summary_peer_ip[tt_MAX_CONTEXT_IDS];
     uint16_t summary_peer_port[tt_MAX_CONTEXT_IDS];
+    // When the poll last looked at its socket - the poll loop's own reading at a receive check or before a wait - so a
+    // busy poll checks once opts.poll.rx_check_ns has passed since (node_poll(), tickle.c), across calls: a run of
+    // short polls looks as a long one does. The polling thread's alone (one poller at a time), so a plain 64-bit field
+    // and no atomic. After every other field, so none of them moves.
+    uint64_t rx_looked_ns;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s

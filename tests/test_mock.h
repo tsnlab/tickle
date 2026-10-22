@@ -112,6 +112,7 @@ uint64_t test_mock_try_receive_advance_ns = 0;   // ... each this much later tha
 int test_mock_socket_reads_under_lock = 0;       // tt_try_receive() calls past the backlog - a read of the
                                                  // socket, on a real HAL - made holding the node's state lock
 void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog datagram tt_try_receive() hands out
+int test_mock_try_receive_calls = 0;             // every tt_try_receive() call, whatever it returned
 // tt_send_batch_nonblocking() (large-message stage 2): room left in the "send buffer", in datagrams - a batch beyond it
 // is cut short there, as a full socket buffer cuts MSG_DONTWAIT short. -1 (the default): unlimited. And its calls.
 int32_t test_mock_nonblocking_room = -1;
@@ -160,6 +161,7 @@ extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
 extern int test_mock_socket_reads_under_lock;
 extern void (*test_mock_try_receive_hook)(void);
+extern int test_mock_try_receive_calls;
 extern uint32_t test_mock_receiver_drops;
 extern uint32_t test_mock_drain_bytes;
 extern int32_t test_mock_nonblocking_room;
@@ -206,6 +208,7 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_len = 0;
     test_mock_try_receive_advance_ns = 0;
     test_mock_try_receive_hook = NULL;
+    test_mock_try_receive_calls = 0;
     test_mock_socket_reads_under_lock = 0;
     test_mock_nonblocking_room = -1;
     test_mock_tx_writable_supported = false;
@@ -602,6 +605,7 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 
     *ip = 0;
     *port = 0;
+    test_mock_try_receive_calls++;
 
     // By default the mock feeds at most the one datagram test_mock_receive_return describes, via tt_receive()
     // above - tt_Context_poll()'s drain loop then immediately sees "nothing more waiting" here and stops. A test
