@@ -93,6 +93,8 @@ SURVIVES_RESET = {
                  "does reset",
     "scheduler": "the heap's push (tt_Context_schedule()); every read is below scheduler_tail, which reset_node_state() "
                  "does reset",
+    "update_part_received": "process_announce(), which zeroes a source's row when it sets update_part_count[source]; "
+                            "update_parts_any() reads no row whose count is 0, and reset_node_state() zeroes the counts",
     "rx_buffer": "the receive (the HAL) or a segment record copied in; nothing reads past what was put there",
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
                    "does initialise that, so the payload never needs to be",
