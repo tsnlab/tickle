@@ -88,6 +88,10 @@
 /platform/linux/udp_offload_check_flap
 /platform/linux/discovery_reply_check
 /platform/linux/rx_drain_check
+/platform/linux/garbage_ctx_check
+/platform/linux/garbage_ctx_check_large
+/platform/linux/garbage_ctx_check_msan
+/platform/linux/garbage_ctx_check_large_msan
 /platform/linux/rx_direct_check
 /platform/linux/rx_direct_check_raw
 /platform/linux/bell_wake_check
