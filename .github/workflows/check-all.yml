@@ -55,6 +55,52 @@ jobs:
           # src/hal_freertos.c compile-DB entry below points clang-tidy at.
           submodules: true
 
+      # The apt packages this job installs, kept between runs (2026-10-22). Nearly all of this job's variance is apt
+      # downloading from the runner image's Ubuntu mirror, azure.archive.ubuntu.com. setup-ros alone fetches about
+      # 600 MB (`apt-get upgrade` plus ros-jazzy-desktop and its build tools) and the steps around it another ~300 MB.
+      # On a good day that is 13-29 MB/s and the "Set up ROS 2" step takes 3 minutes. On 2026-10-22 the same 600 MB took
+      # 1 h 3 min (158 kB/s) in run 39758093408 and 26 min (376 kB/s) in run 39766998587, with apt timing out package
+      # after package against that mirror ("Ign:", 30 s each) while packages.ros.org on the same runner stayed fast; the
+      # same mirror then held cpp-linter's clang-tidy-19 install inside "Check all" for 26 min. Check all ran 125 and 86
+      # minutes those times against ~30 normally.
+      #
+      # This changes where the .deb files come from and nothing else. `apt-get update` still fetches fresh indexes and
+      # apt still resolves every package exactly as before; a cached .deb is used only when its name, size and hash match
+      # what the fresh index asks for, and anything else is downloaded as it always was. So the package set, and the
+      # interface set this job builds on top of it, is the one CI would install without the cache.
+      #
+      # The restore never matches its primary key exactly (it is the run id), so it takes the newest entry by prefix; the
+      # save at the end of the job writes a new entry only when the set of installed .debs changed. A cache download that
+      # stalls is abandoned after 5 minutes and the job falls back to the mirror, so the cache cannot make a run slower
+      # than it would have been. Bump the -v1- to start over.
+      - name: Restore the apt package cache
+        id: apt_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-v1-${{ github.run_id }}
+          restore-keys: apt-debs-ubuntu-24.04-v1-
+
+      - name: Seed apt's archive directory from the cache
+        run: |
+          # `apt` (not `apt-get`) deletes what it downloaded after installing it unless told otherwise, and the step below
+          # uses `apt`; keep both, so the save step sees every package this job installed.
+          sudo tee /etc/apt/apt.conf.d/99tickle-keep-debs > /dev/null <<'EOF'
+          APT::Keep-Downloaded-Packages "true";
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          EOF
+          : > "$RUNNER_TEMP/apt-seeded.txt"
+          if [ -d "$HOME/apt-debs" ]; then
+            find "$HOME/apt-debs" -maxdepth 1 -name '*.deb' -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/apt-seeded.txt"
+            # Same filesystem, so a rename: no second copy on the runner's disk.
+            find "$HOME/apt-debs" -maxdepth 1 -name '*.deb' -exec sudo mv -t /var/cache/apt/archives/ {} +
+          fi
+          echo "seeded $(wc -l < "$RUNNER_TEMP/apt-seeded.txt") .deb files from cache entry" \
+            "'${{ steps.apt_cache.outputs.cache-matched-key }}'"
+
       - name: Install build packages
         run: |
           sudo apt update
@@ -834,3 +880,48 @@ jobs:
           # local_setup.{bash,sh,zsh}, setup.{bash,sh,zsh}, package.{bash,sh}, ...) from the
           # rmw_tickle compile-db step above - not ours either, and gitignored besides.
           shellcheck_ignore_paths: third_party build install
+
+      # The other half of "Restore the apt package cache" at the top. Last, so it also holds what "Check all" itself
+      # installs (cpp-linter's clang-format/clang-tidy 19), and run whether or not the checks passed: a package that
+      # installed is a valid cache entry either way. Only the .debs of packages installed now, at the version installed,
+      # are kept, so entries do not accumulate superseded versions; the key is a hash of that list, so an unchanged set
+      # is not uploaded again. Neither step can fail the job.
+      - name: Collect the apt packages this job installed
+        id: apt_collect
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          archives=/var/cache/apt/archives
+          dir="$HOME/apt-debs"
+          touch "$RUNNER_TEMP/apt-seeded.txt"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dpkg-query -W -f='${Package}:${Architecture}=${Version}\n' | sort -u > "$RUNNER_TEMP/apt-installed.txt"
+          shopt -s nullglob
+          for deb in "$archives"/*.deb; do
+            id=$(dpkg-deb --show --showformat='${Package}:${Architecture}=${Version}' "$deb" 2> /dev/null) || continue
+            if grep -qxF -- "$id" "$RUNNER_TEMP/apt-installed.txt"; then
+              cp "$deb" "$dir/"
+            fi
+          done
+          find "$dir" -maxdepth 1 -name '*.deb' -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/apt-kept.txt"
+          kept=$(wc -l < "$RUNNER_TEMP/apt-kept.txt")
+          reused=$(LC_ALL=C comm -12 "$RUNNER_TEMP/apt-kept.txt" "$RUNNER_TEMP/apt-seeded.txt" | wc -l)
+          # The treatment, reported: how much of what this job installed came from the cache rather than the mirror.
+          echo "$kept installed .deb files, $reused of them seeded from the cache, $(du -sh "$dir" | cut -f1)"
+          if [ "$kept" -eq 0 ]; then
+            echo "::warning::no .deb files left in /var/cache/apt/archives - apt deleted them, so nothing is cached"
+            echo "key=" >> "$GITHUB_OUTPUT"
+          else
+            echo "key=apt-debs-ubuntu-24.04-v1-$(sha256sum < "$RUNNER_TEMP/apt-kept.txt" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save the apt package cache
+        if: >-
+          ${{ !cancelled() && steps.apt_collect.outputs.key != ''
+          && steps.apt_collect.outputs.key != steps.apt_cache.outputs.cache-matched-key }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_collect.outputs.key }}
