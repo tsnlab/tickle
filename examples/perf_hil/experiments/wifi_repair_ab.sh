@@ -13,6 +13,14 @@
 #   A tree (not the first) is NOT WORSE on an arm when, at ge5b2/ge5b4 rel_small, its median per-rep p99 is within 10% of the first
 #     tree's or below it, and, on every arm, its delivered % is no more than 0.1 points below; else WORSE. STORM reps are listed; a tree
 #     with more STORM reps than the first is WORSE on that cell whatever its medians.
+#   THE CLOCK CONTROL (added 2026-10-23, before its first run): with CLOCK_PPS set (wifi_burst_loss_netns.sh header)
+#     every egress carries a steady clock flow, so a burst lasts B / CLOCK_PPS seconds whatever the node sends. The
+#     first A/B of the reader fix (ab_seed: the fix S against its parent P, 4 reps) read S WORSE at ge5b2 (median per-rep
+#     p99 45.1 against 34.5 ms) and ge5b4 (69.0 against 60.6), while P resent 2-3 times per loss and S once - and P's
+#     extra packets end its bursts sooner. Reading of the same A/B under the clock: S NOT WORSE at both arms -> P's
+#     latency came from packet-counted bursts (the emulator), not from the repair; S WORSE at either -> the latency is the
+#     repair's, and S does not land as a default. A rep whose clock sent less than 90% of CLOCK_PPS over its own time is
+#     VOID (its latency is left out and listed).
 #
 # Usage: TREES="P=/path/tree F=/path/tree ..." TAG=name [PROFILE=wifi] [REPS=4] [ARMS=...] [CELLS=...] wifi_repair_ab.sh
 #   Each tree is a checkout (a detached git worktree) holding this harness. Output under
@@ -30,7 +38,7 @@ on_exit() {
 }
 trap on_exit EXIT
 echo "=== wifi_repair_ab $(date -Is) tag=$TAG TREES='$TREES' PROFILE=${PROFILE:-wifi} REPS=${REPS:-4}" \
-    "ARMS='${ARMS:-}' CELLS='${CELLS:-}' ===" >"$AB"
+    "ARMS='${ARMS:-}' CELLS='${CELLS:-}' CLOCK_PPS=${CLOCK_PPS:-0} ===" >"$AB"
 pids=()
 labels=()
 for t in $TREES; do
@@ -68,6 +76,15 @@ for lab in labels:
         r = rows.setdefault((lab, cell, arm), {"p99": [], "retx": [], "loaded": 0, "reps": 0})
         r["reps"] += 1
         r["loaded"] += loaded
+        clock_void = []
+        for line in read(os.path.join(d, "clock.log")):
+            c = kv(line)
+            if "sent" in c and float(c.get("secs", 0)) > 0 and \
+                    int(c["sent"]) < 0.9 * float(c.get("pps", 0)) * float(c["secs"]):
+                clock_void.append(line)
+        if clock_void:
+            r.setdefault("clock_void", []).append(f"rep {rep}: {clock_void[0]}")
+            loaded = True  # its latency is not read (header, the clock control)
         ping = read(os.path.join(d, "ping.log"))
         res = [kv(x) for x in ping if x.startswith("RESULT")]
         r["retx"].append(int(res[0].get("retransmitted", 0)) if res else -1)
@@ -84,6 +101,8 @@ for (lab, cell, arm), r in sorted(rows.items(), key=lambda k: (k[0][1], k[0][2],
     r["med"], r["storms"] = med, storms
     print(f"  {cell:9} {arm:7} {lab:4} reps {r['reps']} (loaded {r['loaded']}) per-rep p99 ms "
           f"{' '.join(f'{x:.1f}' for x in r['p99']) or '-'} median {med:.1f}; writer resends {r['retx']} storms {storms}")
+    for v in r.get("clock_void", []):
+        print(f"  VOID (clock under 90%) {cell} {arm} {lab} {v}")
 deliv = {}
 for lab in labels:
     s = os.path.join(base, f"{tag}_{lab}", "summary.txt")

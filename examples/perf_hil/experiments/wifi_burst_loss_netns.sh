@@ -114,6 +114,15 @@
 #     under 8 ms for most gaps while the p99 still exceeds the amended limit - the excess is then neither detection
 #     nor repair rounds, and the amendment explains nothing.
 #
+# ADDED 2026-10-23, BEFORE ITS FIRST RUN - CLOCK_PPS (default 0: every command line as before). A burst is counted in
+# packets on one egress, so a node that sends more packets ends its bursts sooner in time: the parent of the WIFI repair
+# fix resent 2-3 times per lost datagram and its outages were that much shorter. CLOCK_PPS=N gives every node's egress a
+# steady N packets a second of its own (16-byte UDP to 10.78.0.9, a static neighbour whose MAC no node has: the bridge
+# floods it, every node drops it, nothing answers), through the same unicast band and its netem, so that a burst of B
+# packets lasts about B / N seconds whatever the node's own traffic - Wi-Fi's bursts are in time. The reading it is for
+# is in wifi_repair_ab.sh's header (the clock control). The clock packets count in R2's R; each node's sender prints
+# how many it sent (clock.log), and a run whose sender sent under 90% of N x its duration is VOID for that reading.
+#
 # Usage: [REPS=3] [REP_FIRST=1] [DUR=30] [ARMS="ctl ge1b2 ..."] [CELLS="be_small rel_small rel_large"] [PROFILE=ethernet|wifi]
 #        [OUT=dir] wifi_burst_loss_netns.sh
 #   OUT defaults to ~/rig_results_safe/wifi_baseline/<stamp>: raw logs per run under OUT/runs/, the summary in
@@ -175,7 +184,7 @@ say "=== wifi_burst_loss_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PR
     echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS (core defaults: 1472-byte datagram)"
     echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" \
         "rstats=${LARGE_RSTATS:-0} large_pub_args='${LARGE_PUB_ARGS:-}' large_sub_args='${LARGE_SUB_ARGS:-}'" \
-        "bands=${BANDS:-2}"
+        "bands=${BANDS:-2} clock_pps=${CLOCK_PPS:-0}"
 } >>"$OUT/provenance.txt"
 
 # --- build: both binaries from this tree, as hybrid_send_netns.sh builds its bench ----------------------------------
@@ -220,6 +229,26 @@ spec() {
     esac
 }
 NODES=(p e i)
+# The clock sender (CLOCK_PPS, header): N 16-byte datagrams a second to 10.78.0.9 until the run's stop file appears
+# (checked every 100 datagrams) or its duration ends; prints "clock sent=<n> secs=<s>" on the way out.
+CLOCK_PY='
+import os, socket, sys, time
+pps, dur, stop = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+t0 = time.monotonic()
+n = 0
+while time.monotonic() - t0 < dur and (n % 100 or not os.path.exists(stop)):
+    try:
+        s.sendto(b"0123456789abcdef", ("10.78.0.9", 9))
+    except OSError:
+        pass
+    n += 1
+    wait = t0 + n / pps - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+print(f"clock sent={n} secs={time.monotonic() - t0:.3f} pps={pps:g}", flush=True)
+'
+
 IPS=(10.78.0.1 10.78.0.2 10.78.0.3)
 BCAST=10.78.0.255
 
@@ -308,6 +337,14 @@ run_one() { # run_one ARM CELL REP
     fi
     local stop="$WORK/stop-$run" mode=be
     rm -f "$stop"
+    local clock_pids=()
+    if [ "${CLOCK_PPS:-0}" -gt 0 ]; then
+        for k in 0 1 2; do
+            sudo -n ip -n "${NS[$k]}" neigh replace 10.78.0.9 lladdr 02:00:00:00:00:09 dev wl0 nud permanent
+            inns "$k" python3 -I -c "$CLOCK_PY" "$CLOCK_PPS" $((DUR + 70)) "$stop" >>"$RUN_DIR/clock.log" 2>&1 &
+            clock_pids+=($!)
+        done
+    fi
     [ "$cell" != be_small ] && mode=rel
     local common=(-b "$BCAST" -p "$PROFILE" -q "$stop")
     inns 2 "$WORK/node" idle -c 3 -d $((DUR + 60)) "${common[@]}" >"$RUN_DIR/idle.log" 2>&1 &
@@ -342,6 +379,7 @@ run_one() { # run_one ARM CELL REP
     sleep 1
     touch "$stop"
     wait "$idle_pid"
+    for k in "${clock_pids[@]}"; do wait "$k"; done # each ends on the stop file, at the latest after DUR + 70 s
     for k in 0 1 2; do counters "${NS[$k]}" "${NODES[$k]}"; done
     for k in 0 1 2; do sudo -n ip netns del "${NS[$k]}"; done
     sudo -n ip netns del "$HUB"
