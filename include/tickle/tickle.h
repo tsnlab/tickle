@@ -1504,6 +1504,10 @@ struct tt_Context {
     // The tt_get_ns() reading the running publish took (publish_clock()), 0 until it takes one: what a leased writer's
     // liveliness is asserted at, without a second read. Under the state lock.
     uint64_t publish_clock_ns;
+    // The poll's tt_get_ns() reading while the scheduler entry it was read for runs, 0 otherwise and once a publish in
+    // that entry has taken it as its own (publish_clock(), tickle.c): a scheduled publish costs no clock read. Under
+    // the state lock.
+    uint64_t entry_clock_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry
