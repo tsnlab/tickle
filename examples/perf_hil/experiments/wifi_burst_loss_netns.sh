@@ -280,10 +280,12 @@ run_one() { # run_one ARM CELL REP
     local idle_pid=$!
     TV_PID=""
     if [ "$cell" = rel_large ]; then
+        # shellcheck disable=SC2086 # LARGE_SUB_ARGS / LARGE_PUB_ARGS are words on purpose
         inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" ${LARGE_SUB_ARGS:-} >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
         [ "$arm" = tv ] && { tv_cycle & TV_PID=$!; }
+        # shellcheck disable=SC2086
         inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" ${LARGE_PUB_ARGS:-} >"$RUN_DIR/ping.log" 2>&1
         wait "$echo_pid"
     else
