@@ -15939,14 +15939,14 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 //
 // On a link with repair_timing (WIFI's, tt_LinkOptions.repair_timing, 2026-10-23) the path's estimate is timed by
 // repair_timing_times() instead; the sending estimate as above.
-static bool repair_timing_times(const struct tt_WriterProxy* proxy);
+static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
     }
     bool plain = proxy->retry <= node->opts.reliable.retry;
-    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(proxy) : plain;
+    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(node, proxy) : plain;
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (path && !proxy->probe_busy) {
@@ -15973,8 +15973,22 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
 //   22-23 ms (bursts in time, CLOCK_PPS=1000), and a second unlucky round runs into KEEP_LAST's eviction.
 // - Karn's rule after the seed kept the p99 within 10% of the 1 ms reader's (24.1 / 24.5 against 22.5 / 22.4 ms at
 //   ge5b2 / ge5b4) with a quarter of its resends; copies after delivery under `tv` 6.8% against 18.5%.
-static bool repair_timing_times(const struct tt_WriterProxy* proxy) {
-    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;
+// - Not for a writer of large samples: a gap in one waits behind the rest of the sample's send, the timer asks again
+//   meanwhile, and nearly every recovery has a retry. Under Karn's rule its estimate stayed at the seed: the WB 1 MiB
+//   arms then asked by timer 360-12,480 times a rep against ETHERNET's 19-126, and one ge5b2 rep resent 208,479 units
+//   where the others resent 6,000-9,000. Past the seed such a proxy keeps the default rule.
+static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    if (proxy->recovery_srtt_ns == 0) {
+        return true; // the seed
+    }
+#if tt_LARGE_SAMPLES
+    if (proxy->large_arrival_ns != 0) {
+        return proxy->retry <= node->opts.reliable.retry;
+    }
+#else
+    (void)node;
+#endif
+    return proxy->retry == 0;
 }
 
 // An ACKNACK naming the watermark just went out. Starts a probe on it unless one is already running

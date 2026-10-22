@@ -26,35 +26,43 @@ TESTS = ROOT / "platform/linux/obj/debug/tests"
 PUBSUB = "test_reliable_pubsub"
 SEND = "test_hybrid_send"
 DIFF = "test_ack_bitmap_diff"
+LARGE = "test_large_sample"
 
 # (name, file, old, new, test binary that must fail)
 MUTANTS = [
     (
+        "reader, repair_timing: Karn's rule for a writer of large samples too",
+        "src/tickle.c",
+        "    if (proxy->large_arrival_ns != 0) {\n        return proxy->retry <= node->opts.reliable.retry;",
+        "    if (false) {\n        return proxy->retry <= node->opts.reliable.retry;",
+        LARGE,
+    ),
+    (
         "reader, repair_timing: ignored (the default rule on a WIFI link)",
         "src/tickle.c",
-        "    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(proxy) : plain;",
+        "    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(node, proxy) : plain;",
         "    bool path = plain;",
         PUBSUB,
     ),
     (
         "reader, repair_timing: no seed past the back-off",
         "src/tickle.c",
-        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
-        "    return proxy->retry == 0;",
+        "        return true; // the seed",
+        "        return proxy->retry == 0;",
         PUBSUB,
     ),
     (
         "reader, repair_timing: retried recoveries timed after the seed (no Karn)",
         "src/tickle.c",
-        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
-        "    return proxy->retry <= 3U || proxy->recovery_srtt_ns == 0;",
+        "    return proxy->retry == 0;\n}",
+        "    return proxy->retry <= 3U;\n}",
         PUBSUB,
     ),
     (
         "reader, repair_timing: only the seed timed",
         "src/tickle.c",
-        "    return proxy->retry == 0 || proxy->recovery_srtt_ns == 0;",
-        "    return proxy->recovery_srtt_ns == 0;",
+        "    return proxy->retry == 0;\n}",
+        "    return false;\n}",
         PUBSUB,
     ),
     (
