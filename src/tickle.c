@@ -431,10 +431,10 @@ static uint16_t summary_interval_encode(uint64_t interval_ns) {
     if (interval_ns == (uint64_t)tt_CONTEXT_UPDATE_INTERVAL) {
         return 0;
     }
-    for (uint32_t u = 0; u < tt_SUMMARY_INTERVAL_UNITS; u++) {
-        uint64_t count = (interval_ns + summary_interval_units[u] - 1U) / summary_interval_units[u];
+    for (uint32_t unit = 0; unit < tt_SUMMARY_INTERVAL_UNITS; unit++) {
+        uint64_t count = (interval_ns + summary_interval_units[unit] - 1U) / summary_interval_units[unit];
         if (count <= tt_SUMMARY_INTERVAL_MANTISSA_MAX) { // never 0: a resolved interval is never 0
-            return (uint16_t)((u << tt_SUMMARY_INTERVAL_MANTISSA_BITS) | (uint32_t)count);
+            return (uint16_t)((unit << tt_SUMMARY_INTERVAL_MANTISSA_BITS) | (uint32_t)count);
         }
     }
     return UINT16_MAX;

@@ -61,8 +61,9 @@ opts.socket.buffer_size = 4U << 20; // SO_SNDBUF and SO_RCVBUF
 tt_Context_create_with(&ctx, &opts); // tt_RET_INVALID_ARGUMENT, with a log line naming the field, if refused
 ```
 
-What each field does and its limits: the comments in `tickle.h` and DESIGN.md section 2. Peers judge a context's
-silence by their own discovery timing, so a non-default update interval or miss threshold logs a WARNING. The Linux
+What each field does and its limits: the comments in `tickle.h` and DESIGN.md section 2. A context's discovery summary
+tells its peers its update interval and miss threshold, and they judge its silence by them (DESIGN.md section 5), so
+contexts on different intervals interoperate; a non-default value logs an INFO line. The Linux
 HAL's environment switches (`TT_UDP_OFFLOAD`, `TT_RX_DIRECT`, ...) still decide over `socket` when set. rmw_tickle
 keeps its `RMW_TICKLE_*` environment variables.
 

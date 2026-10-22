@@ -20,11 +20,13 @@
 // peer_silence_ms is what the peer's summaries told this context (tt_Context.peer_silence_ns, 0 = none yet): the
 // treatment as realized, printed beside the verdict it drives.
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
+#include <tickle/config.h>
+#include <tickle/hal.h>
 #include <tickle/tickle.h>
 
 #define POLL_NS (20 * tt_MILLISECOND) // tt_Context_poll() takes nanoseconds
@@ -89,7 +91,7 @@ int main(int argc, char** argv) {
            "peer_silence_ms=%llu polled_s=%llu\n",
            label, (unsigned long long)interval_ms, (unsigned long long)(own_silence / tt_MILLISECOND), peer, arrivals,
            deaths, peer >= 0 && seen[peer] ? 1 : 0,
-           (unsigned long long)(peer >= 0 ? node.peer_silence_ns[peer] / tt_MILLISECOND : 0),
+           peer >= 0 ? (unsigned long long)(node.peer_silence_ns[peer] / tt_MILLISECOND) : 0ULL,
            (unsigned long long)((now - start) / tt_SECOND));
     fflush(stdout);
     tt_Context_destroy(&node);

@@ -373,8 +373,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // default untouched instead of guessing.
     struct tt_NetOptions* net = &impl->init_options.net;
     tt_InitOptions_default(&impl->init_options);
-    // init_options.discovery stays the defaults: no environment variable sets the discovery or liveliness timing, and
-    // the peers judge this context's silence by their own (tt_DiscoveryOptions, tickle.h).
+    // init_options.discovery stays the defaults: no environment variable sets the discovery or liveliness timing. (The
+    // summary tells the peers this context's timing, and they judge its silence by it: tt_DiscoveryOptions, tickle.h.)
     net->port = (uint16_t)(_tt_CONTEXT_PORT + (int)domain_id); // see the domain check at the top
 
     char* broadcast_addr = getenv("TICKLE_BROADCAST_ADDR");

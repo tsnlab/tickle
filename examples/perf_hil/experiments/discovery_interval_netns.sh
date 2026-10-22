@@ -91,8 +91,10 @@ say "  namespaces $NS_A ($NET.1) / $NS_B ($NET.2)"
 # arm NAME: both sides at once, DUR seconds; their outputs in $OUT.d/NAME_{a,b}.log.
 arm() {
     local name=$1
+    # shellcheck disable=SC2024 # the logs are this shell's
     sudo -n ip netns exec "$NS_A" "$OUT.d/$name" A "$NET.255" 1000 "$DUR" < /dev/null > "$OUT.d/${name}_a.log" 2>&1 &
     local pid_a=$!
+    # shellcheck disable=SC2024
     sudo -n ip netns exec "$NS_B" "$OUT.d/$name" B "$NET.255" 4000 "$DUR" < /dev/null > "$OUT.d/${name}_b.log" 2>&1 &
     local pid_b=$!
     wait "$pid_a" "$pid_b"

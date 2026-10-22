@@ -52,7 +52,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   `_UPDATE_INTERVAL`, `_TX_INTERVAL`, `_MAX_LEASE_NS`, `tt_LIVELINESS_LEASE_DIVISOR`, `_DEFER_NS`, `_MAX_DEFERRALS`,
   `_MISS_THRESHOLD`, `tt_DISCOVERY_REQUEST_RETRY`, `_ATTEMPTS`, `tt_SCHED_FULL_WARN_INTERVAL`) are per context, the
   constants their defaults; `tt_SEGMENT_DEAD_READER_NS < silence` checked at creation. A non-default update interval or
-  miss threshold logs a WARNING (peers judge silence by their own). rmw_tickle reads them from its core context.
+  miss threshold logged a WARNING (peers judged silence by their own) until the summary carried both (below), and an
+  INFO line since. rmw_tickle reads them from its core context.
 - **Reliable options** (`tt_InitOptions.reliable`, bundle 3): the retry interval, its starting value, G, ceiling, retry
   count, back-off, stuck-gap warning and the idle HEARTBEAT's period and floor per context (`struct tt_ReliableOptions`;
   each zero is its config.h constant). `tt_reliable_retry_interval_configured()` takes the context. Default wire bytes

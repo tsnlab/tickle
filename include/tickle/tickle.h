@@ -1152,11 +1152,6 @@ struct tt_Context {
     // whose endpoints never change still has to be heard from periodically, or it's presumed
     // gone once tt_LIVELINESS_MISS_THRESHOLD announce intervals pass with nothing heard.
     uint64_t update_last_seen[tt_MAX_CONTEXT_IDS];
-    // Per remote node, the silence after which it is presumed dead, from the timing its latest discovery summary
-    // carried (tt_HeartbeatHeader.summary_interval, 2026-10-22): its own (2 x miss_threshold + 1) x update interval
-    // / 2. 0 until a summary from it arrives, and again once it is presumed dead: judged by this context's own silence
-    // then.
-    uint64_t peer_silence_ns[tt_MAX_CONTEXT_IDS];
 
     // The same index, but the most recent time ANY validated packet was received from that node -
     // DATA, ACKNACK, Heartbeat, UPDATE, anything whose header passed validate_packet_header().
@@ -1896,6 +1891,12 @@ struct tt_Context {
     struct tt_InitOptions opts;
     struct _tt_Link links[tt_MAX_LINK_COUNT];
     uint8_t link_count;
+    // Per remote node, the silence after which it is presumed dead, from the timing its latest discovery summary
+    // carried (tt_HeartbeatHeader.summary_interval, 2026-10-22): its (2 x miss_threshold + 1) x update interval / 2. 0
+    // until a summary from it arrives, and again once it is presumed dead: judged by this context's own silence then.
+    // After every other field, so none of them moves (2 KB earlier moved the segment peer table across the page
+    // boundary test_transport_seam's residency test relies on).
+    uint64_t peer_silence_ns[tt_MAX_CONTEXT_IDS];
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s

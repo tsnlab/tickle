@@ -301,8 +301,10 @@ one ~28-byte summary per node per second.
   Wi-Fi profile beside Ethernet) do not presume each other dead. Default contexts send zeros: their bytes are the
   parent's (`tests/wire_identity_discovery_timing.sh`). A peer built before the change sends zeros, judged as the
   default, and judges by its own as it always did. Two contexts at 1 s and 4 s over a veth pair for 30 s: no death
-  either way; with the receiver's use of the value removed, the 1 s side presumes the 4 s side dead
-  (`examples/perf_hil/experiments/discovery_interval_netns.sh`).
+  either way; with the receiver's use of the value removed, the 1 s side presumed the 4 s side dead 7 times, 3.5 s
+  after each summary (`examples/perf_hil/experiments/discovery_interval_netns.sh`, x86 PC, 2026-10-22). Off the hot
+  path: user instructions per sample on the PC, p1 p3 t1, 3 reps, against 6c355fa2 with a placement control, every
+  row EQUAL (client -0.01%, -0.01%, +0.00%; `initoptions_insn_pc.sh`).
 - An unknown generation draws a request, retried after RTT + `tt_CONTEXT_TX_INTERVAL` (seed `tt_DISCOVERY_REQUEST_RETRY`),
   up to `tt_DISCOVERY_REQUEST_ATTEMPTS`, in `tt_DISCOVERY_PENDING_REQUESTS` slots.
 - Up to `tt_UNICAST_PEER_THRESHOLD` requests per tick are answered unicast, more by one broadcast.
