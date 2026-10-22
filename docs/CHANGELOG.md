@@ -31,7 +31,7 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 - **Wait ring** (Linux HAL; [DESIGN.md](DESIGN.md) section 2, "Receive path"): `tt_receive()`'s wait and read in one
   `io_uring_enter()` on a ring set up `IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN`, owned by the first thread
   that waits and moved to a thread that keeps the poll role; other threads wait with epoll as before. A context option
-  (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT`. A
+  (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT` (1). A
   kernel that refuses it (seccomp, Linux < 6.1) leaves the epoll path, said once.
 - **Context options** (`struct tt_InitOptions`, ROADMAP "Context options" bundle 1; [DESIGN.md](DESIGN.md) section 2):
   `tt_InitOptions_default()` and `tt_Context_create_with(ctx, opts)` (NULL = defaults). The `net` group holds what

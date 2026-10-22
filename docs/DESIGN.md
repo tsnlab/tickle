@@ -147,7 +147,7 @@ and wake the poll if earlier. `tt_Context_lock()` gives consistent compound read
 - Both sockets `O_NONBLOCK`: the checksum is then made during the copy, not in a cold pass (`TT_RX_NONBLOCK`).
 - **Lazy deadline timer:** after 8 data-ended waits in a row the deadline stays in the `timerfd` and the wait has no
   timeout (`TT_RX_LAZY_TIMER`, `TT_RX_LAZY_ADAPT`).
-- **Wait ring** (`TT_RX_URING_WAIT`, default the build's `tt_RX_URING_WAIT`): the wait set held as io_uring polls and
+- **Wait ring** (`TT_RX_URING_WAIT`, default the build's `tt_RX_URING_WAIT`, 1): the wait set held as io_uring polls and
   the data socket's read as a recvmsg submitted with the wait - one `io_uring_enter()` for a datagram that wakes the
   reader, where epoll took two calls. The ring is `SINGLE_ISSUER | DEFER_TASKRUN`: the first waiter owns it, a thread
   that waits 64 times in a row while another owns it takes it over (each move doubles that run), and every other wait

@@ -204,9 +204,10 @@ static inline void tt_thread_yield(void) {
 #endif
 #define tt_HAL_IO_URING (tt_HAL_RX_HINT != tt_RX_HINT_READ)
 // The wait ring (hal_linux.c, "The wait ring"): what opts.socket.rx_uring_wait left at tt_SWITCH_DEFAULT means - 1 on,
-// 0 off. TT_RX_URING_WAIT in the environment decides over both. A build without io_uring has no wait ring.
+// 0 off. TT_RX_URING_WAIT in the environment decides over both. A build without io_uring has no wait ring. On in
+// ab/rx-uring-dt for its rig A/B (rig_queue_rx_uring_wait.sh); it stays on only if that A/B says LAND.
 #ifndef tt_RX_URING_WAIT
-#define tt_RX_URING_WAIT 0
+#define tt_RX_URING_WAIT 1
 #endif
 // The ring moves to a thread that waited this many times in a row while another owned it; each move doubles the run
 // the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring").
