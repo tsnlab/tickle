@@ -240,8 +240,9 @@ and a 100-byte sample every 10 ms for 15 s (`t1s_pacing_netns.sh`, `t1s_pacing_n
 off, the shaper dropped 2,528 datagrams with up to 140 kB queued, the writer resent 5,047, and the small stream's p99
 was 108.3 ms (1,498 of 1,500 received); on, 0 dropped, nothing queued, no resend, p99 0.21 ms (1,500 of 1,500); every
 large sample delivered in both. The control - the small stream alone - p99 0.44 ms off, 0.16 ms on: the 1 ms batch
-tick's phase against the publish period, which differs run to run (a second run, `-run3`, PASS: 0.21 ms off, 0.60 ms
-on; off 2,496 dropped, p99 108.3 ms; on 0, p99 0.68 ms).
+tick's phase against the publish period, which differs run to run (`-run3`, PASS: control 0.21 ms off, 0.60 ms on; off
+2,496 dropped, p99 108.3 ms; on 0, p99 0.68 ms). Again on f0d1ce66 (`-run4`, PASS): off 2,505 dropped, 141 kB
+queued, p99 108.3 ms; on 0, 0 B, p99 0.29 ms; control 0.28 / 0.65 ms.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
