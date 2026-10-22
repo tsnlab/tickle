@@ -13,13 +13,13 @@
 #             not reach a paced send (the retransmissions held, in every build; the large sample's units, in the large
 #             one) and its identity is not shown.
 #
-# Usage: tests/wire_identity_send_pacing.sh [PARENT]     PARENT defaults to 13511f47, the parent of send pacing: a
+# Usage: tests/wire_identity_send_pacing.sh [PARENT]     PARENT defaults to 9c503bc1, the parent of send pacing: a
 # commit, checked out in a temporary worktree, or a directory already holding that tree. Prints one line per check and
 # exits non-zero if any check fails.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PARENT=${1:-13511f47}
+PARENT=${1:-9c503bc1}
 CC=${CC:-gcc}
 
 TMP=$(mktemp -d)

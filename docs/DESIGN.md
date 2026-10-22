@@ -230,19 +230,21 @@ Refused at creation: a `pacing_rate` below `tt_LINK_RATE_MIN` or above the link'
 `tt_PACING_BURST_MIN` (one full 1500-byte frame on the wire) or on a link that is not paced. An EPOLLOUT wake for
 another Publisher resumes a paced send early; it finds the bucket and waits again.
 
-Cost: none measurable. User instructions per sample, client, B 25003126 vs A 13511f47 (A+P the placement control), 3
-reps, every row EQUAL: p1 +0.03% (P -0.01%), p3 +0.06% (+0.03%), t1 +0.07% (+0.00%), t3 +0.07% (+0.00%), 1% loss l1
-+0.07% (-0.01%), l3 +0.05% (-0.00%); 8,202 round trips a p run, 1.1-1.3 M samples a t or l run, 0 void
-(`initoptions_insn_pc.sh`, `pacing_insn_pc_20261022`). Wire- and time-identical when off (`tests/wire_identity_send_pacing.sh`:
-core, fragmenting and large builds, parent-vs-parent control identical, ETHERNET paced at 10 kbit/s differs in each).
-T1S over a 10 Mbit/s tbf veth (burst 16 kB, latency 100 ms) in two namespaces, a 256 kB RELIABLE sample every 500 ms
-and a 100-byte sample every 10 ms for 15 s (`t1s_pacing_netns.sh`, `t1s_pacing_netns_20261022-run2`, PASS): pacing
-off, the shaper dropped 2,528 datagrams with up to 140 kB queued, the writer resent 5,047, and the small stream's p99
-was 108.3 ms (1,498 of 1,500 received); on, 0 dropped, nothing queued, no resend, p99 0.21 ms (1,500 of 1,500); every
-large sample delivered in both. The control - the small stream alone - p99 0.44 ms off, 0.16 ms on: the 1 ms batch
-tick's phase against the publish period, which differs run to run (`-run3`, PASS: control 0.21 ms off, 0.60 ms on; off
-2,496 dropped, p99 108.3 ms; on 0, p99 0.68 ms). Again on f0d1ce66 (`-run4`, PASS): off 2,505 dropped, 141 kB
-queued, p99 108.3 ms; on 0, 0 B, p99 0.29 ms; control 0.28 / 0.65 ms.
+Cost: none measurable. User instructions per sample, client, B 839eb9cb vs A 9c0b1040, both before their rebase (A+P the
+placement control), 3 reps, every row EQUAL: p1 +0.03% (P -0.01%), p3 +0.06% (+0.03%), t1 +0.07% (+0.00%), t3 +0.07%
+(+0.00%), 1% loss l1 +0.07% (-0.01%), l3 +0.05% (-0.00%); 8,202 round trips a p run, 1.1-1.3 M samples a t or l run, 0
+void (`initoptions_insn_pc.sh`, `pacing_insn_pc_20261022`). Rig core gate v2 (A 9c0b1040, B e64d5a93, both before their
+rebase onto D+E and the discovery timing, `coreAB_3f5d210b_20261022-203136`): PASS, 0 CPU/latency WORSE; 5 of 88 rows
+listed, user instructions +0.08% to +0.12% (client c2, c3, c10; server c10, c16). Wire- and time-identical when off
+(`tests/wire_identity_send_pacing.sh`: core, fragmenting and large builds, parent-vs-parent control identical, ETHERNET
+paced at 10 kbit/s differs in each). T1S over a 10 Mbit/s tbf veth (burst 16 kB, latency 100 ms) in two namespaces, a
+256 kB RELIABLE sample every 500 ms and a 100-byte sample every 10 ms for 15 s (`t1s_pacing_netns.sh`,
+`t1s_pacing_netns_20261022-run2`, PASS): pacing off, the shaper dropped 2,528 datagrams with up to 140 kB queued, the
+writer resent 5,047, and the small stream's p99 was 108.3 ms (1,498 of 1,500 received); on, 0 dropped, nothing queued,
+no resend, p99 0.21 ms (1,500 of 1,500); every large sample delivered in both. The control - the small stream alone -
+p99 0.44 ms off, 0.16 ms on: the 1 ms batch tick's phase against the publish period, which differs run to run (`-run3`,
+PASS: control 0.21 ms off, 0.60 ms on; off 2,496 dropped, p99 108.3 ms; on 0, p99 0.68 ms). Again on e81c9ddf before its
+rebase (`-run4`, PASS): off 2,505 dropped, 141 kB queued, p99 108.3 ms; on 0, 0 B, p99 0.29 ms; control 0.28 / 0.65 ms.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 

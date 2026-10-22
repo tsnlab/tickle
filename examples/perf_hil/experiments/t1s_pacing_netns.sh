@@ -30,12 +30,12 @@
 #         the large stream gets through: received(on) >= 90% of published(on), and >= received(off).
 #   FAIL otherwise, naming the line.
 #
-# Runs (2026-10-22, tree 25003126, ~/rig_results_safe/t1s_pacing_netns_20261022-run*): run1 FAIL on the harness - the
+# Runs (2026-10-22, tree 839eb9cb before its rebase, ~/rig_results_safe/t1s_pacing_netns_20261022-run*): run1 FAIL on the harness - the
 # backlog was read as "84K", text, not bytes (qstat() now converts) - its other lines held. run2 PASS: off dropped
 # 2,528 (backlog to 139,964 B), resent 5,047, small p99 108,302 us; on 0 dropped, 0 B queued, 0 resent, 6,211 waits,
 # p99 214 us; 30 of 30 large samples in both; control p99 442 / 160 us. run3 PASS: off 2,496 dropped, p99 108,290 us;
 # on 0, p99 675 us; control 213 / 601 us - the control's two arms swap order between runs: the 1 ms batch tick's phase.
-# run4 (tree f0d1ce66, the node's date from tt_get_wall_ns()) PASS: off 2,505 dropped, backlog 140,992 B, p99 108,301 us;
+# run4 (tree e81c9ddf before its rebase, the node's date from tt_get_wall_ns()) PASS: off 2,505 dropped, backlog 140,992 B, p99 108,301 us;
 # on 0, 0 B, p99 285 us, 6,210 waits; control 279 / 651 us.
 #
 # Usage: [SECONDS_RUN=15] [LARGE=262144] [OUT=prefix] t1s_pacing_netns.sh   OUT defaults to
