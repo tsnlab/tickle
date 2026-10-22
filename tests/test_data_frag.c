@@ -31,7 +31,10 @@
 #include "test_mock.h"
 
 // Whitebox: process_packet()/retransmit_one_sample()/deliver_durability_backlog() are static.
-#include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
+#ifndef TICKLE_C
+#define TICKLE_C "../src/tickle.c"
+#endif
+#include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox: tickle.c's statics; tests/mutants_link_profiles.py passes a mutant
 
 #define SENDER_ID 1
 #define RECEIVER_ID 2
@@ -499,7 +502,7 @@ static void test_sample_above_the_limit_is_refused(void) {
     // Control: the limit itself is accepted.
     sample_len = tt_MAX_SAMPLE_LENGTH;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
-    EXPECT_EQ_INT((int)frag_count_for(tt_MAX_SAMPLE_LENGTH), datagram_count);
+    EXPECT_EQ_INT((int)frag_count_for(&sender, tt_MAX_SAMPLE_LENGTH), datagram_count);
     for (int d = 0; d < datagram_count; d++) {
         deliver(d);
     }
@@ -2051,7 +2054,125 @@ static void test_keep_all_never_evicts_the_unacknowledged_rest_of_a_sample(void)
     EXPECT_EQ_U32(4, frag_cache.oldest_seq_no); // sample 1 went whole, and only after it was all acknowledged
 }
 
+// --- A smaller link MTU (docs/DESIGN.md "Link profiles", item G): the sender cuts at its control_max -----------------
+
+#define NARROW_CONTROL 700U // a link MTU of 728
+
+// The sender as link_profiles_apply() leaves a context whose smallest link has MTU NARROW_CONTROL + 28; the receiver
+// keeps the default, as a peer on a wider link or of an older build would.
+static void narrow_sender(void) {
+    sender.control_max = NARROW_CONTROL;
+    sender.frag_cont = NARROW_CONTROL - LINK_FRAG_CONT_OVERHEAD;
+}
+
+static void expect_every_datagram_within(uint32_t limit) {
+    for (int d = 0; d < datagram_count; d++) {
+        EXPECT_TRUE(wire_len[d] <= limit);
+    }
+}
+
+static void test_a_narrow_link_cuts_fragments_a_default_reader_reassembles(void) {
+    // Control: at the default the sample is three fragments, the first filling its datagram.
+    init_pair(4000);
+    publish_captured();
+    EXPECT_EQ_INT(3, datagram_count);
+    EXPECT_TRUE(wire_len[0] > NARROW_CONTROL);
+    // Narrowed, every datagram fits the link, there are as many as the shorter cut needs, and the reader - which
+    // learns a sample's continuation length from its fragments - puts them back together, in either order.
+    for (int reversed = 0; reversed < 2; reversed++) {
+        init_pair(4000);
+        narrow_sender();
+        publish_captured();
+        EXPECT_EQ_INT((int)frag_count_for(&sender, 4000), datagram_count);
+        EXPECT_TRUE(datagram_count > 3);
+        EXPECT_EQ_U32((uint32_t)datagram_count, pub.seq_no); // one seq_no a datagram, as at the default
+        expect_every_datagram_within(NARROW_CONTROL);
+        EXPECT_EQ_U32(NARROW_CONTROL, wire_len[0] + 4U); // fragment 0 fills its (classic-form) datagram
+        for (int d = 0; d < datagram_count; d++) {
+            deliver(reversed ? datagram_count - 1 - d : d);
+        }
+        expect_delivered_once(4000);
+        EXPECT_EQ_U64(0, receiver.frag_dropped);
+    }
+}
+
+static void test_a_narrow_link_keeps_whole_only_what_fits_it(void) {
+    // A sample that went whole at the default fragments on the narrow link; one that fits the link goes whole.
+    init_pair(1000);
+    narrow_sender();
+    publish_captured();
+    EXPECT_EQ_INT(2, datagram_count);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_FIRST, submessage_of(0)->type);
+    expect_every_datagram_within(NARROW_CONTROL);
+    deliver(0);
+    deliver(1);
+    expect_delivered_once(1000);
+    init_pair(600);
+    narrow_sender();
+    publish_captured();
+    EXPECT_EQ_INT(1, datagram_count);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, submessage_of(0)->type);
+    // Batched samples share a datagram up to the link's length, not the build's.
+    init_pair(200);
+    narrow_sender();
+    pub.batch = true;
+    start_capture();
+    for (int i = 0; i < 6; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    }
+    node_flush(&sender, 0, NULL);
+    test_mock_send_hook = NULL;
+    EXPECT_TRUE(datagram_count >= 2); // 6 x ~230 bytes: two datagrams of the narrow link, one at the default
+    expect_every_datagram_within(NARROW_CONTROL);
+}
+
+static void test_a_narrow_link_retransmits_the_fragment_it_cut(void) {
+    // RELIABLE through the fast path, a lost middle fragment resent from the cache at the same cut.
+    init_pair_reliable_receiver(4000, true);
+    make_reliable();
+    narrow_sender();
+    publish_captured();
+    int count = datagram_count;
+    EXPECT_TRUE(count > 3);
+    expect_every_datagram_within(NARROW_CONTROL);
+    for (int d = 0; d < count; d++) {
+        if (d != 2) {
+            deliver(d);
+        }
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    start_capture();
+    struct tt_ReliableCache* cache = pub.reliable_cache;
+    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 3, &receiver_peer));
+    test_mock_send_hook = NULL;
+    EXPECT_EQ_INT(1, datagram_count);
+    expect_every_datagram_within(NARROW_CONTROL);
+    const struct tt_FragContHeader* cont = (const struct tt_FragContHeader*)(submessage_of(0) + 1);
+    EXPECT_EQ_INT(count, cont->frag_count);
+    EXPECT_EQ_INT(2, cont->frag_index);
+    deliver(0);
+    expect_delivered_once(4000);
+    EXPECT_EQ_U64(0, receiver.frag_dropped);
+}
+
+#if tt_HYBRID_TRANSPORT
+static void test_a_narrow_link_sends_no_runs(void) {
+    // A run's units are full-length continuations: on a narrower link a Publisher asking for IP gets MTU units.
+    init_pair(8);
+    pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+    EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_IP, hybrid_mode(&sender, &pub));
+    narrow_sender();
+    EXPECT_EQ_U32(tt_LARGE_FRAGMENTATION_MTU, hybrid_mode(&sender, &pub));
+}
+#endif
+
 int main(void) {
+    test_a_narrow_link_cuts_fragments_a_default_reader_reassembles();
+    test_a_narrow_link_keeps_whole_only_what_fits_it();
+    test_a_narrow_link_retransmits_the_fragment_it_cut();
+#if tt_HYBRID_TRANSPORT
+    test_a_narrow_link_sends_no_runs();
+#endif
     test_topics_up_to_the_sample_limit_can_be_created();
     test_largest_data_is_not_fragmented();
     test_one_byte_more_is_two_fragments();
