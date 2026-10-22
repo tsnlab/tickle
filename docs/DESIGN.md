@@ -201,10 +201,12 @@ an in-place encoder) still compares with the compiled `tt_UNICAST_PEER_THRESHOLD
 Cost: none measurable - the publish path reads `control_max` where it compared with a constant. User instructions per
 sample, client, B vs A (A+P the placement control), 3 reps, every row EQUAL: p1 -0.04% (P -0.04%), p3 +0.04% (-0.01%),
 t1 +0.03% (-0.01%), t3 +0.05% (-0.01%), 1% loss l1 +0.02% (0.00%), l3 +0.11% (+0.10%) (`initoptions_insn_pc.sh`,
-A 6c355fa2, B e9b6a656 before its rebase, `linkprofiles_insn_pc_20261022-141720`). Default behaviour wire-identical
+A 6c355fa2, B 329c7481 before its rebase, `linkprofiles_insn_pc_20261022-141720`). Default behaviour wire-identical
 (`tests/wire_identity_link_profiles.sh`, core and fragmenting builds). T1S over a 10 Mbit/s tbf veth of MTU 1000 in two
 namespaces (`t1s_profile_netns.sh`, PASS): 907 broadcast datagrams of at most 972 bytes for 6000 samples, none
 IP-fragmented, against ETHERNET's 6007 unicasts; ETHERNET batching on that link IP-fragmented 600.
+Rig core gate v2 (A 6c355fa2, the branch before its rebase): PASS, 0 CPU/latency WORSE; 7 of 88 rows listed, client
+user instructions +0.1% to +3.4% on the p4 cells (c4, c15), server +0.1% to +1.0% (c10, c11, c17).
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
