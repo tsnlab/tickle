@@ -761,6 +761,20 @@ ephemeral data port, so no successor ever replaced them: until 2026-10-22 every 
 FIFO in `/dev/shm`. Shown across processes by `rmw_tickle/rmw_tickle/test/test_shm_kill.c` (subscriber or publisher
 SIGKILLed mid-stream at 500 and 10 Hz, each against a run that is not killed; `test/mutants_shm_kill.py`).
 
+**Counts made times** (ROADMAP 5a; designed 2026-10-22, one commit each on `ab/segment-time-limits`). Three counts
+stood in for times, so each bound was the sender's rate. The first attempt (`ab/hotpath-split`, 2026-10-06) checked
+each deadline where the count was kept, against a 64-bit `tx_clock_ns` stamped by every poll and every publish: the
+attach backoff cost the rig's c10 (P1 cross-host latency) +2.7% RTT (t 5.0), its relaxed 64-bit atomic did not link on
+RV32 FreeRTOS, and the timed receive check cost c6 (P4 5% loss) +2.0% CPU and +0.6% wire bytes, again 10 against 10.
+This design reads no clock on any path the old counts did not, keeps no 64-bit atomic, and leaves every struct the
+hot paths read at its size:
+
+| piece | bounds today | the time rule | where the time comes from | falsified by |
+|---|---|---|---|---|
+| attach backoff | a "no" (`missing`) re-asked every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) `peer_segment()` calls: one failed `open()` per 256 sends, and a late binder kept off shared memory for 256 sends - under 1 ms at max rate, four minutes at 1 Hz | due at the first summary tick `segment.attach_retry_ns` (`tt_SEGMENT_ATTACH_RETRY_NS`, one update interval) after the tick that first saw it (at most that plus two summary intervals); an announce from a peer at our address still makes it due at once (`note_same_host_peer()`) | the summary tick (`node_update()`, every summary interval) ages every cached answer with the poll's reading it is handed (`segment_recheck_sweep()`); the send reads one byte, `recheck_due`, where it decremented a count. Deadline: 32 bits in 2^20 ns units, in padding the entry already had | a test that asks at a standing clock more than once in 10,000 sends, or not at the deadline tick; rig c10 RTT or any cross-host cell's CPU WORSE (core gate v2) |
+| revalidate | a "yes" (attached) re-attached by name every `tt_SEGMENT_REVALIDATE_SENDS` (4096) calls: ~70 a second at 300 k datagrams/s, and a dead owner's ring written for over an hour at 1 Hz; a load, a decrement and a store per call | due at the first summary tick `segment.revalidate_ns` (`tt_SEGMENT_REVALIDATE_NS`, one update interval) after the stamp; the next send re-attaches, or waits while a claim holds the mapping (as before) | the same sweep; the send's fast path is one load of `recheck_due` and no store | a test that re-attaches before the deadline or misses it; same-host cells' instructions per sample WORSE beyond the placement floor (PC `initoptions8_segment_insn_pc.sh`, rig same-host gate v2) |
+| receive check | a busy poll peeks at the socket after `tt_SCHEDULER_IO_INTERLEAVE` (8) due entries back to back: 8 times an entry's cost - ~16 us on the PC, ~40-80 us on a Pi - so the ACKNACK delay it bounds was the hardware's | the poll peeks once `poll.rx_check_ns` (0 = the context's `poll.receive_timeout`, 100 us) has passed since it last looked - a peek or a wait - remembered across calls (`tt_Context.rx_looked_ns`), so a run of short polls looks too and a busy negative-timeout poll looks once per slice | the loop's own reading, which it already takes after every step (`time`); one store per look, in the field added at the end of `tt_Context` (no field moves) | a test whose look comes before or after `rx_check_ns` of entries, or never across short polls; rig c6 wire bytes or CPU, or c1/c8 throughput, WORSE (core gate v2) |
+
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring
 **drops** (`segment_full_dropped`), since rerouting to UDP would overtake queued records. UDP still carries broadcasts,
 oversize datagrams and pre-attach traffic. The reader drains at most `tt_SEGMENT_DRAIN_PER_POLL` per poll.
