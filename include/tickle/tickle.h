@@ -1143,6 +1143,8 @@ struct tt_Context {
     // every bit is set the announce is complete and moves into update_generation[]/update_seen[] above,
     // exactly as an announce in one datagram would.
     uint32_t update_part_generation[tt_MAX_CONTEXT_IDS];
+    // A source's row is read only while update_part_count[source] is not 0, and is zeroed when that count is set, so a
+    // row is written only for a source that has announced (2026-10-22).
     uint32_t update_part_received[tt_MAX_CONTEXT_IDS][tt_UPDATE_PART_WORDS];
     uint8_t update_part_count[tt_MAX_CONTEXT_IDS];
     // Phase 2 (rmw_tickle/PLAN.md) - the tt_VERSION last logged as mismatched for each remote node

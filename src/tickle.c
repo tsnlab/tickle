@@ -6866,7 +6866,12 @@ static void node_init_locks(struct tt_Context* node) {
 }
 
 // Whether any fragment of an announce from `source` is in progress, and forgetting them (see update_parts_complete()).
+// A row is read only while its source's update_part_count is set, which is when process_announce() zeroed it: the reset
+// leaves the rows as they are, and a row is written only for a source that has announced.
 static bool update_parts_any(const struct tt_Context* node, uint8_t source) {
+    if (node->update_part_count[source] == 0) {
+        return false;
+    }
     for (uint32_t word = 0; word < tt_UPDATE_PART_WORDS; word++) {
         if (node->update_part_received[source][word] != 0) {
             return true;
@@ -6912,8 +6917,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
         node->update_part_generation[i] = 0;
-        memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
-        node->update_part_count[i] = 0;
+        node->update_part_count[i] = 0; // update_part_received[i] unread until this is set (update_parts_any())
         node->traffic_last_seen[i] = 0;
     }
 
