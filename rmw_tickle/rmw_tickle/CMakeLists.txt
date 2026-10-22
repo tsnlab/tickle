@@ -229,6 +229,17 @@ if(BUILD_TESTING)
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
 
+  # Two same-host processes over the segment, one SIGKILLed mid-stream, against a control that is never killed
+  # (test/test_shm_kill.c). Eight arms of ~15-20 s each; it broadcasts, so it runs in run_rmw_suite.sh's netns.
+  add_executable(test_shm_kill test/test_shm_kill.c)
+  target_link_libraries(test_shm_kill rmw_tickle Threads::Threads)
+  target_compile_options(test_shm_kill PRIVATE -UNDEBUG)
+  ament_add_test(test_shm_kill
+    COMMAND "$<TARGET_FILE:test_shm_kill>"
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    TIMEOUT 300
+  )
+
   # RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS needs a saturated link, which it makes with a tbf-shaped veth pair - possible only
   # in a named private netns with `sudo -n ip` (run_rmw_suite.sh's). Anywhere else it exits 77: skipped, not passed.
   add_executable(test_large_publish_block test/test_large_publish_block.c)

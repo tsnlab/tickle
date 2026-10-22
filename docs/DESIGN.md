@@ -727,7 +727,13 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 owner's segment:** the owner's mapping holds a `flock()`; `tt_segment_attach()` refuses an unheld file
 (`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask every `tt_SEGMENT_ATTACH_RETRY_SENDS` sends when absent,
 `tt_SEGMENT_REVALIDATE_SENDS` when attached. A reader idle for `tt_SEGMENT_DEAD_READER_NS` with records waiting is
-given up (UDP until recheck). A wedged head warns after `tt_SEGMENT_STALL_PASSES`.
+given up (UDP until recheck); a peer presumed dead is unmapped at once (`release_peer_segment()`; before 2026-10-22 a
+10 Hz writer kept a killed reader's ring mapped for as long as it ran). A wedged head warns after
+`tt_SEGMENT_STALL_PASSES`. **A dead owner's files are swept:** a context building its own segment unlinks every segment
+at its address that nobody holds the flock on, with its bell (`sweep_orphaned_segments()`). The name carries the
+ephemeral data port, so no successor ever replaced them: until 2026-10-22 every SIGKILLed context left 768 KiB and a
+FIFO in `/dev/shm`. Shown across processes by `rmw_tickle/rmw_tickle/test/test_shm_kill.c` (subscriber or publisher
+SIGKILLed mid-stream at 500 and 10 Hz, each against a run that is not killed; `test/mutants_shm_kill.py`).
 
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring
 **drops** (`segment_full_dropped`), since rerouting to UDP would overtake queued records. UDP still carries broadcasts,

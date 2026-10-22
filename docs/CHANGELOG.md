@@ -122,6 +122,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a
+  successor at the same name replacing them, and the name carries the ephemeral data port. A context building its own
+  segment now removes every one at its address that no live owner holds (`sweep_orphaned_segments()`, Linux HAL).
+- A writer kept a dead same-host reader's ring mapped until it exited when it sent too little to fill the ring (a
+  10 Hz publisher whose subscriber was killed); it is now unmapped when the peer is presumed dead. Both found by
+  `rmw_tickle/rmw_tickle/test/test_shm_kill.c` ([DESIGN.md](DESIGN.md) section 10, "Lifecycle").
 - The zero-copy publish (`publish_zerocopy()`, an in-place encoder) compared its peers with the compiled
   `tt_UNICAST_PEER_THRESHOLD`, not the link's resolved `unicast_threshold`, and unicast on a T1S link; it now takes each
   link's share as a flush does.

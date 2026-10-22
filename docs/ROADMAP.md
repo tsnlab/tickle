@@ -47,7 +47,8 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - **Large samples step B on the rig**: done 2026-10-20, every B2 rule PASS with a control that held (RESULTS `SB2`).
 - **Stage 1 / S1 CPU-time half on the rig** (PC half done, `d131d82e`).
 - **FreeRTOS segment**: done 2026-10-21 (`23064e69`), off by default, README says when and how to turn it on.
-- **rmw shared-memory kill test** (two ROS processes, subscriber killed mid-stream).
+- **rmw shared-memory kill test**: done 2026-10-22 (`test_shm_kill`, in the rmw suite); it found two leaks, both fixed
+  (DESIGN.md section 10, "Lifecycle").
 
 ### Other open items
 

@@ -135,7 +135,6 @@ Rig figures against Fast DDS, CycloneDDS and rmw_zenoh: [RESULTS.md](RESULTS.md)
 
 - A segment ring that skips held slots, so ring slots can be lent safely.
 - Event counts across processes; `*_info_by_service` with two endpoints, a type hash and remote QoS.
-- An rmw-level shared-memory kill test (two ROS processes, subscriber killed mid-stream).
 - A two-host cross-vendor rmw throughput benchmark; rmw_tickle coverage in CI; SROS2 (parked).
 
 ## Tuning and differences from DDS
