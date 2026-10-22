@@ -40,6 +40,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   that waits and moved to a thread that keeps the poll role; other threads wait with epoll as before. A context option
   (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT` (1). A
   kernel that refuses it (seccomp, Linux < 6.1) leaves the epoll path, said once.
+- **Wi-Fi discovery** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2): a WIFI link sends each
+  discovery summary also by unicast to its known peers (`tt_LinkOptions.summary_unicast`, at most 16 a round, one round
+  per update interval), repeats a change's broadcast announce 3 times at 100/200/400 ms gaps
+  (`tt_LinkOptions.announce_repeats`), and sets the context's miss threshold to 6 where it is left at the default
+  (`tt_LINK_WIFI_MISS_THRESHOLD`). Counters `tt_Context.summary_copies_sent`, `announce_repeats_sent`. Every other
+  profile resolves both fields off: byte-identical on the wire.
 - **Send pacing** (network-profiles phase 0, item F; [DESIGN.md](DESIGN.md) section 2): `tt_LinkOptions.pacing_rate`
   (bits per second on the wire; 0 = the profile's: T1S 75% of `link_rate`, the rest `tt_PACING_OFF`) and
   `pacing_burst` (bytes; 0 = four frames of the link MTU). A token bucket per link counts every UDP datagram; a large

@@ -163,8 +163,8 @@ the time), 0 ETF drops.
 
 **Link profiles** (`tt_LinkOptions.profile`, network-profiles phase 0 items B and G, 2026-10-22). A link names its
 medium, and the profile fills the link's zero fields; an explicit field always wins. ETHERNET (0) is every value a
-context had before, WIFI maps to it until the Wi-Fi stage decides its own, and discovery timing does not change per
-profile (each context's discovery summary carries its own interval since 2026-10-22, so a later profile may set it).
+context had before. WIFI is ETHERNET's values but for discovery ("Wi-Fi discovery" below, 2026-10-23); the update
+interval does not change per profile (each context's summary carries its own timing since 2026-10-22).
 
 | field | ETHERNET, WIFI | T1S | TSN | applied |
 |---|---|---|---|---|
@@ -177,6 +177,9 @@ profile (each context's discovery summary carries its own interval since 2026-10
 | `unicast_threshold` | 2 | always broadcast | 2 | **per link**, on the send path |
 | `large_fragmentation` | context's | MTU units | context's | context: MTU if any link is |
 | `pacing_rate` / `pacing_burst` | off | 75% of `link_rate` / 4 MTU frames | off | **per link** ("Send pacing" below) |
+| `summary_unicast` | off; **WIFI on** | off | off | **per link**: copies to the peers on it |
+| `announce_repeats` | none; **WIFI 3** | none | none | context: the most |
+| `discovery.miss_threshold` (context's, where 0 or default) | 3; **WIFI 6** | 3 | 3 | context: WIFI's if any link is WIFI |
 
 Only the unicast threshold is per link: the send path already resolves each destination to its link. Everything else
 is one value for the context, because a datagram is encoded once for all the links it goes to and a sample is cut once
@@ -209,6 +212,27 @@ namespaces (`t1s_profile_netns.sh`, PASS): 907 broadcast datagrams of at most 97
 IP-fragmented, against ETHERNET's 6007 unicasts; ETHERNET batching on that link IP-fragmented 600.
 Rig core gate v2 (A 6c355fa2, the branch before its rebase): PASS, 0 CPU/latency WORSE; 7 of 88 rows listed, client
 user instructions +0.1% to +3.4% on the p4 cells (c4, c15), server +0.1% to +1.0% (c10, c11, c17).
+
+**Wi-Fi discovery** (network-profiles phase 3, local values, 2026-10-23). The baseline (RESULTS `WB`) found every false
+peer death between nodes that exchange no data, whose liveliness rests on the broadcast summary; Wi-Fi sends a broadcast
+at the basic rate with no ACK or retry, a unicast with MAC retries. Discovery stays broadcast (the user, 2026-10-06);
+WIFI adds three things, each for one failure:
+
+- **Unicast copies of the summary** (`summary_unicast`): each summary also goes by unicast to every peer known on the
+  link - list applied, address from its latest summary - one round per update interval, at most 16 copies a round,
+  later rounds taking the peers in turn (`send_summary_copies()`). A second path for the loss that hits broadcast
+  alone. Not on a link that broadcasts to one peer (`unicast_threshold` always-broadcast): a copy would be a broadcast.
+- **A miss threshold of 6** (silence 6.5 s, carried by the summary): for the loss that hits both paths. A GE model of
+  the WB arms (idle sender, 1 summary/s, bursts per packet as netem counts them) put false deaths per pair-hour, copies
+  on, at 3.8 (threshold 3), 0.61 (5), 0.29 (6), 0.05 (8) at 10%B4 and 1.4 / 0.77 / 0.45 / 0.23 at 5%B8; without
+  copies 6 leaves 48 at the `bc` arm's 30% broadcast loss. 6 keeps detection under DDS's default leases (10 s, 20 s).
+- **Announce repeats** (`announce_repeats`): a change's broadcast announce goes 3 more times, 100, 200 and 400 ms apart
+  (`arm_announce_repeats()`); a later change restarts them. A peer that has the list ignores a repeat; one that missed it
+  answers it as the change (first contact). A join waited one summary interval for one lost announce (WB R6: 1.0-1.1 s).
+
+Off the per-sample path: one round a second, a scheduler entry per change, the summary's source address recorded.
+ETHERNET's wire is unchanged (`tests/wire_identity_link_profiles.sh` and `_discovery_timing.sh`, the former with a
+mutant giving every link WIFI's copies and repeats, which differs).
 
 **Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
 link averages at most `pacing_rate` bits per second on the wire (IP, UDP and Ethernet framing counted, a datagram's
