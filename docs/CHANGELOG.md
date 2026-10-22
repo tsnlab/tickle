@@ -28,6 +28,14 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Link profiles** (network-profiles phase 0, items B and G; [DESIGN.md](DESIGN.md) section 2): `tt_LinkOptions.profile`
+  (`tt_LINK_PROFILE_ETHERNET` 0, `_T1S`, `_TSN`, `_WIFI`) and the per-link values a profile fills where left 0 - `mtu`,
+  `link_rate`, `retry_floor_ns`, `batch`, `batch_tick_ns`, `idle_heartbeat_ns`, `piggyback_divisor`,
+  `large_fragmentation`, and `unicast_threshold`'s 0. The unicast threshold applies per link; the rest is combined
+  across links into the context. A link MTU below 1500 now cuts batches, announce parts and fragments (it only warned
+  before). `tt_PublisherOptions.batching` (`tt_SWITCH_*`) and `heartbeat_piggyback_every` 0 take the links' default;
+  `tt_HEARTBEAT_PIGGYBACK_NONE` is none. ETHERNET, and a context with no links configured, are byte-identical on the
+  wire.
 - **Context options** (`struct tt_InitOptions`, ROADMAP "Context options" bundle 1; [DESIGN.md](DESIGN.md) section 2):
   `tt_InitOptions_default()` and `tt_Context_create_with(ctx, opts)` (NULL = defaults). The `net` group holds what
   `_tt_CONFIG` held, per context; HALs read the context's copy; bad values are refused at creation with the field named
