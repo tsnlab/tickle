@@ -120,8 +120,11 @@ it stay empty - so the per-sample peer scans and the large ring's index are unto
 the compiled size. `peers` must exceed every link's unicast threshold, so a full table still means broadcasting.
 `tt_DISCOVERY_PENDING_REQUESTS` stays compiled: a full table only skips retries. Cost: none measurable - user instructions per sample, client, B vs A with A+P the placement control, every
 row EQUAL: p1 +0.02% (P -0.01%), p3 +0.01% (-0.01%), t1 +0.01% (+0.02%), t3 0.00%, 1% loss l1 +0.01% (0.00%), l3 0.00%
-(-0.01%) (`initoptions_insn_pc.sh`, A 05118219, B 3ad9a3d5, 3 reps). Default
-behaviour is wire-identical (`tests/wire_identity_initoptions_capacity.sh`).
+(-0.01%) (`initoptions_insn_pc.sh`, A 05118219, B 64bcbd1c's tree before its rebase, 3 reps). Default behaviour is
+wire-identical (`tests/wire_identity_initoptions_capacity.sh`). Rig, A 05118219: core gate v2 PASS (0 CPU/latency
+WORSE; 1 of 88 listed, c3 client user instructions +0.04%); Array1m 30 Hz reliable cross-host, KEEP_LAST 10 and
+KEEP_ALL, 0 and 1% loss (`rmw_keepall_rig.sh`, 5 reps, pre/head/aa): 100% delivered, latency equal, CPU equal at 0%
+and on the same bimodal levels at 1%.
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 

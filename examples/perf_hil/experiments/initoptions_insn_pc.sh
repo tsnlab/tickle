@@ -24,8 +24,8 @@
 #           spread is expected to be wider than a lossless cell's; the bound widens with it, by rule, not by eye.
 #
 # Bundle 9 (the capacity group, 2026-10-22, ~/rig_results_safe/initoptions9_insn_pc_20261022-015539): A 05118219,
-# P = A+P, B 3ad9a3d5; p1 p3 t1 t3 l1 l3, 3 reps, 0 void, every row EQUAL. Client insn_u/sample B vs A (P vs A): p1
-# +0.02% (-0.01%), p3 +0.01% (-0.01%), t1 +0.01% (+0.02%), t3 +0.00% (-0.00%), l1 +0.01% (+0.00%), l3 -0.00% (-0.01%);
+# P = A+P, B 64bcbd1c's tree before its rebase; p1 p3 t1 t3 l1 l3, 3 reps, 0 void, every row EQUAL.
+# Client insn_u/sample B vs A (P vs A): p1 +0.02% (-0.01%), p3 +0.01% (-0.01%), t1 +0.01% (+0.02%), t3 +0.00% (-0.00%), l1 +0.01% (+0.00%), l3 -0.00% (-0.01%);
 # server rows within their own spread (t1 +0.84% against a 3.1% spread). The limits are read where an entry is taken,
 # and the l cells' ACKNACKs reach the one per-ACKNACK reader (the request ring's wrap).
 #
