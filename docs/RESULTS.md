@@ -487,6 +487,69 @@ not R5/R6. WIFI's other rules, as coded: R1 PASS, R2 FAIL (ge5b2 40.5 > 34.2 ms,
 8,681 latencies), R3 PASS, R4 FAIL at ge10b4 (p50 84.6 > 74.7 ms, reverse bytes 0.24%: a local value), R7 FAIL (1,498
 of 8,558). The discovery values do not touch repair; R2's pre-registered reading is the FEC lift, a decision for the user.
 
+### Wi-Fi repair timing, PC netns (`WR`, network profiles phase 3)
+
+**R2 amended before these runs** (the WB harness header and `wifi_burst_read.py`): the limit gains a detection term
+D = (B - 1) / R - netem's burst counts packets, so after a lost datagram it lasts B - 1 more at the egress's own rate
+R (tc counters) before a later datagram reveals the gap; K, T and the 1.5 factor unchanged. Written after WB and WW
+failed R2, so their re-reading is a control of the formula, not a test: WB ge5b2 / ge5b4 38.6 / 60.3 ms, WW WIFI
+40.5 / 61.5 ms, FAIL as registered (34.1 / 44.5, 34.2 / 44.6), PASS amended (41.4 / 67.4, 42.0 / 68.4); WW ETHERNET
+stays VOID (its ctl rel_large overflowed; the reader printed "R1/R2 pass" there - fixed). The reader prints both.
+
+**The cause.** Traced (ge5b2, 6.9 ms round trip): a reader timed no recovery for the first ~13 s, because every one
+took longer than `tt_RELIABLE_RETRY` + 1 waits of `retry_initial` and a recovery the back-off reached is not timed, so
+it asked every 1 ms for good - on both profiles, 2-4 resends per lost datagram and the R7 copies. Each candidate rule,
+WIFI, against the parent P, under `CLOCK_PPS=1000` (a steady clock flow on every egress, so a burst lasts B ms
+whatever a node sends: the parent's extra packets otherwise end its own bursts sooner), `wifi_repair_ab.sh`, 3-4 reps:
+
+| rule | p99 ge5b2 / ge5b4 (median of per-rep) | resends a rep | tv copies after delivery | tv delivered |
+|---|---|---|---|---|
+| P: as on main (1 ms, never timed) | 22.5 / 22.4 ms | ~650 | 18.5% | 99.64-100% |
+| S: first recovery timed past the back-off, then the default rule | 45.9 / 38.2 | ~160 | 0.5% | 99.40-99.54% |
+| **K: S, then Karn's rule (only a first-try recovery timed)** | **24.1 / 24.5** | **~160** | **6.8%** | 99.97-99.98% |
+| K + interval never below the repair transit's mean | 23.3 / 24.0 | ~160 | 1.3% | 99.44% |
+
+S times retried recoveries, so its estimate grew with the loss (intervals 14-113 ms traced). Also tried, no clock: the
+default rule with half the variance weight (R7 3.7%, a `tv` 1 MiB rep resending 445,849); the repair transit as the
+interval before the first timed recovery (it puts a busy writer's send into the interval: test_large_sample's
+busy-writer sample 1 whole 4.92 ms after its send against 1.95). Landed as WIFI's `repair_timing` (DESIGN "Wi-Fi repair
+timing"): K, and a writer of large samples keeps the default rule past the seed - under K its estimate stayed at the
+seed (timer ACKNACKs up to 12,480 a rep against ETHERNET's 19-126, one ge5b2 rep resending 208,479 units).
+
+**ETHERNET against WIFI, one build** (the WB harness, all nine arms, three cells, 3 reps, `TT_UDP_OFFLOAD=0`, load per
+rep median 0.2, at most 1.4; ETHERNET is main's repair, WIFI the profile's; WIFI's discovery as in `WW`):
+
+| | ETHERNET | WIFI |
+|---|---|---|
+| rel_small ge5b2: delivered, one-way p99 (limit) | 99.94%, 51.1 ms (40.5) | 100%, 40.8 ms (43.1) |
+| rel_small ge5b4 | 99.63%, 60.2 ms (66.8) | 99.49%, 68.6 ms (71.5) |
+| resends per lost datagram, ge5b2 / ge5b4 / ge10b4 / tv | 2.2 / 2.9 / 2.7 / 2.3 | 0.97 / 0.97 / 0.93 / 1.07 |
+| tv copies after delivery (R7) | 1,088 of 8,589 (12.7%) | 217 of 8,563 (2.5%) |
+| rel_large ge10b4 p50 (limit 74.0-74.4 ms), reverse bytes | 110.9 ms, 0.25% | 102.9 ms, 0.25% |
+| false peer deaths (R5) | 77 | 0 |
+
+R1 ETHERNET PASS, WIFI FAIL at ge5b4 by 0.01 point (99.49%; 99.72% in the run before, whose small cells ran the same
+code); R2 amended ETHERNET FAIL at ge5b2 (its falsifier fired: 500 of 562 gaps recovered within 8 ms of detection),
+WIFI PASS both; as registered both FAIL. R3 PASS both. R4 FAIL at ge10b4 on both, reverse bytes 0.25%. R5 ETHERNET
+FAIL, WIFI PASS. R6 FAIL once each (ETHERNET a 3.0 s join at ge10b4, WIFI 5.0 s at ge5b4 be_small; PASS on both in
+the run before). R7 FAIL on both, WIFI 5 times fewer copies. The same with the clock flow (small cells, 3 reps): R1/R2
+PASS on both (WIFI p99 23.4 / 23.7 ms, ETHERNET 22.1 / 22.3), resends 3.4-3.7x fewer on WIFI, R7 FAIL on both
+(WIFI 8.1%, ETHERNET 40%).
+1 MiB rows otherwise within each other (no WIFI rep storming in 27).
+
+**Reading, by the pre-registered rules.** FEC: WIFI's R1/R2 fail only at ge5b4, and only R1 by 0.01 point, which the
+rule reads as XOR FEC losing its parity in the burst - interleaving or RS, a separate decision, not this lift;
+ETHERNET's ge5b2 fail reads "lift FEC" but is ETHERNET's repair, not the tuned profile, and its p99 moved 40.5 -> 51.1
+ms between two runs of one build. Range NACK: R4 fails with reverse bytes 0.25% < 2%: a timer or pacing value (the
+drain: repairs queue behind a 1 MiB sample's ~45 ms in netem), no wire lift. R7: no rule tried keeps both 1% copies
+and full delivery under `tv`: a doubly lost sample at a 47 ms round trip recovers inside KEEP_LAST 10's 100 ms only if
+the second request goes before the first repair could have come - a speculative copy. That is redundancy's job (FEC),
+not a timer's; recorded for the wireless-stage decision, not read as a lift (R7 is pre-registered local-only).
+
+Cost (`initoptions_insn_pc.sh`, A = the parent, P = A placement-shifted, B = the change, 3 reps, 0 void): client user
+instructions per sample B vs A (P vs A) p1 -0.01% (-0.01%), p3 +0.00% (-0.01%), t1 -0.00% (-0.00%), t3 +0.01%
+(+0.00%), 1% loss l1 +0.00% (+0.01%), l3 +0.02% (+0.02%); every row EQUAL, server rows within their spread.
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -525,6 +588,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | WB | `wifi_burst_loss_netns.sh`, `wifi_burst_read.py` (PC netns; -O2, segment off) | `9c503bc1` | 2026-10-22 | `wifi_baseline/base_20261022/`, `wifi_baseline/large_nogso_20261023/` (`final_reading.txt`) |
 | WW | the same, amended 2026-10-23 (PROFILE=ethernet and wifi, `TT_UDP_OFFLOAD=0`) | `ca540c2c` (af4ca9ab before its rebase) | 2026-10-23 | `wifi_live/eth_af4ca9ab/`, `wifi_live/wifi_af4ca9ab/` (`summary.txt`) |
 | WBS | `large_storm_netns.sh`, `large_storm_ab_netns.sh`, the WB harness (offload off) | `25dd0fb0` core, and with the HEARTBEAT fix | 2026-10-23 | `large_storm/variants_20261023/`, `ab_pinned_20261023/`, `ab_pinned2_20261023/`, `r34_fix_20261023/` |
+| WR | `wifi_repair_pair.sh` (the WB harness, R2 amended), `wifi_repair_ab.sh` (`CLOCK_PPS`), `initoptions_insn_pc.sh` | ab/wifi-repair (WIFI repair timing) | 2026-10-23 | `wifi_repair/final2_04be_{ethernet,wifi}/`, `final2_04be_clock_*`, `ab_clock{,2,3}.ab.txt`, `ab_seed.ab.txt`, `insn_pc_04be.txt` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
