@@ -431,6 +431,15 @@ static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_no
         !make_sub(ctx_a2.node, &a2_subs[1], &frag_type, "gc_frag", true)) {
         return 1;
     }
+#if tt_LOCAL_DELIVERY
+    // A reader in the writer's own context: delivered in place, without a datagram (tt_LOCAL_DELIVERY, rmw's build).
+    static struct gc_sub a1_self;
+    memset(&a1_self, 0, sizeof(a1_self));
+    a1_self = (struct gc_sub) {.label = "rel(local)", .bytes = SMALL_BYTES};
+    if (!make_sub(ctx_a1.node, &a1_self, &small_type, "gc_rel", true)) {
+        return 1;
+    }
+#endif
     uint64_t now = tt_get_ns();
     pump_started_ns = now;
     (void)tt_Context_schedule(ctx_a1.node, now, pump, NULL);
@@ -469,6 +478,9 @@ static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_no
 #endif
     passed = sub_complete(&a2_subs[0], "A2", round) && passed;
     passed = sub_complete(&a2_subs[1], "A2", round) && passed;
+#if tt_LOCAL_DELIVERY
+    passed = sub_complete(&a1_self, "A1", round) && passed;
+#endif
     tt_Context_destroy(ctx_a1.node);
     tt_Context_destroy(ctx_a2.node);
     for (int i = 0; i < PUBS; i++) {
@@ -476,6 +488,9 @@ static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_no
     }
     free(a2_subs[0].storage);
     free(a2_subs[1].storage);
+#if tt_LOCAL_DELIVERY
+    free(a1_self.storage);
+#endif
     return passed ? 0 : 1;
 }
 

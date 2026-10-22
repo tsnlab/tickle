@@ -288,8 +288,11 @@ GARBAGE_CTX_SRC = garbage_ctx_check.c $(ROOT)/examples/set_bool/SetBool.c $(SRC_
 GARBAGE_CTX_DEFS = -DTT_RX_DROP_PERCENT=10 -I$(ROOT)/examples/set_bool
 garbage_ctx_check: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(GARBAGE_CTX_DEFS) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+# rmw_tickle's build: its datagram and large samples, and the capacities and flag-gated paths its CMakeLists sets.
+GARBAGE_CTX_RMW = $(LARGE_DEFINES) -Dtt_LOCAL_DELIVERY=1 -Dtt_DISCOVERY_OPTIONS=1 -Dtt_ENDPOINT_INDEX_SIZE=4096 \
+    -Dtt_MAX_ENDPOINT_COUNT=2048 -Dtt_MAX_SCHEDULER_LENGTH=512 -Dtt_UPDATE_MAX_PARTS=255 -Dtt_MAX_NODES=256
 garbage_ctx_check_large: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(GARBAGE_CTX_DEFS) $(LARGE_DEFINES) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(GARBAGE_CTX_DEFS) $(GARBAGE_CTX_RMW) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
 # The same under MemorySanitizer, which reports a read of a byte nothing wrote: run with fill "none", so the storage is
 # malloc()'s and every byte of it starts unwritten. The HAL makes the library's calls (MSan's interceptors see only
 # those) and reads its sockets without io_uring, whose completions MSan cannot see written.
@@ -299,7 +302,8 @@ GARBAGE_CTX_MSAN = -fsanitize=memory -fsanitize-recover=memory -fsanitize-memory
 garbage_ctx_check_msan: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
 	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
 garbage_ctx_check_large_msan: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.h)
-	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) $(LARGE_DEFINES) -o $@ $(GARBAGE_CTX_SRC) -lm -lpthread
+	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) $(GARBAGE_CTX_RMW) -o $@ $(GARBAGE_CTX_SRC) -lm \
+	    -lpthread
 
 test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
     bell_wake_check wr_check wr_check_large
