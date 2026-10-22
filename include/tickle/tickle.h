@@ -825,6 +825,11 @@ struct tt_HybridState {
 #define tt_LINK_MTU_MIN 576U      // tt_LinkOptions.mtu's least: the datagram every IPv4 host must accept
 #define tt_LINK_RATE_MIN 1000U    // tt_LinkOptions.link_rate's least, bits per second
 #define tt_LINK_T1S_PLCA_NODES 8U // the nodes a T1S retry floor assumes take a turn per PLCA cycle
+// Send pacing (tt_LinkOptions.pacing_rate and pacing_burst, docs/DESIGN.md "Send pacing").
+#define tt_PACING_OFF UINT64_MAX   // tt_LinkOptions.pacing_rate: no pacing on the link, whatever its profile
+#define tt_LINK_T1S_PACING_PCT 75U // a T1S link's pacing rate, in percent of its link_rate
+#define tt_PACING_BURST_FRAMES 4U  // a paced link's default burst, in frames of its MTU
+#define tt_PACING_BURST_MIN 1538U  // pacing_burst's least: one full 1500-byte frame on the wire (+ 38 framing)
 
 // One link a context talks on (the successor of struct _tt_Link's settings; see that struct in config.h).
 //
@@ -870,6 +875,16 @@ struct tt_LinkOptions {
     // The idle HEARTBEAT period (reliable.idle_heartbeat_period), ns; 0 = the profile's (T1S 1 s, the rest the
     // context's). tt_QOS_DURATION_INFINITE = off.
     uint64_t idle_heartbeat_ns;
+    // Send pacing (docs/DESIGN.md "Send pacing"): the bits per second this context's sends on the link average at
+    // most, counted on the wire (IP, UDP and Ethernet framing included), through a token bucket of the link. A large
+    // sample's units wait for it in the scheduler and a retransmission past a second bucket's worth is left to the
+    // reader's next request; every other send goes at once and is counted. 0 = the profile's: T1S
+    // tt_LINK_T1S_PACING_PCT percent of link_rate, the rest tt_PACING_OFF (none: the send path as before). Otherwise
+    // at least tt_LINK_RATE_MIN and at most link_rate.
+    uint64_t pacing_rate;
+    // The bucket's depth in bytes on the wire: what a paced link may send back to back. 0 = tt_PACING_BURST_FRAMES
+    // frames of the link MTU. At least tt_PACING_BURST_MIN; only on a paced link.
+    uint32_t pacing_burst;
 };
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
@@ -1131,6 +1146,17 @@ struct tt_InitOptions {
         hybrid_transport; // not `hybrid`: struct tt_Context.hybrid is its state (check_context_reset.py)
     struct tt_SegmentOptions segment;
     struct tt_Capacity capacity;
+};
+
+// One link's send pacing (struct tt_Context.pacers): a token bucket kept as the time its sends so far finish at the
+// link's pacing rate. The backlog (until_ns - now, when positive) is the bucket's emptiness in ns: a large sample's
+// send goes while it stays within burst_ns. ns_per_byte_q16: ns a byte on the wire takes, times 2^16; 0 = not paced.
+// frame_payload: the IP payload a frame of the link MTU carries, for counting a datagram's frames.
+struct tt_Pacer {
+    uint64_t until_ns;
+    uint64_t burst_ns;
+    uint64_t ns_per_byte_q16;
+    uint32_t frame_payload;
 };
 
 struct tt_Context {
@@ -1945,6 +1971,14 @@ struct tt_Context {
     uint32_t piggyback_every;
     uint32_t retry_floor_ns;
     bool batch_default;
+    // Send pacing (tt_LinkOptions.pacing_rate, docs/DESIGN.md "Send pacing"): whether any link is paced - the one
+    // branch an unpaced context's send path takes - and each link's bucket, at the index of links[]. Set by
+    // link_profiles_apply(); false on a hand-built context. pacing_waits: the times a large sample's send waited for
+    // the bucket; pacing_repairs_deferred: retransmissions left to the reader's next request.
+    bool pacing;
+    struct tt_Pacer pacers[tt_MAX_LINK_COUNT];
+    uint64_t pacing_waits;
+    uint64_t pacing_repairs_deferred;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -2683,8 +2717,9 @@ struct tt_LargeCursor {
     uint8_t next_dest;
     uint8_t dest_count;
     bool scheduled;
-    bool on_writable; // the wait is for the socket's room (tt_tx_await_writable()), the timer only its fallback
-    bool active;      // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
+    bool on_writable;    // the wait is for the socket's room (tt_tx_await_writable()), the timer only its fallback
+    bool active;         // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
+    uint64_t pace_at_ns; // set when the send stopped for its link's pacing: when the bucket has room again; else 0
 #if tt_HYBRID_TRANSPORT
     uint8_t run_n[tt_LARGE_DESTINATIONS];      // units per datagram to each destination, fixed for the sample (1: MTU)
     uint16_t run_until[tt_LARGE_DESTINATIONS]; // units [0, run_until) go in runs; a re-probe sends only its first
@@ -4016,8 +4051,10 @@ void tt_InitOptions_default(struct tt_InitOptions* opts);
 // silence), a segment.probe_every_max not a power of two, a capacity above its compiled maximum, a capacity.peers
 // not above a link's unicast_threshold, or a link with an unknown profile, batch or large_fragmentation, an mtu below
 // tt_LINK_MTU_MIN (or one at which tt_MAX_SAMPLE_LENGTH would need more than tt_FRAG_MAX_COUNT fragments), a link_rate
-// below tt_LINK_RATE_MIN, a retry_floor_ns above UINT32_MAX, a piggyback_divisor above tt_RELIABLE_BITMAP_BITS, or a
-// batch_tick_ns, idle_heartbeat_ns or large_fragmentation that contradicts the context's own setting of it.
+// below tt_LINK_RATE_MIN, a retry_floor_ns above UINT32_MAX, a piggyback_divisor above tt_RELIABLE_BITMAP_BITS, a
+// pacing_rate below tt_LINK_RATE_MIN or above the link's link_rate, a pacing_burst below tt_PACING_BURST_MIN or on a
+// link that is not paced, or a batch_tick_ns, idle_heartbeat_ns or large_fragmentation that contradicts the context's
+// own setting of it.
 //
 // tt_Context_create(node) is tt_Context_create_with() given the process-wide _tt_CONFIG. DEPRECATED (2026-10-21):
 // writing _tt_CONFIG to configure a context. It stays read by tt_Context_create() until every caller has moved to
