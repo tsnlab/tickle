@@ -36,7 +36,7 @@
 #include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox: the parent's tickle.c, or this tree's
 
 #ifndef WIRE_CAPTURE_OUT
-#error "built by tests/wire_identity_link_profiles.sh with -DWIRE_CAPTURE_OUT=path"
+#define WIRE_CAPTURE_OUT "/dev/null" // tests/wire_identity_link_profiles.sh gives a path
 #endif
 
 #define CAPTURE_MAX ((size_t)512U * 1024U)

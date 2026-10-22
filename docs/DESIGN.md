@@ -195,8 +195,8 @@ large sample's units (`FRAG_*_L`; the reader places them by index at the full le
 a service request or response (they never fragment), and anything in a build that does not fragment (core's default,
 1472 B), which keeps sending whole what it accepted. A context cut short sends MTU units only, since a run's units are
 full-length. An MTU at which `tt_MAX_SAMPLE_LENGTH` needs more than `tt_FRAG_MAX_COUNT` fragments is refused; from
-the interface, it falls back to 1500. Known gap: the zero-copy publish's direct unicast (`publish_zerocopy()`, an in-place encoder) still compares with
-the compiled `tt_UNICAST_PEER_THRESHOLD`, not the link's (as before profiles).
+the interface, it falls back to 1500. Known gap: the zero-copy publish's direct unicast (`publish_zerocopy()`, for
+an in-place encoder) still compares with the compiled `tt_UNICAST_PEER_THRESHOLD`, not the link's, as it did before.
 
 Cost: none measurable - the publish path reads `control_max` where it compared with a constant. User instructions per
 sample, client, B vs A (A+P the placement control), 3 reps, every row EQUAL: p1 -0.04% (P -0.04%), p3 +0.04% (-0.01%),

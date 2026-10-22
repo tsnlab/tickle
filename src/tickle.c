@@ -1764,6 +1764,29 @@ static uint16_t link_interface_mtu(const struct _tt_Link* resolved) {
     return (uint16_t)value;
 }
 
+// A link's values that wait for its interface: the MTU of a T1S or TSN link left 0, and T1S's retry floor from it.
+static void link_resolve_interface(struct tt_LinkOptions* link, const struct _tt_Link* resolved) {
+    if (link->mtu == 0) {
+        link->mtu = link_interface_mtu(resolved);
+    }
+    if (link->retry_floor_ns == 0 && link->profile == tt_LINK_PROFILE_T1S) {
+        link->retry_floor_ns = link_t1s_retry_floor(link->mtu, link->link_rate);
+    }
+}
+
+// tt_ETHERNET_UDP_PAYLOAD sized every datagram for a 1500-byte MTU, and nothing checked that the link has one; a link
+// configured (or profiled) with a smaller MTU is now sent to at its size. An interface narrower than what its link is
+// configured with - a VPN tunnel at 1420, PPPoE at 1492, under a default link - still delivers, through IP
+// fragmentation, which is why this warns rather than refusing the node: but a fragmented control message is lost
+// whenever any one fragment is, and nothing else would say so.
+static void link_warn_mtu(const struct _tt_Link* resolved, uint32_t mtu) {
+    if (resolved->resolved_mtu > 0 && (uint32_t)resolved->resolved_mtu < mtu) {
+        TT_LOG_WARNING("Link %s has MTU %d, below the %u bytes it is configured with (tt_LinkOptions.mtu): "
+                       "control messages near that size will be IP-fragmented, and lost whenever any fragment is",
+                       resolved->broadcast, (int)resolved->resolved_mtu, (unsigned)mtu);
+    }
+}
+
 // What the context's links set for all its sends (struct tt_Context.control_max and the rest; docs/DESIGN.md "Link
 // profiles"), once tt_bind()'s resolution has asked the OS for each interface's MTU. A context with no links configured
 // has one ETHERNET link, and keeps every default.
@@ -1774,31 +1797,16 @@ static void link_profiles_apply(struct tt_Context* node) {
     uint32_t divisor = 0;
     bool batch = net->link_count != 0;
     for (uint8_t i = 0; i < link_count(node); i++) {
-        const struct _tt_Link* resolved = &node->links[i];
         uint32_t mtu = LINK_ETHERNET_MTU;
         if (i < net->link_count) {
             struct tt_LinkOptions* link = &net->links[i];
-            if (link->mtu == 0) {
-                link->mtu = link_interface_mtu(resolved);
-            }
-            if (link->retry_floor_ns == 0 && link->profile == tt_LINK_PROFILE_T1S) {
-                link->retry_floor_ns = link_t1s_retry_floor(link->mtu, link->link_rate);
-            }
+            link_resolve_interface(link, &node->links[i]);
             mtu = link->mtu;
             floor = link->retry_floor_ns > floor ? link->retry_floor_ns : floor;
             divisor = link->piggyback_divisor > divisor ? link->piggyback_divisor : divisor;
             batch = batch && link->batch == tt_SWITCH_ON;
         }
-        // tt_ETHERNET_UDP_PAYLOAD sized every datagram for a 1500-byte MTU, and nothing checked that the link has
-        // one; a link configured (or profiled) with a smaller MTU is now sent to at its size. An interface narrower
-        // than what its link is configured with - a VPN tunnel at 1420, PPPoE at 1492, under a default link - still
-        // delivers, through IP fragmentation, which is why this warns rather than refusing the node: but a fragmented
-        // control message is lost whenever any one fragment is, and nothing else would say so.
-        if (resolved->resolved_mtu > 0 && (uint32_t)resolved->resolved_mtu < mtu) {
-            TT_LOG_WARNING("Link %s has MTU %d, below the %u bytes it is configured with (tt_LinkOptions.mtu): "
-                           "control messages near that size will be IP-fragmented, and lost whenever any fragment is",
-                           resolved->broadcast, (int)resolved->resolved_mtu, (unsigned)mtu);
-        }
+        link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);
         control = link_control < control ? link_control : control;
     }
@@ -14233,6 +14241,18 @@ static bool publisher_large_options_valid(const struct tt_PublisherOptions* opts
 #endif
 }
 
+// batch and the piggyback period: the options', or where they leave it to the context, its links' (publisher_reset()
+// put those there already).
+static void publisher_apply_link_options(struct tt_Publisher* pub, const struct tt_PublisherOptions* opts) {
+    if (opts->batch || opts->batching != tt_SWITCH_DEFAULT) {
+        pub->batch = opts->batch || opts->batching == tt_SWITCH_ON;
+    }
+    if (opts->heartbeat_piggyback_every != 0) {
+        pub->heartbeat_piggyback_every =
+            opts->heartbeat_piggyback_every == tt_HEARTBEAT_PIGGYBACK_NONE ? 0U : opts->heartbeat_piggyback_every;
+    }
+}
+
 static void publisher_apply_large_options(struct tt_Publisher* pub, const struct tt_PublisherOptions* opts) {
     pub->large_fragmentation = opts->large_fragmentation;
     pub->ip_datagram_max = opts->ip_datagram_max;
@@ -14393,15 +14413,7 @@ static tt_ret_t node_create_publisher_qos_locked(struct tt_Node* owner, struct t
         }
     }
 
-    // batch and the piggyback period: the options', or where they leave it to the context, its links'
-    // (publisher_reset() put those there already).
-    if (opts->batch || opts->batching != tt_SWITCH_DEFAULT) {
-        pub->batch = opts->batch || opts->batching == tt_SWITCH_ON;
-    }
-    if (opts->heartbeat_piggyback_every != 0) {
-        pub->heartbeat_piggyback_every =
-            opts->heartbeat_piggyback_every == tt_HEARTBEAT_PIGGYBACK_NONE ? 0U : opts->heartbeat_piggyback_every;
-    }
+    publisher_apply_link_options(pub, opts);
     pub->ack_solicit_watermark_pct = opts->ack_solicit_watermark_pct;
     pub->writable_callback = opts->writable_callback;
     pub->writable_callback_param = opts->writable_callback_param;
