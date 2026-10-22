@@ -5612,9 +5612,20 @@ static uint64_t rd64(struct tt_Header* header, uint64_t value) {
     return tt_is_reverse_endian(header) ? _tt_bswap_64(value) : value;
 }
 
+// The endpoint in index slot `slot`, or NULL when the slot is empty. Occupancy is endpoint_index_used's bit, not a NULL
+// in the slot: an empty slot is never read, so neither the reset nor a rebuild writes it, and the index's pages are
+// written only where an endpoint is (struct tt_Context.endpoint_index).
+static inline struct tt_Endpoint* endpoint_index_at(const struct tt_Context* node, uint32_t slot) {
+    if (((node->endpoint_index_used[slot / 64U] >> (slot % 64U)) & 1U) == 0) {
+        return NULL;
+    }
+    return node->endpoint_index[slot];
+}
+
+// O(tt_ENDPOINT_INDEX_SIZE / 64 + endpoint_count): the bitmap cleared a word at a time, then each endpoint placed.
 static void rebuild_endpoint_index(struct tt_Context* node) {
-    for (uint32_t i = 0; i < tt_ENDPOINT_INDEX_SIZE; i++) {
-        node->endpoint_index[i] = NULL;
+    for (uint32_t i = 0; i < (tt_ENDPOINT_INDEX_SIZE + 63) / 64; i++) {
+        node->endpoint_index_used[i] = 0;
     }
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
@@ -5622,10 +5633,11 @@ static void rebuild_endpoint_index(struct tt_Context* node) {
             continue;
         }
         uint32_t slot = endpoint->id & (tt_ENDPOINT_INDEX_SIZE - 1);
-        while (node->endpoint_index[slot] != NULL) {
+        while (endpoint_index_at(node, slot) != NULL) {
             slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
         }
         node->endpoint_index[slot] = endpoint;
+        node->endpoint_index_used[slot / 64U] |= (uint64_t)1 << (slot % 64U);
     }
     node->endpoint_index_valid = true;
 }
@@ -5655,7 +5667,7 @@ static struct tt_Endpoint* find_endpoint(struct tt_Context* node, uint8_t kind, 
     // kind too) just land in adjacent slots and the kind check below picks the right one(s).
     uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
     for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
         if (endpoint == NULL) {
             return NULL;
         }
@@ -5686,7 +5698,7 @@ static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Context* node, uint
     struct tt_Endpoint* first_match = NULL;
     uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
     for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
         if (endpoint == NULL) {
             break;
         }
@@ -5719,7 +5731,7 @@ static void for_each_endpoint(struct tt_Context* node, uint8_t kind, uint32_t en
 
     uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
     for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
         if (endpoint == NULL) {
             return;
         }
@@ -7642,12 +7654,10 @@ static void reset_node_state(struct tt_Context* node) {
 #if tt_LOCAL_DELIVERY
     node->local_delivery_depth = 0;
 #endif
+    // Neither endpoints[] nor the index is written here: nothing reads endpoints[] past endpoint_count, and the index
+    // is rebuilt - its occupancy bitmap first - before any lookup reads it (rebuild_endpoint_index()).
     node->endpoint_count = 0;
     node->endpoint_index_valid = false;
-
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        node->endpoints[i] = NULL;
-    }
     // No nodes hosted, and the default node not in use (CONTEXT_NODE_PLAN.md stage 2).
     for (int i = 0; i < tt_MAX_NODES; i++) {
         node->nodes[i] = NULL;
@@ -20845,7 +20855,7 @@ static struct tt_ClientCall* find_calling_call(struct tt_Context* node, uint32_t
     }
     uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
     for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
-        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        struct tt_Endpoint* endpoint = endpoint_index_at(node, slot);
         if (endpoint == NULL) {
             break;
         }
