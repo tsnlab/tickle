@@ -44,6 +44,17 @@
 //   - one the watchdog may have ended because the step came a lease or more late is VOID, not a result: the attempt
 //     did not test what it was for, and is retried, up to VOID_TRIES; still VOID is a failure, never a pass;
 //   - otherwise every assertion holds as before.
+//
+// Parts 6 and 8 start from a parked poll thread, and wait for it (2026-10-22). Part 6 failed once more under make
+// check-gates, on "executor_handovers == handovers", with no VOID: the resumed wait had found core's poll taken and
+// interrupted it. Its hold-over came from a wait that found the guard condition triggered at once and so never polled,
+// after a 1 ms wait meant to leave the poll thread parked; when the poll thread is slow to return from the poll that
+// wait interrupted (more than the 1 ms the wait gives it to park), it is still in that poll during the hold-over, and
+// the hand-over is the product's correct answer to that, not a failed resume. Reproduced off the gate: 2 in 300 runs
+// pinned to one CPU, and 20 in 20 with a 3 ms sleep injected into an interrupted tt_Context_poll() before it returns.
+// So those parts now take the hold-over from a wait that polls until another thread triggers it - which interrupts a
+// poll thread still in core's poll and, holding the role throughout, keeps it from polling again - and then wait until
+// the poll thread reports itself parked, rather than assume a fixed sleep was enough (hold_over_parked()).
 
 #include <assert.h>
 #include <pthread.h>
@@ -74,7 +85,7 @@
 #define WAIT_MS 300U             // part 1: the wait
 #define AWAY_TIMER_DUE_MS 20U    // part 2: a timer this far into the executor's absence, past the lease
 #define AWAY_MS 50U              // part 2: the absence
-#define TRIGGER_AFTER_MS 20U     // parts 3 and 4: when the other thread triggers
+#define TRIGGER_AFTER_MS 20U     // parts 3, 4, 6 and 8: when the other thread triggers
 #define WOKEN_WITHIN_MS 5U       // part 3: how soon after that the wait must end
 #define BOTH_WITHIN_MS 10U       // part 4: how soon both waits must end
 #define ON_TIME_MS 2U            // parts 1 and 2: how late a timer may fire, on the best attempt
@@ -87,6 +98,9 @@
 #define HOLDOVER_TRIGGER_MS 50U // part 8: when this thread triggers the other thread's wait
 #define VOID_TRIES 20           // parts 6 and 7: attempts until one was not VOID
 #define NOT_DECIDED UINT64_MAX  // a timed attempt that was VOID: best_of() counts it as a miss and tries again
+#define PARK_CHECK_US 100U      // parts 6 and 8: how often to look whether the poll thread has parked
+#define US_PER_MS 1000U
+#define NS_PER_US 1000L
 
 static _Atomic uint64_t fired_at_ns;
 static _Atomic uintptr_t fired_on_thread;
@@ -101,6 +115,11 @@ static void record_firing(struct tt_Context* node, uint64_t time, void* param) {
 
 static void sleep_ms(unsigned millis) {
     struct timespec pause = {.tv_sec = millis / MS_PER_S, .tv_nsec = (long)(millis % MS_PER_S) * NS_PER_MS};
+    nanosleep(&pause, NULL);
+}
+
+static void sleep_us(unsigned micros) {
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = (long)micros * NS_PER_US};
     nanosleep(&pause, NULL);
 }
 
@@ -245,6 +264,29 @@ static bool still_held_over(const struct fixture* fix, uint64_t ended_before, co
     return false;
 }
 
+// Parts 6 and 8: holds the role over from a wait that polled - another thread triggers the guard condition
+// TRIGGER_AFTER_MS into it - and returns once the poll thread is parked; false if VOID (the watchdog ended the
+// hold-over first, still_held_over()). That wait held the role from its start, so a poll thread still in core's poll
+// was interrupted and found busy until it left; with the role still taken it parks and stays parked.
+static bool hold_over_parked(const struct fixture* fix, uint64_t ended, const char* part) {
+    struct trigger_later later = {fix->guard, TRIGGER_AFTER_MS};
+    pthread_t trigger; // NOLINT(misc-include-cleaner) - as above
+    assert(0 == pthread_create(&trigger, NULL, trigger_after, &later));
+    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS)); // polls until the trigger
+    assert(0 == pthread_join(trigger, NULL));
+    for (unsigned waited = 0;
+         !atomic_load(&fix->impl->poll_thread_parked) && atomic_load(&fix->impl->holdover_thread) == fix->main_thread &&
+         waited < WAITED_FOR_GOOD_MS * US_PER_MS;
+         waited += PARK_CHECK_US) {
+        sleep_us(PARK_CHECK_US);
+    }
+    if (!still_held_over(fix, ended, part)) {
+        return false;
+    }
+    assert(atomic_load(&fix->impl->poll_thread_parked)); // held over all along, and still not parked: a defect
+    return true;
+}
+
 // Part 5, one attempt: a wait that finds the guard condition triggered keeps the role, and its caller stays away;
 // returns how late a timer due meanwhile fired, in ns, or NOT_DECIDED if the hold-over was over before the timer was
 // scheduled.
@@ -276,13 +318,10 @@ static uint64_t timer_after_holdover(const struct fixture* fix) {
 // the hold-over began, and the watchdog had ended it (the lease, which part 5 checks, not a resume).
 static bool holdover_resumed(const struct fixture* fix) {
     const char* part = "6. hold-over resumed";
-    // First a wait that times out: it takes the role from the poll thread (part 5 left it polling) and leaves it
-    // parked for the lease, so what follows starts from a parked poll thread.
-    assert(RMW_RET_TIMEOUT == wait_untriggered(fix, 1 * MS));
+    // The hold-over begins with the poll thread parked (part 5 left it polling), so a hand-over below is a resume that
+    // did not resume.
     uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
-    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
-    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
-    if (!still_held_over(fix, ended, part)) {
+    if (!hold_over_parked(fix, ended, part)) {
         return false;
     }
     uint64_t handovers = atomic_load(&fix->impl->executor_handovers);
@@ -338,9 +377,8 @@ static bool holdover_ended_by_zero_wait(const struct fixture* fix) {
 static uint64_t holdover_taken_over(const struct fixture* fix) {
     const char* part = "8. hold-over taken over";
     uint64_t ended = atomic_load(&fix->impl->holdovers_ended);
-    assert(RMW_RET_OK == rmw_trigger_guard_condition(fix->guard));
-    assert(RMW_RET_OK == wait_untriggered(fix, WAITED_FOR_GOOD_MS * MS));
-    if (!still_held_over(fix, ended, part)) {
+    // From a parked poll thread (part 7's zero wait woke it): the take-over polls without interrupting anyone first.
+    if (!hold_over_parked(fix, ended, part)) {
         return NOT_DECIDED;
     }
     rmw_guard_condition_t* other_guard = rmw_create_guard_condition(fix->context);
