@@ -33,8 +33,9 @@
 // reports a read of any byte nothing wrote, where a pattern would read as defined).
 //
 // PRE-REGISTERED READING, per round and per context, printed as one line and enforced below:
-//   PASS  B1: every reliable sample (RELIABLE_COUNT) delivered once, in order, intact; at least BE_MIN_PCT% of each
-//             best-effort topic's, none damaged; every call answered. A2: every reliable and fragmented
+//   PASS  B1: every reliable sample (RELIABLE_COUNT) delivered once, in order, intact; of each best-effort topic at
+//             least be_bar() samples (see there: half of what the injected loss leaves whole, never 0), none damaged,
+//             none older than one already delivered; every call answered. A2: every reliable and fragmented
 //             sample. A1: every sample published; retransmitted > 0 summed over the round (the loss was exercised -
 //             a round in which nothing was resent did not test repair, and FAILS rather than passes).
 //   The process exits 0 only when every round of every context passed, printing "garbage_ctx_check: PASS - all".
@@ -78,8 +79,15 @@ int epoll_pwait2(int epfd, struct epoll_event* events, int maxevents, const stru
 
 #define ROUNDS 2
 #define RELIABLE_COUNT 100U
-#define BE_MIN_PCT 50U
+#ifndef TT_RX_DROP_PERCENT
+#define TT_RX_DROP_PERCENT 0
+#endif
 #define PCT 100U
+// The smallest payload one fragment of a sample carries on a 1500-byte link: the real one is about 1,450 bytes (the
+// 1,472-byte UDP payload less the fragment headers), so dividing by this counts at least as many fragments per sample
+// as are sent, and the bar it gives is no higher than the loss model allows (be_bar()).
+#define FRAG_UNIT_MIN 1400U
+#define BE_BAR_DIVISOR 2.0 // the bar is half of what the loss model expects (be_bar())
 #define CALL_COUNT 40U
 // A request or its answer is lost one time in ten at each end (TT_RX_DROP_PERCENT): with the default 3 retries a call
 // ends unanswered about once in 700, which over 80 calls failed this check one run in ten. With 20 a call is answered.
@@ -177,10 +185,11 @@ static struct tt_TypeSupport frag_type = {
 struct gc_sub {
     struct tt_Subscriber sub; // first: the callback's pointer is this struct's
     const char* label;
-    uint32_t bytes;    // what every sample must be
-    uint32_t received; // delivered
-    uint32_t next;     // the seq a reliable subscriber must see next
-    uint32_t out_of_order;
+    uint32_t bytes;     // what every sample must be
+    uint32_t received;  // delivered
+    uint32_t next;      // the seq after the last one delivered
+    uint32_t gaps;      // deliveries that skipped a seq: loss, which only a reliable topic must not show
+    uint32_t backwards; // deliveries older than one already delivered: wrong on every topic
     uint32_t damaged;
     void* storage;
 };
@@ -203,10 +212,12 @@ static void on_sample(struct tt_Subscriber* subscriber, uint64_t time, uint16_t 
     if (!sample->intact || sample->bytes != sub->bytes) {
         sub->damaged++;
     }
-    if (sample->seq != sub->next) {
-        sub->out_of_order++;
+    if (sub->received > 1U && sample->seq < sub->next) {
+        sub->backwards++;
+    } else {
+        sub->gaps += sample->seq - sub->next;
+        sub->next = sample->seq + 1U;
     }
-    sub->next = sample->seq + 1U;
 }
 
 static uint32_t calls_made;
@@ -393,10 +404,28 @@ static void* poll_until(void* param) {
     return NULL;
 }
 
+// The least a best-effort topic of `bytes`-sample must deliver out of RELIABLE_COUNT. The HAL drops a datagram with
+// probability p = TT_RX_DROP_PERCENT% (only the first one a wait reads - so the real loss is lower), and a sample of n
+// fragments arrives whole only if none of its n is dropped: at worst (1 - p)^n of them. The bar is half of that
+// expectation, so a run is not failed by the binomial spread of a correct one (at 100 samples and the model's own loss,
+// a 15-fragment sample's bar of 10 is 2.6 standard deviations under its mean of 20.6, P < 0.5%; a 1-datagram sample's
+// 45 is 15 under 90), and at least 1, so a run that delivers nothing always fails.
+// A fixed share was wrong: a 20,000-byte sample is 14 fragments, (0.9)^14 = 23% arrive whole, and CI delivered 33 of
+// 100 against a 50% bar (2026-10-22, "Integration Linux"). n is counted with FRAG_UNIT_MIN, never fewer than are sent.
+static uint32_t be_bar(uint32_t bytes) {
+    uint32_t fragments = bytes <= FRAG_UNIT_MIN ? 1U : (bytes + FRAG_UNIT_MIN - 1U) / FRAG_UNIT_MIN;
+    double whole = 1.0;
+    for (uint32_t i = 0; i < fragments; i++) {
+        whole *= (double)(PCT - TT_RX_DROP_PERCENT) / (double)PCT;
+    }
+    uint32_t bar = (uint32_t)(whole * (double)RELIABLE_COUNT / BE_BAR_DIVISOR);
+    return bar > 0U ? bar : 1U;
+}
+
 static bool sub_complete(const struct gc_sub* sub, const char* where, int round) {
-    bool passed = sub->received == RELIABLE_COUNT && sub->out_of_order == 0 && sub->damaged == 0;
-    printf("garbage_ctx_check: round %d %s %s received=%u/%u out_of_order=%u damaged=%u %s\n", round, where, sub->label,
-           sub->received, RELIABLE_COUNT, sub->out_of_order, sub->damaged, passed ? "ok" : "FAIL");
+    bool passed = sub->received == RELIABLE_COUNT && sub->gaps == 0 && sub->backwards == 0 && sub->damaged == 0;
+    printf("garbage_ctx_check: round %d %s %s received=%u/%u gaps=%u backwards=%u damaged=%u %s\n", round, where,
+           sub->label, sub->received, RELIABLE_COUNT, sub->gaps, sub->backwards, sub->damaged, passed ? "ok" : "FAIL");
     return passed;
 }
 
@@ -527,10 +556,12 @@ static int run_b(int round, struct tt_Context* b1_node, uint64_t round_ns) {
     poll_until(&ctx_b1);
 
     bool passed = true;
-    for (int i = 0; i < 4; i += 3) { // the two best-effort topics: most samples, none damaged
-        bool be_passed = subs[i].received * PCT >= RELIABLE_COUNT * BE_MIN_PCT && subs[i].damaged == 0;
-        printf("garbage_ctx_check: round %d B1 %s received=%u/%u (need %u%%) damaged=%u %s\n", round, subs[i].label,
-               subs[i].received, RELIABLE_COUNT, BE_MIN_PCT, subs[i].damaged, be_passed ? "ok" : "FAIL");
+    for (int i = 0; i < 4; i += 3) { // the two best-effort topics: be_bar() samples, none damaged or older
+        uint32_t bar = be_bar(subs[i].bytes);
+        bool be_passed = subs[i].received >= bar && subs[i].damaged == 0 && subs[i].backwards == 0;
+        printf("garbage_ctx_check: round %d B1 %s received=%u/%u (need %u) gaps=%u backwards=%u damaged=%u %s\n", round,
+               subs[i].label, subs[i].received, RELIABLE_COUNT, bar, subs[i].gaps, subs[i].backwards, subs[i].damaged,
+               be_passed ? "ok" : "FAIL");
         passed = passed && be_passed;
     }
     passed = sub_complete(&subs[1], "B1", round) && passed;
