@@ -139,7 +139,9 @@ say "=== wifi_burst_loss_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PR
     echo "netem_base='${NETEM_BASE:-limit 10000 delay 2ms slot 1ms 4ms packets 42}' node_env='${NODE_ENV:-}'"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
     echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS (core defaults: 1472-byte datagram)"
-    echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0"
+    echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" \
+        "rstats=${LARGE_RSTATS:-0} large_pub_args='${LARGE_PUB_ARGS:-}' large_sub_args='${LARGE_SUB_ARGS:-}'" \
+        "bands=${BANDS:-2}"
 } >>"$OUT/provenance.txt"
 
 # --- build: both binaries from this tree, as hybrid_send_netns.sh builds its bench ----------------------------------
@@ -152,8 +154,11 @@ if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -I
     tail -5 "$WORK/build.log"
     exit 1
 fi
+LARGE_STATS=()
+[ "${LARGE_RSTATS:-0}" = 1 ] && LARGE_STATS=(-Dtt_RELIABLE_STATS)
+# shellcheck disable=SC2068 # an empty array expands to nothing
 if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 \
-    -I"$REPO/include" -I"$REPO/src" -o "$WORK/large" "$HERE/large_sample_bench.c" "${CORE[@]}" -lpthread -lm \
+    ${LARGE_STATS[@]} -I"$REPO/include" -I"$REPO/src" -o "$WORK/large" "$HERE/large_sample_bench.c" "${CORE[@]}" -lpthread -lm \
     >>"$WORK/build.log" 2>&1; then
     say "VOID  large_sample_bench did not build"
     tail -5 "$WORK/build.log"
@@ -214,6 +219,8 @@ shape() {
         "${t[@]}" qdisc add dev wl0 parent 1:1 handle 10: netem $(spec "$arm" bcast) || return 1
         # shellcheck disable=SC2046
         "${t[@]}" qdisc add dev wl0 parent 1:2 handle 20: netem $(spec "$arm" ucast) || return 1
+        # BANDS=1 (a diagnostic, 2026-10-23): no broadcast filters, so broadcast shares the unicast band and its queue.
+        [ "${BANDS:-2}" = 1 ] && return 0
         "${t[@]}" filter add dev wl0 parent 1: protocol ip prio 1 u32 match ip dst "$BCAST/32" flowid 1:1 || return 1
         "${t[@]}" filter add dev wl0 parent 1: protocol ip prio 1 u32 match ip dst 255.255.255.255/32 flowid 1:1 ||
             return 1
@@ -273,11 +280,11 @@ run_one() { # run_one ARM CELL REP
     local idle_pid=$!
     TV_PID=""
     if [ "$cell" = rel_large ]; then
-        inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" >"$RUN_DIR/echo.log" 2>&1 &
+        inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" ${LARGE_SUB_ARGS:-} >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
         [ "$arm" = tv ] && { tv_cycle & TV_PID=$!; }
-        inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" >"$RUN_DIR/ping.log" 2>&1
+        inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" ${LARGE_PUB_ARGS:-} >"$RUN_DIR/ping.log" 2>&1
         wait "$echo_pid"
     else
         inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/owd_us.txt" \

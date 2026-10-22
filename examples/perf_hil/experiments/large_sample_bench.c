@@ -68,6 +68,15 @@
 #include <tickle/hal_linux.h> // struct tt_hal: the receive sockets, the drain's counters
 #include <tickle/tickle.h>
 
+// RSTATS lines at the end of a run when built with -Dtt_RELIABLE_STATS (wifi_burst_loss_netns.sh's large cell). Guarded
+// so a copy of this file built elsewhere (hybrid_first_n_pc.sh) compiles without the header beside it.
+#if defined(tt_RELIABLE_STATS) && __has_include("../tickle/common/reliable_stats_print.h")
+#include "../tickle/common/reliable_stats_print.h"
+#define BENCH_RSTATS(role) print_reliable_stats(role)
+#else
+#define BENCH_RSTATS(role) ((void)(role))
+#endif
+
 #define BENCH_HEADER 16U // send_ns (8), index (4), reserved (4)
 #define BENCH_SEND_NS_BYTES 8U
 #define BENCH_INDEX_OFFSET 8U
@@ -844,6 +853,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     int result = opts.publisher ? run_publisher(&node, &opts) : run_subscriber(&node, &opts);
+    BENCH_RSTATS(opts.publisher ? "pub" : "sub");
     tt_Context_destroy(&node);
     return result;
 }
