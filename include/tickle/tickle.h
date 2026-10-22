@@ -1103,7 +1103,7 @@ struct tt_Context {
     // only the pages holding an endpoint are (2026-10-22: the rebuild NULLed every slot, which made
     // the whole index resident and cost tt_ENDPOINT_INDEX_SIZE stores for every endpoint added).
     struct tt_Endpoint* endpoint_index[tt_ENDPOINT_INDEX_SIZE];
-    uint64_t endpoint_index_used[(tt_ENDPOINT_INDEX_SIZE + 63) / 64];
+    uint64_t endpoint_index_used[tt_ENDPOINT_INDEX_WORDS];
     bool endpoint_index_valid;
     uint64_t last_modified; // Last modified timestamp in ns to announce other nodes e.g. server, publisher
 

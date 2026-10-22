@@ -4916,15 +4916,16 @@ static uint64_t rd64(struct tt_Header* header, uint64_t value) {
 // in the slot: an empty slot is never read, so neither the reset nor a rebuild writes it, and the index's pages are
 // written only where an endpoint is (struct tt_Context.endpoint_index).
 static inline struct tt_Endpoint* endpoint_index_at(const struct tt_Context* node, uint32_t slot) {
-    if (((node->endpoint_index_used[slot / 64U] >> (slot % 64U)) & 1U) == 0) {
+    uint64_t used = node->endpoint_index_used[slot / tt_ENDPOINT_INDEX_WORD_BITS];
+    if (((used >> (slot % tt_ENDPOINT_INDEX_WORD_BITS)) & 1U) == 0) {
         return NULL;
     }
     return node->endpoint_index[slot];
 }
 
-// O(tt_ENDPOINT_INDEX_SIZE / 64 + endpoint_count): the bitmap cleared a word at a time, then each endpoint placed.
+// O(tt_ENDPOINT_INDEX_WORDS + endpoint_count): the bitmap cleared a word at a time, then each endpoint placed.
 static void rebuild_endpoint_index(struct tt_Context* node) {
-    for (uint32_t i = 0; i < (tt_ENDPOINT_INDEX_SIZE + 63) / 64; i++) {
+    for (uint32_t i = 0; i < tt_ENDPOINT_INDEX_WORDS; i++) {
         node->endpoint_index_used[i] = 0;
     }
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
@@ -4937,7 +4938,8 @@ static void rebuild_endpoint_index(struct tt_Context* node) {
             slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
         }
         node->endpoint_index[slot] = endpoint;
-        node->endpoint_index_used[slot / 64U] |= (uint64_t)1 << (slot % 64U);
+        uint64_t bit = (uint64_t)1 << (slot % tt_ENDPOINT_INDEX_WORD_BITS);
+        node->endpoint_index_used[slot / tt_ENDPOINT_INDEX_WORD_BITS] |= bit;
     }
     node->endpoint_index_valid = true;
 }
