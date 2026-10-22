@@ -29,7 +29,8 @@ mutant() {
     cp -r "$ROOT/examples" "$dir/"
     cp "$ROOT/src/"*.c "$ROOT/src/"*.h "$dir/src/"
     cp "$ROOT/platform/linux/garbage_ctx_check.c" "$ROOT/platform/linux/garbage_ctx_check.sh" "$dir/platform/linux/"
-    python3 - "$dir/src/tickle.c" "$2" "$3" <<'EOF' || return 1
+    # A mutant whose anchor is gone is a check that did not run: it fails the script, not just this function.
+    if ! python3 - "$dir/src/tickle.c" "$2" "$3" <<'EOF'
 import sys
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(path).read()
@@ -37,6 +38,11 @@ if text.count(old) != 1:
     sys.exit(f"mutant anchor matched {text.count(old)} times, not 1")
 open(path, "w").write(text.replace(old, new))
 EOF
+    then
+        echo "FAIL  $name: the mutant was not applied"
+        failed=1
+        return
+    fi
     (cd "$dir/platform/linux" && clang -fsanitize=memory -fsanitize-recover=memory -fsanitize-memory-track-origins \
         -fno-omit-frame-pointer -O1 -g -Dtt_HAL_RX_HINT=1 -DTT_RX_DROP_PERCENT=10 -Dtt_MAX_BUFFER_LENGTH=65507 \
         -Dtt_LARGE_SAMPLES=1 -Dtt_LOCAL_DELIVERY=1 -Dtt_DISCOVERY_OPTIONS=1 \
@@ -79,12 +85,12 @@ mutant endpoint_idx "    for (uint32_t i = 0; i <= mask; i++) {
         node->endpoint_index[i] = NULL;
     }" "    (void)0;"
 mutant endpoint_mask "    uint32_t slot = endpoint_id & mask;
-    for (uint32_t probe = 0; probe <= mask; probe++) {
+    for (;;) { // ends at an empty slot: the slots in use always outnumber the endpoints
         struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             return NULL;
         }" "    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
-    for (uint32_t probe = 0; probe <= mask; probe++) {
+    for (;;) {
         struct tt_Endpoint* endpoint = node->endpoint_index[slot];
         if (endpoint == NULL) {
             return NULL;
