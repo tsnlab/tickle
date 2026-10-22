@@ -2090,10 +2090,10 @@ struct tt_Context {
     uint64_t announce_repeats_sent;
     uint32_t summary_peer_ip[tt_MAX_CONTEXT_IDS];
     uint16_t summary_peer_port[tt_MAX_CONTEXT_IDS];
-    // When the poll last looked at its socket - the poll loop's own reading at a receive check or before a wait - so a
-    // busy poll checks once opts.poll.rx_check_ns has passed since (node_poll(), tickle.c), across calls: a run of
-    // short polls looks as a long one does. The polling thread's alone (one poller at a time), so a plain 64-bit field
-    // and no atomic. After every other field, so none of them moves.
+    // When the poll last looked at its socket - the poll loop's own reading at a receive check, or the reading a wait
+    // takes when it ends (poll_wait_io()) - so a busy poll checks once opts.poll.rx_check_ns has passed since
+    // (node_poll(), tickle.c), across calls: a run of short polls looks as a long one does. The polling thread's alone
+    // (one poller at a time), so a plain 64-bit field and no atomic. After every other field, so none of them moves.
     uint64_t rx_looked_ns;
 };
 
