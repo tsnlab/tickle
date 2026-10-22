@@ -1890,7 +1890,7 @@ static uint64_t recover_after(struct tt_Context* node, struct tt_Subscriber* sub
     struct tt_WriterProxy* proxy = remote_writer_proxy(sub);
     uint64_t asked = test_mock_now + tt_MILLISECOND;
     test_mock_now = asked;
-    uint32_t tail = write_data(node, seq + 1, 100 * (seq + 1), seq + 1); // seq is missing: an immediate ACKNACK
+    uint32_t tail = write_data(node, seq + 1, 100ULL * (seq + 1), seq + 1); // seq is missing: an immediate ACKNACK
     EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     proxy->probe_busy = busy;
     for (int i = 0; i < retries; i++) {
@@ -1899,7 +1899,7 @@ static uint64_t recover_after(struct tt_Context* node, struct tt_Subscriber* sub
         acknack_retry(node, tt_get_ns(), proxy);
     }
     test_mock_now += tt_MILLISECOND;
-    tail = write_data(node, seq, 100 * seq, seq);
+    tail = write_data(node, seq, 100ULL * seq, seq);
     node->rx_targeted = true;
     EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     node->rx_targeted = false;
