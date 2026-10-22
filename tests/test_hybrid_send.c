@@ -933,7 +933,7 @@ static void expect_call(uint32_t run_n, uint32_t run_until, uint32_t next, uint3
     uint32_t units[LARGE_BATCH];
     const struct tt_LargeRecord* record = large_record_at(&pub, 0);
     struct tt_Peer dest = {0};
-    uint32_t k = large_build_runs(&sender, record, run_n, run_until, next, &dest, framings, batch, units);
+    uint32_t k = large_build_runs(&sender, record, run_n, run_until, next, &dest, framings, batch, units, LARGE_BATCH);
     uint32_t total = 0;
     for (uint32_t i = 0; i < k; i++) {
         total += units[i];
