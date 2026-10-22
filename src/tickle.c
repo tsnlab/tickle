@@ -878,6 +878,8 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
 // and in link_profiles_apply() once the links are resolved, for what needs the interface's MTU.
 #define LINK_ETHERNET_MTU 1500U
 #define LINK_IPV4_UDP_HEADERS 28U // IPv4 20, UDP 8
+#define LINK_IP_HEADER 20U
+#define LINK_UDP_HEADER 8U
 // An Ethernet frame's bytes on the wire around its payload: preamble and SFD 8, MAC header 14, FCS 4, inter-frame
 // gap 12.
 #define LINK_FRAME_OVERHEAD 38U
@@ -918,6 +920,13 @@ static uint64_t link_t1s_retry_floor(uint32_t mtu, uint64_t link_rate) {
     return floor < UINT32_MAX ? floor : UINT32_MAX;
 }
 
+// A T1S link's default pacing rate: tt_LINK_T1S_PACING_PCT percent of its link_rate (docs/DESIGN.md "Send pacing"),
+// never below tt_LINK_RATE_MIN where the link_rate is not.
+static uint64_t link_t1s_pacing_rate(uint64_t link_rate) {
+    uint64_t rate = (link_rate / 100U) * tt_LINK_T1S_PACING_PCT;
+    return rate >= tt_LINK_RATE_MIN || link_rate < tt_LINK_RATE_MIN ? rate : (uint64_t)tt_LINK_RATE_MIN;
+}
+
 // Whether the context set a value its links could also decide: neither 0 nor the default. A context created from
 // tt_InitOptions_default() holds the defaults resolved, and its links' profiles must still apply.
 static bool context_value_set(uint64_t value, uint64_t default_value) {
@@ -949,6 +958,9 @@ static void resolve_link_profile(struct tt_LinkOptions* link) {
     }
     if (link->idle_heartbeat_ns == 0 && t1s) {
         link->idle_heartbeat_ns = LINK_T1S_IDLE_HEARTBEAT;
+    }
+    if (link->pacing_rate == 0) {
+        link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
     }
 }
 
@@ -1090,6 +1102,25 @@ static tt_ret_t reject_option(const char* field, const char* why) {
 static bool valid_slot_bytes(uint32_t slot_bytes);
 #endif
 
+// A link's pacing (validate_link_profile()): a rate the link can carry and a burst that holds a full frame, on a paced
+// link only. Checked on the resolved options: a pacing_rate of 0 is the profile's by now.
+static tt_ret_t validate_link_pacing(const struct tt_LinkOptions* link) {
+    bool paced = link->pacing_rate != tt_PACING_OFF;
+    if (paced && link->pacing_rate < tt_LINK_RATE_MIN) {
+        return reject_option("net.links[].pacing_rate", "is below tt_LINK_RATE_MIN");
+    }
+    if (paced && link->pacing_rate > link->link_rate) {
+        return reject_option("net.links[].pacing_rate", "is above the link's link_rate");
+    }
+    if (link->pacing_burst != 0 && !paced) {
+        return reject_option("net.links[].pacing_burst", "is set on a link that is not paced");
+    }
+    if (link->pacing_burst != 0 && link->pacing_burst < tt_PACING_BURST_MIN) {
+        return reject_option("net.links[].pacing_burst", "is below tt_PACING_BURST_MIN");
+    }
+    return tt_RET_OK;
+}
+
 // A link's profile and the values it filled (validate_link_options()). The MTU of a T1S or TSN link left to the
 // interface is checked when it is known (link_profiles_apply()), and falls back to 1500 there rather than refusing.
 static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
@@ -1117,7 +1148,7 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     if (link->piggyback_divisor > tt_RELIABLE_BITMAP_BITS) {
         return reject_option("net.links[].piggyback_divisor", "is above tt_RELIABLE_BITMAP_BITS");
     }
-    return tt_RET_OK;
+    return validate_link_pacing(link);
 }
 
 // One link's settings (validate_net_options()).
@@ -1772,6 +1803,24 @@ static void link_resolve_interface(struct tt_LinkOptions* link, const struct _tt
     if (link->retry_floor_ns == 0 && link->profile == tt_LINK_PROFILE_T1S) {
         link->retry_floor_ns = link_t1s_retry_floor(link->mtu, link->link_rate);
     }
+    if (link->pacing_burst == 0 && link->pacing_rate != tt_PACING_OFF) {
+        link->pacing_burst = tt_PACING_BURST_FRAMES * ((uint32_t)link->mtu + LINK_FRAME_OVERHEAD);
+    }
+}
+
+// A link's bucket (struct tt_Pacer) from its resolved pacing_rate and pacing_burst; all 0 - not paced - for
+// tt_PACING_OFF. The burst in ns is taken in two halves so that no product passes 64 bits (a burst near 4 GB at
+// tt_LINK_RATE_MIN would).
+static void link_pacer_configure(struct tt_Pacer* pacer, const struct tt_LinkOptions* link) {
+    memset(pacer, 0, sizeof(*pacer));
+    if (link->pacing_rate == tt_PACING_OFF) {
+        return;
+    }
+    uint64_t q16 = ((8ULL * tt_SECOND) << 16U) / link->pacing_rate;
+    pacer->ns_per_byte_q16 = q16 != 0 ? q16 : 1U;
+    pacer->burst_ns = ((uint64_t)(link->pacing_burst >> 16U) * pacer->ns_per_byte_q16) +
+                      (((uint64_t)(link->pacing_burst & 0xFFFFU) * pacer->ns_per_byte_q16) >> 16U);
+    pacer->frame_payload = ((uint32_t)link->mtu - LINK_IP_HEADER) & ~7U; // an IP fragment's payload: a multiple of 8
 }
 
 // tt_ETHERNET_UDP_PAYLOAD sized every datagram for a 1500-byte MTU, and nothing checked that the link has one; a link
@@ -1796,11 +1845,14 @@ static void link_profiles_apply(struct tt_Context* node) {
     uint64_t floor = 0;
     uint32_t divisor = 0;
     bool batch = net->link_count != 0;
+    bool pacing = false;
     for (uint8_t i = 0; i < link_count(node); i++) {
         uint32_t mtu = LINK_ETHERNET_MTU;
         if (i < net->link_count) {
             struct tt_LinkOptions* link = &net->links[i];
             link_resolve_interface(link, &node->links[i]);
+            link_pacer_configure(&node->pacers[i], link);
+            pacing = pacing || node->pacers[i].ns_per_byte_q16 != 0;
             mtu = link->mtu;
             floor = link->retry_floor_ns > floor ? link->retry_floor_ns : floor;
             divisor = link->piggyback_divisor > divisor ? link->piggyback_divisor : divisor;
@@ -1812,6 +1864,7 @@ static void link_profiles_apply(struct tt_Context* node) {
     }
     node->control_max = control;
     node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD;
+    node->pacing = pacing;
     node->batch_default = batch;
     node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
     // The floor is put under the measured G where G is kept - its least (timer_lateness_fold()) and its cold start - so
@@ -3423,11 +3476,123 @@ static void tx_class_leave(struct tt_Context* node, uint8_t outer) {
     node->tx_class = outer;
 }
 
+// ---- Send pacing (tt_LinkOptions.pacing_rate, docs/DESIGN.md "Send pacing"). A paced link's bucket is the time its
+// sends so far finish at the pacing rate (struct tt_Pacer.until_ns); every datagram the context sends on the link over
+// UDP is counted into it where it leaves (the seam below, large_send_batch()), and two kinds of send wait for it: a
+// large sample's units (pace_units(), the send cursor) and retransmissions (pace_repair_allowed()). Nothing here runs
+// on a context with no paced link: each caller tests tt_Context.pacing first, the one branch the send path pays.
+
+// The link a destination is on: the one link of a context that has one, else the link whose subnet holds ip (ip 0, the
+// HAL's broadcast address, is link 0's).
+static uint8_t pace_link(struct tt_Context* node, uint32_t ip) {
+    return link_count(node) <= 1 ? 0U : link_of_ip(node, ip);
+}
+
+// What a datagram of `len` UDP payload bytes takes of a paced link, in ns: its bytes on the wire - UDP and IP headers,
+// one IP header and Ethernet framing (LINK_FRAME_OVERHEAD) per frame the link MTU cuts it into - at the pacing rate.
+static uint64_t pace_cost_ns(const struct tt_Pacer* pacer, uint32_t len) {
+    uint32_t ip_payload = len + LINK_UDP_HEADER;
+    uint32_t frames = 1U + ((ip_payload - 1U) / pacer->frame_payload);
+    uint64_t wire = (uint64_t)ip_payload + ((uint64_t)frames * (LINK_IP_HEADER + LINK_FRAME_OVERHEAD));
+    return (wire * pacer->ns_per_byte_q16) >> 16U;
+}
+
+// The bucket's emptiness at `now`, in ns of sending: 0 when it is full.
+static uint64_t pace_backlog(const struct tt_Pacer* pacer, uint64_t now) {
+    return pacer->until_ns > now ? pacer->until_ns - now : 0U;
+}
+
+// Counts one datagram sent over UDP to ip into its link's bucket - whatever sent it, so that a large sample's send
+// leaves room for what else the context sends. Only called with tt_Context.pacing set.
+static void pace_charge(struct tt_Context* node, uint32_t ip, size_t len, uint64_t now) {
+    struct tt_Pacer* pacer = &node->pacers[pace_link(node, ip)];
+    if (pacer->ns_per_byte_q16 == 0) {
+        return; // a link that is not paced, beside one that is
+    }
+    uint64_t start = pacer->until_ns > now ? pacer->until_ns : now;
+    pacer->until_ns = start + pace_cost_ns(pacer, (uint32_t)len);
+}
+
+static __attribute__((noinline)) void pace_charge_one(struct tt_Context* node, uint32_t ip, size_t len) {
+    pace_charge(node, ip, len, tt_get_ns());
+}
+
+static __attribute__((noinline)) void pace_charge_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams,
+                                                        uint32_t count) {
+    uint64_t now = tt_get_ns();
+    for (uint32_t i = 0; i < count; i++) {
+        pace_charge(node, datagrams[i].ip, (size_t)datagrams[i].head_len + datagrams[i].body_len, now);
+    }
+}
+
+// Whether a send to dest leaves over UDP, where pacing applies, rather than through a same-host peer's segment.
+static bool pace_dest_is_udp(struct tt_Context* node, const struct tt_Peer* dest) {
+#if tt_SEGMENT_ENABLED
+    return dest->context_id == tt_CONTEXT_ID_INVALID ||
+           peer_segment(node, dest->context_id, dest->ip, dest->port) == NULL;
+#else
+    (void)node;
+    (void)dest;
+    return true;
+#endif
+}
+
+#if tt_LARGE_SAMPLES
+// How many datagrams of `len` bytes each may go to dest now, at most `want`: as many as the bucket holds. 0 when none
+// may, with *at set to when one may - the backlog drained to a burst less one datagram, or, for a datagram longer than
+// the whole burst, drained completely: such a datagram goes alone from a full bucket. Only with tt_Context.pacing set.
+static uint32_t pace_units(struct tt_Context* node, const struct tt_Peer* dest, uint32_t len, uint32_t want,
+                           uint64_t* at) {
+    if (!pace_dest_is_udp(node, dest)) {
+        return want;
+    }
+    const struct tt_Pacer* pacer = &node->pacers[pace_link(node, dest->ip)];
+    uint64_t cost = pacer->ns_per_byte_q16 != 0 ? pace_cost_ns(pacer, len) : 0U;
+    if (cost == 0) {
+        return want; // not paced, or faster than a nanosecond a datagram
+    }
+    uint64_t now = tt_get_ns();
+    uint64_t backlog = pace_backlog(pacer, now);
+    if (backlog + cost <= pacer->burst_ns) {
+        uint64_t fit = (pacer->burst_ns - backlog) / cost;
+        return fit < want ? (uint32_t)fit : want;
+    }
+    if (backlog == 0) {
+        return 1U;
+    }
+    *at = now + (cost > pacer->burst_ns ? backlog : backlog + cost - pacer->burst_ns);
+    return 0U;
+}
+#endif
+
+// Whether a retransmission of `len` bytes to target may go now: while its link's backlog stays within two bursts. A
+// repair is answered ahead of a large sample's send - the send cursor then waits for the bucket - but never more than
+// a burst beyond it; one past that is left to the reader, whose next request asks again, and counted. Only with
+// tt_Context.pacing set.
+static bool pace_repair_allowed(struct tt_Context* node, const struct tt_Peer* target, uint32_t len) {
+    if (!pace_dest_is_udp(node, target)) {
+        return true;
+    }
+    const struct tt_Pacer* pacer = &node->pacers[pace_link(node, target->ip)];
+    if (pacer->ns_per_byte_q16 == 0) {
+        return true;
+    }
+    uint64_t backlog = pace_backlog(pacer, tt_get_ns());
+    if (backlog == 0 || backlog + pace_cost_ns(pacer, len) <= 2U * pacer->burst_ns) {
+        return true;
+    }
+    node->pacing_repairs_deferred++;
+    return false;
+}
+
 // The four send shapes. Each tries the peer's segment first when the destination is a known peer,
 // and falls back to UDP for any reason at all - the fallback is the module's documented failure
 // mode rather than an error, which is exactly why every reason for taking it is counted.
 static int32_t seam_send(struct tt_Context* node, const void* buf, size_t len) {
     count_udp(node, UDP_BECAUSE_BROADCAST, 1); // this shape is the HAL's broadcast address by definition
+    if (__builtin_expect(node->pacing, 0)) {
+        pace_charge_one(node, 0, len);
+    }
     return tt_send(node, buf, len);
 }
 
@@ -3448,6 +3613,9 @@ static int32_t seam_send_to(struct tt_Context* node, const void* buf, size_t len
         return -1;
     }
     count_udp(node, reason, 1);
+    if (__builtin_expect(node->pacing, 0)) {
+        pace_charge_one(node, ip, len);
+    }
     return tt_send_to(node, buf, len, ip, port);
 }
 
@@ -3462,6 +3630,9 @@ static int32_t seam_send_iov(struct tt_Context* node, const void* hdr, size_t hd
     reason = context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED;
 #endif
     count_udp(node, reason, 1);
+    if (__builtin_expect(node->pacing, 0)) {
+        pace_charge_one(node, ip, hdr_len + body_len);
+    }
     return tt_send_iov(node, hdr, hdr_len, body, body_len, ip, port);
 }
 
@@ -3498,6 +3669,9 @@ static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatag
         }
         count_udp(node, reason, 1);
         left++;
+        if (__builtin_expect(node->pacing, 0)) {
+            pace_charge_batch(node, &datagrams[i], 1);
+        }
         failed = failed || tt_send_batch(node, &datagrams[i], 1) < 0;
     }
     for (uint32_t written = 0; written < peers; written++) {
@@ -3544,10 +3718,16 @@ static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatag
     if (left == 0) {
         return 0; // every datagram took a segment; nothing for the socket
     }
+    if (__builtin_expect(node->pacing, 0)) {
+        pace_charge_batch(node, remaining, left);
+    }
     return tt_send_batch(node, remaining, left);
 #else
     for (uint32_t i = 0; i < count; i++) {
         count_udp(node, context_ids[i] == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED, 1);
+    }
+    if (__builtin_expect(node->pacing, 0)) {
+        pace_charge_batch(node, datagrams, count);
     }
     return tt_send_batch(node, datagrams, count);
 #endif
@@ -7274,6 +7454,8 @@ static void node_init_locks(struct tt_Context* node) {
     node->batch_default = false;
     node->piggyback_every = 0;
     node->retry_floor_ns = 0;
+    node->pacing = false; // no link paced: the send path's one branch (docs/DESIGN.md "Send pacing")
+    memset(node->pacers, 0, sizeof(node->pacers));
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -11572,6 +11754,9 @@ static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutData
     if (sent > 0) {
         count_udp(node, dest->context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED,
                   (uint32_t)sent);
+        if (__builtin_expect(node->pacing, 0)) {
+            pace_charge_batch(node, batch, (uint32_t)sent); // what went: the rest waits for room, and is counted then
+        }
     }
     return sent;
 }
@@ -11633,11 +11818,12 @@ static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last)
 // the last unit - which, reached, goes alone, in a call of its own, as its MTU fragment. The call carries about what a
 // batch of MTU fragments does, so a ranged encode stays a call ahead of the wire instead of encoding the whole sample
 // before the first run goes. units[k] is how many units datagram k carries, so a call cut short by a full send buffer
-// moves the cursor by exactly what went.
+// moves the cursor by exactly what went. max_units (LARGE_BATCH, or fewer on a paced link) ends the call once it
+// carries that many units; it always carries one datagram, a whole run however long.
 static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t run_n,
                                  uint32_t run_until, uint32_t next, const struct tt_Peer* dest,
                                  uint8_t (*framings)[HYBRID_RUN_L_FRAMING], struct tt_OutDatagram* batch,
-                                 uint32_t* units) {
+                                 uint32_t* units, uint32_t max_units) {
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
     uint32_t last = (uint32_t)record->count - 1U;
@@ -11653,7 +11839,7 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
     }
     uint32_t k = 0;
     uint32_t call_units = 0;
-    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {
+    for (; k < LARGE_BATCH && call_units < max_units && next < last; k++) {
         if (next >= run_until) { // a re-probe's units after its one run: each its MTU fragment
             uint32_t length = large_length(next, record->cdr_len);
             uint32_t skip = 0;
@@ -11695,6 +11881,24 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
     return k;
 }
 
+// The send cursor's datagrams to its destination that its link's pacing lets go now (pace_units()), at most `want`
+// of `len` bytes each - all of them on a context with no paced link. 0 stops the send with the cursor's pace_at_ns set
+// (large_pump() then waits in the scheduler, large_wait_for_pace()): what the publish has not encoded yet is encoded
+// first, as for a full send buffer, since its caller's sample may be gone by then; if that fails, *failed is set.
+static uint32_t large_paced_count(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                                  uint32_t len, uint32_t want, bool* failed) {
+    if (__builtin_expect(!node->pacing, 1)) {
+        return want;
+    }
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    uint32_t fit = pace_units(node, &cursor->dests[cursor->next_dest], len, want, &cursor->pace_at_ns);
+    if (fit == 0 && !large_encode_through(pub, record, record->cdr_len)) {
+        cursor->pace_at_ns = 0;
+        *failed = true;
+    }
+    return fit;
+}
+
 // large_send_some() for a destination this sample goes to in runs of n: true when all of it has gone to `dest`. A
 // record its publish is still encoding is encoded through the last unit a send call carries just before that call, as
 // a batch of MTU fragments is (large_encode_through()); if that fails, *failed is set and true returned.
@@ -11703,11 +11907,18 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
     while (cursor->next_index < record->count) {
+        // A paced link: the units its bucket holds, each counted as an MTU unit; a run longer than that goes whole.
+        uint32_t max_units = large_paced_count(
+            node, pub, record, (uint32_t)LARGE_FRAMING_MAX + large_length(cursor->next_index, record->cdr_len),
+            LARGE_BATCH, failed);
+        if (max_units == 0) {
+            return *failed;
+        }
         uint8_t framings[LARGE_BATCH][HYBRID_RUN_L_FRAMING];
         struct tt_OutDatagram batch[LARGE_BATCH];
         uint32_t units[LARGE_BATCH];
-        uint32_t batch_count =
-            large_build_runs(node, record, run_n, run_until, cursor->next_index, dest, framings, batch, units);
+        uint32_t batch_count = large_build_runs(node, record, run_n, run_until, cursor->next_index, dest, framings,
+                                                batch, units, max_units);
         uint32_t call_units = 0;
         for (uint32_t k = 0; k < batch_count; k++) {
             call_units += units[k];
@@ -11763,6 +11974,12 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
     while (cursor->next_index < record->count) {
         uint32_t batch_count = record->count - cursor->next_index;
         batch_count = batch_count < batch_max ? batch_count : batch_max;
+        batch_count = large_paced_count(node, pub, record,
+                                        (uint32_t)LARGE_FRAMING_MAX + large_length(cursor->next_index, record->cdr_len),
+                                        batch_count, failed);
+        if (batch_count == 0) {
+            return *failed;
+        }
         if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {
             *failed = true;
             return true;
@@ -12054,6 +12271,26 @@ static void large_wait_for_room(struct tt_Context* node, struct tt_Publisher* pu
     }
 }
 
+// The send stopped for its link's pacing (large_paced_count()): it goes on from the scheduler when the bucket has room
+// (tt_LargeCursor.pace_at_ns) - never a wait or a sleep in the publish. Replaces a wait for the socket's room, which
+// the bucket's time outlasts or the send finds again.
+static void large_wait_for_pace(struct tt_Context* node, struct tt_Publisher* pub) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    uint64_t at = cursor->pace_at_ns;
+    cursor->pace_at_ns = 0;
+    if (cursor->scheduled) {
+        (void)tt_Context_unschedule(node, large_send_resume, pub);
+        cursor->scheduled = false;
+    }
+    cursor->on_writable = false;
+    if (tt_Context_schedule(node, at, large_send_resume, pub)) {
+        cursor->scheduled = true;
+        node->pacing_waits++;
+    } else {
+        TT_LOG_ERROR("Cannot schedule large_send_resume");
+    }
+}
+
 // Every fragment of `record` has gone: a retained one gets its end-of-sample HEARTBEAT and the ring goes back within
 // the KEEP_LAST depth (a record committed during this send may have passed it by one); one nothing keeps goes now.
 static void large_record_sent(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record) {
@@ -12097,6 +12334,10 @@ static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
         bool progress = false;
         bool failed = false;
         if (!large_send_some(node, pub, record, &progress, &failed)) {
+            if (cursor->pace_at_ns != 0) {
+                large_wait_for_pace(node, pub);
+                return;
+            }
             large_wait_for_room(node, pub, progress);
             return;
         }
@@ -12198,6 +12439,9 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
                             index, record->count, length, target->context_id, &skip);
     struct tx_datagram dgram = {framing + skip, framing_length - skip,
                                 record->buffer + tt_LARGE_CDR_OFFSET + large_offset(index), length};
+    if (__builtin_expect(node->pacing, 0) && !pace_repair_allowed(node, target, framing_length - skip + length)) {
+        return LARGE_RESEND_SENT; // not gone: left to the reader's next request (pace_repair_allowed())
+    }
     node->tx_seq_span = 1;
     if (!send_datagram(node, &dgram, target, 1)) {
         TT_LOG_WARNING("Cannot retransmit large sample seq_no %u now", seq_no);
@@ -20657,6 +20901,10 @@ static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* 
     // this copy from the original that was only late, which its retry-interval estimate depends on
     // (tt_Context.rx_targeted). No wire change: a node of an older build sees a submessage addressed to
     // itself and processes it exactly as before.
+    if (__builtin_expect(node->pacing, 0) &&
+        !pace_repair_allowed(node, target, (uint32_t)sizeof(struct tt_Header) + cache_entry->len)) {
+        return false; // not gone, and not counted as resent: left to the reader's next request
+    }
     if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, true, target)) {
         TT_LOG_WARNING("Cannot retransmit seq_no %u now", missing_seq_no);
         RSTAT_INC(retransmit_tx_fail);
