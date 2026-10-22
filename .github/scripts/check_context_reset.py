@@ -76,6 +76,8 @@ SURVIVES_RESET = {
     # 2026-10-22, bundle 10 item 2: the tables the reset used to write in full, which made every page of them resident
     # in every context (418 KB of an rmw_tickle context's 2.26 MB). Each is now read only where something wrote it;
     # platform/linux/garbage_ctx_check.c runs contexts created in unzeroed storage (and under MemorySanitizer) to say so.
+    "scheduler": "the heap's push (tt_Context_schedule()); every read is below scheduler_tail, which reset_node_state() "
+                 "does reset",
     "endpoint_index": "rebuild_endpoint_index(), which writes every slot to NULL before any lookup walks it",
     "rx_buffer": "the receive (the HAL) or a segment record copied in; nothing reads past what was put there",
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
