@@ -23,6 +23,7 @@
 #include <dlfcn.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdarg.h> // syscall()'s arguments
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -57,10 +58,13 @@ enum call {
     CALL_SELECT,
     CALL_PSELECT,
     CALL_EPOLL_PWAIT2, // 2026-10-20: TickLE's wait set (hal_linux.c rx_wait()), in a TT_HAL_LIBC_CALLS build
+    // 2026-10-22: TickLE's wait ring (hal_linux.c wr_wait(): the wait and the read in one call), made through syscall()
+    // in a TT_HAL_LIBC_CALLS build. Its datagram is in a buffer this layer does not see: the record has no payload.
+    CALL_IO_URING_ENTER,
 };
-static const char* const call_names[] = {"sendto",   "sendmsg", "sendmmsg",    "recvfrom",   "recvmsg",
-                                         "recvmmsg", "poll",    "ppoll",       "epoll_wait", "epoll_pwait",
-                                         "select",   "pselect", "epoll_pwait2"};
+static const char* const call_names[] = {"sendto",   "sendmsg", "sendmmsg",     "recvfrom",      "recvmsg",
+                                         "recvmmsg", "poll",    "ppoll",        "epoll_wait",    "epoll_pwait",
+                                         "select",   "pselect", "epoll_pwait2", "io_uring_enter"};
 
 struct record {
     uint64_t t_in;
@@ -351,6 +355,32 @@ int epoll_pwait2(int epfd, struct epoll_event* events, int maxevents, const stru
     uint64_t t_in = now_ns();
     int ret = real_epoll_pwait2(epfd, events, maxevents, timeout, sigmask);
     (void)claim(CALL_EPOLL_PWAIT2, t_in, now_ns(), ret);
+    return ret;
+}
+
+#define SYSCALL_ARGS 6 // what syscall() passes on
+
+// syscall(): io_uring_enter recorded (CALL_IO_URING_ENTER), every other number passed on unrecorded. Resolved at the
+// first call, which may come before the constructor (this layer's own fallbacks above call it).
+long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-parameter-name, cert-dcl37-c)
+    static long (*real_syscall)(long, ...);
+    if (real_syscall == NULL) {
+        real_syscall = (long (*)(long, ...))resolve("syscall");
+    }
+    va_list args;
+    va_start(args, number);
+    long arg[SYSCALL_ARGS];
+    for (int i = 0; i < SYSCALL_ARGS; i++) {
+        arg[i] = va_arg(args, long);
+    }
+    va_end(args);
+    // NOLINTNEXTLINE(misc-include-cleaner) - SYS_io_uring_enter: <sys/syscall.h>, above
+    if (number != SYS_io_uring_enter || records == NULL) {
+        return real_syscall(number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
+    }
+    uint64_t t_in = now_ns();
+    long ret = real_syscall(number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
+    (void)claim(CALL_IO_URING_ENTER, t_in, now_ns(), ret);
     return ret;
 }
 

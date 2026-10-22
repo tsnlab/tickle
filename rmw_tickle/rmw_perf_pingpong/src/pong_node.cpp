@@ -9,6 +9,7 @@
 // BenchTraits<T>.
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -35,8 +36,12 @@ namespace {
     }
 
     // --stamps: per sample, when the ping reached this callback and when publish() of the echo returned.
+    // --executor-threads N (2026-10-22, the wait ring's rig A/B): N > 1 spins a MultiThreadedExecutor of N threads,
+    // which take rmw_wait() - and with it rmw_tickle's poll role - in turn; 1 (the default) is rclcpp::spin() as
+    // before.
     template <typename T>
-    auto run_pong(const rclcpp::Node::SharedPtr& node, bool reliable, pingpong::stamp_log& stamps) -> void {
+    auto run_pong(const rclcpp::Node::SharedPtr& node, bool reliable, pingpong::stamp_log& stamps, size_t threads)
+        -> void {
         rclcpp::QoS qos(8);
         if (reliable) {
             qos.reliable().keep_last(8);
@@ -53,7 +58,13 @@ namespace {
                 pingpong::stamp_log_add(stamps, pingpong::BenchTraits<T>::seq(*msg), callback_ns, pingpong::now_ns());
             });
 
-        rclcpp::spin(node);
+        if (threads > 1) {
+            rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), threads);
+            executor.add_node(node);
+            executor.spin();
+        } else {
+            rclcpp::spin(node);
+        }
     }
 
 } // namespace
@@ -62,6 +73,7 @@ auto main(int argc, char** argv) -> int {
     bool reliable = false;
     const char* message = "bench";
     const char* stamps_path = nullptr; // --stamps <file>, see pingpong::stamp_log
+    size_t threads = 1;                // --executor-threads <n>, see run_pong()
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--reliable") == 0) {
             reliable = true;
@@ -69,6 +81,8 @@ auto main(int argc, char** argv) -> int {
             stamps_path = argv[++i];
         } else if (std::strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
             message = argv[++i];
+        } else if (std::strcmp(argv[i], "--executor-threads") == 0 && i + 1 < argc) {
+            threads = std::strtoul(argv[++i], nullptr, 10);
         }
     }
 
@@ -81,11 +95,11 @@ auto main(int argc, char** argv) -> int {
         pingpong::stamp_log_open(stamps, stamps_path, "pong: seq callback_ns publish_return_ns (CLOCK_MONOTONIC ns)");
 
         if (std::strcmp(message, "bench") == 0) {
-            run_pong<rmw_perf_pingpong::msg::Bench>(node, reliable, stamps);
+            run_pong<rmw_perf_pingpong::msg::Bench>(node, reliable, stamps, threads);
         } else if (std::strcmp(message, "array1k") == 0) {
-            run_pong<rmw_perf_pingpong::msg::Array1k>(node, reliable, stamps);
+            run_pong<rmw_perf_pingpong::msg::Array1k>(node, reliable, stamps, threads);
         } else if (std::strcmp(message, "struct16") == 0) {
-            run_pong<rmw_perf_pingpong::msg::Struct16>(node, reliable, stamps);
+            run_pong<rmw_perf_pingpong::msg::Struct16>(node, reliable, stamps, threads);
         } else {
             std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
             rclcpp::shutdown();

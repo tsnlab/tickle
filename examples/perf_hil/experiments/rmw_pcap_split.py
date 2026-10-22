@@ -153,6 +153,31 @@ def first_call(recs, key_hex, prefix, not_before):
     return None
 
 
+# io_uring_enter since 2026-10-22: TickLE's wait ring (hal_linux.c wr_wait()), which waits and reads in that one call. Its
+# datagram lands in a buffer sysstamp does not see, so the record has no payload to match by key: ring_receive() takes,
+# on the thread that sends the reply, the last io_uring_enter that returned between the tap and the reply's send.
+RING = "io_uring_enter"
+
+
+def ring_receive(recs, tap, before, tid=None):
+    """The wait ring's receive: the last io_uring_enter (successful) on thread `tid` (any, if None) that returned at or
+    after the tap and before `before`, or None. With one sample in flight - a ping-pong - it is the call that returned
+    the datagram the tap saw."""
+    best = None
+    for r in recs:
+        if r[1] == RING and r[4] >= 0 and tap <= r[3] <= before and (tid is None or r[0] == tid):
+            best = r
+    return best
+
+
+def ring_next(recs, tap):
+    """The first successful io_uring_enter that returned at or after the tap (the ping's receive of the echo)."""
+    for r in recs:
+        if r[1] == RING and r[4] >= 0 and r[3] >= tap:
+            return r
+    return None
+
+
 def wake_before(recs, recv, tap):
     """The wait call (poll, ppoll, epoll_*, select) on the receiving thread that returned after the packet reached
     the tap and before the receive began: the thread's wake-up. None when the thread blocks in the receive
@@ -241,7 +266,10 @@ def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
         ps = first_call(ping_r, kh, "send", send_ns_rt)
         pr = first_call(pong_r, kh, "recv", arr[k])
         pss = first_call(pong_r, kh, "send", pr[3]) if pr else None
-        prr = first_call(ping_r, kh, "recv", back[k])
+        if pr is None:  # a wait ring's receive: no payload in its record (RING, above)
+            pss = first_call(pong_r, kh, "send", arr[k])
+            pr = ring_receive(pong_r, arr[k], pss[2], pss[0]) if pss else None
+        prr = first_call(ping_r, kh, "recv", back[k]) or ring_next(ping_r, back[k])
         if not (ps and pr and pss and prr):
             continue
         matches[k] = (ps, pr, pss, prr)
@@ -367,6 +395,7 @@ def main():
         matches = kernel_split(stem, full, sent, back, arr, dep, coff, rtt, out.with_suffix(out.suffix + ".sysstamp"))
         app_split(stem, full, sent, back, arr, dep, matches, out.with_suffix(out.suffix + ".stamps"))
     wake_summary()
+    ring_summary()
 
 
 def range_rule(subj, other):
@@ -445,3 +474,62 @@ def wake_summary():
 
 if __name__ == "__main__":
     main()
+
+
+def ring_summary():
+    """The wait ring's rig A/B (rig_queue_rx_uring_wait.sh, written 2026-10-22 before the run and enforced here): the
+    variants rmw_tickle@libc and @default carry the ring (the branch's tt_RX_URING_WAIT 1), @libc_ringoff and @ringoff
+    are built with -Dtt_RX_URING_WAIT=0 (the epoll path). Printed only when a ringoff variant is in the rows.
+      RING0 SAMPLES FIRST: an arm is read in a cell only with >= 3 ok reps; a sysstamp rep only with >= 50 matched
+            samples and its "pong tap->recv".
+      RING1 CONTROL: the libc arms' median wire p50s within 10 us, else RING2 is NOT READ.
+      RING2 THE RECEIVE RETURN, per-rep p50 of "pong tap->recv", libc against libc_ringoff: IMPROVED when the range rule
+            says FASTER and the median of the reps is at least 0.5 us lower; otherwise NOT IMPROVED (NOT READ when
+            RING0/RING1 say so).
+      RING3 THE ROUND TRIP without the instrument (sst off), default against ringoff, per-rep rtt_avg: by the range rule;
+            PASS unless SLOWER.
+      RING_VERDICT PASS iff RING2 IMPROVED and RING3 PASS (stage R); RING_RTT_VERDICT is RING3 alone (stage M, where
+            nothing is captured).
+    """
+    if not any(r["rmw"].endswith("ringoff") for r in ROWS.values()):
+        return
+    print("\n=== wait ring summary (RING0-RING3) ===")
+    ring2, ring3 = "NOT READ", "NOT READ"
+    for cell in sorted({r["cell"] for r in ROWS.values()}):
+        print(f"-- {cell}")
+        rows = [r for r in ROWS.values() if r["cell"] == cell]
+
+        def sst(rmw):
+            return [r for r in rows if r["sst"] and r["rmw"] == rmw and r.get("n", 0) >= 50 and "pong tap->recv" in r]
+
+        on, off = sst("rmw_tickle@libc"), sst("rmw_tickle@libc_ringoff")
+        if on or off:
+            if len(on) < 3 or len(off) < 3:
+                print(f"   RING0 NOT READ: readable sst reps libc {len(on)}, libc_ringoff {len(off)} (3 needed)")
+            elif any("wire" not in r for r in on + off):
+                print("   RING1 NOT READ: a rep without its wire p50")
+            else:
+                w_on = statistics.median(r["wire"] for r in on) / 1000
+                w_off = statistics.median(r["wire"] for r in off) / 1000
+                ok = abs(w_on - w_off) <= 10.0
+                print(f"   RING1 wire p50 libc {w_on:.1f} libc_ringoff {w_off:.1f} us -> CONTROL {'PASS' if ok else 'FAIL'}")
+                if ok:
+                    xs = [r["pong tap->recv"] / 1000 for r in on]
+                    ys = [r["pong tap->recv"] / 1000 for r in off]
+                    rule = range_rule(xs, ys)
+                    diff = statistics.median(xs) - statistics.median(ys)
+                    ring2 = "IMPROVED" if rule == "FASTER" and diff <= -0.5 else "NOT IMPROVED"
+                    print(f"   RING2 pong tap->recv p50 per rep libc {[round(x, 2) for x in xs]} libc_ringoff "
+                          f"{[round(y, 2) for y in ys]} us: {rule}, median {diff:+.2f} us -> {ring2}")
+        plain = {v: [r["rtt"] * 1e3 for r in rows if not r["sst"] and r["rmw"] == f"rmw_tickle@{v}"]
+                 for v in ("default", "ringoff")}
+        if len(plain["default"]) < 3 or len(plain["ringoff"]) < 3:
+            print(f"   RING0 NOT READ (RING3): rtt reps default {len(plain['default'])}, ringoff {len(plain['ringoff'])}")
+        else:
+            rule = range_rule(plain["default"], plain["ringoff"])
+            diff = statistics.median(plain["default"]) - statistics.median(plain["ringoff"])
+            ring3 = "FAIL" if rule == "SLOWER" else "PASS"
+            print(f"   RING3 rtt_avg per rep default {[round(x, 1) for x in plain['default']]} ringoff "
+                  f"{[round(y, 1) for y in plain['ringoff']]} us: {rule}, median {diff:+.1f} us -> {ring3}")
+    print(f"RING_VERDICT {'PASS' if ring2 == 'IMPROVED' and ring3 == 'PASS' else 'FAIL'} (RING2 {ring2}, RING3 {ring3})")
+    print(f"RING_RTT_VERDICT {ring3 if ring3 != 'NOT READ' else 'NOT_READ'}")

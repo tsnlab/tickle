@@ -138,6 +138,11 @@ variant_args() {
         # sysstamp's LD_PRELOAD sees rmw_tickle's sends, receives and epoll_pwait2 as it sees the vendors'. The last
         # -DCMAKE_C_FLAGS wins over RMW_TICKLE_BUILD's, so the flags are repeated with the define added.
         libc) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS'" ;;
+        # ringoff, libc_ringoff (2026-10-22, rig_queue_rx_uring_wait.sh): the HAL's wait ring compiled off by default
+        # (tt_RX_URING_WAIT 0: tt_receive() waits with epoll and reads with recvfrom()), the control of a build whose
+        # default has it on.
+        ringoff) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -Dtt_RX_URING_WAIT=0'" ;;
+        libc_ringoff) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -Dtt_RX_URING_WAIT=0'" ;;
         *) echo "" ;;
     esac
 }
@@ -452,6 +457,10 @@ BIN=$PI_HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
     [ "$qos" = reliable ] && flag="--reliable"
+    # PONG_THREADS=N (2026-10-22): the pong spins a MultiThreadedExecutor of N threads (pong_node --executor-threads);
+    # every row says pong_threads=N. Unset: rclcpp::spin(), as before.
+    local pongthreads=""
+    [ -n "${PONG_THREADS:-}" ] && pongthreads="--executor-threads $PONG_THREADS"
     env=$(env_for "$rmw")
     case "$EP:$rmw" in
     on:rmw_tickle*) env="$env; export RMW_TICKLE_EXECUTOR_POLL=1" ;;
@@ -477,7 +486,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         pingpre=$(insn_prefix /tmp/rmwx_ping.insn)
         pongrm="rm -f /tmp/rmwx_pong.insn;" pingrm="rm -f /tmp/rmwx_ping.insn;"
     fi
-    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm $pongrm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm $pongrm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $pongthreads $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     if [ "$INSN_COUNT" = 1 ]; then
         pongperf=$pongpid
         pongpid=$(sh_ "$SERVER" "$(remote_child_of_perf)
@@ -642,7 +651,7 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     esac
     # Gate v2 A2: a counted row without both counts is VOID - "could not look" is never "no work".
     if [ -n "$insn_void" ] && [ "$verdict" = ok ]; then verdict=$insn_void; fi
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
