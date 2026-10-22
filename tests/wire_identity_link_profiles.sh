@@ -11,7 +11,10 @@
 #   mutant    this tree with a default changed where the scenario must pass through it - must DIFFER from the parent,
 #             or the scenario does not reach that code and its identity is not shown:
 #               core   ETHERNET's MTU 1500 -> 1400 (the batch and the announce are cut shorter);
-#               frag   the default fragment cut 4 bytes shorter (the long samples' fragments).
+#               frag   the default fragment cut 4 bytes shorter (the long samples' fragments);
+#             and, in the core build, WIFI's summary copies and announce repeats (2026-10-23) given to every link - must
+#             DIFFER, or the scenario does not reach the announce repeats and ETHERNET's identity says nothing about
+#             them (the summary's miss-threshold byte is tests/wire_identity_discovery_timing.sh's).
 #
 # Usage: tests/wire_identity_link_profiles.sh [PARENT]     PARENT defaults to 6c355fa2, the parent of link profiles: a
 # commit, checked out in a temporary worktree, or a directory already holding that tree. Prints one line per check and
@@ -94,6 +97,7 @@ EOF
 mutate mutant_core "link->mtu = (uint16_t)LINK_ETHERNET_MTU;" "link->mtu = (uint16_t)1400U;"
 mutate mutant_frag "node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD;" \
     "node->frag_cont = control - LINK_FRAG_CONT_OVERHEAD - 4U;"
+mutate mutant_wifi "bool wifi = link->profile == tt_LINK_PROFILE_WIFI;" "bool wifi = true;"
 
 for build in core frag; do
     flags=()
@@ -107,6 +111,8 @@ for build in core frag; do
     verdict "$build identity" same "$TMP/${build}_this.bin" "$TMP/${build}_parent_a.bin"
     verdict "$build mutant" differ "$TMP/${build}_mutant.bin" "$TMP/${build}_parent_a.bin"
 done
+capture "$ROOT" "$TMP/mutant_wifi.c" core_wifi_mutant
+verdict "core wifi mutant" differ "$TMP/core_wifi_mutant.bin" "$TMP/core_parent_a.bin"
 
 cleanup # the trap does it too, on any earlier exit
 trap - EXIT

@@ -5,7 +5,10 @@ is decided by a test, and every field is read where it changes what the context 
   - check mutants turn one refusal into a log line that lets creation go on (its `return reject_option(...)` becomes
     `(void)reject_option(...)`), skip the conflict check, or drop the Publisher's batching check;
   - reader mutants put the default back where a profile's value, or a link's, is applied - so the field is written and
-    never read there.
+    never read there;
+  - WIFI's discovery (2026-10-23): each condition of the summary copies (who gets one, how often, how many a round, from
+    where), the miss threshold (any WIFI link, the explicit one winning) and the announce repeats (when, how many, the
+    restart on a change, the doubling gap) removed or replaced in turn.
 
 Each rebuilds the test that covers it against a mutated COPY of src/tickle.c (the tree is never edited) - tests/
 test_link_profiles.c, for the fragments a smaller MTU cuts tests/test_data_frag.c, and for the fragment-count bound
@@ -101,6 +104,63 @@ MUTANTS = [
     (F, "whole limit", "    return node->control_max;\n#else", "    return (uint32_t)FRAG_WHOLE_DATA_LIMIT;\n#else"),
     (F, "fragment cut", "    return node->frag_cont;", "    return (uint32_t)FRAG_CONT_PAYLOAD;"),
     (F, "no runs on a narrow link", "    if (node->control_max < (uint32_t)tt_CONTROL_MAX_LENGTH) {", "    if (false) {"),
+    # WIFI's discovery (2026-10-23): summary copies, the miss threshold, announce repeats.
+    check("summary_unicast", '"net.links[].summary_unicast"'),
+    check("announce_repeats", '"net.links[].announce_repeats"'),
+    (P, "WIFI discovery resolved", "    resolve_link_discovery(link);\n", "    (void)link;\n"),
+    (P, "WIFI summary copies",
+     "link->summary_unicast = wifi ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;",
+     "link->summary_unicast = (uint8_t)tt_SWITCH_OFF;"),
+    (P, "WIFI announce repeats",
+     "link->announce_repeats = wifi ? (uint8_t)tt_LINK_WIFI_ANNOUNCE_REPEATS : (uint8_t)tt_ANNOUNCE_REPEATS_NONE;",
+     "link->announce_repeats = (uint8_t)tt_ANNOUNCE_REPEATS_NONE;"),
+    (P, "WIFI miss threshold", "opts->discovery.miss_threshold = (uint8_t)tt_LINK_WIFI_MISS_THRESHOLD;", "(void)0;"),
+    (P, "WIFI on any link", "any_wifi = any_wifi || link->profile == tt_LINK_PROFILE_WIFI;",
+     "any_wifi = link->profile == tt_LINK_PROFILE_WIFI;"),
+    (P, "explicit miss threshold wins",
+     "if (any_wifi && !context_value_set(opts->discovery.miss_threshold, tt_LIVELINESS_MISS_THRESHOLD)) {",
+     "if (any_wifi) {"),
+    (P, "copies only where the link unicasts",
+     "return link->summary_unicast == tt_SWITCH_ON && resolved->unicast_threshold != 0;",
+     "return link->summary_unicast == tt_SWITCH_ON;"),
+    (P, "copies only where asked", "return link->summary_unicast == tt_SWITCH_ON && resolved->unicast_threshold != 0;",
+     "return resolved->unicast_threshold != 0;"),
+    (P, "reader summary_unicast", "    node->summary_copies = copies;", "    node->summary_copies = false;"),
+    (P, "reader announce_repeats",
+     "repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;",
+     "repeats = link_announce_repeats(link);"),
+    (P, "announce_repeats NONE is none",
+     "return link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE ? link->announce_repeats : 0U;",
+     "return link->announce_repeats;"),
+    (P, "summary address recorded", "    note_summary_peer(node, source, sender_ip, sender_port);\n", ""),
+    (P, "a dead peer's address forgotten", "    node->summary_peer_port[source] = 0; // nor sent copies", "    (void)0; //"),
+    (P, "copies only to applied peers", "if (!node->update_seen[id] || node->summary_peer_port[id] == 0) {",
+     "if (node->summary_peer_port[id] == 0) {"),
+    (P, "copies only to a heard address", "if (!node->update_seen[id] || node->summary_peer_port[id] == 0) {",
+     "if (!node->update_seen[id]) {"),
+    (P, "copies only on a copying link",
+     "    return link_takes_summary_copies(&node->opts.net.links[link], &node->links[link]);\n}",
+     "    (void)link;\n    return true;\n}"),
+    (P, "copies only from a copying context",
+     "if (!node->summary_copies || time - node->summary_copy_ns < discovery_update_interval_ns(node)) {",
+     "if (time - node->summary_copy_ns < discovery_update_interval_ns(node)) {"),
+    (P, "one round an interval",
+     "if (!node->summary_copies || time - node->summary_copy_ns < discovery_update_interval_ns(node)) {",
+     "if (!node->summary_copies) {"),
+    (P, "the round's time kept", "    node->summary_copy_ns = time;\n", "    (void)0;\n"),
+    (P, "copies capped a round", "step < tt_MAX_CONTEXT_IDS && sent < LINK_SUMMARY_COPIES_MAX;", "step < tt_MAX_CONTEXT_IDS;"),
+    (P, "rounds taken in turn", "    node->summary_copy_next = (uint8_t)id;", "    (void)id;"),
+    (P, "copies from the summary tick", "    send_summary_copies(node, time);\n", ""),
+    (P, "repeats after a change", "    arm_announce_repeats(node, time);\n", ""),
+    (P, "a change restarts the repeats", "    (void)tt_Context_unschedule(node, announce_repeat, NULL);\n", ""),
+    (P, "no repeats asked, none scheduled", "    if (node->announce_repeats == 0) {\n        return;\n    }\n    (void)tt_Context_unschedule",
+     "    (void)tt_Context_unschedule"),
+    (P, "a repeat is counted down", "    node->announce_repeats_left--;\n", ""),
+    (P, "repeat gaps double", "    node->announce_repeat_gap_ns *= 2U;", "    node->announce_repeat_gap_ns *= 1U;"),
+    (P, "the last repeat schedules none", "    if (node->announce_repeats_left != 0 &&\n        !tt_Context_schedule",
+     "    if (!tt_Context_schedule"),
+    (P, "the repeat is the announce", "    if (build_and_send_update(node, NULL, 0)) {\n        node->announce_repeats_sent++;",
+     "    if (true) {\n        node->announce_repeats_sent++;"),
 ]
 
 

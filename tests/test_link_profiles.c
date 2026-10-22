@@ -10,7 +10,9 @@
 
 // Link profiles (struct tt_LinkOptions.profile and its value fields; docs/DESIGN.md "Link profiles"), through the mock
 // HAL and tt_Context_create_with():
-//   - ETHERNET, WIFI and a context with no links configured keep every default, whatever the interface's MTU;
+//   - ETHERNET, WIFI and a context with no links configured keep every default, whatever the interface's MTU - but
+//     WIFI's discovery: unicast copies of the summary to its known peers (one round per update interval, capped, taken
+//     in turn), a miss threshold of 6 where the context leaves it, and a change's announce repeated at 100/300/700 ms;
 //   - T1S and TSN fill their links' zero fields with their values, and the context derives what it applies to all its
 //     sends from its links (the smallest MTU, the longest retry floor, the shortest idle HEARTBEAT and tick, the most
 //     frequent piggyback, batching where every link batches, MTU units where any link asks);
@@ -557,6 +559,277 @@ static void test_tick_idle_heartbeat_and_mode_set_the_context(void) {
     destroy();
 }
 
+// ---- WIFI's discovery (2026-10-23): summary copies, the miss threshold, announce repeats.
+
+static void expect_discovery(bool copies, uint8_t repeats, uint8_t miss) {
+    EXPECT_TRUE(node.summary_copies == copies);
+    EXPECT_EQ_U32(repeats, node.announce_repeats);
+    EXPECT_EQ_U32(miss, node.opts.discovery.miss_threshold);
+}
+
+static void test_wifi_discovery_values(void) {
+    // Each profile's, on the link and the context; WIFI's summary carries its threshold.
+    static const uint8_t others[] = {tt_LINK_PROFILE_ETHERNET, tt_LINK_PROFILE_T1S, tt_LINK_PROFILE_TSN};
+    for (size_t i = 0; i < sizeof(others); i++) {
+        struct tt_InitOptions opts = one_link(others[i]);
+        create(&opts, -1);
+        EXPECT_EQ_U32(tt_SWITCH_OFF, node.opts.net.links[0].summary_unicast);
+        EXPECT_EQ_U32(tt_ANNOUNCE_REPEATS_NONE, node.opts.net.links[0].announce_repeats);
+        expect_discovery(false, 0, tt_LIVELINESS_MISS_THRESHOLD);
+        destroy();
+    }
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    create(&opts, -1);
+    EXPECT_EQ_U32(tt_SWITCH_ON, node.opts.net.links[0].summary_unicast);
+    EXPECT_EQ_U32(tt_LINK_WIFI_ANNOUNCE_REPEATS, node.opts.net.links[0].announce_repeats);
+    expect_discovery(true, tt_LINK_WIFI_ANNOUNCE_REPEATS, tt_LINK_WIFI_MISS_THRESHOLD);
+    struct tt_HeartbeatHeader summary;
+    memset(&summary, 0, sizeof(summary));
+    fill_summary(&node, &summary);
+    EXPECT_EQ_U32(tt_LINK_WIFI_MISS_THRESHOLD, summary.summary_miss_threshold);
+    destroy();
+    // From tt_InitOptions_default(): its resolved default threshold is not "set".
+    tt_InitOptions_default(&opts);
+    opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = LINK_BROADCAST, .profile = tt_LINK_PROFILE_WIFI};
+    opts.net.link_count = 1;
+    create(&opts, -1);
+    expect_discovery(true, tt_LINK_WIFI_ANNOUNCE_REPEATS, tt_LINK_WIFI_MISS_THRESHOLD);
+    destroy();
+
+    // Explicit fields win: on WIFI, off and none and another count and threshold; on ETHERNET, on and a count.
+    opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].summary_unicast = tt_SWITCH_OFF;
+    opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_NONE;
+    opts.discovery.miss_threshold = 4;
+    create(&opts, -1);
+    expect_discovery(false, 0, 4);
+    destroy();
+    opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].announce_repeats = 5;
+    create(&opts, -1);
+    expect_discovery(true, 5, tt_LINK_WIFI_MISS_THRESHOLD);
+    destroy();
+    opts = one_link(tt_LINK_PROFILE_ETHERNET);
+    opts.net.links[0].summary_unicast = tt_SWITCH_ON;
+    opts.net.links[0].announce_repeats = 2;
+    create(&opts, -1);
+    expect_discovery(true, 2, tt_LIVELINESS_MISS_THRESHOLD); // the threshold is WIFI's profile value only
+    destroy();
+    // A WIFI link that broadcasts as soon as one peer is known takes no copies: each would be one more broadcast.
+    opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].unicast_threshold = tt_UNICAST_ALWAYS_BROADCAST;
+    create(&opts, -1);
+    expect_discovery(false, tt_LINK_WIFI_ANNOUNCE_REPEATS, tt_LINK_WIFI_MISS_THRESHOLD);
+    destroy();
+
+    // Several links: WIFI first or last sets the threshold and the copies; the repeats are the most any link asks.
+    memset(&opts, 0, sizeof(opts));
+    opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = "10.0.0.255", .profile = tt_LINK_PROFILE_WIFI};
+    opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = "10.0.1.255", .profile = tt_LINK_PROFILE_ETHERNET};
+    opts.net.link_count = 2;
+    create(&opts, -1);
+    expect_discovery(true, tt_LINK_WIFI_ANNOUNCE_REPEATS, tt_LINK_WIFI_MISS_THRESHOLD);
+    destroy();
+    opts.net.links[0].profile = tt_LINK_PROFILE_ETHERNET;
+    opts.net.links[0].announce_repeats = 5;
+    opts.net.links[1].profile = tt_LINK_PROFILE_WIFI;
+    opts.net.links[1].announce_repeats = 2;
+    create(&opts, -1);
+    expect_discovery(true, 5, tt_LINK_WIFI_MISS_THRESHOLD);
+    destroy();
+}
+
+// The unicast copies: what went to which address, and the copy's bytes.
+static int copy_count;
+static uint32_t copy_ips[32];
+static uint8_t copy_miss;
+static int copy_heartbeats;
+
+static void capture_copy(const void* buf, size_t len) {
+    static uint8_t classic[tt_MAX_BUFFER_LENGTH * 2];
+    if (test_mock_send_hook_ip == 0) {
+        return; // a broadcast
+    }
+    if (copy_count < (int)(sizeof(copy_ips) / sizeof(copy_ips[0]))) {
+        copy_ips[copy_count] = test_mock_send_hook_ip;
+    }
+    copy_count++;
+    size_t classic_len = test_classic_form(buf, len, classic);
+    copy_heartbeats = heartbeats_in(classic, classic_len);
+    const struct tt_HeartbeatHeader* hb =
+        (const struct tt_HeartbeatHeader*)(classic + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    copy_miss = classic_len >= SUMMARY_DATAGRAM_LENGTH && hb->endpoint_id == tt_DISCOVERY_ENDPOINT_ID
+                    ? hb->summary_miss_threshold
+                    : 0xEEU;
+}
+
+static void start_copies(void) {
+    copy_count = 0;
+    copy_heartbeats = 0;
+    copy_miss = 0;
+    memset(copy_ips, 0, sizeof(copy_ips));
+    test_mock_send_hook = capture_copy;
+}
+
+// A peer as discovery makes it: its list applied (update_seen) and its summary heard from ip:PORT.
+static void know_peer(uint8_t id, uint32_t ip) {
+    node.update_seen[id] = true;
+    EXPECT_TRUE(process_discovery_summary(&node, id, node.update_generation[id], ip, PORT));
+}
+
+static void test_wifi_summary_copies(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    create(&opts, -1);
+    know_peer(PEER_ID, PEER_IP);
+    uint64_t t = test_mock_now;
+    // From the summary tick: one copy, to the peer, a summary carrying WIFI's threshold.
+    start_copies();
+    node_update(&node, t, NULL);
+    EXPECT_EQ_INT(1, copy_count);
+    EXPECT_EQ_U32(PEER_IP, copy_ips[0]);
+    EXPECT_EQ_INT(1, copy_heartbeats);
+    EXPECT_EQ_U32(tt_LINK_WIFI_MISS_THRESHOLD, copy_miss);
+    EXPECT_EQ_U64(1, node.summary_copies_sent);
+    // One round per update interval.
+    start_copies();
+    send_summary_copies(&node, t + (tt_CONTEXT_UPDATE_INTERVAL / 2U));
+    EXPECT_EQ_INT(0, copy_count);
+    send_summary_copies(&node, t + tt_CONTEXT_UPDATE_INTERVAL);
+    EXPECT_EQ_INT(1, copy_count);
+    t += tt_CONTEXT_UPDATE_INTERVAL;
+    // A peer whose list is not applied, or whose summaries were never heard, has none.
+    node.update_seen[PEER_ID + 1] = false;
+    EXPECT_TRUE(process_discovery_summary(&node, PEER_ID + 1, 1, PEER_IP + 1, PORT));
+    node.update_seen[PEER_ID + 2] = true; // known by its announce alone
+    t += tt_CONTEXT_UPDATE_INTERVAL;
+    start_copies();
+    send_summary_copies(&node, t);
+    EXPECT_EQ_INT(1, copy_count);
+    EXPECT_EQ_U32(PEER_IP, copy_ips[0]);
+    // Presumed dead: none, even once it is known by an announce again, until a summary says where it is.
+    presume_node_dead(&node, PEER_ID, 4 * tt_SECOND);
+    node.update_seen[PEER_ID] = true;
+    t += tt_CONTEXT_UPDATE_INTERVAL;
+    start_copies();
+    send_summary_copies(&node, t);
+    EXPECT_EQ_INT(0, copy_count);
+    destroy();
+
+    // Past LINK_SUMMARY_COPIES_MAX peers a round sends that many, and the next starts where it stopped.
+    create(&opts, -1);
+    for (uint8_t i = 0; i < 20; i++) {
+        know_peer((uint8_t)(PEER_ID + i), PEER_IP + i);
+    }
+    t = test_mock_now;
+    start_copies();
+    send_summary_copies(&node, t);
+    EXPECT_EQ_INT((int)LINK_SUMMARY_COPIES_MAX, copy_count);
+    EXPECT_EQ_U32(PEER_IP, copy_ips[0]);
+    start_copies();
+    send_summary_copies(&node, t + tt_CONTEXT_UPDATE_INTERVAL);
+    EXPECT_EQ_INT((int)LINK_SUMMARY_COPIES_MAX, copy_count);
+    EXPECT_EQ_U32(PEER_IP + LINK_SUMMARY_COPIES_MAX, copy_ips[0]);  // the 17th
+    EXPECT_EQ_U32(PEER_IP, copy_ips[20 - LINK_SUMMARY_COPIES_MAX]); // then from the first again
+    destroy();
+
+    // ETHERNET sends none.
+    opts = one_link(tt_LINK_PROFILE_ETHERNET);
+    create(&opts, -1);
+    know_peer(PEER_ID, PEER_IP);
+    start_copies();
+    node_update(&node, test_mock_now, NULL);
+    EXPECT_EQ_INT(0, copy_count);
+    EXPECT_EQ_U64(0, node.summary_copy_ns); // no round taken at all: no walk of the peers a second
+    destroy();
+
+    // A peer on a link that takes no copies has none: WIFI beside ETHERNET, the peer on ETHERNET's subnet (the mock
+    // resolves every link to one subnet; link 1, WIFI, is moved to 10.0.1.0/24 here).
+    memset(&opts, 0, sizeof(opts));
+    opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = "10.0.0.255", .profile = tt_LINK_PROFILE_ETHERNET};
+    opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = "10.0.1.255", .profile = tt_LINK_PROFILE_WIFI};
+    opts.net.link_count = 2;
+    create(&opts, -1);
+    node.links[1].resolved_addr = 0x0a000107U;
+    know_peer(PEER_ID, PEER_IP);         // 10.0.0.9: the ETHERNET link
+    know_peer(PEER_ID + 1, 0x0a000109U); // 10.0.1.9: the WIFI link
+    start_copies();
+    send_summary_copies(&node, test_mock_now);
+    EXPECT_EQ_INT(1, copy_count);
+    EXPECT_EQ_U32(0x0a000109U, copy_ips[0]);
+    destroy();
+}
+
+// Runs the context's scheduler up to `until`, the mock clock following each entry.
+static void run_until(uint64_t until) {
+    for (;;) {
+        bool has_next = false;
+        uint64_t next = 0;
+        while (run_due_entry(&node, test_mock_now, &has_next, &next)) {
+        }
+        if (!has_next || next > until) {
+            test_mock_now = until;
+            return;
+        }
+        test_mock_now = next > test_mock_now ? next : test_mock_now;
+    }
+}
+
+// The broadcasts the context sent: announces, summaries and the repeats.
+static int broadcasts(void) {
+    return test_mock_send_call_count - test_mock_send_to_call_count;
+}
+
+static void test_wifi_announce_repeats(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    create(&opts, -1);
+    run_until(test_mock_now + 2 * tt_SECOND); // whatever the creation announced, and its repeats
+    // A change: its announce once the tick is quiet, then the repeats at 100, 300 and 700 ms after it.
+    uint64_t sent = node.announce_repeats_sent;
+    create_publisher(&pubs[0], "changes_the_list", &TEST_QOS_UNRELIABLE, NULL);
+    uint64_t change = test_mock_now + tt_CONTEXT_TX_INTERVAL; // announce_soon: the change's broadcast, once quiet
+    start_capture();
+    run_until(change + 99 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent, node.announce_repeats_sent);
+    int before = broadcasts();
+    run_until(change + 101 * tt_MILLISECOND);
+    run_until(change + 103 * tt_MILLISECOND); // its flush tick
+    EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
+    EXPECT_TRUE(broadcasts() > before); // a broadcast went
+    run_until(change + 299 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
+    run_until(change + 301 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent);
+    run_until(change + 699 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent);
+    run_until(change + 701 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 3U, node.announce_repeats_sent);
+    run_until(change + 3 * tt_SECOND);
+    EXPECT_EQ_U64(sent + 3U, node.announce_repeats_sent);
+    // A change while they run starts them again, for the newer list: the first chain's 300 ms repeat does not go.
+    sent = node.announce_repeats_sent;
+    create_publisher(&pubs[1], "changes_it_again", &TEST_QOS_UNRELIABLE, NULL);
+    change = test_mock_now + tt_CONTEXT_TX_INTERVAL;
+    run_until(change + 101 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 1U, node.announce_repeats_sent);
+    create_publisher(&pubs[2], "and_again", &TEST_QOS_UNRELIABLE, NULL);
+    run_until(change + 104 * tt_MILLISECOND); // the second change's announce; its repeats from ~204 ms
+    run_until(change + 301 * tt_MILLISECOND);
+    EXPECT_EQ_U64(sent + 2U, node.announce_repeats_sent); // the second chain's first, not the first chain's second
+    run_until(change + 3 * tt_SECOND);
+    EXPECT_EQ_U64(sent + 1U + tt_LINK_WIFI_ANNOUNCE_REPEATS, node.announce_repeats_sent);
+    destroy();
+
+    // ETHERNET repeats nothing and schedules nothing for it.
+    opts = one_link(tt_LINK_PROFILE_ETHERNET);
+    create(&opts, -1);
+    create_publisher(&pubs[0], "changes_the_list", &TEST_QOS_UNRELIABLE, NULL);
+    run_until(test_mock_now + 5 * tt_MILLISECOND);
+    EXPECT_TRUE(!tt_Context_unschedule(&node, announce_repeat, NULL));
+    run_until(test_mock_now + 3 * tt_SECOND);
+    EXPECT_EQ_U64(0, node.announce_repeats_sent);
+    destroy();
+}
+
 // ---- The checks.
 
 static void expect_created(const struct tt_InitOptions* opts, tt_ret_t expected, const char* what) {
@@ -618,6 +891,20 @@ static void test_validation(void) {
     opts.net.links[0].piggyback_divisor = tt_RELIABLE_BITMAP_BITS + 1U;
     expect_created(&opts, tt_RET_INVALID_ARGUMENT, "piggyback_divisor above tt_RELIABLE_BITMAP_BITS");
 
+    opts = one_link(0);
+    opts.net.links[0].summary_unicast = tt_SWITCH_OFF;
+    expect_created(&opts, tt_RET_OK, "summary_unicast tt_SWITCH_OFF");
+    opts.net.links[0].summary_unicast = tt_SWITCH_OFF + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "summary_unicast past tt_SWITCH_OFF");
+
+    opts = one_link(0);
+    opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_MAX;
+    expect_created(&opts, tt_RET_OK, "announce_repeats tt_ANNOUNCE_REPEATS_MAX");
+    opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_NONE;
+    expect_created(&opts, tt_RET_OK, "announce_repeats tt_ANNOUNCE_REPEATS_NONE");
+    opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_MAX + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "announce_repeats above tt_ANNOUNCE_REPEATS_MAX");
+
     // A link value against the context's own: refused when both are set and differ, taken when equal or when the
     // context's is its default.
     opts = one_link(0);
@@ -674,6 +961,9 @@ int main(void) {
     test_piggyback_divisor_piggybacks_heartbeats();
     test_retry_floor_holds_up_the_measured_g();
     test_tick_idle_heartbeat_and_mode_set_the_context();
+    test_wifi_discovery_values();
+    test_wifi_summary_copies();
+    test_wifi_announce_repeats();
     test_validation();
 
     if (test_result() != 0) {

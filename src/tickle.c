@@ -6694,12 +6694,9 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
 // is pushed; a peer that misses it pulls the list when the next summary shows the new generation.
 // One repeat of a change's broadcast announce (tt_LinkOptions.announce_repeats): the current list, as the change sent
 // it - a peer that has it ignores the repeat (discovery_generation_applied()), one that missed it answers it as the
-// change itself. The next waits twice as long.
+// change itself. The next waits twice as long. Scheduled only while a repeat is owed (arm_announce_repeats()).
 static void announce_repeat(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
-    if (node->announce_repeats_left == 0) {
-        return;
-    }
     node->announce_repeats_left--;
     if (build_and_send_update(node, NULL, 0)) {
         node->announce_repeats_sent++;
@@ -16949,15 +16946,15 @@ static void send_summary_ahead(struct tt_Context* node) {
     node->summaries_ridden++;
 }
 
-// Whether node `id` is sent a copy of the summary: a peer whose list is applied, whose summaries' address is known, on
-// a link that takes copies (link_takes_summary_copies()).
+// Whether node `id` is sent a copy of the summary: a peer whose list is applied (never this context: its own announce
+// is not processed, process_submessage()'s self_sent), whose summaries' address is known, on a link that takes copies
+// (link_takes_summary_copies()). Copies go only from a context with links configured, so the link is one of them.
 static bool summary_copy_due(struct tt_Context* node, uint8_t id) {
-    if (id == node->id || !node->update_seen[id] || node->summary_peer_port[id] == 0) {
+    if (!node->update_seen[id] || node->summary_peer_port[id] == 0) {
         return false;
     }
     uint8_t link = link_of_ip(node, node->summary_peer_ip[id]);
-    return link < node->opts.net.link_count &&
-           link_takes_summary_copies(&node->opts.net.links[link], &node->links[link]);
+    return link_takes_summary_copies(&node->opts.net.links[link], &node->links[link]);
 }
 
 // The summary's unicast copies (tt_LinkOptions.summary_unicast): a broadcast on Wi-Fi goes at the basic rate with no
@@ -21318,12 +21315,10 @@ static void note_peer_timing(struct tt_Context* node, uint8_t source, const stru
         summary_interval_decode(code), miss != 0 ? (uint64_t)miss : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD);
 }
 
-// Where `source`'s summaries come from, which its copies of ours go to (send_summary_copies()); only where copies go.
+// Where `source`'s summaries come from: where copies of ours go, if this context sends any (send_summary_copies()).
 static void note_summary_peer(struct tt_Context* node, uint8_t source, uint32_t sender_ip, uint16_t sender_port) {
-    if (node->summary_copies) {
-        node->summary_peer_ip[source] = sender_ip;
-        node->summary_peer_port[source] = sender_port;
-    }
+    node->summary_peer_ip[source] = sender_ip;
+    node->summary_peer_port[source] = sender_port;
 }
 
 // A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -

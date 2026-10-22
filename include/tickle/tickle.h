@@ -2038,8 +2038,8 @@ struct tt_Context {
     // Discovery on a lossy broadcast (tt_LinkOptions.summary_unicast and announce_repeats, docs/DESIGN.md "Link
     // profiles", 2026-10-23), set by link_profiles_apply(); off on a hand-built context. summary_copies: whether any
     // link takes unicast copies of the summary; announce_repeats: the repeats a change's broadcast announce is owed.
-    // summary_peer_ip/_port: per remote node, the address its latest summary came from (port 0: none), recorded only
-    // where copies go; summary_copy_next: the node id the next round of copies starts at, so a capped round reaches
+    // summary_peer_ip/_port: per remote node, the address its latest summary came from (port 0: none);
+    // summary_copy_next: the node id the next round of copies starts at, so a capped round reaches
     // every peer in turn; summary_copy_ns: when the last round went. announce_repeats_left and announce_repeat_gap_ns:
     // what the latest change is still owed, and the wait before the next. summary_copies_sent and
     // announce_repeats_sent count what went. After every other field, as peer_silence_ns is.
