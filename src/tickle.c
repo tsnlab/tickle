@@ -3023,9 +3023,10 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
 }
 
 // Everything this context mapped, handed back. Nothing else does it: a segment is a file in
-// /dev/shm, so a context that exits without unlinking leaves it there for good. The leak hides in
-// a test because create unlinks first, so the next context at the same address and id replaces the
-// stale file and sees nothing wrong - it is only unbounded in a system that runs long enough.
+// /dev/shm, so a context that exits without unlinking leaves it there until another context at its
+// address builds a segment and sweeps it (sweep_orphaned_segments(), hal_linux.c). Not "until the
+// next context at the same name replaces it", as this said until 2026-10-22: the name carries the
+// ephemeral data port, so no successor ever had it, and every killed context's files stayed for good.
 //
 // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are still
 // being read by them. Only this context's own segment is this context's to remove.
@@ -3187,6 +3188,25 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
 #endif
         release_own_segment(node);
     }
+}
+
+// A dead peer's ring, handed back: discovery has presumed it dead (or it said goodbye and fell silent), so nothing
+// will be sent to it and nobody drains its ring. Without this the mapping stayed for as long as this context ran - a
+// writer leaves a ring only from its send path (the dead-reader rule needs a full ring, the revalidation
+// tt_SEGMENT_REVALIDATE_SENDS sends), and a peer that is gone is sent nothing. At 10 Hz a publisher kept a SIGKILLed
+// subscriber's 768 KiB ring mapped indefinitely (rmw_tickle/rmw_tickle/test/test_shm_kill.c, K2, 2026-10-22), and
+// with it the pages of a file that, unlinked or not, nothing else reads. Not while a publisher of ours holds a claimed
+// slot in it (peer_segment()): an application is writing into that slot; the entry stays, as the revalidation does.
+// A peer wrongly presumed dead is attached again at its next datagram, as after any revalidation.
+static void release_peer_segment(struct tt_Context* node, uint8_t context_id) {
+    const struct tt_SegmentPeer* entry = segment_peer_if_live(node, context_id);
+    if (entry == NULL || entry->claims != 0) {
+        return;
+    }
+    if (entry->mapping != NULL && entry->mapping != node->own_segment) {
+        tt_segment_detach(entry->mapping, entry->mapped_bytes);
+    }
+    segment_peer_clear(node, context_id);
 }
 
 #if tt_SAMPLE_LENDING
@@ -17619,6 +17639,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     // cost of that choice is holding a segment slightly longer than necessary; the cost of the other
     // one would be dropping it while somebody was writing to it.
     forget_same_host_peer(node, source);
+    release_peer_segment(node, source);
 #endif
 #if tt_LARGE_SHM
     large_region_forget_reader(node, source); // what it held in this context's regions is free again (step B)

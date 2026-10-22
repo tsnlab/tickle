@@ -79,6 +79,9 @@
 #include <sys/file.h> // flock(): the registry's lock, and the segment owner's
 #include <sys/stat.h> // fchmod(), fstat()
 #endif
+#if tt_SEGMENT_ENABLED
+#include <dirent.h> // opendir(): the orphaned segments at this context's address (sweep_orphaned_segments())
+#endif
 
 #if tt_CONTEXT_ID_CLAIM
 #include <signal.h> // kill()
@@ -4953,7 +4956,144 @@ static bool segment_owner_gone(int segment_fd) {
     return flock(segment_fd, LOCK_SH | LOCK_NB) == 0;
 }
 
+// What follows "tickle-seg-<ip>-" in a segment's or doorbell's name: "<port>-<id>", then nothing (a segment) or
+// ".bell" (its doorbell). 0 for anything else.
+#define SWEPT_SEGMENT 1
+#define SWEPT_BELL 2
+static int segment_name_kind(const char* rest) {
+    int fields = 0;
+    while (fields < 2) {
+        if (*rest < '0' || *rest > '9') {
+            return 0;
+        }
+        while (*rest >= '0' && *rest <= '9') {
+            rest++;
+        }
+        fields++;
+        if (fields == 1) {
+            if (*rest != '-') {
+                return 0;
+            }
+            rest++;
+        }
+    }
+    if (*rest == '\0') {
+        return SWEPT_SEGMENT;
+    }
+    return strcmp(rest, ".bell") == 0 ? SWEPT_BELL : 0;
+}
+
+// Removes `path` if it is still the file open as `file_fd`: asked by inode just before the unlink, so a file created at
+// the name since the descriptor was opened is left alone (but for the instant between the two calls; see below).
+static void unlink_if_same_file(const char* path, int file_fd) {
+    struct stat opened;
+    struct stat named;
+    if (fstat(file_fd, &opened) == 0 && stat(path, &named) == 0 && opened.st_dev == named.st_dev &&
+        opened.st_ino == named.st_ino) {
+        (void)unlink(path);
+    }
+}
+
+// One file of the sweep below: a segment nobody owns goes with its doorbell, and a doorbell whose segment is gone goes.
+static void sweep_one(const char* found, int kind) {
+    struct stat info;
+    if (kind == SWEPT_BELL) {
+        // A doorbell outlives its segment only when its owner died between the two unlinks or after them: an owner
+        // creates the segment first and the bell second (create_own_segment()), and removes them the other way round.
+        char its_segment[tt_SEGMENT_PATH_LENGTH + 8];
+        size_t length = strlen(found) - strlen(".bell");
+        if (length >= sizeof(its_segment)) {
+            return;
+        }
+        memcpy(its_segment, found, length);
+        its_segment[length] = '\0';
+        if (stat(its_segment, &info) != 0 && errno == ENOENT && lstat(found, &info) == 0 && S_ISFIFO(info.st_mode)) {
+            (void)unlink(found);
+        }
+        return;
+    }
+    int file_fd = open(found, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (file_fd < 0) {
+        return;
+    }
+    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode) && segment_owner_gone(file_fd)) {
+        unlink_if_same_file(found, file_fd);
+        char its_bell[tt_SEGMENT_PATH_LENGTH + 16];
+        if (snprintf(its_bell, sizeof(its_bell), "%s.bell", found) < (int)sizeof(its_bell) &&
+            lstat(its_bell, &info) == 0 && S_ISFIFO(info.st_mode)) {
+            (void)unlink(its_bell);
+        }
+    }
+    (void)close(file_fd);
+}
+
+// The files dead contexts at this context's address left behind: every "<dir>tickle-seg-<ip>-<port>-<id>" nobody owns
+// (segment_owner_gone()), with its ".bell", and every bell whose segment is gone. Run when this context builds its own
+// segment, so a host that keeps starting same-host contexts keeps its /dev/shm clean.
+//
+// Why it is needed. A context killed without teardown leaves its segment (768 KiB by default) and its doorbell, and
+// release_segments() (tickle.c) relied on a successor at the same name replacing them. Nothing makes one: the name
+// carries the data port, which is ephemeral, and the claimed id moves on too, so a restarted process is at a different
+// name and the dead one's files stayed in /dev/shm for good - one pair per SIGKILLed context, found 2026-10-22 by
+// rmw_tickle/rmw_tickle/test/test_shm_kill.c (K4/R4), with dozens already on the development PC.
+//
+// Why it is safe. A live owner holds its flock() for as long as it maps its segment, so its file is never taken for an
+// orphan, and an orphan never becomes owned again: an owner locks only the file it has just created with O_EXCL. What
+// is left is a context creating at the very same name - the dead one's address, port AND id - between the inode check
+// and the unlink here; it would lose its name and be reached over UDP until it next rebuilds its segment. Leaving the
+// files is unbounded; that instant is not. A file that is not ours to remove (another user's, in sticky /dev/shm) is
+// left where it is.
+static void sweep_orphaned_segments(const char* path) {
+    const char* slash = strrchr(path, '/');
+    if (slash == NULL) {
+        return;
+    }
+    const char* base = slash + 1;
+    const char* id_dash = strrchr(base, '-');
+    if (id_dash == NULL || id_dash == base) {
+        return;
+    }
+    const char* port_dash = id_dash - 1;
+    while (port_dash > base && *port_dash != '-') {
+        port_dash--;
+    }
+    if (port_dash <= base) {
+        return;
+    }
+    char dir[tt_SEGMENT_PATH_LENGTH];
+    const size_t dir_length = (size_t)(base - path);
+    const size_t prefix_length = (size_t)(port_dash + 1 - base); // "tickle-seg-<ip>-"
+    if (dir_length >= sizeof(dir)) {
+        return;
+    }
+    memcpy(dir, path, dir_length);
+    dir[dir_length] = '\0';
+    DIR* listing = opendir(dir);
+    if (listing == NULL) {
+        return;
+    }
+    const size_t base_length = strlen(base);
+    char found[tt_SEGMENT_PATH_LENGTH + 8];
+    const struct dirent* entry = NULL;
+    while ((entry = readdir(listing)) != NULL) {
+        const char* name = entry->d_name;
+        if (strncmp(name, base, prefix_length) != 0) {
+            continue;
+        }
+        if (strncmp(name, base, base_length) == 0 &&
+            (name[base_length] == '\0' || strcmp(name + base_length, ".bell") == 0)) {
+            continue; // our own name and bell: tt_segment_create() and tt_segment_bell_create() replace them
+        }
+        const int kind = segment_name_kind(name + prefix_length);
+        if (kind != 0 && snprintf(found, sizeof(found), "%s%s", dir, name) < (int)sizeof(found)) {
+            sweep_one(found, kind);
+        }
+    }
+    (void)closedir(listing);
+}
+
 void* tt_segment_create(const char* path, size_t bytes) {
+    sweep_orphaned_segments(path);
     // Unlinked first, so a segment left behind by a dead context of this name is replaced rather
     // than inherited. Anyone still holding the old mapping keeps it and sees the old incarnation,
     // which is precisely what lets them notice they are stale.

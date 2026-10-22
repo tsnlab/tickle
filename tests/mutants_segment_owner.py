@@ -42,6 +42,18 @@ MUTANTS = [
         "    return flock(segment_fd, LOCK_SH | LOCK_NB) == 0;",
         "    return true;",
     ),
+    (
+        "a new owner sweeping the dead ones' files at its address",
+        "src/hal_linux.c",
+        "    sweep_orphaned_segments(path);\n",
+        "    (void)sweep_orphaned_segments;\n",
+    ),
+    (
+        "the sweep sparing a live owner's file",
+        "src/hal_linux.c",
+        "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode) && segment_owner_gone(file_fd)) {",
+        "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode)) {",
+    ),
 ]
 
 

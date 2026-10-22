@@ -61,12 +61,17 @@
 
 #define OWNER_ID 9
 #define WRITER_ID 10
-#define OWNER_IP 0xC0000207U // 192.0.2.7, TEST-NET-1: no real context is ever at it
+// 198.18.x.y (RFC 2544 benchmarking range: no real context is ever at it), x.y from this process's id. Per process,
+// because a context building its segment sweeps every orphan at its address (sweep_orphaned_segments()): two runs of
+// this test at one address - parallel build configurations - would sweep each other's deliberate corpses.
+#define OWNER_IP_BASE 0xC6120000U
+#define OWNER_IP owner_ip
 #define RACE_OWNERS 200
 #define PORT_BASE 10000
 #define PORT_SPAN 50000
 
 static uint16_t owner_port;
+static uint32_t owner_ip;
 
 static void init_context(struct tt_Context* node, uint8_t id, uint32_t incarnation) {
     memset(node, 0, sizeof(*node));
@@ -320,14 +325,98 @@ static void test_owners_restarting_under_a_writer(void) {
            verdicts[tt_SEGMENT_ORPHANED], verdicts[tt_SEGMENT_ABSENT], verdicts[tt_SEGMENT_BAD_HEADER]);
     remove_owner_files();
 }
+// A context building its segment removes what dead contexts at its address left: a segment nobody owns with its bell.
+// Not a live owner's file, and nothing at another address (the controls: the sweep is by owner and by address, not of
+// everything that looks like a segment).
+static bool owner_file_exists(uint32_t ip, uint16_t port, bool bell) {
+    char path[tt_SEGMENT_PATH_LENGTH];
+    if (bell) {
+#if tt_SEGMENT_BELL_FIFO
+        (void)bell_name(path, sizeof(path), ip, port, OWNER_ID);
+#else
+        return false;
+#endif
+    } else {
+        (void)segment_name(path, sizeof(path), ip, port, OWNER_ID);
+    }
+    struct stat info;
+    return lstat(path, &info) == 0;
+}
+
+static void remove_files_at(uint32_t ip, uint16_t port) {
+    const uint32_t saved_ip = owner_ip;
+    const uint16_t saved_port = owner_port;
+    owner_ip = ip;
+    owner_port = port;
+    remove_owner_files();
+    owner_ip = saved_ip;
+    owner_port = saved_port;
+}
+
+static pid_t spawn_owner_at(uint32_t ip, uint16_t port) {
+    const uint32_t saved_ip = owner_ip;
+    const uint16_t saved_port = owner_port;
+    owner_ip = ip;
+    owner_port = port;
+    pid_t owner = spawn_owner();
+    owner_ip = saved_ip;
+    owner_port = saved_port;
+    return owner;
+}
+
+static void test_dead_owners_files_are_swept(void) {
+    const uint32_t here = owner_ip;
+    const uint32_t elsewhere = owner_ip ^ 1U; // another address: its corpse is not this context's to remove
+    const uint16_t dead_port = (uint16_t)(owner_port + 1U);
+    const uint16_t live_port = (uint16_t)(owner_port + 2U);
+    const uint16_t sweeper_port = (uint16_t)(owner_port + 3U);
+
+    pid_t dead = spawn_owner_at(here, dead_port);
+    pid_t live = spawn_owner_at(here, live_port);
+    pid_t dead_elsewhere = spawn_owner_at(elsewhere, dead_port);
+    EXPECT_TRUE(dead > 0 && live > 0 && dead_elsewhere > 0);
+    if (dead > 0) {
+        kill_owner(dead);
+    }
+    if (dead_elsewhere > 0) {
+        kill_owner(dead_elsewhere);
+    }
+    // Before: the dead one's files are there, as a crash leaves them - the control that "gone" below is the sweep's.
+    EXPECT_TRUE(owner_file_exists(here, dead_port, false));
+#if tt_SEGMENT_BELL_FIFO
+    EXPECT_TRUE(owner_file_exists(here, dead_port, true));
+#endif
+
+    struct tt_Context sweeper;
+    init_context(&sweeper, OWNER_ID, 5U);
+    sweeper.hal.own_port = sweeper_port;
+    create_own_segment(&sweeper);
+    EXPECT_TRUE(sweeper.own_segment != NULL);
+
+    EXPECT_TRUE(!owner_file_exists(here, dead_port, false));     // the orphan, gone
+    EXPECT_TRUE(!owner_file_exists(here, dead_port, true));      // with its bell
+    EXPECT_TRUE(owner_file_exists(here, live_port, false));      // a live owner's, kept
+    EXPECT_TRUE(owner_file_exists(elsewhere, dead_port, false)); // another address's orphan, kept
+    EXPECT_TRUE(owner_file_exists(here, sweeper_port, false));   // and the sweeper's own, built
+    if (live > 0) {
+        kill_owner(live);
+    }
+    release_segments(&sweeper);
+    remove_files_at(here, dead_port);
+    remove_files_at(here, live_port);
+    remove_files_at(here, sweeper_port);
+    remove_files_at(elsewhere, dead_port);
+}
 #endif
 
 int main(void) {
 #if tt_SEGMENT_ENABLED
     owner_port = (uint16_t)(PORT_BASE + ((uint32_t)getpid() % PORT_SPAN));
+    owner_ip = OWNER_IP_BASE | ((uint32_t)getpid() & 0xFFFFU);
     test_a_dead_owners_segment_is_never_written();
     test_ownership_is_the_mapping();
     test_owners_restarting_under_a_writer();
+    test_dead_owners_files_are_swept();
 #endif
     if (test_result() != 0) {
         return 1;
