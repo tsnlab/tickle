@@ -79,7 +79,11 @@ int epoll_pwait2(int epfd, struct epoll_event* events, int maxevents, const stru
 #define ROUNDS 2
 #define RELIABLE_COUNT 100U
 #define BE_MIN_PCT 50U
+#define PCT 100U
 #define CALL_COUNT 40U
+// A request or its answer is lost one time in ten at each end (TT_RX_DROP_PERCENT): with the default 3 retries a call
+// ends unanswered about once in 700, which over 80 calls failed this check one run in ten. With 20 a call is answered.
+#define CALL_RETRIES 20U
 #define PUBLISH_PERIOD_NS (10ULL * tt_MILLISECOND)
 #define CALL_START_NS (1500ULL * tt_MILLISECOND)
 #define MATCH_WAIT_NS (6ULL * tt_SECOND)
@@ -101,8 +105,13 @@ struct gc_sample {
     bool intact;    // set by decode
 };
 
+// Any mix of the byte's offset and the sample's seq will do, as long as a byte from another sample or another offset
+// is unlikely to match.
+#define PATTERN_OFFSET_MUL 13U
+#define PATTERN_SEQ_MUL 7U
+#define PATTERN_OFFSET_SHIFT 9U
 static uint8_t pattern(uint32_t i, uint32_t seq) {
-    return (uint8_t)((i * 13U) + (seq * 7U) + (i >> 9U));
+    return (uint8_t)((i * PATTERN_OFFSET_MUL) + (seq * PATTERN_SEQ_MUL) + (i >> PATTERN_OFFSET_SHIFT));
 }
 
 static int32_t gc_encode_size(struct tt_Data* data) {
@@ -223,6 +232,8 @@ static void on_response(struct tt_Client* client, int8_t return_code, struct Set
         calls_answered++;
     } else {
         calls_failed++;
+        printf("garbage_ctx_check: call %u failed: return_code %d, response %s\n", calls_made, (int)return_code,
+               response == NULL ? "none" : "wrong");
     }
 }
 
@@ -231,7 +242,7 @@ static void on_response(struct tt_Client* client, int8_t return_code, struct Set
 struct gc_context {
     const char* label;
     struct tt_Context* node; // the storage under test
-    pthread_t thread;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
     uint64_t deadline_ns;
 };
 
@@ -383,15 +394,15 @@ static void* poll_until(void* param) {
 }
 
 static bool sub_complete(const struct gc_sub* sub, const char* where, int round) {
-    bool ok = sub->received == RELIABLE_COUNT && sub->out_of_order == 0 && sub->damaged == 0;
+    bool passed = sub->received == RELIABLE_COUNT && sub->out_of_order == 0 && sub->damaged == 0;
     printf("garbage_ctx_check: round %d %s %s received=%u/%u out_of_order=%u damaged=%u %s\n", round, where, sub->label,
-           sub->received, RELIABLE_COUNT, sub->out_of_order, sub->damaged, ok ? "ok" : "FAIL");
-    return ok;
+           sub->received, RELIABLE_COUNT, sub->out_of_order, sub->damaged, passed ? "ok" : "FAIL");
+    return passed;
 }
 
 static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_node, uint64_t round_ns) {
-    struct gc_context a1 = {.label = "A1", .node = a1_node};
-    struct gc_context a2 = {.label = "A2", .node = a2_node};
+    struct gc_context ctx_a1 = {.label = "A1", .node = a1_node};
+    struct gc_context ctx_a2 = {.label = "A2", .node = a2_node};
     memset(pubs, 0, sizeof(pubs));
     static struct gc_sub a2_subs[2];
     memset(a2_subs, 0, sizeof(a2_subs));
@@ -400,7 +411,7 @@ static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_no
     served = 0;
     pump_going = false;
     pump_tick = 0;
-    if (!create(&a1) || !create(&a2)) {
+    if (!create(&ctx_a1) || !create(&ctx_a2)) {
         return 1;
     }
     pubs[0] = (struct gc_pub) {.label = "be", .bytes = SMALL_BYTES, .wanted_matches = 1};
@@ -410,66 +421,66 @@ static int run_a(int round, struct tt_Context* a1_node, struct tt_Context* a2_no
     a2_subs[0] = (struct gc_sub) {.label = "rel", .bytes = SMALL_BYTES};
     a2_subs[1] = (struct gc_sub) {.label = "frag", .bytes = FRAG_BYTES};
     struct tt_ServerOptions server_options = {.callback = (tt_SERVER_CALLBACK)on_request};
-    if (!make_pub(a1.node, &pubs[0], &small_type, "gc_be", false) ||
-        !make_pub(a1.node, &pubs[1], &small_type, "gc_rel", true) ||
-        !make_pub(a1.node, &pubs[2], &frag_type, "gc_frag", true) ||
-        !make_pub(a1.node, &pubs[3], &frag_type, "gc_frag_be", false) ||
-        tt_Node_create_server(tt_Context_default_node(a1.node), &server, &SetBoolService, "gc_svc", NULL,
+    if (!make_pub(ctx_a1.node, &pubs[0], &small_type, "gc_be", false) ||
+        !make_pub(ctx_a1.node, &pubs[1], &small_type, "gc_rel", true) ||
+        !make_pub(ctx_a1.node, &pubs[2], &frag_type, "gc_frag", true) ||
+        !make_pub(ctx_a1.node, &pubs[3], &frag_type, "gc_frag_be", false) ||
+        tt_Node_create_server(tt_Context_default_node(ctx_a1.node), &server, &SetBoolService, "gc_svc", NULL,
                               &server_options, NULL, 0) != tt_RET_OK ||
-        !make_sub(a2.node, &a2_subs[0], &small_type, "gc_rel", true) ||
-        !make_sub(a2.node, &a2_subs[1], &frag_type, "gc_frag", true)) {
+        !make_sub(ctx_a2.node, &a2_subs[0], &small_type, "gc_rel", true) ||
+        !make_sub(ctx_a2.node, &a2_subs[1], &frag_type, "gc_frag", true)) {
         return 1;
     }
     uint64_t now = tt_get_ns();
     pump_started_ns = now;
-    (void)tt_Context_schedule(a1.node, now, pump, NULL);
-    a1.deadline_ns = now + round_ns;
-    a2.deadline_ns = now + round_ns;
-    pthread_create(&a1.thread, NULL, poll_until, &a1);
-    pthread_create(&a2.thread, NULL, poll_until, &a2);
-    pthread_join(a1.thread, NULL);
-    pthread_join(a2.thread, NULL);
+    (void)tt_Context_schedule(ctx_a1.node, now, pump, NULL);
+    ctx_a1.deadline_ns = now + round_ns;
+    ctx_a2.deadline_ns = now + round_ns;
+    pthread_create(&ctx_a1.thread, NULL, poll_until, &ctx_a1);
+    pthread_create(&ctx_a2.thread, NULL, poll_until, &ctx_a2);
+    pthread_join(ctx_a1.thread, NULL);
+    pthread_join(ctx_a2.thread, NULL);
 
-    bool ok = true;
+    bool passed = true;
     uint32_t retransmitted = 0;
     for (int i = 0; i < PUBS; i++) {
         retransmitted += pubs[i].pub.retransmitted;
         printf("garbage_ctx_check: round %d A1 %s published=%u/%u matched=%u retransmitted=%u\n", round, pubs[i].label,
                pubs[i].published, RELIABLE_COUNT, (unsigned)tt_Publisher_matched_count(&pubs[i].pub),
                pubs[i].pub.retransmitted);
-        ok = ok && pubs[i].published == RELIABLE_COUNT;
+        passed = passed && pubs[i].published == RELIABLE_COUNT;
     }
-    uint64_t shm = a1.node->tx_datagrams_by_transport[tt_TRANSPORT_SHM];
+    uint64_t shm = ctx_a1.node->tx_datagrams_by_transport[tt_TRANSPORT_SHM];
     unsigned long long reassembled = 0;
 #if tt_FRAG_ENABLED
-    reassembled = (unsigned long long)a2.node->frag_reassembled;
+    reassembled = (unsigned long long)ctx_a2.node->frag_reassembled;
 #endif
     printf("garbage_ctx_check: round %d A1 served=%u tx_shm=%llu frag_reassembled(A2)=%llu fragmented=%d\n", round,
            served, (unsigned long long)shm, reassembled, FRAGMENTED ? 1 : 0);
     if (retransmitted == 0) {
         printf("garbage_ctx_check: round %d A1: nothing was retransmitted - the loss was not exercised: FAIL\n", round);
-        ok = false;
+        passed = false;
     }
 #if tt_SEGMENT_ENABLED
     if (shm == 0) {
         printf("garbage_ctx_check: round %d A1: nothing went over shared memory to A2: FAIL\n", round);
-        ok = false;
+        passed = false;
     }
 #endif
-    ok = sub_complete(&a2_subs[0], "A2", round) && ok;
-    ok = sub_complete(&a2_subs[1], "A2", round) && ok;
-    tt_Context_destroy(a1.node);
-    tt_Context_destroy(a2.node);
+    passed = sub_complete(&a2_subs[0], "A2", round) && passed;
+    passed = sub_complete(&a2_subs[1], "A2", round) && passed;
+    tt_Context_destroy(ctx_a1.node);
+    tt_Context_destroy(ctx_a2.node);
     for (int i = 0; i < PUBS; i++) {
         free(pubs[i].storage);
     }
     free(a2_subs[0].storage);
     free(a2_subs[1].storage);
-    return ok ? 0 : 1;
+    return passed ? 0 : 1;
 }
 
 static int run_b(int round, struct tt_Context* b1_node, uint64_t round_ns) {
-    struct gc_context b1 = {.label = "B1", .node = b1_node};
+    struct gc_context ctx_b1 = {.label = "B1", .node = b1_node};
     static struct gc_sub subs[4];
     memset(subs, 0, sizeof(subs));
     memset(&client, 0, sizeof(client));
@@ -477,50 +488,51 @@ static int run_b(int round, struct tt_Context* b1_node, uint64_t round_ns) {
     calls_answered = 0;
     calls_failed = 0;
     call_outstanding = false;
-    if (!create(&b1)) {
+    if (!create(&ctx_b1)) {
         return 1;
     }
     subs[0] = (struct gc_sub) {.label = "be", .bytes = SMALL_BYTES};
     subs[1] = (struct gc_sub) {.label = "rel", .bytes = SMALL_BYTES};
     subs[2] = (struct gc_sub) {.label = "frag", .bytes = FRAG_BYTES};
     subs[3] = (struct gc_sub) {.label = "frag_be", .bytes = FRAG_BYTES};
-    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)on_response};
-    if (!make_sub(b1.node, &subs[0], &small_type, "gc_be", false) ||
-        !make_sub(b1.node, &subs[1], &small_type, "gc_rel", true) ||
-        !make_sub(b1.node, &subs[2], &frag_type, "gc_frag", true) ||
-        !make_sub(b1.node, &subs[3], &frag_type, "gc_frag_be", false) ||
-        tt_Node_create_client(tt_Context_default_node(b1.node), &client, &SetBoolService, "gc_svc", NULL,
+    struct tt_ClientOptions client_options = {.callback = (tt_CLIENT_CALLBACK)on_response,
+                                              .call_retry_count = CALL_RETRIES};
+    if (!make_sub(ctx_b1.node, &subs[0], &small_type, "gc_be", false) ||
+        !make_sub(ctx_b1.node, &subs[1], &small_type, "gc_rel", true) ||
+        !make_sub(ctx_b1.node, &subs[2], &frag_type, "gc_frag", true) ||
+        !make_sub(ctx_b1.node, &subs[3], &frag_type, "gc_frag_be", false) ||
+        tt_Node_create_client(tt_Context_default_node(ctx_b1.node), &client, &SetBoolService, "gc_svc", NULL,
                               &client_options, NULL, 0) != tt_RET_OK) {
         return 1;
     }
     uint64_t now = tt_get_ns();
     calls_from_ns = now + CALL_START_NS;
-    (void)tt_Context_schedule(b1.node, now, caller, NULL);
-    b1.deadline_ns = now + round_ns;
-    poll_until(&b1);
+    (void)tt_Context_schedule(ctx_b1.node, now, caller, NULL);
+    ctx_b1.deadline_ns = now + round_ns;
+    poll_until(&ctx_b1);
 
-    bool ok = true;
+    bool passed = true;
     for (int i = 0; i < 4; i += 3) { // the two best-effort topics: most samples, none damaged
-        bool be_ok = subs[i].received * 100U >= RELIABLE_COUNT * BE_MIN_PCT && subs[i].damaged == 0;
+        bool be_passed = subs[i].received * PCT >= RELIABLE_COUNT * BE_MIN_PCT && subs[i].damaged == 0;
         printf("garbage_ctx_check: round %d B1 %s received=%u/%u (need %u%%) damaged=%u %s\n", round, subs[i].label,
-               subs[i].received, RELIABLE_COUNT, BE_MIN_PCT, subs[i].damaged, be_ok ? "ok" : "FAIL");
-        ok = ok && be_ok;
+               subs[i].received, RELIABLE_COUNT, BE_MIN_PCT, subs[i].damaged, be_passed ? "ok" : "FAIL");
+        passed = passed && be_passed;
     }
-    ok = sub_complete(&subs[1], "B1", round) && ok;
-    ok = sub_complete(&subs[2], "B1", round) && ok;
-    bool calls_ok = calls_made == CALL_COUNT && calls_answered == CALL_COUNT && calls_failed == 0;
+    passed = sub_complete(&subs[1], "B1", round) && passed;
+    passed = sub_complete(&subs[2], "B1", round) && passed;
+    bool calls_passed = calls_made == CALL_COUNT && calls_answered == CALL_COUNT && calls_failed == 0;
     printf("garbage_ctx_check: round %d B1 calls made=%u answered=%u failed=%u (need %u) %s\n", round, calls_made,
-           calls_answered, calls_failed, CALL_COUNT, calls_ok ? "ok" : "FAIL");
-    ok = ok && calls_ok;
+           calls_answered, calls_failed, CALL_COUNT, calls_passed ? "ok" : "FAIL");
+    passed = passed && calls_passed;
 #if tt_FRAG_ENABLED
     printf("garbage_ctx_check: round %d B1 frag_reassembled=%llu frag_abandoned=%llu\n", round,
-           (unsigned long long)b1.node->frag_reassembled, (unsigned long long)b1.node->frag_abandoned);
+           (unsigned long long)ctx_b1.node->frag_reassembled, (unsigned long long)ctx_b1.node->frag_abandoned);
 #endif
-    tt_Context_destroy(b1.node);
+    tt_Context_destroy(ctx_b1.node);
     for (int i = 0; i < 4; i++) {
         free(subs[i].storage);
     }
-    return ok ? 0 : 1;
+    return passed ? 0 : 1;
 }
 
 int main(int argc, char** argv) {
