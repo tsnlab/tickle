@@ -2359,6 +2359,28 @@ static void run_path_tests(void) {
     test_a_durable_backlog_interleaving_large_and_small_samples();
 }
 
+// WIFI repair timing (tt_LinkOptions.repair_timing, 2026-10-23) times a recovery for the path the way
+// repair_timing_times() says: the seed, then Karn's rule - but not for a writer of large samples, whose recoveries
+// nearly all wait out a retry behind the rest of the send; under Karn's rule its estimate stayed at the seed and the WB
+// 1 MiB arms asked by timer up to 100 times as often as ETHERNET (one rep resent 208,479 units). Such a writer keeps
+// the default rule past the seed. The control is the small writer on the same proxy state.
+static void test_wifi_repair_timing_keeps_the_default_rule_for_a_large_writer(void) {
+    static struct tt_Context ctx;
+    static struct tt_WriterProxy proxy;
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&proxy, 0, sizeof(proxy));
+    ctx.opts.reliable.retry = tt_RELIABLE_RETRY;
+    proxy.retry = tt_RELIABLE_RETRY + 1U;
+    EXPECT_TRUE(repair_timing_times(&ctx, &proxy)); // no estimate: the seed, past the back-off
+    proxy.recovery_srtt_ns = 5000000U;
+    proxy.retry = 1;
+    EXPECT_TRUE(!repair_timing_times(&ctx, &proxy)); // a small writer: Karn's rule, a retried recovery is not timed
+    proxy.large_arrival_ns = 1;
+    EXPECT_TRUE(repair_timing_times(&ctx, &proxy)); // a large writer: within the plain retries, timed
+    proxy.retry = tt_RELIABLE_RETRY + 1U;
+    EXPECT_TRUE(!repair_timing_times(&ctx, &proxy)); // and past the back-off, not
+}
+
 int main(void) {
     ranged = false;
     run_path_tests();
@@ -2373,6 +2395,7 @@ int main(void) {
     test_a_heartbeat_announces_no_sample_still_going_out();
     test_a_busy_writer_is_not_warned_about();
     test_a_busy_writers_send_is_not_timed_as_the_path();
+    test_wifi_repair_timing_keeps_the_default_rule_for_a_large_writer();
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();

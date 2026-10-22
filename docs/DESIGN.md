@@ -246,7 +246,9 @@ the first recovery is timed whatever the back-off (with no estimate the waits we
 the back-off doubled), and after it only one its first request answered (Karn's rule): a retried recovery spans its
 retry's wait, and timed (the default rule once seeded) it grew the interval with the loss and put a doubly lost
 sample's second round late - one-way p99 38-40 ms against 22-23 ms at 5% loss, bursts of 4. A busy recovery (the
-writer's large sample still arriving) seeds nothing. Read on the recovery path only (`end_watermark_probe()`); the
+writer's large sample still arriving) seeds nothing, and a writer of large samples keeps the default rule past the seed:
+its gaps wait behind the rest of the send, nearly every recovery has a retry, and under Karn's rule its estimate stayed
+at the seed (one 1 MiB rep resent 208,479 units against 6,000-9,000). Read on the recovery path only (`end_watermark_probe()`); the
 retry, publish and send paths are unchanged, and ETHERNET's recoveries are timed as before. Measured in RESULTS `WR`.
 
 **Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
