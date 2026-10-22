@@ -55,8 +55,9 @@ if ! (
     . "$ROS_SETUP"
     # shellcheck disable=SC1091
     [ -f "$HOME/rmw_perf_ws/install/setup.bash" ] && . "$HOME/rmw_perf_ws/install/setup.bash"
+    # rss_tables_rmw (bundle10_rss's node, 2026-10-22): a ROS package like conv_cost, built for its database entry.
     colcon build --packages-up-to rmw_tickle rmw_perf_pingpong rmw_tickle_interfaces_check \
-        rosidl_typesupport_tickle_c_tests conv_cost \
+        rosidl_typesupport_tickle_c_tests conv_cost rss_tables_rmw \
         --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE= >/dev/null 2>&1
 ); then
     echo "lint-rmw: rmw_tickle or a ROS C++ package did not build - refusing to report a pass" >&2

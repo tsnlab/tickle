@@ -407,9 +407,10 @@ jobs:
           # rmw_tickle_interfaces_check (P2's std_msgs round trip, run in its own step below) is here
           # for the same reason: it links the installed std_msgs, so it builds without TickLE's.
           # conv_cost (RMW_PERF_PLAN 12's measurement tool) too: built by hand, it had no entry, and
-          # turned af54d45e red on "'rclcpp/rclcpp.hpp' file not found".
+          # turned af54d45e red on "'rclcpp/rclcpp.hpp' file not found". rss_tables_rmw (bundle10_rss's
+          # node, examples/perf_hil/experiments/bundle10_rss) for the same reason.
           colcon build \
-            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_perf_pingpong rmw_tickle_interfaces_check conv_cost \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_perf_pingpong rmw_tickle_interfaces_check conv_cost rss_tables_rmw \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=ON
           source install/setup.bash
           # rosidl_typesupport_tickle_c_tests_dep first (well, colcon topologically sorts this
@@ -445,6 +446,7 @@ jobs:
             build/rmw_perf_pingpong/compile_commands.json \
             build/rmw_tickle_interfaces_check/compile_commands.json \
             build/conv_cost/compile_commands.json \
+            build/rss_tables_rmw/compile_commands.json \
             examples/perf_hil/tickle/compile_commands.json \
             examples/perf_hil/cyclonedds/compile_commands.json \
             examples/perf_hil/fastdds/compile_commands.json > compile_commands.tmp

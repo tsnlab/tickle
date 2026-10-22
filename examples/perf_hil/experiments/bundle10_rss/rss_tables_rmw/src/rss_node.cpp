@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
 // bundle10_rss: one role of a scenario, in one process that hosts one rmw_tickle context. The residency of the
 // context's tables is read by rss_tables_preload.so (LD_PRELOAD), not here; this node only produces the traffic.
 //
@@ -26,6 +36,9 @@
 
 namespace {
 
+    constexpr int rss_node_argc = 6; // the program name and five arguments
+    constexpr int ms_per_second = 1000;
+
     uint64_t g_sent = 0;
     uint64_t g_recv = 0;
 
@@ -50,7 +63,7 @@ namespace {
             pub->publish(*msg);
         });
         rclcpp::spin_until_future_complete(node, std::promise<void>().get_future(),
-                                           std::chrono::milliseconds(static_cast<int64_t>(dur * 1000)));
+                                           std::chrono::milliseconds(static_cast<int64_t>(dur * ms_per_second)));
     }
 
     template <typename T> auto run_sub(const rclcpp::Node::SharedPtr& node, bool reliable, double dur) -> void {
@@ -59,7 +72,7 @@ namespace {
                                                     g_recv++;
                                                 });
         rclcpp::spin_until_future_complete(node, std::promise<void>().get_future(),
-                                           std::chrono::milliseconds(static_cast<int64_t>(dur * 1000)));
+                                           std::chrono::milliseconds(static_cast<int64_t>(dur * ms_per_second)));
     }
 
     auto run_server(const rclcpp::Node::SharedPtr& node, double dur) -> void {
@@ -71,7 +84,7 @@ namespace {
                 g_recv++;
             });
         rclcpp::spin_until_future_complete(node, std::promise<void>().get_future(),
-                                           std::chrono::milliseconds(static_cast<int64_t>(dur * 1000)));
+                                           std::chrono::milliseconds(static_cast<int64_t>(dur * ms_per_second)));
     }
 
     auto run_client(const rclcpp::Node::SharedPtr& node, double rate, double dur) -> void {
@@ -84,18 +97,22 @@ namespace {
             }
             auto req = std::make_shared<Echo::Request>();
             req->id = ++g_sent;
+            // By value: rclcpp picks this overload by the callback's exact parameter type, SharedFuture.
+            // NOLINTNEXTLINE(performance-unnecessary-value-param)
             cli->async_send_request(req, [](rclcpp::Client<Echo>::SharedFuture /*f*/) -> void {
                 g_recv++;
             });
         });
         rclcpp::spin_until_future_complete(node, std::promise<void>().get_future(),
-                                           std::chrono::milliseconds(static_cast<int64_t>(dur * 1000)));
+                                           std::chrono::milliseconds(static_cast<int64_t>(dur * ms_per_second)));
     }
 
 } // namespace
 
-auto main(int argc, char** argv) -> int {
-    if (argc < 6) {
+// An exception out of rclcpp ends the process as std::terminate() does, with no RSS_NODE line - which the scenario's
+// reader voids, the same as a run that counted nothing.
+auto main(int argc, char** argv) -> int { // NOLINT(bugprone-exception-escape)
+    if (argc < rss_node_argc) {
         std::fprintf(stderr,
                      "usage: rss_node idle|pub|sub|server|client small|mid|large reliable|best_effort RATE DUR\n");
         return 2;
@@ -117,7 +134,7 @@ auto main(int argc, char** argv) -> int {
     using rss_tables_rmw::msg::Small;
     if (role == "idle") {
         rclcpp::spin_until_future_complete(node, std::promise<void>().get_future(),
-                                           std::chrono::milliseconds(static_cast<int64_t>(dur * 1000)));
+                                           std::chrono::milliseconds(static_cast<int64_t>(dur * ms_per_second)));
     } else if (role == "pub") {
         if (msg == "large") {
             run_pub<Large>(node, reliable, rate, dur);

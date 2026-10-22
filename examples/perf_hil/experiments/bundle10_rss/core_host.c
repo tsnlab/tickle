@@ -28,13 +28,18 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
-#include "SetBool.h"
-#include "UInt64.h"
-#include "rss_tables.c"
+// The examples' codecs by their path from here, so the file parses with no -I of its own (clang-tidy, CI's cpp-linter).
+#include "../../../set_bool/SetBool.h"
+#include "../../../uint64/UInt64.h"
+// The instrument, one source for both of its uses (rss_tables_preload.c includes it too).
+#include "rss_tables.c" // NOLINT(bugprone-suspicious-include)
 
-static _Alignas(4096) struct tt_Context g_ctx;
-static _Alignas(4096) struct tt_Server g_server;
-static _Alignas(4096) struct tt_Client g_client;
+enum { CORE_HOST_ARGC = 7 }; // the program name and six arguments
+
+// Each on a page of its own (RT_PAGE), so a page's residency belongs to one object.
+static _Alignas(RT_PAGE) struct tt_Context g_ctx;
+static _Alignas(RT_PAGE) struct tt_Server g_server;
+static _Alignas(RT_PAGE) struct tt_Client g_client;
 static struct tt_Publisher g_pub;
 static struct tt_Subscriber g_sub;
 
@@ -95,7 +100,7 @@ static void call(struct tt_Context* node, uint64_t time, void* param) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 7) {
+    if (argc < CORE_HOST_ARGC) {
         fprintf(stderr, "usage: core_host LAYOUT idle|pub|sub|server|client CONTEXT_ID BROADCAST RATE_HZ DUR_S\n");
         return 2;
     }
@@ -106,7 +111,7 @@ int main(int argc, char** argv) {
     const char* role = argv[2];
     _tt_CONFIG.context_id = atoi(argv[3]);
     _tt_CONFIG.broadcast = argv[4];
-    g_interval_ns = (uint64_t)(1e9 / atof(argv[5]));
+    g_interval_ns = (uint64_t)((double)tt_SECOND / atof(argv[5]));
     const double dur = atof(argv[6]);
     tt_log_set_level(TT_LOG_WARNING);
 
@@ -149,7 +154,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     rt_snapshot(stdout, "created");
-    tt_Context_schedule(&g_ctx, tt_get_ns() + (uint64_t)(dur * 1e9), on_done, NULL);
+    tt_Context_schedule(&g_ctx, tt_get_ns() + (uint64_t)(dur * (double)tt_SECOND), on_done, NULL);
     while (!g_done) {
         ret = tt_Context_poll(&g_ctx, -1);
         if (ret != tt_RET_OK && ret != tt_RET_TIMEOUT) {
