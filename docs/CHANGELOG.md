@@ -28,6 +28,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Send pacing** (network-profiles phase 0, item F; [DESIGN.md](DESIGN.md) section 2): `tt_LinkOptions.pacing_rate`
+  (bits per second on the wire; 0 = the profile's: T1S 75% of `link_rate`, the rest `tt_PACING_OFF`) and
+  `pacing_burst` (bytes; 0 = four frames of the link MTU). A token bucket per link counts every UDP datagram; a large
+  sample's units wait for it in the scheduler, a retransmission past two bursts is left to the reader's next request;
+  ordinary sends are never held. Counters `tt_Context.pacing_waits`, `pacing_repairs_deferred`. Off - every profile but
+  T1S - is wire- and time-identical.
 - **Link profiles** (network-profiles phase 0, items B and G; [DESIGN.md](DESIGN.md) section 2): `tt_LinkOptions.profile`
   (`tt_LINK_PROFILE_ETHERNET` 0, `_T1S`, `_TSN`, `_WIFI`) and the per-link values a profile fills where left 0 - `mtu`,
   `link_rate`, `retry_floor_ns`, `batch`, `batch_tick_ns`, `idle_heartbeat_ns`, `piggyback_divisor`,
@@ -90,6 +96,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- The zero-copy publish (`publish_zerocopy()`, an in-place encoder) compared its peers with the compiled
+  `tt_UNICAST_PEER_THRESHOLD`, not the link's resolved `unicast_threshold`, and unicast on a T1S link; it now takes each
+  link's share as a flush does.
 - rmw_tickle: a process could hang at `rclcpp::shutdown()` after its last node was destroyed (the action check's
   client, 3 of 100 runs on the PC). The context was destroyed while an `rmw_wait()` holding the executor poll role -
   rclcpp's graph listener - still polled it, and a poll that re-entered `epoll_wait()` while the descriptors were being

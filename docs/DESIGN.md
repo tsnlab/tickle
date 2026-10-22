@@ -141,6 +141,7 @@ profile (an interval in the announce, item C, is the user's open decision).
 | `piggyback_divisor` | none | 8 (every window/8 samples) | none | context: the most frequent |
 | `unicast_threshold` | 2 | always broadcast | 2 | **per link**, on the send path |
 | `large_fragmentation` | context's | MTU units | context's | context: MTU if any link is |
+| `pacing_rate` / `pacing_burst` | off | 75% of `link_rate` / 4 MTU frames | off | **per link** ("Send pacing" below) |
 
 Only the unicast threshold is per link: the send path already resolves each destination to its link. Everything else
 is one value for the context, because a datagram is encoded once for all the links it goes to and a sample is cut once
@@ -171,6 +172,39 @@ A 6c355fa2, B e9b6a656 before its rebase, `linkprofiles_insn_pc_20261022-141720`
 (`tests/wire_identity_link_profiles.sh`, core and fragmenting builds). T1S over a 10 Mbit/s tbf veth of MTU 1000 in two
 namespaces (`t1s_profile_netns.sh`, PASS): 907 broadcast datagrams of at most 972 bytes for 6000 samples, none
 IP-fragmented, against ETHERNET's 6007 unicasts; ETHERNET batching on that link IP-fragmented 600.
+
+**Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
+link averages at most `pacing_rate` bits per second on the wire (IP, UDP and Ethernet framing counted, a datagram's
+frames by the link MTU), through a token bucket of `pacing_burst` bytes. T1S paces at 75% of `link_rate` (7.5 Mbit/s):
+the plan's 70-80%, the middle, leaving a quarter of the bus for the other nodes' PLCA turns and for what this node sends
+unpaced; a burst of 4 frames of the link MTU (6152 B at 1500) is a few PLCA turns' worth, the large-run cap. ETHERNET,
+TSN and WIFI are off (`tt_PACING_OFF`), and so is a context with no links configured.
+
+| rule | detail |
+|---|---|
+| where | one bucket **per link** (`tt_Context.pacers[]`, as `links[]`): unlike B's combined values, every paced send is addressed to one destination, which the send path already resolves to its link (`link_of_ip()`); a T1S bus and an Ethernet uplink do not slow each other. Kept as the time the link's sends so far finish at the rate (`until_ns`); the backlog `until_ns - now` is the bucket's emptiness |
+| counted | every datagram that leaves over UDP, whatever sent it, where it leaves: the seam (`seam_send*()`) and `large_send_batch()`; a same-host segment's records are not |
+| waits | a **large sample's units**: the send cursor sends what the bucket holds (`pace_units()`) and stops with `pace_at_ns`; `large_pump()` then schedules `large_send_resume` for when one unit fits (`large_wait_for_pace()`, `pacing_waits`) - the machinery a full socket buffer uses, never a wait or a sleep in the publish. What the publish has not encoded yet is encoded first, as for a full buffer. A datagram longer than the whole burst (a unit IP-fragmented on a narrow link, a hybrid run) goes alone from a full bucket |
+| repairs | a **retransmission** (`retransmit_one_sample()`, `large_resend()`) goes while the backlog stays within two bursts: it is answered ahead of the large send, which waits for it, by at most a burst. Past that it is not sent, not marked resent and not gone: the reader's next ACKNACK asks again (`pacing_repairs_deferred`) |
+| not held | ordinary DATA, announces, HEARTBEATs, ACKNACKs and a small sample's fragments go at once and are counted. They are what pacing protects - a periodic sample's latency - and core has no queue to hold them in; holding them would add latency where the large send is what fills the bus. On T1S they are already batched on the 1 ms tick |
+| off | `tt_Context.pacing` false: each send site pays one branch on it, nothing else |
+
+Refused at creation: a `pacing_rate` below `tt_LINK_RATE_MIN` or above the link's `link_rate`, a `pacing_burst` below
+`tt_PACING_BURST_MIN` (one full 1500-byte frame on the wire) or on a link that is not paced. An EPOLLOUT wake for
+another Publisher resumes a paced send early; it finds the bucket and waits again.
+
+Cost: none measurable. User instructions per sample, client, B 25003126 vs A 13511f47 (A+P the placement control), 3
+reps, every row EQUAL: p1 +0.03% (P -0.01%), p3 +0.06% (+0.03%), t1 +0.07% (+0.00%), t3 +0.07% (+0.00%), 1% loss l1
++0.07% (-0.01%), l3 +0.05% (-0.00%); 8,202 round trips a p run, 1.1-1.3 M samples a t or l run, 0 void
+(`initoptions_insn_pc.sh`, `pacing_insn_pc_20261022`). Wire- and time-identical when off (`tests/wire_identity_send_pacing.sh`:
+core, fragmenting and large builds, parent-vs-parent control identical, ETHERNET paced at 10 kbit/s differs in each).
+T1S over a 10 Mbit/s tbf veth (burst 16 kB, latency 100 ms) in two namespaces, a 256 kB RELIABLE sample every 500 ms
+and a 100-byte sample every 10 ms for 15 s (`t1s_pacing_netns.sh`, `t1s_pacing_netns_20261022-run2`, PASS): pacing
+off, the shaper dropped 2,528 datagrams with up to 140 kB queued, the writer resent 5,047, and the small stream's p99
+was 108.3 ms (1,498 of 1,500 received); on, 0 dropped, nothing queued, no resend, p99 0.21 ms (1,500 of 1,500); every
+large sample delivered in both. The control - the small stream alone - p99 0.44 ms off, 0.16 ms on: the 1 ms batch
+tick's phase against the publish period, which differs run to run (a second run, `-run3`, PASS: 0.21 ms off, 0.60 ms
+on; off 2,496 dropped, p99 108.3 ms; on 0, p99 0.68 ms).
 
 **The poll loop.** One thread at a time calls `tt_Context_poll(ctx, timeout)`; a second poller gets `tt_RET_BUSY`.
 
@@ -417,7 +451,7 @@ User decisions: per-datagram seq_no at this size, wire types 11/12, 8 MiB defaul
 | wire (v12) | types 11/12 = 8/9 with u16 index/count (shortfall 6), used for **every sample above `tt_MAX_SAMPLE_LENGTH` and only those**; a node without stage 2 skips them (`frag_large_skipped`); different control sizes drop (`large.dropped`) |
 | storage | caller callbacks `large_acquire`/`large_release` (`tt_Context_set_large_buffers()`); `NULL` = no room |
 | publisher | encodes into its buffer and sends from it (two iovecs a datagram); **retains by reference** (`tt_LARGE_RETAINED`), released after the last fragment (BEST_EFFORT), all acks (VOLATILE) or KEEP_LAST eviction (DURABLE) |
-| **Send cursor** | on `EAGAIN` the rest goes from the poll when the socket reports half free (`EPOLLOUT` on a dup), with `tt_LARGE_SEND_WRITABLE_FALLBACK_NS`; without that, a timer `tt_LARGE_SEND_RETRY_NS` doubling to `_MAX_NS` |
+| **Send cursor** | on `EAGAIN` the rest goes from the poll when the socket reports half free (`EPOLLOUT` on a dup), with `tt_LARGE_SEND_WRITABLE_FALLBACK_NS`; without that, a timer `tt_LARGE_SEND_RETRY_NS` doubling to `_MAX_NS`. On a paced link it also stops when the link's bucket is empty and resumes from the scheduler when a unit fits (section 2, "Send pacing") |
 | a publish during a send | waits without seq_nos (`large_pending`); a newer one replaces it (`large.tail_abandoned`); KEEP_ALL gets `WOULD_BLOCK`; the sample in flight is never abandoned |
 | **End-of-sample HEARTBEAT** | `tt_LARGE_END_HEARTBEAT`: non-FINAL after the last fragment, chased (one retry interval, doubling to 100 ms) while unacknowledged, with the match HEARTBEAT ahead of it while owed |
 | **Subscriber** | the first fragment acquires `frag_count x 1452` B in one of `tt_LARGE_ASSEMBLIES`; each fragment copied to its offset; no buffer: RELIABLE leaves it unrecorded, BEST_EFFORT drops (`large_no_buffer`) |

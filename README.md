@@ -63,7 +63,8 @@ tt_Context_create_with(&ctx, &opts); // tt_RET_INVALID_ARGUMENT, with a log line
 
 Each link in `net.links[]` takes a `profile` - `tt_LINK_PROFILE_ETHERNET` (0, the defaults), `_T1S`, `_TSN` or `_WIFI` -
 whose values fill the link's zero fields (MTU, batching, unicast threshold, retry floor, idle HEARTBEAT, ...; DESIGN.md
-section 2, "Link profiles").
+section 2, "Link profiles"). A link's `pacing_rate` and `pacing_burst` pace its sends through a token bucket - T1S at
+75% of its link rate by default, every other profile not at all (DESIGN.md section 2, "Send pacing").
 
 What each field does and its limits: the comments in `tickle.h` and DESIGN.md section 2. Peers judge a context's
 silence by their own discovery timing, so a non-default update interval or miss threshold logs a WARNING. The Linux
