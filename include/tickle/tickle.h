@@ -1288,6 +1288,8 @@ struct tt_Context {
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
     // (TickLE CDR-4)" in DESIGN.md. tt_Context already has >= 8-byte alignment (it holds uint64_t
     // members); _Alignas keeps that true for these buffers regardless of member reordering.
+    // Written as each datagram is built and read only up to tx_tail, so nothing zeroes it (2026-10-22: the reset's
+    // memset made all of it resident in every context, 131 KB in rmw_tickle's build).
     tt_ALIGNAS(4) uint8_t tx_buffer[tt_TX_BUFFER_LENGTH];
     uint32_t tx_tail;
     uint32_t tx_size;
@@ -1395,6 +1397,7 @@ struct tt_Context {
     // follows a 4-byte prefix there (rmw_tickle's psn) at 0 mod 8, aligned for a struct with 64-bit members, so a
     // loaned take can read it in place (docs/RMW.md "Loaned messages"). It was 4-aligned and fell at 4 mod 8 in the
     // rmw build, which put every such message off its alignment: 8 of 300 socket-path samples were read in place.
+    // Read only as far as what was received into it, so, like tx_buffer, never zeroed.
     tt_ALIGNAS(8) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
     uint32_t rx_size;

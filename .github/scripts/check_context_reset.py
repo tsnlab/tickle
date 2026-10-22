@@ -82,7 +82,11 @@ SURVIVES_RESET = {
     "collision_logged_ip": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "collision_logged_port": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "hal": "tt_bind() and the platform HAL, which writes every member it uses",
+    # 2026-10-22, bundle 10 item 2: the tables the reset used to write in full, which made every page of them resident
+    # in every context (418 KB of an rmw_tickle context's 2.26 MB). Each is now read only where something wrote it;
+    # platform/linux/garbage_ctx_check.c runs contexts created in unzeroed storage (and under MemorySanitizer) to say so.
     "endpoint_index": "rebuild_endpoint_index(), which writes every slot to NULL before any lookup walks it",
+    "rx_buffer": "the receive (the HAL) or a segment record copied in; nothing reads past what was put there",
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
                    "does initialise that, so the payload never needs to be",
     "default_node_name": "the snprintf() one line before node->name is pointed at it",

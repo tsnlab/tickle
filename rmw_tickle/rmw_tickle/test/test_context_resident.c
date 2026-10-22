@@ -18,10 +18,13 @@
 // resident" mean something:
 //   - mincore() sees a write: one page written in a separate zero_allocate()d block of the same size is reported
 //     resident, and that block's other pages are not.
-//   - the context's own mapping is visible to it: core's tt_Context_init() writes tx_buffer, so tx_buffer's pages are
-//     resident. If core stops writing it this control fails, and the test needs a new one, not a looser bound.
+//   - the context's own mapping is visible to it: the page holding tickle_context.id, which creation writes, reads
+//     resident. (Until 2026-10-22 this was tx_buffer, which creation then zeroed in full; it no longer does - see
+//     below.)
 // The checks: tt_Discovery's entity table, which nothing writes with no peer, is under 10% resident, and the whole
-// struct under 50%. memset() put both at 100%.
+// struct under 50%. memset() put both at 100%. And since 2026-10-22 (bundle 10 item 2), the context's two datagram
+// buffers - 128 KB each in this build, written in full by every context's creation until then - are resident only
+// where datagrams were built or received: under a quarter of their pages with a single idle node.
 
 #include <assert.h>
 #include <stddef.h>
@@ -49,6 +52,15 @@ enum {
     BYTES_PER_KB = 1024,
     NS_PER_MS = 1000 * 1000,
 };
+
+// Whether the page holding `address` is resident.
+static int page_resident(const void* address) {
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    unsigned char vec = 0;
+    int ret = mincore((void*)((uintptr_t)address - ((uintptr_t)address % page)), page, &vec);
+    assert(0 == ret);
+    return (int)(vec & 1U);
+}
 
 // Pages wholly inside [start, start + len), and how many of them are resident.
 static void resident(const void* start, size_t len, size_t* pages, size_t* in_core) {
@@ -111,19 +123,29 @@ int main(void) {
     size_t all_in = 0;
     size_t tx_pages = 0;
     size_t tx_in = 0;
+    size_t rx_pages = 0;
+    size_t rx_in = 0;
     size_t ent_pages = 0;
     size_t ent_in = 0;
     resident(impl, sizeof(*impl), &all_pages, &all_in);
     resident(impl->tickle_context.tx_buffer, sizeof(impl->tickle_context.tx_buffer), &tx_pages, &tx_in);
+    resident(impl->tickle_context.rx_buffer, sizeof(impl->tickle_context.rx_buffer), &rx_pages, &rx_in);
+    int id_page_in = page_resident(&impl->tickle_context.id);
     resident(impl->discovery.entities, sizeof(impl->discovery.entities), &ent_pages, &ent_in);
     printf("context impl: %zu of %zu pages resident (%zu kB of %zu kB)\n", all_in, all_pages,
            all_in * page / BYTES_PER_KB, all_pages * page / BYTES_PER_KB);
-    printf("  tickle_context.tx_buffer (written by tt_Context_init, the control): %zu of %zu\n", tx_in, tx_pages);
+    printf("  the page holding tickle_context.id (written by creation, the control): %s\n",
+           id_page_in != 0 ? "resident" : "not resident");
+    printf("  tickle_context.tx_buffer (written as datagrams are built): %zu of %zu\n", tx_in, tx_pages);
+    printf("  tickle_context.rx_buffer (written as datagrams arrive): %zu of %zu\n", rx_in, rx_pages);
     printf("  discovery.entities (nothing writes it with no peer): %zu of %zu\n", ent_in, ent_pages);
 
-    // Control 2: the context's mapping is visible - core wrote tx_buffer, and every page of it reads resident.
-    assert(tx_pages > 16);
-    assert(tx_in == tx_pages);
+    // Control 2: the context's mapping is visible - core wrote the page holding its id, and it reads resident.
+    assert(id_page_in != 0);
+    // The datagram buffers: resident only where something was built or received, not in full.
+    assert(tx_pages > 16 && rx_pages > 16);
+    assert(tx_in * 4U < tx_pages);
+    assert(rx_in * 4U < rx_pages);
     assert(ent_pages > 200);
     assert(ent_in * 10U < ent_pages);
     assert(all_in * 2U < all_pages);
