@@ -9305,6 +9305,21 @@ static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent
     return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
 }
 
+// publish_zerocopy()'s datagram to its peers through each link's share of them (tx_destinations()): unicast within the
+// link's threshold, its broadcast past it. False when a send failed.
+static bool zerocopy_send_per_link(struct tt_Context* node, const struct tt_Publisher* pub, const uint8_t* head,
+                                   uint32_t head_len, const uint8_t* body, uint32_t body_len) {
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    uint8_t count = tx_destinations(node, pub->peers, count_peers(pub->peers), destinations);
+    for (uint8_t i = 0; i < count; i++) {
+        if (seam_send_iov(node, head, head_len, body, body_len, destinations[i].ip, destinations[i].port,
+                          destinations[i].context_id) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Zero-copy standalone-packet publish: framing (Header + SubmessageHeader + DataHeader) built in
 // a stack buffer, the CDR sent straight from the publisher's own memory via one sendmsg() - no
 // staging copy into tx_buffer. Only reachable when tx_buffer is empty (nothing to coalesce with),
@@ -9361,10 +9376,20 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     uint32_t head_len = (uint32_t)sizeof(framing) - skip;
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
         note_reached(node, pub->peers, peer_count);
-        for (uint8_t i = 0; i < peer_count; i++) {
-            if (seam_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port,
-                              pub->peers[i].context_id) < 0) {
+        if (link_count(node) > 1 || peer_count > node->links[0].unicast_threshold) {
+            // A link whose own threshold (tt_LinkOptions.unicast_threshold, resolved) the peers exceed, or several
+            // links: each link's share, as a flush addresses one (link_destinations()). Until 2026-10-22 this path
+            // compared with the compiled tt_UNICAST_PEER_THRESHOLD only, so a T1S link unicast what it broadcasts
+            // everywhere else.
+            if (!zerocopy_send_per_link(node, pub, head, head_len, body, body_len)) {
                 return tt_RET_IO_ERROR;
+            }
+        } else {
+            for (uint8_t i = 0; i < peer_count; i++) {
+                if (seam_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port,
+                                  pub->peers[i].context_id) < 0) {
+                    return tt_RET_IO_ERROR;
+                }
             }
         }
     } else {

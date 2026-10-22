@@ -94,6 +94,8 @@ MUTANTS = [
     (P, "Publisher piggyback none",
      "opts->heartbeat_piggyback_every == tt_HEARTBEAT_PIGGYBACK_NONE ? 0U : opts->heartbeat_piggyback_every;",
      "opts->heartbeat_piggyback_every;"),
+    (P, "zero-copy per-link threshold",
+     "if (link_count(node) > 1 || peer_count > node->links[0].unicast_threshold) {", "if (false) {"),
     (P, "batch limit", "uint32_t limit = node->control_max;", "uint32_t limit = tt_CONTROL_MAX_LENGTH;"),
     (P, "announce limit", "ROUNDUP(bytes) <= node->control_max;", "ROUNDUP(bytes) <= tt_CONTROL_MAX_LENGTH;"),
     (F, "whole limit", "    return node->control_max;\n#else", "    return (uint32_t)FRAG_WHOLE_DATA_LIMIT;\n#else"),
