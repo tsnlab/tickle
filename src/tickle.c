@@ -7096,10 +7096,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
 #if tt_FRAG_ENABLED
-    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
-        node->frag_slots[i].received = 0;
-        node->frag_slots[i].done = false;
-    }
+    node->frag_slots_used = 0; // no slot's header is read until frag_slot_for() has claimed it
     node->frag_clock = 0;
     node->frag_fast_sub = NULL;
     node->frag_fast_timestamp = 0;
@@ -20843,7 +20840,9 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, uint8_t source
     struct tt_FragSlot* unused = NULL;
     struct tt_FragSlot* oldest_done = NULL;
     struct tt_FragSlot* oldest = NULL;
-    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
+    // Slots at and past frag_slots_used have never been claimed: free, and their headers unwritten, so not read. The
+    // first of them is the lowest-numbered free slot whenever none below it is free, as the full walk found it.
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
         struct tt_FragSlot* slot = &node->frag_slots[i];
         if ((slot->received != 0 || slot->done) && frag_slot_is(slot, source, entity_id, seq_no)) {
             return slot;
@@ -20855,6 +20854,9 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, uint8_t source
         } else if (unused == NULL) {
             unused = slot;
         }
+    }
+    if (unused == NULL && node->frag_slots_used < tt_FRAG_REASSEMBLY_SLOTS) {
+        unused = &node->frag_slots[node->frag_slots_used++];
     }
     struct tt_FragSlot* slot = unused != NULL ? unused : oldest_done;
     if (slot == NULL) {
@@ -20987,7 +20989,7 @@ static bool reassemble_fragment(struct tt_Context* node, struct tt_Header* heade
 
 // Whether the reassembly pool is already collecting this sample.
 static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample_seq_no) {
-    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
         const struct tt_FragSlot* slot = &node->frag_slots[i];
         if (slot->received != 0 && frag_slot_is(slot, source, entity_id, sample_seq_no)) {
             return true;
