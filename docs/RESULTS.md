@@ -415,6 +415,37 @@ wire bytes WIN at 0.01% and 0.1%, LOSE at 1% (+0.46%); p99 LOSE at 0.01% and 0.1
 With no matched reader nothing goes on the wire (`NS`): writer CPU per sample -69% (p1 1 kHz), -94% (1 MiB 30 Hz).
 Cost: a new reader's first sample arrives ~2 ms later at p1.
 
+### Wi-Fi-like burst loss, PC netns (`WB`, network profiles phase 3 baseline)
+
+The current build (ETHERNET, which WIFI maps to) between three private namespaces on a bridge, every egress netem
+`delay 2ms slot 1ms 4ms packets 42` plus Gilbert-Elliott loss (L% average, mean burst B packets) both ways; `bc`:
+unicast 1%/B2, broadcast 30%/B3; `tv`: clean / 5%B4 / 10%B8 +20 ms, every 5 s. 100 B at 100 Hz (2,900 scored a rep),
+1 MiB RELIABLE at 5 Hz (150 a rep). Base round trip 6.90 ms, one-way 3.43 ms. Latency only from reps the PC was not
+loaded past nproc/2 (other sessions' builds loaded most of them: 2 of 6 reps per decision cell).
+
+| RELIABLE 100 B | ctl | 1%B2 | 1%B8 | 5%B2 | 5%B4 | 5%B8 | 10%B4 | bc | tv |
+|---|---|---|---|---|---|---|---|---|---|
+| delivered % | 100 | 100 | 99.86 | 100 | 99.55 | 98.28 | 99.02 | 100 | 98.36 |
+| one-way p99 ms | 5.98 | 9.43 | 6.04 | 38.6 | 60.3 | 87.5 | 81.1 | 18.0 | 93.6 |
+| resends per lost datagram | - | 4.1 | 2.7 | 3.0 | 3.4 | 2.2 | 2.3 | 3.8 | 2.2 |
+
+BEST_EFFORT delivered 1 - L within the realized loss (the treatment check). Against the pre-registered rule
+(`wifi_burst_read.py`): R1 PASS; R2 FAIL at 5%B2 (38.6 > 34.1 ms) and 5%B4 (60.3 > 44.5 ms), with core's
+detect-to-recover under 8 ms for ~90% of gaps - the excess is the burst before a gap is seen, which R2's round count
+leaves out; R5 FAIL: 0 false peer deaths between the two nodes exchanging data in any arm, but 112 in pairs that exchange
+none (summaries only; `bc` 62 across its 15 runs); R6 FAIL once (a 4.0 s join at 10%B4; 1.0-1.1 s at 5%, one lost
+announce); R7 FAIL: copies after delivery 22% of delivered under `tv`. R3/R4 (1 MiB) VOID twice: with UDP GSO a netem
+skb carried up to 9.2 frames on average, so slot and loss act per skb (p50 5 ms against the control's 47 ms); with
+`TT_UDP_OFFLOAD=0` every frame is an skb, and the control itself overflowed the 10,000-packet queue (5,161 drops,
+4,995-127,131 units resent a rep, p99 up to 503 ms) - 45-unit IP runs, a lost frame resending the run. Delivered 100% in
+every 1 MiB cell; p50 47-99 ms, p99 58-651 ms.
+
+Levers for the Wi-Fi profile, by evidence: (1) the large-sample retry against the link's serialization (`link_rate`, the
+retry floor) and pacing - the lossless control storms; (2) liveliness of pairs with no data - unicast summaries to known
+peers or a longer silence; (3) the reader's ACKNACK retry under jitter - timer ACKNACKs outnumber immediate ones 4.7x
+in the median rep (101x under `tv`), 2-4 resends per loss; (4) the hybrid estimator under bursts - at 1%B8 it kept 2-unit runs, 5.2 resends per lost frame
+against 2.0 at 1%B2 in MTU units. Batching was not exercised.
+
 ## 3. Sources
 
 Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results/`; harnesses in
@@ -438,6 +469,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SF | `fair_samehost_remeasure.sh`, `fair_samehost_summary.py` | `e521bbba` | 2026-10-09 | `fair_samehost_e521bbba_20261009-033254.*` |
 | SP | the same, `s11_publisher_cpu.py` | `228da18d` | 2026-10-17 | `fair_samehost_228da18d_20261017-144159.*` |
 | SC | the same, read at `a89aefe2` (R4 of `f2127ec3`) | `2579e822` | 2026-10-18 | `creation_rtt_samehost_2579e822_20261018-092008.*` |
+| WB | `wifi_burst_loss_netns.sh`, `wifi_burst_read.py` (PC netns; -O2, segment off) | `9c503bc1` | 2026-10-22 | `wifi_baseline/base_20261022/`, `wifi_baseline/large_nogso_20261023/` (`final_reading.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
