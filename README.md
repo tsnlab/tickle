@@ -67,6 +67,13 @@ contexts on different intervals interoperate; a non-default value logs an INFO l
 HAL's environment switches (`TT_UDP_OFFLOAD`, `TT_RX_DIRECT`, ...) still decide over `socket` when set. rmw_tickle
 keeps its `RMW_TICKLE_*` environment variables.
 
+Traffic classes (`socket.tx_class[DATA|REPAIR|CONTROL]`: an SO_PRIORITY and a DSCP each) and send times
+(`socket.txtime`, `tt_Publisher_publish_at()`) need the network set up by you: a VLAN PCP comes from the priority through
+the interface's map (`ip link add link eth0 name eth0.5 type vlan id 5 egress-qos-map 5:5 3:3 2:2`), a send time is kept
+only under an ETF qdisc (`tc qdisc ... etf clockid CLOCK_TAI delta 200000`, as the child of the band DATA's priority
+maps to - ETF drops any untimed datagram), and SO_TXTIME and priorities above 6 need CAP_NET_ADMIN. DESIGN.md section 2
+has what is per socket and what per datagram.
+
 ## Test
 
 ```sh

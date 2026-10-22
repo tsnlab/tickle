@@ -170,6 +170,12 @@ struct tt_OutDatagram {
 // - a sample's fragments, or one datagram to several peers - so that the number of system calls stops
 // following the number of datagrams.
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count);
+// Core's, for a HAL: the traffic class (tt_TX_CLASS_*, tickle.h) of the datagram whose first `head_len` bytes are
+// `head` (its framing - a tt_OutDatagram's head, or a whole datagram), as `node` sends it now. CONTROL when it carries
+// nothing of a user's (discovery, HEARTBEAT, ACKNACK, a fence or bell); otherwise REPAIR when it is a call's retry or
+// core is resending (node->tx_class), else DATA. The Linux HAL asks only when the context's classes differ
+// (hal_linux.c "Traffic classes and send time"); a context with the defaults never calls it.
+uint8_t tt_tx_class(const struct tt_Context* node, const void* head, size_t head_len);
 // tt_send_batch() without waiting for room in the socket's send buffer (large-message stage 2, DESIGN.md section 8):
 // returns how many of the `count` datagrams went, in order - fewer, possibly 0, when the buffer filled - or a negative
 // value on any other error. Core sends the rest later. Only a build with tt_LARGE_SAMPLES calls it.

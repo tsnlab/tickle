@@ -40,6 +40,15 @@
 
 #define TEST_COMMON_DEFINE_STORAGE
 #include "../src/hal_linux.c" // NOLINT(bugprone-suspicious-include) - the real HAL, deliberately
+
+// Core's, which the HAL asks only when a context's traffic classes differ (hal_linux.c "Traffic classes and send
+// time"); this test's contexts have none, so it is never called.
+uint8_t tt_tx_class(const struct tt_Context* node, const void* head, size_t head_len) {
+    (void)node;
+    (void)head;
+    (void)head_len;
+    return tt_TX_CLASS_DATA;
+}
 #include "test_common.h"
 
 #if tt_SEGMENT_ENABLED && tt_SEGMENT_BELL_FIFO

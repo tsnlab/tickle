@@ -84,6 +84,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   Publisher, peers and writer proxies per endpoint, remembered ACKNACK requests, outstanding claims, retained large
   samples - each at most its compiled size, which stays the array size and the default. A table is full at its limit,
   with the refusal it always had; `peers` must exceed every link's unicast threshold.
+- **Traffic classes and send time** (network profiles items D and E; `tt_InitOptions.socket.tx_class[]` and `.txtime`,
+  Linux HAL): an SO_PRIORITY (to a qdisc band, and to a VLAN PCP through the interface's egress-qos-map) and a DSCP per
+  class - DATA (a user's sample or call), REPAIR (a resend, a durability backlog, a call's retry), CONTROL (discovery,
+  HEARTBEAT, ACKNACK) - read from what each datagram carries; and SO_TXTIME (CLOCK_TAI) with
+  `tt_Publisher_publish_at()`, which an ETF qdisc honours. Every option 0 (the default) sets nothing: the same system
+  calls and bytes. No wire change; other HALs ignore the options.
 - `tt_*_get_actual_qos()`, `tt_QosProfile_resolve()`, `tt_QOS_PROFILE_DEFAULT`, `_SENSOR_DATA`, `_SERVICES_DEFAULT`.
 - History depth counts samples; `history.bytes` caps a Publisher's cache, with a warning at creation (D10).
 - Compatibility judged when an announce is applied, counted once per pair (`tt_QosIncompatibleStatus`,
