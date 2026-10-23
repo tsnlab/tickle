@@ -578,7 +578,8 @@ ACKNACKs ride a batched summary broadcast 1-2 times a 30 s rep (`broadcast_with_
 design (the receiver field confines them). Rig (2026-10-24, A 896d4a29, B 1b54c2f1 before its rebase): core gate v2
 `coreAB_1b54c2f1_20261023-223424` PASS, 0/88 WORSE; `lrf_1m_20261024-000628` (Array1m 30 Hz reliable, loss 0/0.1/1%)
 and `lrf_4m_20261024-000628` (Array4m 15 Hz, loss 0), pre/head/aa 5 reps each: every rep delivered 100% (lost 0), median
-latency and CPU ms/MB equal across arms within the aa spread (1 MiB 1%: 9.39-9.47 ms; 4 MiB: 36.47-36.62 ms). Landed.
+latency and CPU ms/MB equal between pre and head (1 MiB 1%: 9.39-9.47 ms; 4 MiB: 36.47-36.62 ms), and the aa arm alike;
+aa is the harness's older ack build (8d1c3712), not A again, so it is no same-binary control. Landed.
 
 (a), what the storm is. In the reps that stormed the reader dropped nothing in its socket and the ACKNACK count was the
 calm reps' (777 immediate, 219 timer): each ACKNACK named hundreds of units whose repairs were still queued behind the
