@@ -2506,6 +2506,12 @@ struct tt_Server { // extends endpoint
     // same context was answered (before 2026-10-09 the second answer replaced the first and the retry re-ran the
     // callback).
     uint8_t cache_client_tag[tt_MAX_SERVER_CACHE_COUNT];
+    // Which launch of its client slot i's response is for, as the request showed it: the request's source port, 0 when
+    // unknown. A context sends everything from its data port, which it binds afresh at every launch (tt_bind(), port
+    // 0), and a same-host record carries that same port (struct tt_SegmentSlot.sender_port), so a request from another
+    // port under the same context id is a new launch - one discovery may not have shown yet, or cannot show at all
+    // (no discovery table) - and is never answered with, or counted with, this response (2026-10-23).
+    uint16_t cache_client_port[tt_MAX_SERVER_CACHE_COUNT];
     // The longest recent gap, ns, between a response going out and the same client asking again - a decaying
     // maximum of what retries have shown this server. 0 until the first retry arrives.
     uint64_t client_retry_gap;

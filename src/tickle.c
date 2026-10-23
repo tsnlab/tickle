@@ -8233,6 +8233,10 @@ tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOpt
     link_profiles_apply(node);
 
     node->entity_id_base = (uint32_t)tt_get_wall_ns();
+    // This launch's first call seq_no, from the same draw: a server that has not yet seen this launch's new port (a
+    // retry of the predecessor's, still in flight) or a predecessor's answer arriving late could otherwise meet a
+    // seq_no this launch also uses - every launch used to start at 0 (2026-10-23).
+    node->call_seq_no = (uint16_t)(node->entity_id_base ^ (node->entity_id_base >> 16));
 
 #if tt_CONTEXT_ID_CLAIM
     if (!claim_initial_id(node)) {
@@ -8726,6 +8730,7 @@ static tt_ret_t server_reset(struct tt_Context* node, struct tt_Server* server, 
         server->cache_sent_at[i] = 0;
         server->cache_client_entity[i] = 0;
         server->cache_client_tag[i] = 0;
+        server->cache_client_port[i] = 0;
         server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
         server->pending_timeout_scheduled[i] = false;
     }
@@ -20247,10 +20252,22 @@ static bool server_client_known(const struct tt_Server* server, uint8_t receiver
     return client != NULL && client->kind == tt_KIND_SERVICE_CLIENT;
 }
 
-// Whether slot `slot`'s response was cached for an earlier incarnation of the client now asking: discovery knew the
-// client then and knows it now, under different entity_ids. When either side is unknown it cannot tell, and the
-// response stands - the old behaviour, which a farewell still bounds (drop_cached_responses_from_source()).
-static bool server_cache_slot_is_stale(const struct tt_Server* server, int slot, uint8_t receiver) {
+// Whether a response cached for a request from port `cached` is for another launch of the context now asking from
+// `asking` (struct tt_Server.cache_client_port). 0 on either side is a port not known, which tells nothing.
+static bool server_port_differs(uint16_t cached, uint16_t asking) {
+    return cached != asking && cached != 0 && asking != 0;
+}
+
+// Whether slot `slot`'s response was cached for an earlier incarnation of the client now asking from `sender_port`:
+// the request comes from another port than the one the response was cached for - a context binds its data port
+// afresh at every launch - or discovery knew the client then and knows it now, under different entity_ids. When
+// neither can tell, the response stands - the old behaviour, which a farewell still bounds
+// (drop_cached_responses_from_source()).
+static bool server_cache_slot_is_stale(const struct tt_Server* server, int slot, uint8_t receiver,
+                                       uint16_t sender_port) {
+    if (server_port_differs(server->cache_client_port[slot], sender_port)) {
+        return true;
+    }
     uint32_t cached_for = server->cache_client_entity[slot];
     if (cached_for == 0) {
         return false;
@@ -20321,6 +20338,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot) {
     server->cache_sent_at[slot] = 0; // the client moved on, or the slot is wanted: nothing to learn from it
     server->cache_client_entity[slot] = 0;
     server->cache_client_tag[slot] = 0;
+    server->cache_client_port[slot] = 0;
 }
 
 // A complete announce from `source` has just been applied. Every local Server drops the responses - live or expired
@@ -20366,15 +20384,15 @@ static void note_server_cache_hit(struct tt_Server* server, int slot) {
 // server kept it, and the gap says by how much. One such sample counts as at most twice the current lifetime, so a
 // stale match - a restarted client reusing the id, long after - raises it by a bounded step and not to whatever it
 // measured; a genuinely slow client gets there in a few misses.
-static void learn_from_expired_response(struct tt_Server* server, uint8_t receiver, uint8_t client_tag,
-                                        uint16_t seq_no) {
+static void learn_from_expired_response(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
+                                        uint16_t sender_port) {
     uint64_t now = tt_get_ns();
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL || server->cache_sent_at[i] == 0 ||
             !server_cache_slot_names(server, i, receiver, client_tag, seq_no)) {
             continue;
         }
-        if (now > server->cache_sent_at[i] && !server_cache_slot_is_stale(server, i, receiver)) {
+        if (now > server->cache_sent_at[i] && !server_cache_slot_is_stale(server, i, receiver, sender_port)) {
             uint64_t gap = now - server->cache_sent_at[i];
             uint64_t lifetime = server_cache_lifetime(server);
             uint64_t bound = lifetime > UINT64_MAX / 2 ? UINT64_MAX : 2 * lifetime;
@@ -20417,18 +20435,22 @@ static uint16_t seq_no_ahead(uint16_t seq_no, uint16_t newest) {
     return ahead <= INT16_MAX ? ahead : 0U;
 }
 
-static bool server_cache_slot_is_own(const struct tt_Server* server, int slot, uint8_t receiver, uint8_t client_tag) {
+// Whether slot `slot` holds a live answer to the Client `client_tag` of context `receiver` in its launch asking from
+// `sender_port`. A predecessor's answers under the same context id are not its own: they say nothing about its calls.
+static bool server_cache_slot_is_own(const struct tt_Server* server, int slot, uint8_t receiver, uint8_t client_tag,
+                                     uint16_t sender_port) {
     return server->cache[slot] != NULL && server->cache[slot]->receiver == receiver &&
-           server->cache_client_tag[slot] == client_tag;
+           server->cache_client_tag[slot] == client_tag &&
+           !server_port_differs(server->cache_client_port[slot], sender_port);
 }
 
 // The calling Client's live answers: how many, and the one to its oldest call, by seq_no - counted back from that
 // Client's newest call among them and the new answer's (`seq_no`).
-static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
-                            struct server_cache_pick* pick) {
+static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t sender_port,
+                            uint16_t seq_no, struct server_cache_pick* pick) {
     uint16_t newest_ahead = 0;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server_cache_slot_is_own(server, i, receiver, client_tag)) {
+        if (server_cache_slot_is_own(server, i, receiver, client_tag, sender_port)) {
             uint16_t ahead = seq_no_ahead(server_cache_entry_seq_no(server, i), seq_no);
             newest_ahead = ahead > newest_ahead ? ahead : newest_ahead;
         }
@@ -20436,7 +20458,7 @@ static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t 
     uint16_t newest = (uint16_t)(seq_no + newest_ahead);
     pick->new_age = newest_ahead;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (!server_cache_slot_is_own(server, i, receiver, client_tag)) {
+        if (!server_cache_slot_is_own(server, i, receiver, client_tag, sender_port)) {
             continue;
         }
         pick->own_live++;
@@ -20450,8 +20472,9 @@ static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t 
 
 // Every slot's liveness is decided here at `now` (server_cache_live()), so pick_own_oldest() after it reads cache[] as
 // live.
-static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
-                                    uint64_t now, struct server_cache_pick* pick) {
+static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, uint8_t client_tag,
+                                    uint16_t sender_port, uint16_t seq_no, uint64_t now,
+                                    struct server_cache_pick* pick) {
     *pick = (struct server_cache_pick) {-1, -1, -1, -1, 0, 0, 0};
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (!server_cache_live(server, i, now)) {
@@ -20467,11 +20490,12 @@ static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, 
         }
     }
     if (tt_CLIENT_MAX_OUTSTANDING > 1) {
-        pick_own_oldest(server, receiver, client_tag, seq_no, pick);
+        pick_own_oldest(server, receiver, client_tag, sender_port, seq_no, pick);
     }
 }
 
-// Caches the response just encoded at `submessage_header` for the Client `client_tag` of context `receiver`.
+// Caches the response just encoded at `submessage_header` for the Client `client_tag` of context `receiver`, whose
+// request came from `sender_port` (struct tt_Server.cache_client_port).
 //
 // Built with tt_CLIENT_MAX_OUTSTANDING 1, that Client's previous answer goes: it calls again only once it has it, so
 // one live answer per calling Client. With more, a new call proves nothing about which earlier answer arrived - the
@@ -20492,7 +20516,7 @@ static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, 
 // callback (server_cache_can_keep()), since the evicted answer's client may still retry it. A deferred request's
 // answer, kept when tt_Server_send_response() sends it, still can.
 static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header, uint8_t receiver,
-                             uint8_t client_tag) {
+                             uint8_t client_tag, uint16_t sender_port) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
     uint16_t seq_no =
         ((const struct tt_CallResponseHeader*)((const uint8_t*)submessage_header + sizeof(struct tt_SubmessageHeader)))
@@ -20508,7 +20532,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
         }
     }
     struct server_cache_pick pick;
-    pick_server_cache_slots(server, receiver, client_tag, seq_no, now, &pick);
+    pick_server_cache_slots(server, receiver, client_tag, sender_port, seq_no, now, &pick);
 
     if (length > server_cache_entry_length(server)) {
         // Larger than this server's cache entries (tt_Server_set_storage() sized them for this
@@ -20546,6 +20570,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     server->cache_sent_at[free_slot] = now;
     server->cache_client_entity[free_slot] = server_client_entity(server, receiver);
     server->cache_client_tag[free_slot] = client_tag;
+    server->cache_client_port[free_slot] = sender_port;
     server->cache[free_slot] = cache;
 
     return true;
@@ -20564,7 +20589,8 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 // unexecuted instead, as tt_CALL_IGNORED is - its client's retry asks again, and a slot frees within one answer
 // lifetime. The cost is liveness under overload: more callers than tt_MAX_SERVER_CACHE_COUNT answers within a
 // lifetime, each holding fewer than tt_CLIENT_CALL_WINDOW of its own, wait for slots instead of being served.
-static bool server_cache_can_keep(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no) {
+static bool server_cache_can_keep(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t sender_port,
+                                  uint16_t seq_no) {
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] == NULL) {
             return true;
@@ -20578,14 +20604,14 @@ static bool server_cache_can_keep(struct tt_Server* server, uint8_t receiver, ui
     }
     if (tt_CLIENT_MAX_OUTSTANDING == 1) {
         for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-            if (server_cache_slot_is_own(server, i, receiver, client_tag)) {
+            if (server_cache_slot_is_own(server, i, receiver, client_tag, sender_port)) {
                 return true;
             }
         }
         return false;
     }
     struct server_cache_pick pick;
-    pick_server_cache_slots(server, receiver, client_tag, seq_no, now, &pick);
+    pick_server_cache_slots(server, receiver, client_tag, sender_port, seq_no, now, &pick);
     return pick.own_live >= tt_CLIENT_CALL_WINDOW;
 }
 
@@ -20595,12 +20621,12 @@ static bool server_cache_can_keep(struct tt_Server* server, uint8_t receiver, ui
 // sent, and the retry ran the callback again (2026-10-16, tests/test_scheduler_headroom.c). Then room to keep the
 // answer (server_cache_can_keep()). False turns the request away unexecuted; the client's retry asks again.
 static bool server_can_take_request(struct tt_Context* node, struct tt_Server* server, uint8_t receiver,
-                                    uint8_t client_tag, uint16_t seq_no) {
+                                    uint8_t client_tag, uint16_t sender_port, uint16_t seq_no) {
     if (!sched_has_room(node)) {
         sched_note_full(node);
         return false;
     }
-    if (!server_cache_can_keep(server, receiver, client_tag, seq_no)) {
+    if (!server_cache_can_keep(server, receiver, client_tag, sender_port, seq_no)) {
         TT_LOG_DEBUG("Every kept answer may still be wanted - CallRequest turned away until one expires");
         return false;
     }
@@ -20636,9 +20662,9 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Context* nod
 // function itself doesn't need to know which. `old_tx_tail` is this submessage's start, for
 // rolling back on a failure here.
 static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node, uint8_t receiver, uint8_t client_tag,
-                                                        struct tt_Server* server, uint16_t request_seq_no,
-                                                        int8_t return_code, struct tt_Response* response,
-                                                        uint32_t old_tx_tail) {
+                                                        uint16_t sender_port, struct tt_Server* server,
+                                                        uint16_t request_seq_no, int8_t return_code,
+                                                        struct tt_Response* response, uint32_t old_tx_tail) {
     struct tt_Service* service = server->service;
 
     // Header and SubmessageHeader
@@ -20684,7 +20710,7 @@ static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node,
 
     // Cache submessage header before flush. (set_server_cache() has had no way to fail since a kept answer's expiry
     // stopped taking a scheduler entry, 2026-10-21; a false would still roll the response back.)
-    if (!set_server_cache(server, submessage_header, receiver, client_tag)) {
+    if (!set_server_cache(server, submessage_header, receiver, client_tag, sender_port)) {
         rollback(node, old_tx_tail);
         return NULL;
     }
@@ -20827,8 +20853,8 @@ static void send_ready_slot(struct tt_Context* node, struct tt_Server* server, i
 
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
-        encode_call_response(node, request_id.receiver, server->pending_client_tag[slot], server, request_id.seq_no,
-                             return_code, response, old_tx_tail);
+        encode_call_response(node, request_id.receiver, server->pending_client_tag[slot], sender_port, server,
+                             request_id.seq_no, return_code, response, old_tx_tail);
 
     // Reclaim the slot regardless of encode success - a failure here is already logged by
     // encode_call_response() itself, and retrying it from this same stale slot later would just fail
@@ -20895,11 +20921,12 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
 
     // Check cache - for any request, a duplicated first transmission (retry 0) included: answering it again would run
     // a non-idempotent callback twice. What must not be answered from the cache is a request from a new incarnation of
-    // the client - a restarted process reusing the context id, whose seq_no starts at 0 again. Discovery tells the two
-    // apart where it can (server_cache_slot_is_stale()); a farewell drops the source's responses outright
-    // (drop_cached_responses_from_source()).
+    // the client - a restarted process reusing the context id, whose seq_no may meet its predecessor's. The request's
+    // source port tells the two apart (a launch binds a new data port), and discovery where it knows both entity_ids
+    // (server_cache_slot_is_stale()); a farewell drops the source's responses outright
+    // (drop_cached_responses_from_source()). Asked only of a slot that names the call - a retry or a duplicate.
     int cached_slot = find_server_cache_slot(server, header->source, client_tag, seq_no);
-    if (cached_slot >= 0 && server_cache_slot_is_stale(server, cached_slot, header->source)) {
+    if (cached_slot >= 0 && server_cache_slot_is_stale(server, cached_slot, header->source, sender_port)) {
         TT_LOG_DEBUG("Cached response for node %d is from an earlier incarnation of its client - dropped",
                      header->source);
         clear_server_cache_slot(server, cached_slot);
@@ -20908,7 +20935,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     if (cached_slot >= 0) {
         note_server_cache_hit(server, cached_slot);
     } else if (callrequest_header->retry != 0) {
-        learn_from_expired_response(server, header->source, client_tag, seq_no);
+        learn_from_expired_response(server, header->source, client_tag, seq_no, sender_port);
     }
     struct tt_SubmessageHeader* cached = cached_slot >= 0 ? server->cache[cached_slot] : NULL;
     uint32_t old_tx_tail = node->tx_tail;
@@ -20920,7 +20947,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
             return false;
         }
     } else {
-        if (!server_can_take_request(node, server, header->source, client_tag, seq_no)) {
+        if (!server_can_take_request(node, server, header->source, client_tag, sender_port, seq_no)) {
             return true; // turned away before the callback, as tt_CALL_IGNORED is: the client's retry asks again
         }
         struct tt_Service* service = server->service;
@@ -20950,8 +20977,8 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
             return true; // turned away unanswered: the client's retry asks again
         }
 
-        submessage_header = encode_call_response(node, header->source, client_tag, server, seq_no, return_code,
-                                                 (struct tt_Response*)response, old_tx_tail);
+        submessage_header = encode_call_response(node, header->source, client_tag, sender_port, server, seq_no,
+                                                 return_code, (struct tt_Response*)response, old_tx_tail);
         if (submessage_header == NULL) {
             return false;
         }

@@ -14,9 +14,16 @@
 // time(&now)/localtime(&now) call gettimeofday() and (indirectly) picolibc's own gmtime_r().
 
 #include <stddef.h>
+#include <stdint.h>
 #include <time.h>
 
 #include <sys/time.h>
+
+#include "lwipopts.h"
+
+// hal_freertos.c's clock (tickle/hal.h), declared here alone: hal.h brings in the HAL's lwIP headers, and in the socket
+// build lwIP's sockets.h then redefines the struct timeval <sys/time.h> declares for gettimeofday() below.
+uint64_t tt_get_ns(void);
 
 void _exit(int status) {
     (void)status;
@@ -91,4 +98,12 @@ struct tm* localtime(const time_t* timep) {
     result.tm_yday = 0; // Not computed - unused by log.c's "%Y-%m-%d %H:%M:%S" format
 
     return &result;
+}
+
+// lwIP's LWIP_RAND (lwipopts.h), which udp_init() draws the first local UDP port from. No hardware random source on
+// this target: the timer at the moment of the call, both halves folded, which varies between boots only with how long
+// the boot took. A board with a TRNG reads it here instead.
+uint32_t board_lwip_rand(void) {
+    uint64_t now = tt_get_ns();
+    return (uint32_t)(now ^ (now >> 32));
 }

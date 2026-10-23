@@ -62,3 +62,13 @@
 #define DEFAULT_TCP_RECVMBOX_SIZE 8
 #define DEFAULT_ACCEPTMBOX_SIZE 8
 #define TCPIP_MBOX_SIZE 8
+
+// Where lwIP's local UDP ports start (udp_init()). Without LWIP_RAND every boot starts at 0xc000 and binds the same
+// ports in the same order, so a rebooted board's context got its predecessor's data port - the port a server tells a
+// client's launches apart by (struct tt_Server.cache_client_port, 2026-10-23). This target has no hardware random
+// source: board_lwip_rand() (board/runtime_stubs.c) reads the timer, which differs between boots only by how long the
+// boot took to reach udp_init(), so a board that boots in exactly the same number of ticks still gets the same port
+// (DESIGN.md section 7). A board with a TRNG returns it there.
+#include <stdint.h>
+uint32_t board_lwip_rand(void);
+#define LWIP_RAND() board_lwip_rand()

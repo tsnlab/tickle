@@ -779,7 +779,139 @@ static void test_full_slots_still_serve_a_client_at_its_window(void) {
     EXPECT_TRUE(get_server_cache(&server, 10, 0, 1) != NULL);               // and no one else's
 }
 
+// --- A new launch of the client, told by the request's source port (struct tt_Server.cache_client_port, 2026-10-23).
+// A context sends everything from its data port, bound afresh at every launch, so a request under the same context id
+// from another port is a new launch, whatever discovery does or does not know yet. None of these attach discovery.
+#define PORT_A 40001
+#define PORT_B 40002
+
+static void ask_from(struct tt_Context* node, uint16_t port, uint16_t seq_no, uint8_t retry, uint64_t at) {
+    advance_to(node, at);
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+    uint32_t tail = write_callrequest(node, seq_no, retry);
+    EXPECT_TRUE(process_callrequest(node, &header, node->rx_buffer, 0, tail, 0x0a000002U, port));
+}
+
+// The control: a duplicate and a retry from the port the answer was kept for are served from it. Killed by: a port
+// rule that fires on equal ports (the callback would run three times).
+static void test_a_retry_from_the_same_port_is_served_from_the_cache(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask_from(&node, PORT_A, 0, 0, t0);
+    ask_from(&node, PORT_A, 0, 0, t0 + MS);
+    ask_from(&node, PORT_A, 0, 1, t0 + (2 * MS));
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_call_count);
+}
+
+// The bug (ROADMAP 5a): the client killed and started again under the same context id, before anything told the server
+// - no farewell, no discovery - asks with its predecessor's seq_no from its new port. Its callback runs, first
+// transmission or retry, and the predecessor's answer is gone. On the parent the callback count stayed at 1 and the
+// new launch got the predecessor's answer. Killed by: the port test removed from server_cache_slot_is_stale().
+static void test_a_new_port_under_the_same_id_is_a_new_client(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask_from(&node, PORT_A, 0, 0, t0);
+    ask_from(&node, PORT_B, 0, 0, t0 + MS); // the next launch's first call
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+    ask_from(&node, PORT_B, 0, 1, t0 + (2 * MS)); // and its retry: now served from its own answer
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+    ask_from(&node, PORT_A, 5, 0, t0 + (3 * MS));
+    ask_from(&node, PORT_B, 5, 1, t0 + (4 * MS)); // a launch whose first send was lost: the cache sees a retry first
+    EXPECT_EQ_U32(4, (uint32_t)callback_count);
+}
+
+// A port not known on either side (0: a transport that did not say, or an answer kept before the port was) tells
+// nothing, and the answer stands - the rule before 2026-10-23. Killed by: 0 taken as a port that differs.
+static void test_an_unknown_port_keeps_the_answer(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask_from(&node, 0, 0, 0, t0);
+    ask_from(&node, PORT_B, 0, 1, t0 + MS);
+    ask_from(&node, PORT_A, 1, 0, t0 + (2 * MS));
+    ask_from(&node, 0, 1, 1, t0 + (3 * MS));
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+}
+
+// A deferred answer is kept for the port its request came from (struct tt_Server.pending_sender_port), as a
+// synchronous one is. Killed by: send_ready_slot() keeping it with no port (the new launch would get it).
+static void test_a_deferred_answer_is_kept_for_its_requests_port(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    stub_return_code = tt_CALL_DEFERRED;
+    uint64_t t0 = test_mock_now;
+    ask_from(&node, PORT_A, 7, 0, t0);
+    uint8_t response_byte = 0;
+    tt_RequestId request_id = {REMOTE_NODE_ID, 7};
+    EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte));
+    stub_return_code = 0;
+    ask_from(&node, PORT_A, 7, 1, t0 + MS); // A's retry: the kept answer
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+    ask_from(&node, PORT_B, 7, 0, t0 + (2 * MS)); // the next launch: its own call
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+}
+
+// A retry from a new launch that meets its predecessor's expired answer is not a sample of how long this client waits:
+// the predecessor's answer went out before the new launch existed. Killed by: learn_from_expired_response() not
+// handed the request's port (the lifetime would grow to the bound, 2 x itself).
+static void test_a_new_launchs_retry_teaches_no_gap(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t seed = server_cache_lifetime(&server);
+    uint64_t t0 = test_mock_now;
+    ask_from(&node, PORT_A, 1, 0, t0);
+    ask_from(&node, PORT_B, 1, 1, t0 + (10000 * MS)); // long after A's answer expired
+    EXPECT_EQ_U64(seed, server_cache_lifetime(&server));
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+    // The control, the same from A's own port: it does learn (test_one_miss_cannot_inflate_the_lifetime_without_bound).
+    ask_from(&node, PORT_B, 2, 0, t0 + (10001 * MS));
+    ask_from(&node, PORT_B, 2, 1, t0 + (20001 * MS));
+    EXPECT_TRUE(server_cache_lifetime(&server) > seed);
+}
+
+// A predecessor's answers are not the new launch's own (server_cache_slot_is_own()): counted as its own, a full call
+// window of them made the new launch's first answer read as the answer to its oldest call - sent, not kept - and the
+// retry of that answer ran the callback a second time. Here the predecessor's calls are 100.. and the new launch's
+// seq_no starts at 50, as a per-launch random start may. Killed by: the port test removed from
+// server_cache_slot_is_own() (the callback runs CALL_WINDOW + 2 times).
+static void test_a_predecessors_answers_are_not_the_new_launchs_own(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    for (int k = 0; k < tt_CLIENT_CALL_WINDOW; k++) {
+        ask_from(&node, PORT_A, (uint16_t)(100 + k), 0, t0 + ((uint64_t)k * US));
+    }
+    ask_from(&node, PORT_B, 50, 0, t0 + MS);
+    ask_from(&node, PORT_B, 50, 1, t0 + (2 * MS)); // its answer was lost: the retry finds it kept
+    EXPECT_EQ_U32(tt_CLIENT_CALL_WINDOW + 1, (uint32_t)callback_count);
+}
+
 int main(void) {
+    test_a_retry_from_the_same_port_is_served_from_the_cache();
+    test_a_new_port_under_the_same_id_is_a_new_client();
+    test_an_unknown_port_keeps_the_answer();
+    test_a_deferred_answer_is_kept_for_its_requests_port();
+    test_a_new_launchs_retry_teaches_no_gap();
+    test_a_predecessors_answers_are_not_the_new_launchs_own();
     test_fresh_request_invokes_callback_and_sends();
     test_retry_hits_cache_without_recalling_callback();
     test_fresh_request_response_is_unicast_to_sender();

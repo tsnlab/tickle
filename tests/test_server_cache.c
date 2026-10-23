@@ -69,7 +69,7 @@ static void test_cache_round_trip(void) {
 
     struct tt_SubmessageHeader* original = write_fake_response(&node, 5, 0x1111, 42);
 
-    EXPECT_TRUE(set_server_cache(&server, original, 5, 0));
+    EXPECT_TRUE(set_server_cache(&server, original, 5, 0, 0));
 
     struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 0, 42);
     EXPECT_TRUE(cached != NULL);
@@ -94,8 +94,8 @@ static void test_cache_for_same_receiver(void) {
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 42), 5, 0));
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x2222, 99), 5, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 42), 5, 0, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x2222, 99), 5, 0, 0));
 
     if (tt_CLIENT_MAX_OUTSTANDING == 1) {
         EXPECT_TRUE(get_server_cache(&server, 5, 0, 42) == NULL); // evicted
@@ -113,8 +113,8 @@ static void test_cache_keeps_entries_for_different_receivers_independent(void) {
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 1), 5, 0));
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 1), 5, 0, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0, 0));
 
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 1) != NULL);
     EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) != NULL);
@@ -135,20 +135,20 @@ static void test_cache_bounds_one_clients_answers(void) {
     init_node_and_server(&node, &server);
 
     test_mock_now = 1000;
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0, 0));
     for (int k = tt_CLIENT_CALL_WINDOW - 1; k >= 0; k--) { // calls 100.. answered newest first
         test_mock_now += 10;
-        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(100 + k)), 5, 0));
+        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(100 + k)), 5, 0, 0));
     }
     test_mock_now += 10;
     note_server_cache_hit(&server, find_server_cache_slot(&server, 5, 0, 100)); // call 100's answer re-sent: newest
     test_mock_now += 10;
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 100 + tt_CLIENT_CALL_WINDOW), 5, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 100 + tt_CLIENT_CALL_WINDOW), 5, 0, 0));
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 100) == NULL); // the oldest call's went, though sent last
     for (int k = 1; k <= tt_CLIENT_CALL_WINDOW; k++) {
         EXPECT_TRUE(get_server_cache(&server, 5, 0, (uint16_t)(100 + k)) != NULL);
     }
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 99), 5, 0)); // a late duplicate
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 99), 5, 0, 0)); // a late duplicate
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 99) == NULL);
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 101) != NULL);
     EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) != NULL); // another Client's, older than all of them, stays
@@ -166,24 +166,24 @@ static void test_full_cache_takes_a_deep_clients_own_answer(void) {
     init_node_and_server(&node, &server);
 
     test_mock_now = 1000;
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 9, 0x1111, 1), 9, 0)); // the slow Client's
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 9, 0x1111, 1), 9, 0, 0)); // the slow Client's
     for (int i = 1; i < tt_MAX_SERVER_CACHE_COUNT - tt_CLIENT_MAX_OUTSTANDING; i++) {
         test_mock_now += 10;
         EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, (uint8_t)(100 + i), 0x1111, 1),
-                                     (uint8_t)(100 + i), 0));
+                                     (uint8_t)(100 + i), 0, 0));
     }
     for (int k = 0; k < tt_CLIENT_MAX_OUTSTANDING; k++) {
         test_mock_now += 10;
-        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(200 + k)), 5, 0));
+        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(200 + k)), 5, 0, 0));
     }
     test_mock_now += 10;
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 300), 5, 0)); // full: one must go
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 300), 5, 0, 0)); // full: one must go
     EXPECT_TRUE(get_server_cache(&server, 9, 0, 1) != NULL);   // the oldest overall stays
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 200) == NULL); // the deep Client's own oldest went
     EXPECT_TRUE(get_server_cache(&server, 5, 0, 300) != NULL);
     // A Client with fewer than a full depth takes the oldest overall, as before.
     test_mock_now += 10;
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 7, 0x1111, 1), 7, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 7, 0x1111, 1), 7, 0, 0));
     EXPECT_TRUE(get_server_cache(&server, 9, 0, 1) == NULL);
     EXPECT_TRUE(get_server_cache(&server, 7, 0, 1) != NULL);
 }
