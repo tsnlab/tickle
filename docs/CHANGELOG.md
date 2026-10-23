@@ -203,6 +203,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A RELIABLE Subscriber with no reorder buffer takes fragmented samples again** (2026-10-24). Since `d25c12a2` gave
+  an unbounded or large rmw type no reorder buffer, its Subscriber took no DATA_FRAG fragment at all: the in-order fast
+  path needed a slot for each to spill to, so every fragmented sample was re-requested forever and none delivered. The
+  acceptance case `durable` (TRANSIENT_LOCAL, six 60,000-byte `sensor_msgs/Image`) received 0 of 4 on `e9efea98` in
+  every run, 4 of 4 on `d25c12a2^`; CI runs no acceptance case, so nothing went red. Such a sample is now put together
+  in the scratch unrecorded and recorded whole as one span; a sample disturbed before that is dropped, which loses
+  nothing because none of it was acknowledged (`tests/test_data_frag.c`, four cases, all red on `e9efea98`). Rig core
+  gate v2 (`coreAB_c4efa1fd_20261024-081841`, A e9efea98, B c4efa1fd before its rebase): PASS, 3/88 listed, not
+  blocking - user instructions +0.93% server c4 p4, +0.34%/+0.47% client/server c17 p4 (the fragmented cells, whose
+  buffered path now asks `reorder_payload_capacity()` once more); landed as a correctness fix.
 - **An older announce overtaken by a newer one no longer replaces it** (`announce_superseded()`, 2026-10-23). The
   broadcast list and a unicast reply land on two sockets and are read in either order, so a node's list from before it
   created a Subscriber could be applied after the list with it: the Subscriber was forgotten with its ack state and

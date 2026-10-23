@@ -19318,6 +19318,12 @@ static void frag_fast_spill(struct tt_Context* node) {
         return;
     }
     node->frag_fast_sub = NULL;
+    if (reorder_payload_capacity(sub) == 0) {
+        // No buffer to move it to: its fragments were never recorded (frag_fast_take()), so dropping the part-built
+        // sample loses nothing - the writer still holds it, and the ACKNACK asks for it again from its first seq_no.
+        sub->reorder_overflow++;
+        return;
+    }
     struct tt_WriterProxy* proxy = find_writer_proxy(sub, node->frag_fast_context_id, node->frag_fast_entity_id);
     reorder_follow_pivot(sub, proxy, node->frag_fast_seq_no); // the fragments are consecutive: the first places all
     const uint8_t* bytes = node->frag_scratch + 4;
@@ -19369,7 +19375,12 @@ static bool frag_fast_holds(const struct tt_Context* node, const struct tt_Subsc
 // the drain deals with it.
 static void frag_fast_spill_if_overtaken(struct tt_Context* node, const struct tt_Subscriber* sub,
                                          const struct tt_WriterProxy* proxy) {
-    if (frag_fast_holds(node, sub, proxy) && proxy->ack_seq_no != node->frag_fast_seq_no + node->frag_fast_placed) {
+    if (!frag_fast_holds(node, sub, proxy)) {
+        return;
+    }
+    // Unrecorded (no reorder buffer, frag_fast_take()), the watermark waits on the sample's first fragment.
+    uint32_t placed = reorder_payload_capacity(sub) == 0 ? 0 : node->frag_fast_placed;
+    if (proxy->ack_seq_no != node->frag_fast_seq_no + placed) {
         frag_fast_spill(node);
     }
 }
@@ -19399,7 +19410,7 @@ static void note_collision(struct tt_WriterProxy* proxy, const struct tt_Reorder
 static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              struct data_delivery_ctx* ctx, bool is_native) {
 #if tt_FRAG_ENABLED
-    if (frag_fast_holds(node, sub, NULL)) {
+    if (frag_fast_holds(node, sub, NULL) && reorder_payload_capacity(sub) != 0) {
         frag_fast_spill(node); // this buffer is about to hold something, and it must be empty for that
     }
 #endif
@@ -22254,6 +22265,9 @@ static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_
 // taken by another writer's datagram; the caller then leaves it unrecorded, so it is asked for again.
 static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                    const struct data_delivery_ctx* ctx, bool is_native) {
+    if (reorder_payload_capacity(sub) == 0) {
+        return false; // no buffer - and a sample the fast path is putting together unrecorded stays there
+    }
     if (frag_fast_holds(node, sub, NULL)) {
         frag_fast_spill(node); // the fast path's sample needs this buffer empty to be moved into it
     }
@@ -22284,6 +22298,21 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
     return true;
 }
 
+// An unrecorded sample in the scratch (frag_fast_take()) whose writer's watermark has left its first fragment - given
+// up on by an eviction Heartbeat, or its writer gone - can never complete, and would keep every other sample out of
+// the scratch: dropped (nothing of it was recorded). One with a buffer is the drain's (frag_fast_spill_if_overtaken()).
+static void frag_fast_drop_if_overtaken(struct tt_Context* node) {
+    struct tt_Subscriber* holder = node->frag_fast_sub;
+    if (holder == NULL || reorder_payload_capacity(holder) != 0) {
+        return;
+    }
+    const struct tt_WriterProxy* proxy =
+        find_writer_proxy(holder, node->frag_fast_context_id, node->frag_fast_entity_id);
+    if (proxy == NULL || proxy->ack_seq_no != node->frag_fast_seq_no) {
+        frag_fast_spill(node);
+    }
+}
+
 // The in-order fast path (2026-10-06). A fragment that is the next datagram its writer's tracking expects,
 // of a sample whose earlier fragments all came the same way, is put together in the node's frag_scratch and
 // the sample delivered from there when its last fragment lands - without touching the reorder buffer, which
@@ -22296,14 +22325,34 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
 // frag_fast_spill() can always hand it over). Anything else - a second writer, a second Subscriber of the
 // same writer, a fragment out of order - goes the ordinary way, and moves this sample there first if it
 // would disturb it. False: not taken, and the caller stores it as before.
+//
+// A Subscriber with no reorder buffer (tt_QOS_REORDER_NONE - rmw_tickle's shape for an unbounded or large type
+// since 2026-10-20) has nowhere to spill to, so its fragments are put together here unrecorded: the watermark stays
+// on the sample's first seq_no until the last fragment lands, and the whole sample is recorded then, in one go. A
+// sample disturbed before that is simply dropped from the scratch (frag_fast_spill()), which loses nothing - none of
+// it was acknowledged, so the writer still holds it and the ordinary ACKNACK asks for it again. Without this such a
+// Subscriber took no fragment at all: every fragmented sample was re-requested forever and none was delivered (the
+// rmw acceptance case `durable`, 60,000-byte sensor_msgs/Image, received 0 of 4).
 static bool frag_fast_take(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                            const struct data_delivery_ctx* ctx, bool is_native) {
     uint32_t length = ctx->tail - ctx->head;
     uint32_t index = ctx->frag_index;
+    bool unrecorded = reorder_payload_capacity(sub) == 0;
+    if (unrecorded) {
+        frag_fast_drop_if_overtaken(node);
+    }
     // In order: the next datagram the writer's tracking expects. While a sample is in the scratch the
     // watermark moves only as its fragments arrive (anything else moves it out first), so for a continuation
-    // this also says it is the next fragment of that sample - given that its index is the next one.
-    if (ctx->seq_no != proxy->ack_seq_no || reorder_payload_capacity(sub) < length) {
+    // this also says it is the next fragment of that sample - given that its index is the next one. Unrecorded,
+    // the watermark stays on the sample's first fragment, and the next one expected is counted from there.
+    uint32_t expected = proxy->ack_seq_no;
+    if (unrecorded && index != 0) {
+        if (!frag_fast_holds(node, sub, proxy) || proxy->ack_seq_no != node->frag_fast_seq_no) {
+            return false;
+        }
+        expected = node->frag_fast_seq_no + node->frag_fast_placed;
+    }
+    if (ctx->seq_no != expected || (!unrecorded && reorder_payload_capacity(sub) < length)) {
         return false;
     }
     if (index == 0) {
@@ -22333,8 +22382,10 @@ static bool frag_fast_take(struct tt_Context* node, struct tt_Subscriber* sub, s
     _tt_memcpy(node->frag_scratch + 4 + node->frag_fast_length, ctx->buffer + ctx->head, length);
     node->frag_fast_sub = sub;
     // Always new: the writer is tracked and this is its watermark, which nothing has received yet.
-    (void)update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
-                              ctx->sender_port);
+    if (!unrecorded) {
+        (void)update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
+                                  ctx->sender_port);
+    }
     if (index == 1) {
         node->frag_fast_cont_length = (uint16_t)length;
     }
@@ -22344,6 +22395,15 @@ static bool frag_fast_take(struct tt_Context* node, struct tt_Subscriber* sub, s
         return true;
     }
     node->frag_fast_sub = NULL;
+    if (unrecorded) {
+        // Whole: every fragment is recorded now, as one span from the watermark (large_accept_run() records a run
+        // the same way) - the bits the recorded path would have set one fragment at a time.
+        const uint16_t span = node->rx_seq_span;
+        node->rx_seq_span = (uint16_t)node->frag_fast_count;
+        (void)update_reliable_ack(node, sub, node->frag_fast_seq_no, ctx->header->source, ctx->entity_id,
+                                  ctx->sender_ip, ctx->sender_port);
+        node->rx_seq_span = span;
+    }
     node->frag_reassembled++;
     deliver_in_order(node, sub, proxy, node->frag_fast_seq_no, node->frag_fast_timestamp, node->frag_scratch + 4,
                      node->frag_fast_length, node->frag_fast_is_native, node->frag_fast_via_data_port, NULL);
