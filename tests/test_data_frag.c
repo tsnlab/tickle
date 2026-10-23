@@ -1167,6 +1167,91 @@ static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
     expect_delivered_once(2800);
 }
 
+// --- RELIABLE receiver with no reorder buffer, once it tracks the writer (2026-10-24) -------------------------------
+//
+// rmw_tickle gives an unbounded or large type no reorder buffer (since 2026-10-20: its 8192-sample window is wider
+// than the slots its budget pays for, and core refuses a buffer narrower than the window). Such a Subscriber took no
+// fragment at all - the in-order fast path needed a slot for each, the buffer had none - so every fragmented sample was
+// re-requested forever and none was delivered: the rmw acceptance case `durable` (TRANSIENT_LOCAL, 60,000-byte
+// sensor_msgs/Image) received 0 of 4. These pin the repair: put together in order, unrecorded until whole.
+
+// A DATA first, which the Subscriber records and delivers, and which makes it track the writer (seq_no 1); then the
+// fragmented sample under test, seq_no 2 on, captured and not yet delivered.
+static void tracked_none_pair(uint32_t len) {
+    init_pair_reliable_receiver(len, false);
+    EXPECT_EQ_U32(0, reorder_payload_capacity(&sub)); // the shape under test: no buffer
+    sample_len = 100;
+    publish_captured();
+    EXPECT_EQ_INT(1, datagram_count);
+    deliver(0);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_TRUE(sender_proxy() != NULL && sender_proxy()->ack_seq_no == 2);
+    delivered_count = 0;
+    sample_len = len;
+    sample_seed = expected_seed = 9; // the sample's bytes differ from the DATA's, so a stale copy cannot pass
+    publish_captured();
+}
+
+static void test_reliable_none_fragments_in_order_are_delivered(void) {
+    tracked_none_pair(4000); // 3 fragments, seq_no 2..4
+    EXPECT_EQ_INT(3, datagram_count);
+    deliver(0);
+    deliver(1);
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_EQ_U32(2, sender_proxy()->ack_seq_no); // part of a sample: nothing recorded, so nothing acknowledged
+    deliver(2);
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no); // whole: all three recorded at once
+    EXPECT_EQ_U32(0, sub.reorder_overflow);
+}
+
+static void test_reliable_none_lost_fragment_is_asked_for_and_completes(void) {
+    tracked_none_pair(4000);
+    deliver(0);
+    deliver(2); // seq_no 3 lost: 4 cannot be taken, and stays unrecorded
+    EXPECT_EQ_INT(0, delivered_count);
+    struct tt_WriterProxy* proxy = sender_proxy();
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_TRUE(!bitmap_test_bit(proxy->received_bitmap, 2)); // seq_no 4 is not received: it will be asked for
+    // The writer resends what the ACKNACK names, from the watermark: all three. The first, already in the scratch, is
+    // a duplicate that must not disturb the sample; the other two complete it.
+    deliver(0);
+    deliver(1);
+    deliver(2);
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
+}
+
+static void test_reliable_none_duplicate_does_not_disturb_the_sample(void) {
+    // A resend of a fragment already in the scratch (the writer answering an ACKNACK sent while the sample was being
+    // put together) arrives mid-sample: it is not taken, and the part-built sample must survive it.
+    tracked_none_pair(4000);
+    deliver(0);
+    deliver(1);
+    deliver(0);
+    deliver(1);
+    EXPECT_EQ_INT(0, delivered_count);
+    deliver(2);
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
+}
+
+static void test_reliable_none_sample_given_up_on_frees_the_scratch(void) {
+    // Its first fragment arrives, the writer then declares the sample gone (an eviction Heartbeat). The part-built
+    // sample is never delivered, and the next one - which needs the same scratch - still arrives intact.
+    tracked_none_pair(4000);
+    deliver(0);
+    advance_past_unavailable(sender_proxy(), 5);
+    EXPECT_EQ_INT(0, delivered_count);
+    sample_seed = expected_seed = 11;
+    publish_captured(); // seq_no 5..7
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(8, sender_proxy()->ack_seq_no);
+}
+
 static void test_reliable_two_writers_interleaved(void) {
     // Two writers of one topic count from 1 alike, and a fragment is held even in order - the per-writer
     // slot offset is what keeps their datagrams from colliding.
@@ -2194,6 +2279,10 @@ int main(void) {
     test_reliable_missing_fragment_is_tracked_as_its_own_gap();
     test_reliable_sample_given_up_on_is_never_delivered_torn();
     test_reliable_fragment_without_room_is_left_unrecorded();
+    test_reliable_none_fragments_in_order_are_delivered();
+    test_reliable_none_lost_fragment_is_asked_for_and_completes();
+    test_reliable_none_duplicate_does_not_disturb_the_sample();
+    test_reliable_none_sample_given_up_on_frees_the_scratch();
     test_reliable_two_writers_interleaved();
     test_reliable_in_order_sample_never_touches_the_reorder_buffer();
     test_reliable_out_of_order_fragments_still_deliver_through_the_buffer();
