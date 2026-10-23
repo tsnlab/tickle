@@ -763,7 +763,7 @@ own segment unlinks every segment at its address that nobody holds the flock on,
 `rmw_tickle/rmw_tickle/test/test_shm_kill.c` (subscriber or publisher SIGKILLed mid-stream at 500 and 10 Hz, each
 against a run that is not killed; `test/mutants_shm_kill.py`).
 
-**Counts made times** (ROADMAP 5a; designed 2026-10-22, one commit each on `ab/segment-time-limits`). Three counts
+**Counts made times** (ROADMAP 5a; designed 2026-10-22, landed 2026-10-23 from `ab/segment-time-limits`). Three counts
 stood in for times, so each bound was the sender's rate. The first attempt (`ab/hotpath-split`, 2026-10-06) checked
 each deadline where the count was kept, against a 64-bit `tx_clock_ns` stamped by every poll and every publish: the
 attach backoff cost the rig's c10 (P1 cross-host latency) +2.7% RTT (t 5.0), its relaxed 64-bit atomic did not link on
@@ -793,7 +793,25 @@ and +0.9% inside their floors (this run's A spread 2.8-4.4%), latency servers -0
 server, FAIL +12.8% for the same reason (937 per record against 951, 2.88 records per delivered sample against 2.52).
 The rig decides: the same-host gate v2 for pieces 1 and 2 (A, B and C the design commit, piece 1 and piece 2;
 `ab_samehost.sh`, the bundle 8 cells, B-A and C-B) and the core gate v2 with c6 added for pieces 1 and 3
-(`rig_queue_core_ab.sh`, `CORE_CELLS` with 6). Not run yet.
+(`rig_queue_core_ab.sh`, `CORE_CELLS` with 6).
+
+On the rig, 2026-10-23 (A c4c7e194, the design commit; pieces 1, 2, 3 bbe395b6, 66d74ed4, 2fa07cc9, each before its
+rebase). Same-host gate v2 (`ab_samehost_segment_time_limits_20261023-063521`, A P B C C B P A, 8 runs an arm, control
+held): formally WORSE. B-A (piece 1) 3/34, user instructions on the latency cells: reliable_latency p1 client +0.03%
+and server +0.06%, p3 server +0.05% (floors 0.00-0.01%); every other row held. C-B (piece 2) 2/34: reliable_throughput
+p3 client user instructions +0.03% and reliable_latency p3 server kernel instructions +1.95% (floor 0.36%); 22 rows
+better, among them received throughput +7.6% (be p1) to +17.0% (be p4) and +12.0% (rt p3), CPU per sample -5.8% to
+-12.8%, and throughput servers' kernel instructions -21% to -79% a sample (no re-attach every 4096 sends). The +1.95% is
+the other side of the same rule: at the latency cells' 1,000 sends a second, 4096 sends was one re-attach every ~4 s
+and the time is one every ~2 s (the client's `shm_attach_attempts` 5 against 9 a run, 3 re-attaches against 7), each
+an `munmap()`, `open()`, `fstat()`, `flock()`, `mmap()`, a bell FIFO reopened and the ring's pages faulted in again
+(read from the code, not instrumented): about 1.4 M kernel instructions per extra re-attach on the server (+417 a sample over 13,034 samples), its user
+instructions unchanged (+0.00%), so not the sweep. Break-even is about 2,000 sends a second. Core gate v2 with c6:
+piece 1 (A c4c7e194, B bbe395b6; `coreAB_bbe395b6_20261023-091236`) PASS, 0/96, c10 RTT +1.24% held; piece 3 (A
+66d74ed4, B 2fa07cc9; `coreAB_2fa07cc9_20261023-105010`) PASS with 3/96 listed, not blocking - client user
+instructions on c4 (p4) +0.29%, c6 (p4, 5% loss) +0.11%, c15 (p4, Q1) +0.31% - and c6 wire bytes -0.15%, c6 CPU held,
+c1/c8 throughput held. Landed on the user's overall judgement (2026-10-23) despite the formal same-host WORSE: the
+times do not depend on the testbed, and the costs are small against what they remove.
 
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring
 **drops** (`segment_full_dropped`), since rerouting to UDP would overtake queued records. UDP still carries broadcasts,

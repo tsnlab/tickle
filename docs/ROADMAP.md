@@ -12,10 +12,11 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 - **0. A fair testbed.** Done 2026-10-19: `s6_transport_cells.sh` rotates the framework order per rep (`b83e2513`),
   and the same-host rows were re-measured that way (`60f49f6a`, RESULTS `SB`). S9c re-run the same night (`SB9`).
 - **5a. Testbed-independent constants.** The fitted values that stay are in RMW.md "Options you may tune". Open:
-  - Kept off main after rig A/Bs (`ab/hotpath-split`): segment attach backoff by time, revalidate by time, timed
-    receive check. Redesigned 2026-10-22 with no clock read on a send and no 64-bit atomic (DESIGN 10 "Counts made
-    times"), one commit each on `ab/segment-time-limits`. PC: deterministic rows equal or better, throughput servers
-    read as load (DESIGN 10); rig A/Bs (same-host gate v2, core gate v2 with c6) prepared, not run.
+  - Landed 2026-10-23 from `ab/segment-time-limits` (the first attempt, `ab/hotpath-split`, was kept off main after
+    rig A/Bs): segment attach backoff by time, revalidate by time, timed receive check, redesigned with no clock read
+    on a send and no 64-bit atomic (DESIGN 10 "Counts made times"). Rig: core gate v2 PASS (pieces 1 and 3), same-host
+    gate v2 formally WORSE (piece 1 user instructions +0.03..+0.06% on latency cells, piece 2 a latency server's kernel
+    instructions +1.95%), landed on the user's overall judgement.
   - A client restarted under the same context id can get its predecessor's cached answer. Fixing it needs a per-launch
     tag in CallRequest, a wire change.
 

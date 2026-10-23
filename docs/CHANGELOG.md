@@ -33,6 +33,14 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 - **A busy poll checks its socket after a time, not after 8 scheduler entries** (ROADMAP 5a; [DESIGN.md](DESIGN.md)
   section 10). `poll.scheduler_io_interleave` is `poll.rx_check_ns` (0 = `poll.receive_timeout`), counted from the
   poll's last look at its socket across calls; `tt_SCHEDULER_IO_INTERLEAVE` stops the build.
+- Both landed on the user's overall judgement (2026-10-23) despite a formal same-host WORSE: the times do not depend on
+  the testbed. Rig, A c4c7e194 (the design commit), pieces bbe395b6, 66d74ed4, 2fa07cc9, each before its rebase.
+  Same-host gate v2 (`ab_samehost_segment_time_limits_20261023-063521`): piece 1 WORSE 3/34, user instructions
+  +0.03..+0.06% on reliable_latency p1/p3; piece 2 WORSE 2/34, client user instructions +0.03% on reliable_throughput
+  p3 and server kernel instructions +1.95% on reliable_latency p3 (a re-attach every ~2 s instead of every 4096 sends,
+  ~4 s at 1,000 sends a second), against 22 rows better - throughput +7.6% to +17.0%, CPU per sample -5.8% to -12.8%.
+  Core gate v2 with c6: piece 1 PASS 0/96 (`coreAB_bbe395b6_20261023-091236`), piece 3 PASS with 3/96 listed, client
+  user instructions +0.11..+0.31% on c4/c6/c15 (`coreAB_2fa07cc9_20261023-105010`).
 
 ### Added
 
