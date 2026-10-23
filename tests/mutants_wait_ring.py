@@ -44,7 +44,7 @@ from mutant_guard import be_nice, check_anchors, run_capped, usage_line
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAL = "src/hal_linux.c"
 RUNNER = ROOT / "examples/perf_hil/experiments/wr_check_netns.sh"
-WR_CHECK_DEFS = ["-DTT_RX_RING_MOVE_WAITS=8U", "-DTT_RX_RING_MOVE_MAX=64U"]  # platform/linux/Makefile's
+WR_CHECK_DEFS = ["-DTT_RX_RING_MOVE_MAX=64U"]  # platform/linux/Makefile's
 LARGE_DEFINES = ["-Dtt_MAX_BUFFER_LENGTH=65507", "-Dtt_LARGE_SAMPLES=1"]
 DEFAULT = "default"
 LARGE = "large"

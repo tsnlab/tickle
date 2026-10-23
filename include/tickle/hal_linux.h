@@ -210,9 +210,13 @@ static inline void tt_thread_yield(void) {
 #define tt_RX_URING_WAIT 1
 #endif
 // The ring moves to a thread that waited this many times in a row while another owned it; each move doubles the run
-// the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring").
+// the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring"). 2, the shortest run that is still a
+// run, since 2026-10-24: the doubling, not this first run, is what bounds how often the ring moves, and the first move
+// is the expected one - rmw's poll thread waits first and then hands the role to the executor for good. 64 until then
+// left the executor's first 64 waits on the epoll path (RESULTS KH2: the first ~20 measured round trips of every
+// rmw_tickle run on the rig).
 #ifndef TT_RX_RING_MOVE_WAITS
-#define TT_RX_RING_MOVE_WAITS 64U
+#define TT_RX_RING_MOVE_WAITS 2U
 #endif
 #ifndef TT_RX_RING_MOVE_MAX
 #define TT_RX_RING_MOVE_MAX 65536U
