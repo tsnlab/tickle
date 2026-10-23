@@ -46,6 +46,9 @@
 //                could only build it by giving the ring to one thread: `probe`'s ISSUER lines show a SINGLE_ISSUER ring
 //                refusing (EEXIST) every thread but the one that created or enabled it, while production's polling
 //                thread changes at run time (rmw's poll thread, or whichever executor thread holds the poll role).
+//   prod_dt_msg  prod_dt with production's read as it is since the wait ring landed (hal_linux.c wr_arm(), 2026-10-24):
+//                IORING_OP_RECVMSG with the sender's address (msg_name), not IORING_OP_RECV. Against prod_dt: what the
+//                address costs on the wake path (diagnostic, not read by recv_wake_xhost_read.py).
 // A style whose setup the kernel refuses prints "REFUSED <style> <reason>" and exits 3: not measured, not a failure of
 // the others. `probe` tries every style's setup and prints AVAILABLE or REFUSED for each, then PBUF lines: which
 // IORING_REGISTER_PBUF_RING variants the kernel accepts, against a control it must refuse, and a PBUF_CAUSE line that
@@ -160,22 +163,24 @@ enum style {
     URING_MS_DT,
     PROD,
     PROD_DT,
+    PROD_DT_MSG,
     STYLE_COUNT
 };
-static const char* const style_names[STYLE_COUNT] = {"recvfrom", "recvfrom_aa", "recvmsg",     "epoll3", "uring",
-                                                     "uring_dt", "uring_ms",    "uring_ms_dt", "prod",   "prod_dt"};
+static const char* const style_names[STYLE_COUNT] = {"recvfrom", "recvfrom_aa", "recvmsg",    "epoll3",
+                                                     "uring",    "uring_dt",    "uring_ms",   "uring_ms_dt",
+                                                     "prod",     "prod_dt",     "prod_dt_msg"};
 
 static int is_uring(enum style style) { // waits on the style's own ring
-    return (style >= URING && style <= URING_MS_DT) || style == PROD_DT;
+    return (style >= URING && style <= URING_MS_DT) || style == PROD_DT || style == PROD_DT_MSG;
 }
 static int is_multishot(enum style style) {
     return style == URING_MS || style == URING_MS_DT;
 }
 static int is_deferred(enum style style) {
-    return style == URING_DT || style == URING_MS_DT || style == PROD_DT;
+    return style == URING_DT || style == URING_MS_DT || style == PROD_DT || style == PROD_DT_MSG;
 }
 static int is_prod(enum style style) {
-    return style == PROD || style == PROD_DT;
+    return style == PROD || style == PROD_DT || style == PROD_DT_MSG;
 }
 
 struct wire { // the first 16 bytes of every datagram, in host order (both ends are the same machine type)
@@ -490,10 +495,24 @@ static int uring_next(struct receiver* rcv, unsigned* submit, struct io_uring_cq
 // uring, uring_dt: one IORING_OP_RECV submitted and waited for in the same io_uring_enter().
 static ssize_t receive_uring_single(struct receiver* rcv) {
     struct io_uring_sqe* sqe = uring_sqe(&rcv->ring);
-    sqe->opcode = IORING_OP_RECV;
     sqe->fd = rcv->socket_fd;
-    sqe->addr = (uint64_t)(uintptr_t)rcv->buf;
-    sqe->len = (uint32_t)sizeof(rcv->buf);
+    struct sockaddr_in from;
+    struct iovec iov = {.iov_base = rcv->buf, .iov_len = sizeof(rcv->buf)}; // NOLINT(misc-include-cleaner)
+    struct msghdr msg;
+    if (rcv->style == PROD_DT_MSG) { // production's: the address with the bytes (hal_linux.c wr_arm())
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_name = &from;
+        msg.msg_namelen = sizeof(from);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        sqe->opcode = IORING_OP_RECVMSG;
+        sqe->addr = (uint64_t)(uintptr_t)&msg;
+        sqe->len = 1U;
+    } else {
+        sqe->opcode = IORING_OP_RECV;
+        sqe->addr = (uint64_t)(uintptr_t)rcv->buf;
+        sqe->len = (uint32_t)sizeof(rcv->buf);
+    }
     sqe->user_data = URING_DATA_RECV;
     unsigned submit = 1;
     struct io_uring_cqe cqe;
