@@ -532,6 +532,7 @@ later. Silent with nothing unacknowledged, no matched reader, or BEST_EFFORT rea
 | response cache | `tt_MAX_SERVER_CACHE_COUNT` slots keyed by (source, `client_tag`, seq_no): a retry never runs the callback twice. Kept by a BEST_EFFORT Server too: the retries come from RELIABLE clients |
 | call window | a Server keeps `tt_CLIENT_CALL_WINDOW` (2 x outstanding) answers per Client; a Client makes no call while one is that many calls old; both ends must agree |
 | answer lifetime | the longer of the client's horizon (auto: its deadline + one `tt_CALL_DEADLINE_PER_SEND`, 1.25 s; explicit: `(count + 1) x call_retry_interval`) and `tt_SERVER_CACHE_GAP_MULTIPLE` x its longest response-to-retry gap; dropped for a new incarnation; with every slot live, a new request is turned away before its callback (its client retries) unless its Client holds a full window of its own; a deferred answer still evicts the oldest-sent |
+| launch identity | a request's source port (no wire field): every send leaves the data port, bound afresh per launch, and a same-host record carries it. An answer kept for another port under the same context id is a predecessor's: it answers nothing and is not the new launch's own; port 0 is unknown and keeps the old rule. A launch's first seq_no is drawn with its entity_id base, so a predecessor's late answer rarely names one of its calls. Limits: Linux may hand a restart its old port (about 1 in 28,000); on FreeRTOS lwIP's first port comes from `LWIP_RAND`, here the boot timer, so a board that boots in the same ticks rebinds its port (a TRNG there closes it); both still fall back to discovery and the farewell (2026-10-23) |
 | deferred | `tt_CALL_DEFERRED`, then `tt_Server_send_response()` from any thread; reclaimed after `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` |
 | turned away | `tt_CALL_IGNORED` keeps nothing; the retry asks again |
 | size | never fragmented: bounded by `tt_MAX_BUFFER_LENGTH` |
@@ -545,9 +546,12 @@ answer, rounded to 8; an answer larger than its slot is sent and not kept, and i
 
 | build | slots x entry | `struct tt_Server` (RV32) | takes |
 |---|---|---|---|
-| core default | 64 x 2,944 B | 191,544 B | 51 calls/s, or 8 Clients at any rate |
-| FreeRTOS default | 16 x 2,944 B | 47,976 B | 12.8 calls/s, or 2 Clients at any rate |
-| FreeRTOS examples (`set_bool`, `ping_pong`) | 8 x 24 B, caller storage | 560 B + 192 B | 6.4 calls/s, or 1 Client at any rate; they make 2 |
+| core default | 64 x 2,944 B | 191,672 B | 51 calls/s, or 8 Clients at any rate |
+| FreeRTOS default | 16 x 2,944 B | 48,008 B | 12.8 calls/s, or 2 Clients at any rate |
+| FreeRTOS examples (`set_bool`, `ping_pong`) | 8 x 24 B, caller storage | 576 B + 192 B | 6.4 calls/s, or 1 Client at any rate; they make 2 |
+
+The struct sizes are `sizeof(struct tt_Server)` from riscv64-unknown-elf-gcc at `-march=rv32imac -mabi=ilp32`; since
+2026-10-23 each slot also keeps its request's source port (+2 B a slot: 191,544, 47,976 and 560 B before).
 
 A slower answer lifetime lowers the rate in proportion: an explicit `call_retry_interval` keeps answers `(count + 1) x`
 it, and a server that has seen late retries keeps them `tt_SERVER_CACHE_GAP_MULTIPLE` x the gap (up to ~4 s on a lossy
