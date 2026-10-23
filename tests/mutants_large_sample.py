@@ -423,7 +423,7 @@ MUTANTS = [
     ),
     (
         "resend order tail: no reordering window",
-        "        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + ack->repair_min_rtt_ns / 4U;",
+        "        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + (ack->repair_min_rtt_ns / 4U);",
         "        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns;",
         "test_a_tail_waits_rack_rtt_and_its_reordering_window",
     ),

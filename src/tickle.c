@@ -11774,6 +11774,19 @@ static void large_order_arrived(struct tt_Context* node, struct tt_PeerAck* ack,
     large_repair_free(node, slot);
 }
 
+// The two times an ACKNACK from this reader is read against: the repair timeout and RACK's time rule.
+static void large_order_times(const struct tt_PeerAck* ack, struct large_order* order) {
+    if (ack->repair_srtt_ns != 0) {
+        // RACK-TLP's probe timeout (RFC 8985, 7.2): twice the time a repair takes to be shown arrived
+        order->timeout = (uint32_t)(((uint64_t)ack->repair_srtt_ns * 2U) >> LARGE_REPAIR_SHIFT) + 1U;
+    }
+    if (ack->repair_rack_rtt_ns != 0) {
+        // RACK's time rule (RFC 8985 6.2): lost once RACK.rtt + reo_wnd (min_RTT / 4) has passed since it went
+        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + (ack->repair_min_rtt_ns / 4U);
+        order->rack = (uint32_t)(rack >> LARGE_REPAIR_SHIFT) + 1U;
+    }
+}
+
 // Reads one ACKNACK from `target`'s Subscriber `reader_entity_id` to `pub` for the resend order, before its requests
 // are answered. Received, for certain: every unit below its seq_no, the watermark - those it passed since the reader's
 // last ACKNACK (from `prev_ack`), and the first send of the sample just below it. A unit the request leaves out between
@@ -11831,14 +11844,8 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
             }
         }
     }
-    if (ack != NULL && ack->repair_srtt_ns != 0) {
-        // RACK-TLP's probe timeout (RFC 8985, 7.2): twice the time a repair takes to be shown arrived
-        order->timeout = (uint32_t)(((uint64_t)ack->repair_srtt_ns * 2U) >> LARGE_REPAIR_SHIFT) + 1U;
-    }
-    if (ack != NULL && ack->repair_rack_rtt_ns != 0) {
-        // RACK's time rule (RFC 8985 6.2): lost once RACK.rtt + reo_wnd (min_RTT / 4) has passed since it went
-        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + ack->repair_min_rtt_ns / 4U;
-        order->rack = (uint32_t)(rack >> LARGE_REPAIR_SHIFT) + 1U;
+    if (ack != NULL) {
+        large_order_times(ack, order);
     }
 }
 
