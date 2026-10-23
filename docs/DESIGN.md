@@ -441,20 +441,21 @@ context goes again only when that reader has shown the resend lost:
 
 | condition | how the writer knows it, from one ACKNACK |
 |---|---|
-| **it received something sent after that resend** (RACK's order rule) | every send of a large unit - each resend, and each send call of a sample's first send to its only destination - takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed, the send call the unit just below it went in) and units it leaves out between its lowest and highest request (a pending resend's own serial; the highest other one's send call). On a path that keeps order, the resend would have arrived first |
-| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the first ACKNACK that shows it arrived, units resent once (Karn). Before the first sample: how long the reader took to ask for the unit after the send call it went in |
+| **it received something sent after that resend** (RACK's order rule) | each resend, and each large sample's first send, takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed; the sample of the unit just below it) and units it leaves out between its lowest and highest request (a pending resend's own serial; the sample of the highest other one). On a path that keeps order, the resend would have arrived first |
+| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the first ACKNACK that shows it arrived, units resent once (Karn). Before the first sample: how long the reader took to ask for the unit after its sample began to go |
 
 Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
 is answered at once, as before; with nothing pending in the context nothing is read.
 
 - **No fixed time.** The order is a counter; the timeout is measured on the path it guards, like the reader's retry
-  interval (section 6). Each estimate errs one way: a send call bounds when its units went from below, so "sent after"
-  is never claimed for a copy that went earlier. What a skipping ACKNACK leaves out may still be on its way (a reader
+  interval (section 6). Each estimate errs one way: a sample's first send bounds when its units went from below, so
+  "sent after" is never claimed for a copy that went earlier. What a skipping ACKNACK leaves out may still be on its way (a reader
   leaves out repairs it reckons in flight); read as received, it ends a hold early - one resend, as before the rule.
 - **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
   reader context, serial, time, seed, resends - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
-  resend at its next request, as before. Per Publisher `tt_LARGE_SEND_MARKS` (8) send calls of 12 B, and 8 B in each
-  large record and each ack entry. **FreeRTOS RV32: nothing** - large samples compile out there (section 8, "scope").
+  resend at its next request, as before. 8 B in each large record and each ack entry (256 B a Publisher). **FreeRTOS
+  RV32: nothing** - large samples compile out there (section 8, "scope"). Send-call marks, to show a resend lost by a
+  later part of the same sample, were built and taken out: every `test_large_sample` case read the same without them.
 - **Wire: none.** Without loss no unit is named, so nothing changes: the default context's bytes are the parent's.
 - **Falsified by:** the queued-path sim (`test_large_sample`) still resending more units than its samples carry, at any
   of its seeds, while the parent's control does; the netns A/B (`large_repair_followups_netns.sh`, PROFILE=ethernet

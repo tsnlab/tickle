@@ -335,6 +335,67 @@ MUTANTS = [
         '    if (!send_datagram(node, &dgram, target, 1)) {\n        TT_LOG_WARNING("Cannot retransmit large sample',
         "test_a_sending_writer_is_not_asked_for_repairs_on_their_way",
     ),
+    # The resend order (DESIGN.md section 4, "Large-sample resend order"): one mutant per condition.
+    (
+        "resend order: every request answered at once",
+        "    node->large.resend_held++;\n    return false;",
+        "    node->large.resend_held++;\n    return true;",
+        "test_a_queued_path_does_not_storm, test_a_repair_on_its_way_is_not_resent",
+    ),
+    (
+        "resend order: a resend shown lost waits for its timeout",
+        "    if (order->shown && large_serial_after(order->shown_serial, slot->serial)) {",
+        "    if (false) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: no repair timeout",
+        "    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
+        "    if (false) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: no seed before the first timing",
+        "    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
+        "    if (now - slot->resent_at >= order->timeout) {",
+        "test_a_queued_path_does_not_storm",
+    ),
+    (
+        "resend order: keyed without the reader",
+        "    return slot->context_id == context_id && slot->seq_no == seq_no && slot->entity_id == pub->endpoint.entity_id;",
+        "    return slot->context_id != 0 && slot->seq_no == seq_no && slot->entity_id == pub->endpoint.entity_id;",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: the watermark's advance not read",
+        "        if (large_repair_is(slot, pub, unit, target->context_id)) {\n            large_order_arrived(node, ack, slot, now, order);\n        }\n    }",
+        "    }",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: a pending unit left out of a request not read",
+        "            if (large_repair_is(slot, pub, unit, target->context_id)) {\n                large_order_arrived(node, ack, slot, now, order);\n            } else if (!bounded) {",
+        "            if (large_repair_is(slot, pub, unit, target->context_id)) {\n            } else if (!bounded) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: units above the highest request read as received",
+        "    if (acknack_named_range(bitmap, words, &low, &high)) {\n        for",
+        "    if (acknack_named_range(bitmap, words, &low, &high)) {\n        high = ((uint32_t)words * 64U) - 1U;\n        for",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: a unit resent twice timed (no Karn)",
+        "    if (slot->resends == 1 && ack != NULL) {",
+        "    if (ack != NULL) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: a later sample's first send not counted",
+        "        next->first_serial = large_next_serial(node); // every copy",
+        "        next->first_serial = 1U; // every copy",
+        "test_the_resend_order_rules",
+    ),
 ]
 
 # Survivors with no unit test that sees them (2026-10-16, srtt_busy_writer_pc_ab.sh): the cadence of the retries while

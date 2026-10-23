@@ -449,6 +449,20 @@ struct tt_LargeAssembly {
     bool via_data_port;
 };
 
+// One large-sample unit resent to a reader's context and not yet seen received there (tt_LargeState.repairs, the
+// resend order: DESIGN.md section 4). context_id 0: the slot is free.
+struct tt_LargeRepair {
+    uint32_t seq_no;
+    uint32_t entity_id; // the Publisher's
+    uint32_t serial;    // tt_LargeState.repair_serial when it went: the context's order of large sends
+    uint32_t resent_at; // tt_get_ns() >> 10 when it last went
+    // How long, in the same units, the reader took to ask for it the first time after its sample began to go: the
+    // repair timeout - a repair answered no slower than the original was found missing
+    uint32_t hold;
+    uint8_t context_id; // the reader's context it went to
+    uint8_t resends;    // to that reader, saturating: only a unit resent once is timed (Karn)
+};
+
 #if tt_LARGE_SHM
 // A Publisher's shared region (large-message step B, DESIGN.md section 8): tt_LargeRegionHeader, then one
 // tt_LargeChunkEntry per chunk, then the chunks, each tt_LARGE_HEADER_OFFSET + the DataHeader + CDR as a large buffer
@@ -609,6 +623,17 @@ struct tt_LargeState {
     uint64_t direct_runs;
     uint64_t direct_missed;
     uint64_t direct_cancelled;
+    // The resend order (DESIGN.md section 4; tickle.c large_resend_due()): the units resent and not yet seen received,
+    // a slot per seq_no modulo tt_LARGE_REPAIR_SLOTS, repairs_live of them in use; repair_serial numbers every resend
+    // and every large sample's first send (tt_LargeRecord.first_serial), so "sent after" is a comparison.
+    // resend_held (on the traffic line): requests for a unit left unanswered because its last resend had not yet been
+    // shown lost.
+    // acknack_order: what the ACKNACK being answered shows (tickle.c struct large_order), NULL outside its answer.
+    struct tt_LargeRepair repairs[tt_LARGE_REPAIR_SLOTS];
+    const struct large_order* acknack_order;
+    uint32_t repair_serial;
+    uint32_t repairs_live;
+    uint64_t resend_held;
 };
 #endif
 
@@ -2850,6 +2875,10 @@ struct tt_LargeRecord {
     bool retained;    // kept for resends once sent: the Publisher has a reliable cache
     bool sent;        // every fragment has gone to every destination once
     uint32_t encoded; // CDR bytes encoded so far: cdr_len, but while its publish encodes it a send call at a time
+    // The resend order (DESIGN.md section 4): tt_LargeState.repair_serial when its first send began (0 before), and
+    // tt_get_ns() >> 10 then - every copy of its units went after that.
+    uint32_t first_serial;
+    uint32_t first_sent_at;
 #if tt_LARGE_SHM
     uint8_t chunk;       // 1 + the region chunk `buffer` is in; 0: a caller's buffer
     uint32_t ref_resent; // tt_LargeRefState.acknack_serial of the ACKNACK that last had its descriptor resent
@@ -2929,6 +2958,12 @@ struct tt_PeerAck {
     // Cleared by the Subscriber's ack passing first_owed_seq_no, or after tt_MATCH_HEARTBEATS publishes.
     uint32_t first_owed_seq_no;
     uint8_t match_heartbeats_left;
+#if tt_LARGE_SAMPLES
+    // The resend order's repair timeout to this reader (DESIGN.md section 4): RFC 6298's srtt over the time from a
+    // large unit's one resend to the first ACKNACK of this reader's that showed it arrived. 0: none timed yet.
+    uint32_t repair_srtt_ns;
+    uint32_t repair_rttvar_ns;
+#endif
 };
 
 #if tt_HYBRID_TRANSPORT
