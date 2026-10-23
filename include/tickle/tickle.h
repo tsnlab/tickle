@@ -1887,6 +1887,14 @@ struct tt_Context {
     // one is kept in the Publisher's history, its seq_nos taken, for a TRANSIENT_LOCAL reader's backlog.
     uint64_t tx_unmatched_dropped;
     uint64_t tx_unmatched_kept;
+    // Announces ignored because they were older than the one already acted on from their source (2026-10-23,
+    // announce_superseded() in tickle.c).
+    uint64_t rx_announces_superseded;
+    // Per remote node, when (tt_get_ns()) update_generation[] above was last set: an older generation arriving soon
+    // after it is a reordered datagram, not a change (announce_superseded(), tickle.c). Here, past segment_peers[],
+    // rather than beside update_generation[]: 2 KB ahead of that table moved it across a page boundary, and
+    // test_transport_seam's residency check needs it spanning three whole pages.
+    uint64_t update_applied_ns[tt_MAX_CONTEXT_IDS];
     // Set by the HAL on each receive: true when the datagram came in on this node's own data
     // port, false when it came in on the shared well-known port (where broadcasts land). Lives
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it

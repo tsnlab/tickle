@@ -187,6 +187,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **An older announce overtaken by a newer one no longer replaces it** (`announce_superseded()`, 2026-10-23). The
+  broadcast list and a unicast reply land on two sockets and are read in either order, so a node's list from before it
+  created a Subscriber could be applied after the list with it: the Subscriber was forgotten with its ack state and
+  matched again by the next announce at a new match point, and a RELIABLE writer's samples published in between were
+  never owed to it. CI's `test_loaned_messages` failed on it on `64e72418` (claimed-many: the talker's first round was
+  never sent and it stopped after 2 s); the same bug was in `df7b2a09`. Pinned to one CPU, rmw runs applied such a list
+  at a phase start in 7 of 150 on each tree; with the rule, 3 of 150 met one and ignored it, none applied it. Within 1 s of acting on a list, an older
+  generation from the same source (serial order; generation 0 before every other) is ignored and counted
+  (`rx_announces_superseded`); past it, every generation is applied as before. `test_peer_discovery`, 7 mutants in
+  `tests/mutants_announce_reorder.py`, all caught.
 - **A reliable HEARTBEAT went out with batched broadcast content** (RESULTS `WB`, corrected): a unicast HEARTBEAT
   now first flushes the batched content, so it goes the way its data went (`heartbeat_unicast_count()`). The WB 1 MiB
   control stormed in 7 of 20 pinned reps before, 0 of 20 after. Rig (A 25dd0fb0, B cfebd755, each before its rebase):

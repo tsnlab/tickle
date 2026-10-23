@@ -380,6 +380,82 @@ static void test_source_dropping_endpoint_forgets_its_peer(void) {
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
 
+// An older announce overtaken by a newer one (the broadcast list and the unicast reply land on different sockets) must
+// not replace it: the source's node-only list arriving after the list with its Subscriber forgot the Subscriber, and a
+// RELIABLE Publisher's samples written before the next announce re-matched it were never owed to it (CI 2026-10-23,
+// test_loaned_messages). The control: the same older generation once the reorder window is past is applied as a change,
+// as every announce that is not the applied one was before.
+static void test_an_older_announce_arriving_after_a_newer_one_is_ignored(void) {
+    for (int late = 0; late <= 1; late++) {
+        test_mock_reset();
+        test_mock_now = 5U * ANNOUNCE_REORDER_WINDOW_NS; // a clock well past 0: the window runs from the apply
+        struct tt_Context node;
+        init_node(&node);
+        struct tt_Publisher pub;
+        init_publisher(&pub, &node);
+        struct tt_Header header;
+        init_header(&header, REMOTE_NODE_ID);
+
+        uint32_t tail =
+            write_update_one_entity(node.rx_buffer, 200, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+        test_mock_now += late != 0 ? ANNOUNCE_REORDER_WINDOW_NS : ANNOUNCE_REORDER_WINDOW_NS - 1U;
+        tail = write_update_no_entities(node.rx_buffer, 100); // made before the Subscriber was
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        EXPECT_EQ_U32(late != 0 ? 0U : 1U, (uint32_t)count_peers(pub.peers));
+        EXPECT_EQ_U64(late != 0 ? 0U : 1U, node.rx_announces_superseded);
+        EXPECT_EQ_U32(late != 0 ? 100U : 200U, node.update_generation[REMOTE_NODE_ID]);
+    }
+    // Serial order across the 32-bit wrap: 0xFFFFFF00 lies before 0x100, so it is the older one there; and a newer one
+    // inside the window is a change (the source dropped its Subscriber), however soon it comes.
+    test_mock_reset();
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail =
+        write_update_one_entity(node.rx_buffer, 0x100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    tail = write_update_no_entities(node.rx_buffer, 0xFFFFFF00U);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    tail = write_update_no_entities(node.rx_buffer, 0x200);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_U64(1, node.rx_announces_superseded);
+
+    // Generation 0, the list of a source that had not changed yet, is older than any other - serially it would read as
+    // newer than 0x90000000.
+    test_mock_reset();
+    init_node(&node);
+    init_publisher(&pub, &node);
+    tail =
+        write_update_one_entity(node.rx_buffer, 0x90000000U, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    tail = write_update_no_entities(node.rx_buffer, 0);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_U64(1, node.rx_announces_superseded);
+
+    // ...and every other generation is newer than 0: a source's first change after its unchanged list is applied
+    // however its generation reads serially (0x90000000 lies "before" 0). The rmw runs of the first version of this
+    // rule, which ordered 0 serially, ignored such a list in 30 of 150 (each delaying discovery by up to the window).
+    test_mock_reset();
+    init_node(&node);
+    init_publisher(&pub, &node);
+    tail = write_update_no_entities(node.rx_buffer, 0);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    tail =
+        write_update_one_entity(node.rx_buffer, 0x90000000U, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_U64(0, node.rx_announces_superseded);
+}
+
 // A farewell from one source must not disturb a peer entry another source established.
 static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
     test_mock_reset();
@@ -1669,6 +1745,7 @@ int main(void) {
     test_repeat_contact_is_answered_only_when_broadcast();
     test_reply_skipped_when_tx_buffer_has_pending_content();
     test_source_dropping_endpoint_forgets_its_peer();
+    test_an_older_announce_arriving_after_a_newer_one_is_ignored();
     test_farewell_from_one_source_leaves_other_peers_intact();
     test_a_departed_first_peer_does_not_take_the_survivors_data();
     test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();

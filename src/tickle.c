@@ -7752,6 +7752,7 @@ static void reset_node_state(struct tt_Context* node) {
 
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         node->update_generation[i] = 0;
+        node->update_applied_ns[i] = 0;
         node->update_seen[i] = false;
         node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
@@ -7922,6 +7923,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->tx_dropped_oversize = 0;
     node->tx_unmatched_dropped = 0;
     node->tx_unmatched_kept = 0;
+    node->rx_announces_superseded = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
     node->rx_self_sent_data = 0;
@@ -18601,6 +18603,7 @@ static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t s
 static void note_discovery_round_trip(struct tt_Context* node, uint8_t source, uint32_t generation);
 
 static bool discovery_generation_applied(const struct tt_Context* node, uint8_t source, uint32_t generation);
+static bool announce_superseded(const struct tt_Context* node, uint8_t source, uint32_t generation);
 
 static bool process_announce(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
@@ -18640,6 +18643,10 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
 
     if (discovery_generation_applied(node, source, generation)) {
         return true; // the periodic resend of the announce we last acted on
+    }
+    if (announce_superseded(node, source, generation)) {
+        node->rx_announces_superseded++;
+        return true; // an older list than the one acted on, overtaken on the way: applying it would undo the newer
     }
 
     bool whole = frag_count == 1;
@@ -18688,6 +18695,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     bool is_first_contact_from_sender = !node->update_seen[source];
     note_discovery_round_trip(node, source, generation);
     node->update_generation[source] = generation;
+    node->update_applied_ns[source] = tt_get_ns();
     node->update_seen[source] = true;
     node->update_reprocess[source] = false;
     // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
@@ -21388,6 +21396,30 @@ static void send_discovery_request(struct tt_Context* node, uint8_t source, uint
 static bool discovery_generation_applied(const struct tt_Context* node, uint8_t source, uint32_t generation) {
     return node->update_seen[source] && !node->update_reprocess[source] &&
            node->update_generation[source] == generation;
+}
+
+// How long after acting on a source's announce an older generation from it is taken for a reordered datagram
+// (announce_superseded()). A generation is the sender's last_modified in nanoseconds cut to 32 bits, so two of them
+// are ordered only while they lie within 2^31 ns (2.1 s) of each other: a genuinely newer announce arriving this soon
+// after the applied one was made less than this window plus one transit after it, which keeps it inside 2^31 and reads
+// as newer. Past the window, an announce that is not the applied one is taken as new, as it always was.
+#define ANNOUNCE_REORDER_WINDOW_NS (1000ULL * tt_MILLISECOND)
+
+// An announce older than the one acted on from its source, arriving soon after it: a datagram overtaken on the way -
+// the broadcast list and the unicast reply land on two sockets (the well-known and the data port) and are read in
+// whichever order the poll returns them, and the segment is a third path. Applying it would replace the newer list
+// with the older: a Subscriber created between the two would be forgotten, its ack state dropped with it, and matched
+// again by the next announce at a new match point - so a RELIABLE Publisher's samples written in between were never
+// owed to it (test_loaned_messages, CI 2026-10-23: the talker stalled on a round its listener was never sent).
+// Generation 0 is the list of a context that has not changed since it was created (tt_Context.last_modified), older
+// than any it sends after, and any of those newer than it: serially, either would read as older than half the others.
+static bool announce_superseded(const struct tt_Context* node, uint8_t source, uint32_t generation) {
+    uint32_t applied = node->update_generation[source];
+    if (!node->update_seen[source] || applied == 0) {
+        return false;
+    }
+    bool older = generation == 0 || seq_delta(generation, applied) < 0;
+    return older && tt_get_ns() - node->update_applied_ns[source] < ANNOUNCE_REORDER_WINDOW_NS;
 }
 
 static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param);
