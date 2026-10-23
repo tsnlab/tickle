@@ -773,7 +773,11 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 **Lifecycle (lazy).** Built when the first same-host peer appears, released when the last goes. **No writer uses a dead
 owner's segment:** the owner's mapping holds a `flock()`; `tt_segment_attach()` refuses an unheld file
 (`tt_SEGMENT_ORPHANED`); writers never unlink. Writers re-ask a missing segment after `tt_SEGMENT_ATTACH_RETRY_NS`, an
-attached one after `tt_SEGMENT_REVALIDATE_NS` (both kept by the summary tick, below). A reader idle for
+attached one after `tt_SEGMENT_REVALIDATE_NS` (both kept by the summary tick, below). **A revalidation does not remap**
+(2026-10-23, `ab/revalidate-no-remap`): `tt_segment_identify()` (HAL) opens the name, fstats it, takes the shared
+`flock()` look and closes; the same file (device and inode, recorded before the attach) with its owner alive keeps the
+mapping and the bell (`segment_revalidated`), and a file gone, replaced by a successor's or orphaned gives them up and
+attaches again, counted by reason as before. FreeRTOS answers the region's address from its table. A reader idle for
 `tt_SEGMENT_DEAD_READER_NS` with records waiting is given up (UDP until recheck); a peer presumed dead is unmapped at
 once (`release_peer_segment()`; before 2026-10-22 a 10 Hz writer kept a killed reader's ring mapped for as long as it
 ran). A wedged head warns after `tt_SEGMENT_STALL_PASSES`. **A dead owner's files are swept:** a context building its
@@ -794,7 +798,7 @@ hot paths read at its size:
 | piece | bounds today | the time rule | where the time comes from | falsified by |
 |---|---|---|---|---|
 | attach backoff | a "no" (`missing`) re-asked every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) `peer_segment()` calls: one failed `open()` per 256 sends, and a late binder kept off shared memory for 256 sends - under 1 ms at max rate, four minutes at 1 Hz | due at the first summary tick `segment.attach_retry_ns` (`tt_SEGMENT_ATTACH_RETRY_NS`, one update interval) after the tick that first saw it (at most that plus two summary intervals); an announce from a peer at our address still makes it due at once (`note_same_host_peer()`) | the summary tick (`node_update()`, every summary interval) ages every cached answer with the poll's reading it is handed (`segment_recheck_sweep()`); the send reads one byte, `recheck_due`, where it decremented a count. Deadline: 32 bits in 2^20 ns units, in padding the entry already had | a test that asks at a standing clock more than once in 10,000 sends, or not at the deadline tick; rig c10 RTT or any cross-host cell's CPU WORSE (core gate v2) |
-| revalidate | a "yes" (attached) re-attached by name every `tt_SEGMENT_REVALIDATE_SENDS` (4096) calls: ~70 a second at 300 k datagrams/s, and a dead owner's ring written for over an hour at 1 Hz; a load, a decrement and a store per call | due at the first summary tick `segment.revalidate_ns` (`tt_SEGMENT_REVALIDATE_NS`, one update interval) after the stamp; the next send re-attaches, or waits while a claim holds the mapping (as before) | the same sweep; the send's fast path is one load of `recheck_due` and no store | a test that re-attaches before the deadline or misses it; same-host cells' instructions per sample WORSE beyond the placement floor (PC `initoptions8_segment_insn_pc.sh`, rig same-host gate v2) |
+| revalidate | a "yes" (attached) re-attached by name every `tt_SEGMENT_REVALIDATE_SENDS` (4096) calls: ~70 a second at 300 k datagrams/s, and a dead owner's ring written for over an hour at 1 Hz; a load, a decrement and a store per call | due at the first summary tick `segment.revalidate_ns` (`tt_SEGMENT_REVALIDATE_NS`, one update interval) after the stamp; the next send re-attaches, or waits while a claim holds the mapping (as before) - since 2026-10-23 it asks `tt_segment_identify()` and re-attaches only when the file is not the one mapped, owned (above) | the same sweep; the send's fast path is one load of `recheck_due` and no store | a test that re-attaches before the deadline or misses it; same-host cells' instructions per sample WORSE beyond the placement floor (PC `initoptions8_segment_insn_pc.sh`, rig same-host gate v2) |
 | receive check | a busy poll peeks at the socket after `tt_SCHEDULER_IO_INTERLEAVE` (8) due entries back to back: 8 times an entry's cost - ~16 us on the PC, ~40-80 us on a Pi - so the ACKNACK delay it bounds was the hardware's | the poll peeks once `poll.rx_check_ns` (0 = the context's `poll.receive_timeout`, 100 us) has passed since it last looked - a peek or a wait - remembered across calls (`tt_Context.rx_looked_ns`), so a run of short polls looks too and a busy negative-timeout poll looks once per slice; and only after an entry has run since the last look, so a check never follows a check | the loop's own reading, which it already takes after every step (`time`); one store per look, in the field added at the end of `tt_Context` (no field moves) | a test whose look comes before or after `rx_check_ns` of entries, or never across short polls; rig c6 wire bytes or CPU, or c1/c8 throughput, WORSE (core gate v2) |
 
 Measured on the PC (`initoptions8_segment_insn_pc.sh`, user instructions per sample, A P B B P A, 6 runs an arm, 6
@@ -832,6 +836,23 @@ piece 1 (A c4c7e194, B bbe395b6; `coreAB_bbe395b6_20261023-091236`) PASS, 0/96, 
 instructions on c4 (p4) +0.29%, c6 (p4, 5% loss) +0.11%, c15 (p4, Q1) +0.31% - and c6 wire bytes -0.15%, c6 CPU held,
 c1/c8 throughput held. Landed on the user's overall judgement (2026-10-23) despite the formal same-host WORSE: the
 times do not depend on the testbed, and the costs are small against what they remove.
+
+**Revalidation without remapping** (2026-10-23, `ab/revalidate-no-remap`, not landed). The +1.95% above is removed at
+its cause: a revalidation asks `tt_segment_identify()` and keeps the mapping when the same file is there, owned (the
+lifecycle paragraph above). Shown by `tests/test_segment_owner.c` on the real HAL with real SIGKILLs: three
+revalidations of a live owner attach nothing (on the parent each re-attached: 4 attaches where 1 is expected), a
+successor's file whose owner is alive is attached at its incarnation, a removed file is left, and an orphan is left
+(the existing test); seven mutants in `mutants_segment_owner.py` and two in `mutants_segment_time_limits.py` die. PC
+(`revalidate_insn_pc.sh`, `revalidate_insn_pc_20261023`, A the parent, P its placement build, B the branch; A P B B P
+A, 6 runs an arm, lat_p1 and lat_p3 at 20 s, about 26,000 round trips a run): the treatment held (client
+`shm_attach_attempts` 17 a run in A and P, 2 in B), and the pre-registered verdict is **FAIL**. Kernel instructions per
+round trip: lat_p1 client +9.6% and server +8.2% WORSE, lat_p3 client -1.0% IMPROVED, server -0.5% HELD. Read from the
+runs: kernel counts on this PC fall in two modes (client ~17.3 k or ~20-21 k a round trip) with every path counter a
+round trip identical across arms (sleeps 2.006, bells 1.000), and the high mode clusters by block (lat_p1 block 4, all
+three B runs) rather than by arm, so the kernel half cannot resolve the expected ~1% (15 re-attaches over 26,000 round
+trips). User instructions: lat_p1 server +0.078% (+3.2 a round trip, floor 0.6, A spread 0.085%) and lat_p3 client
++0.36% (A spread 2.8%) FAIL against the +0.05% bound - not explained; the kept revalidation runs less user code than
+the re-attach it replaces. The rig decides (same-host gate v2, prepared, not run).
 
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring
 **drops** (`segment_full_dropped`), since rerouting to UDP would overtake queued records. UDP still carries broadcasts,
@@ -891,7 +912,7 @@ sleep generations are unchanged. Discovery and matching stay UDP.
 
 | HAL part | FreeRTOS |
 |---|---|
-| region | a table of `tt_HAL_FREERTOS_SEGMENTS` names: create / attach (counts a user) / detach / unlink, memory returned with neither name nor user; never `ORPHANED` |
+| region | a table of `tt_HAL_FREERTOS_SEGMENTS` names: create / attach (counts a user) / identify (the region's address) / detach / unlink, memory returned with neither name nor user; never `ORPHANED` |
 | memory | `tt_freertos_set_segment_memory()`: the application's region, else the FreeRTOS heap; 24 KiB default (`tt_SEGMENT_BYTES`, 16 slots); none: UDP |
 | doorbell | a ring sets the owner's flag and gives the semaphore `tt_receive()` waits on, reported as a zero-length datagram; netconn build only (sockets: UDP doorbell) |
 | reader | always sleeps (`tt_SEGMENT_READER_WAITS` 0): one core, no time slicing, so spinning would stop the writer |

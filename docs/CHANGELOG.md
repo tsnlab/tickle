@@ -150,6 +150,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **A segment revalidation keeps its mapping when the name still holds the same, owned file** (`ab/revalidate-no-remap`,
+  not landed; [DESIGN.md](DESIGN.md) section 10). New HAL call `tt_segment_identify()` (Linux: open, fstat, `flock()`
+  look, close; FreeRTOS: the region's address); a file gone, replaced or orphaned still remaps, counted as before; kept
+  revalidations count in `tt_Context.segment_revalidated`. PC `revalidate_insn_pc_20261023`: client attaches 17 -> 2 a
+  run, pre-registered verdict FAIL (kernel counts bimodal by block on the shared PC; lat_p1 server user instructions
+  +0.078%). Rig same-host gate v2 pending.
 - **A scheduled publish reads no clock** ([DESIGN.md](DESIGN.md) section 2): the first publish of a scheduler entry
   takes the reading the poll ran the entry at (`tt_Context.entry_clock_ns`), so its stamp is early by the entry's own
   work before it. A second publish in the entry, and every entry after the first of a non-blocking poll, reads the
