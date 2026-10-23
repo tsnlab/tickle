@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset check-results-provenance lint lint-rmw lint-shell test-typesupport test-rmw test-rmw-behaviour clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-bench-shapes check-unsupported-list check-context-reset check-results-provenance lint lint-rmw lint-shell test-typesupport test-rmw test-rmw-behaviour clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen coverage
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan coverage:
@@ -48,9 +48,6 @@ lint-shell:
 
 check-doc-shas:
 	./.github/scripts/check_doc_shas.sh
-
-check-rig-lock:
-	./.github/scripts/check_rig_lock_coverage.sh
 
 # The four HIL benchmark payload shapes, checked against each other: the .msg TickLE generates
 # from, the .idl both DDS vendors generate from, and the generated header. See the script's own
@@ -126,7 +123,7 @@ test-freertos:
 # performance test (.github/workflows/performance.yml) is deliberately not part of this - it
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
 # here.
-test-all: test headers-cpp check-doc-shas check-rig-lock check-bench-shapes test-samehost test-linux test-freertos
+test-all: test headers-cpp check-doc-shas check-bench-shapes test-samehost test-linux test-freertos
 
 # Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
 # into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/

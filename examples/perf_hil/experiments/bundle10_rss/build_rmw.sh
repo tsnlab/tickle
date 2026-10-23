@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build_rmw.sh - the rmw_tickle build bundle10_rss measures: rmw_tickle and its two typesupports from this checkout
-# (shared libraries, as rmw-perf.yml builds them) plus the rss_tables_rmw node package, RelWithDebInfo so gdb can read
+# (shared libraries, as rmw-perf.yml built them) plus the rss_tables_rmw node package, RelWithDebInfo so gdb can read
 # the struct layouts (layout.py). Into WS (default /home/semih/tmp_build/b10rss/ws) with only /opt/ros/lyrical
 # sourced: another workspace on AMENT_PREFIX_PATH would shadow this rmw_tickle.
 #

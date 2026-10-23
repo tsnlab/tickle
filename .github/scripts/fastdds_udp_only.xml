@@ -3,8 +3,8 @@
   Forces FastDDS onto real UDPv4, disabling its default shared-memory transport.
 
   Used only for the one-off rmw_tickle-vs-FastDDS-vs-CycloneDDS comparison
-  (.github/scripts/compare_rmw_perf.sh), not the standing rmw_tickle-only regression job
-  (rmw-perf.yml). Without this, FastDDS auto-negotiates a same-host shared-memory transport that
+  (.github/scripts/compare_rmw_perf.sh), not the rmw_tickle-only regression job (rmw-perf.yml,
+  retired 2026-10-23). Without this, FastDDS auto-negotiates a same-host shared-memory transport that
   bypasses the kernel UDP/IP stack entirely - rmw_tickle has no such shortcut (hal_linux.c's own
   plain UDP sockets), so a same-host benchmark would silently favor FastDDS for reasons that have
   nothing to do with either implementation's own real efficiency (rmw_tickle/PLAN.md's Milestone

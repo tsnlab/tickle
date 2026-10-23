@@ -6,7 +6,8 @@
   <description>
     Sends std_msgs/String and std_msgs/Header between two processes through rmw_tickle, using
     interface packages built with rosidl_typesupport_tickle_c (rmw_tickle/scripts/
-    build_ros2_interfaces.sh), and publishes them from a default rclcpp::Node. Run by
+    build_ros2_interfaces.sh), publishes them from a default rclcpp::Node, and checks a live
+    BEST_EFFORT stream between two rclcpp processes for ordering. Run by
     rmw_tickle/scripts/check_ros2_interfaces.sh.
   </description>
   <maintainer email="semih@tsnlab.com">TSN Lab</maintainer>

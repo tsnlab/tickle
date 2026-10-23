@@ -29,8 +29,8 @@
 #
 # --behaviour (make test-rmw-behaviour, 2026-10-08): after the suite, the rmw behaviour checks CI's "Check all" runs
 # and the suite does not, in the same netns against the same build - check_ros2_interfaces.sh as CI calls it: std_msgs
-# String and Header between two processes, the same from a default rclcpp::Node (-r), and an rclcpp_action Fibonacci
-# (-A), each against the workspace's ifaces/ and with RMW_TICKLE_PREFIX naming this checkout's install, so the chain
+# String and Header between two processes, the same from a default rclcpp::Node (-r), an rclcpp_action Fibonacci
+# (-A), and a BEST_EFFORT rclcpp stream checked for timestamp order and for every cell having run (-S), each against the workspace's ifaces/ and with RMW_TICKLE_PREFIX naming this checkout's install, so the chain
 # of underlays that workspace was built on cannot put another rmw_tickle ahead of it. NOT run here, still CI-only: the
 # upstream conformance suite (test_rmw_implementation, a patched jazzy clone this machine's ROS does not build), the
 # controls that need two more interface workspaces built, and the direct-codec identity harness.
@@ -186,6 +186,7 @@ behaviour() {
 behaviour pubsub
 behaviour rclcpp -r
 behaviour action -A
+behaviour stream -S
 if [ "$behaviour_failed" != 0 ]; then
     echo "run_rmw_suite: behaviour checks FAILED"
     exit 1

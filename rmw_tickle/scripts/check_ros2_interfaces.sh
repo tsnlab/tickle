@@ -6,7 +6,7 @@
 # reference_ament_prefix_shadowing in its notes).
 #
 # Usage, in a shell with ROS 2 and rmw_tickle's install sourced:
-#   check_ros2_interfaces.sh [-w WORKSPACE] [-r]  # the workspace build_ros2_interfaces.sh built into
+#   check_ros2_interfaces.sh [-w WORKSPACE] [-r|-A|-S]  # the workspace build_ros2_interfaces.sh built into
 #
 # -r: publish from a default rclcpp::Node (default_node.cpp) instead of the rmw-level publisher -
 # the first thing a user runs. rclcpp then starts the type description service, parameter services,
@@ -22,6 +22,19 @@
 # when the client gets every feedback as a prefix of the true sequence and the exact result, AND its
 # maps show rmw_tickle and the workspace's example_interfaces TickLE typesupport. It also sends a
 # second goal and cancels it partway: the cancel must be accepted and the goal end CANCELED.
+#
+# -S: a live BEST_EFFORT stream between two rclcpp processes, checked sample by sample (stream_check.cpp) -
+# what .github/workflows/rmw-perf.yml checked on its self-hosted box until it was retired on 2026-10-23, here
+# on every push instead. One pub/sub pair per cell, STREAM_CHECK_TYPES (array1k header) x STREAM_CHECK_MODES
+# (block poll), STREAM_CHECK_SECONDS (3) of 1000 Hz each. Passes only when, in every cell, both processes
+# exit 0, the subscriber received at least one sample and loaded rmw_tickle and the workspace's std_msgs
+# TickLE typesupport, and saw no sample whose publish time was not strictly newer than the previous one
+# (rmw-perf.yml's "Fail on a timestamp-ordering violation"); when no process aborted with "Data consistency
+# violated" or std::terminate (the abort class that job found); and when every expected cell printed its
+# result line - the count is derived from the two lists, so a cell that ran nothing cannot pass as one that
+# passed (rmw-perf.yml's "Verify every expected cell actually ran"). Out-of-order ids are reported, not gated.
+# Needs the workspace built with -a (a default rclcpp::Node). STREAM_CHECK_INJECT is the controls' knob
+# (stream_check.cpp); a real run never sets it.
 #
 # -o OVERLAY: an install to source after the workspace, for controls - e.g. an example_interfaces
 # built without rmw_tickle sourced, which has no TickLE typesupport, so that -A must then fail at
@@ -39,12 +52,14 @@ set -euo pipefail
 WORKSPACE="${HOME}/tickle_ros2_interfaces"
 RCLCPP=0
 ACTION=0
+STREAM=0
 OVERLAY=""
-while getopts "w:rAo:" opt; do
+while getopts "w:rASo:" opt; do
     case "$opt" in
     w) WORKSPACE="$OPTARG" ;;
     r) RCLCPP=1 ;;
     A) ACTION=1 ;;
+    S) STREAM=1 ;;
     o) OVERLAY="$OPTARG" ;;
     *) exit 2 ;;
     esac
@@ -145,6 +160,68 @@ keep_logs() {
         find "$log" -maxdepth 1 -type f -exec cp {} "$CHECK_ROS2_KEEP_LOGS"/ \; 2>/dev/null || true
     fi
 }
+
+if [ "$STREAM" = 1 ]; then
+    stream_check="$(dirname "$check")/stream_check"
+    [ -x "$stream_check" ] || fail "no $stream_check"
+    cpp_ts_lib="$WORKSPACE/install/std_msgs/lib/libstd_msgs__rosidl_typesupport_tickle_cpp.so"
+    read -r -a types <<<"${STREAM_CHECK_TYPES:-array1k header}"
+    read -r -a modes <<<"${STREAM_CHECK_MODES:-block poll}"
+    seconds="${STREAM_CHECK_SECONDS:-3}"
+    trap 'kill "${sub_pid:-}" "${pub_pid:-}" 2>/dev/null || true; keep_logs; rm -rf "$log"' EXIT
+    expected=$((${#types[@]} * ${#modes[@]}))
+    ran=0
+    violations=0
+    out_of_order=0
+    problems=()
+    for type in "${types[@]}"; do
+        for mode in "${modes[@]}"; do
+            cell="$type-$mode"
+            # Explicit, distinct ids, as rmw-perf.yml's launch template gave its pair.
+            TICKLE_NODE_ID=101 "$stream_check" sub "$type" "$mode" $((seconds + 3)) >"$log/$cell.sub.txt" 2>&1 &
+            sub_pid=$!
+            sleep 1
+            TICKLE_NODE_ID=102 "$stream_check" pub "$type" "$seconds" >"$log/$cell.pub.txt" 2>&1 &
+            pub_pid=$!
+            pub_status=0
+            wait "$pub_pid" || pub_status=$?
+            sub_status=0
+            wait "$sub_pid" || sub_status=$?
+            line=$(grep "^stream_check cell $type $mode: " "$log/$cell.sub.txt" || true)
+            echo "$cell: ${line:-no result line} (sub exit $sub_status, pub exit $pub_status)"
+            # The abort class: perf_test's throw, and anything else that ended in std::terminate or a signal.
+            if grep -h 'Data consistency violated\|terminate called' "$log/$cell.sub.txt" "$log/$cell.pub.txt"; then
+                problems+=("$cell: a process aborted (Data consistency violated / std::terminate)")
+            elif [ "$sub_status" -ge 128 ] || [ "$pub_status" -ge 128 ]; then
+                problems+=("$cell: a process died by signal (sub exit $sub_status, pub exit $pub_status)")
+            fi
+            [ "$sub_status" = 0 ] || problems+=("$cell: the subscriber exited $sub_status")
+            [ "$pub_status" = 0 ] || problems+=("$cell: the publisher exited $pub_status")
+            [ -n "$line" ] || continue
+            ran=$((ran + 1))
+            identity=$(identity_of "$log/$cell.sub.txt" "$rmw_lib" "$cpp_ts_lib")
+            case "$identity" in OK:*) ;; *) problems+=("$cell: libraries under test not loaded: $identity") ;; esac
+            received=$(echo "$line" | grep -o 'received=[0-9]*' | cut -d= -f2)
+            ts=$(echo "$line" | grep -o 'timestamp_not_newer=[0-9]*' | cut -d= -f2)
+            ooo=$(echo "$line" | grep -o 'out_of_order=[0-9]*' | cut -d= -f2)
+            [ "${received:-0}" -gt 0 ] || problems+=("$cell: the subscriber received nothing")
+            violations=$((violations + ${ts:-0}))
+            out_of_order=$((out_of_order + ${ooo:-0}))
+            [ "${ts:-0}" = 0 ] || grep -h '^timestamp_not_newer' "$log/$cell.sub.txt" | head -20
+        done
+    done
+    echo "out-of-order arrivals (BEST_EFFORT promises no order; reported, not gated): $out_of_order"
+    echo "timestamp-ordering violations (gated): $violations"
+    echo "expected $expected cells (${#types[@]} types x ${#modes[@]} modes), $ran printed a result"
+    [ "$violations" = 0 ] || problems+=("$violations timestamp-ordering violation(s): a subscriber was delivered a sample no newer than the previous one")
+    [ "$ran" -ge "$expected" ] || problems+=("only $ran of $expected cells produced a result - a run that tested less than the matrix is not a pass")
+    if [ ${#problems[@]} -gt 0 ]; then
+        printf 'check_ros2_interfaces: FAIL: %s\n' "${problems[@]}" >&2
+        exit 1
+    fi
+    echo "check_ros2_interfaces: PASS"
+    exit 0
+fi
 
 if [ "$ACTION" = 1 ]; then
     action_check="$(dirname "$check")/action_check"

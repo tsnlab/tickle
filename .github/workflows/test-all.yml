@@ -103,15 +103,6 @@ jobs:
         continue-on-error: true
         run: make check-doc-shas
 
-      # Three separate steps of rmw-perf.yml were found writing shared trees outside the box
-      # lock on 2026-09-24, one after another, because each fix asked "is the benchmark locked?"
-      # rather than "is this state shared?". The cost was a twelve-rep measurement corrupted by
-      # CI rewriting binaries underneath it, and a hypothesis built on the result.
-      - name: Shared-tree writes are under the rig lock
-        id: rig_lock
-        continue-on-error: true
-        run: make check-rig-lock
-
       # Every public header, as C and as C++. rmw_tickle's typesupport is C++ and includes these,
       # so a C-only construct in one breaks it - and nothing else in this workflow can see that,
       # because every other tier is C. _Static_assert in config.h took the Check-all workflow red

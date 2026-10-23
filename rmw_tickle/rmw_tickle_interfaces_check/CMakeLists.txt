@@ -32,7 +32,12 @@ target_link_libraries(interfaces_check
 add_executable(default_node src/default_node.cpp)
 target_link_libraries(default_node rclcpp::rclcpp ${std_msgs_TARGETS} ${sensor_msgs_TARGETS})
 
-install(TARGETS interfaces_check default_node DESTINATION lib/${PROJECT_NAME})
+# A live two-process stream through rclcpp, checked sample by sample for ordering, one pub/sub pair
+# per cell (check_ros2_interfaces.sh -S) - what rmw-perf.yml checked until it was retired.
+add_executable(stream_check src/stream_check.cpp)
+target_link_libraries(stream_check rclcpp::rclcpp ${std_msgs_TARGETS})
+
+install(TARGETS interfaces_check default_node stream_check DESTINATION lib/${PROJECT_NAME})
 
 # A ROS 2 action through rmw_tickle (check_ros2_interfaces.sh -A). Optional: example_interfaces is
 # not part of every ROS 2 install, and a workspace built without it must still build the rest.

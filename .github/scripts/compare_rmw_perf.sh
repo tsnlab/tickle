@@ -14,16 +14,15 @@
 # FastDDS/CycloneDDS an unfair advantage rmw_tickle structurally can't have).
 #
 # Deliberately NOT wired into any GitHub Actions workflow (the user's own call, 2026-09-19,
-# after "TickLE Plan" had started integrating this into rmw-perf.yml - a standalone script run
+# after "TickLE Plan" had started integrating this into rmw-perf.yml, since retired - a standalone script run
 # by hand, with results copied into rmw_tickle/COMPARISON.md afterward, is enough for something
 # this intermittent). Run this directly on a box with buildfarm_perf_tests already provisioned
-# per docs/RMW_PERF_SETUP.md (today, that's the tickle-perf self-hosted runner's own
-# ~/rmw_perf_ws - SSH there and run this script from a checkout of this repo).
+# per docs/RMW_PERF_SETUP.md (today, the lab PC's ~/rmw_perf_ws - run this script from a checkout of this
+# repo there).
 #
 # Usage: .github/scripts/compare_rmw_perf.sh [runtime_seconds]
-#   runtime_seconds: per topic/rmw/sync-mode benchmark duration (default 10, matching rmw-perf.
-#                    yml's own PERF_TEST_RUNTIME - see that workflow's own comment on why it's
-#                    short by buildfarm_perf_tests' own 30s default).
+#   runtime_seconds: per topic/rmw/sync-mode benchmark duration (default 10, the PERF_TEST_RUNTIME
+#                    the retired rmw-perf.yml used - short by buildfarm_perf_tests' own 30s default).
 
 # No -u: /opt/ros/*/setup.bash itself references AMENT_TRACE_SETUP_FILES without ever setting it
 # first - not nounset-safe, a real ROS 2/ament-wide quirk, not something to work around here.
@@ -34,7 +33,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUNTIME="${1:-10}"
 
 : "${RMW_PERF_WS:="$HOME/rmw_perf_ws"}"
-: "${ROS_DISTRO_NAME:?Set ROS_DISTRO_NAME to the real ROS 2 distro installed on this box (not necessarily jazzy - see rmw-perf.yml for why)}"
+: "${ROS_DISTRO_NAME:?Set ROS_DISTRO_NAME to the real ROS 2 distro installed on this box (not necessarily jazzy - see docs/RMW_PERF_SETUP.md for why)}"
 
 # Keep TickLE's discovery traffic on this box (2026-09-23, a real incident, not a precaution):
 # hal_linux.c's compiled-in default is _tt_CONTEXT_BROADCAST 255.255.255.255 (config.h), which on this
@@ -56,8 +55,8 @@ PERF_TEST_TOPICS="Array1k;Struct16"
 PERF_TEST_RMW_IMPLEMENTATIONS="rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
 
 # Box-scoped mutual exclusion (examples/perf_hil/rig_lock.sh). This script benchmarks on THIS
-# machine, not on the rpis - and so does CI's own rmw-perf job, on the self-hosted runner that
-# lives here. Until 2026-09-24 nothing stood between the two but one session remembering to ask
+# machine, not on the rpis - and so did CI's rmw-perf job (retired 2026-10-23), on the self-hosted
+# runner that lives here. Until 2026-09-24 nothing stood between the two but one session remembering to ask
 # another, which is the arrangement the rpi lock exists because it failed. Scope "box", not the
 # default "hil": taking the rpi lock for a job that never touches an rpi blocks the rig for no
 # reason, which this script did for most of an afternoon.
@@ -124,7 +123,7 @@ cat "$FASTRTPS_DEFAULT_PROFILES_FILE"
 
 echo "=== Running the benchmark (two-process, real rclcpp/rmw boundary, all three rmws) ==="
 rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
-# `|| true` on both, matching rmw-perf.yml's own established pattern: this benchmark's own
+# `|| true` on both, the retired rmw-perf.yml's original pattern: this benchmark's own
 # numbers are the actual point of running it, not a pass/fail gate - a real per-combo failure
 # (e.g. a crash) still needs the summary table below to run so it's visible, not abort the script
 # right here before ever printing it.

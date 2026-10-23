@@ -138,12 +138,13 @@ rmw layer as well as the library under it.
 
 ### Performance [4.iv]
 
-`rmw_tickle` has performance-tracking CI (`.github/workflows/rmw-perf.yml`, `rmw_tickle`'s own before/after
-latency and throughput), run by hand (`workflow_dispatch`) rather than on every push, because it needs the
-dedicated rig - something neither `rmw_fastrtps_cpp` nor `rmw_cyclonedds_cpp` currently has ("does not currently
-have performance tests," their own quality declarations' own words). It is a regression tracker for `rmw_tickle`
-itself, not a cross-vendor comparison. Cross-vendor figures, taken on TickLE core's two-Raspberry-Pi rig
-(`.github/workflows/performance.yml`, also dispatch-only), are in `docs/RESULTS.md`.
+`rmw_tickle`'s performance figures, its own and against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`, are taken
+by the rig harnesses in `examples/perf_hil/experiments/` (two Raspberry Pis, plus same-host cells) and published with
+their provenance in `docs/RESULTS.md` - something neither vendor currently has ("does not currently have performance
+tests," their own quality declarations' own words). The same-host `buildfarm_perf_tests` workflow
+(`.github/workflows/rmw-perf.yml`) was retired on 2026-10-23: its figures were used nowhere, and the one thing only
+it checked - a live two-process `rclcpp` stream failing on a timestamp-ordering violation, an abort, or a cell that
+never ran - runs on every push in `check-all.yml` (`rmw_tickle/scripts/check_ros2_interfaces.sh -S`).
 
 ### Linters and Static Analysis [4.v]
 

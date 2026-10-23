@@ -21,8 +21,8 @@
 # RIG_LOCK_SCOPE: which shared resource is being claimed. There are two, and conflating them is
 # what this parameter exists to stop (2026-09-24):
 #   hil  (default) - the two rpis. Held by run_perf.sh and by every perf_hil sweep.
-#   box            - THIS machine. Held by compare_rmw_perf.sh and by CI's own rmw-perf job, both
-#                    of which run their benchmarks here rather than on the rpis.
+#   box            - THIS machine. Held by compare_rmw_perf.sh, which runs its benchmark here rather
+#                    than on the rpis (and by CI's rmw-perf job until it was retired, 2026-10-23).
 # Until this existed the lock guarded the rpis only, so the one resource the same-host benchmarks
 # actually contend for had nothing but "remember to ask the other session" in front of it - which
 # is precisely the arrangement the rpi lock exists because it failed. A box-only job taking the hil

@@ -9,8 +9,8 @@
 
 """Turn test_rmw_implementation's own per-executable JUnit/gtest .xml output into one Markdown
 table of rmw_tickle's conformance results, written to GITHUB_STEP_SUMMARY by check-all.yml's own
-"Run the upstream rmw conformance suite" step - same treatment rmw-perf.yml's own
-rmw_perf_summary.py already gives the performance numbers, so a run's Actions summary page shows
+"Run the upstream rmw conformance suite" step - same treatment rmw_perf_summary.py gives
+compare_rmw_perf.sh's performance numbers, so a run's Actions summary page shows
 pass/skip/fail counts directly instead of only the raw `colcon test-result --verbose` console log.
 
 Only `*__rmw_tickle.gtest.xml` files are read - this same workspace's own test_rmw_implementation

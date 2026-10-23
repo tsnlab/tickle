@@ -180,7 +180,6 @@ wall_start=$(date +%s)
 launch lint "$lint_kind" "lint (clang-format + clang-tidy)" make lint "${lint_vars[@]}"
 launch shell gate "lint-shell" make lint-shell
 launch docshas gate "check-doc-shas" make check-doc-shas
-launch riglock gate "check-rig-lock" make check-rig-lock
 launch bench gate "check-bench-shapes" make check-bench-shapes
 launch unsup gate "check-unsupported-list" make check-unsupported-list
 launch ctxreset gate "check-context-reset" make check-context-reset

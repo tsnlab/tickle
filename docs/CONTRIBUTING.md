@@ -78,9 +78,9 @@ so a hand-edited generated file or a `.msg`/`.srv` edited without regenerating b
   [.clang-tidy](../.clang-tidy)) are both enforced by `make lint` / CI
   ([check-all.yml](../.github/workflows/check-all.yml)). Run `clang-format -i` on files you touch
   rather than hand-formatting.
-- **`make check-gates` runs every local gate at once** (15 today: lint, shell lint, the document,
-  rig-lock, bench-shape, unsupported-list, context-reset and provenance checks, unit tests, tsan, the typesupport tests, the
-  FreeRTOS and rmw lints and a sweep of build configurations) and prints one PASS or FAIL row per gate, exiting
+- **`make check-gates` runs every local gate at once** (16 today: lint, shell lint, the document,
+  bench-shape, unsupported-list, context-reset and provenance checks, unit tests, tsan, ASan + UBSan, the typesupport
+  tests, the FreeRTOS and rmw lints, the rmw suite, a sweep of build configurations and the FreeRTOS link) and prints one PASS or FAIL row per gate, exiting
   non-zero if any failed. Read the rows, not the last line. Prefer it to running them one at a time and reading the last line: a
   gate's answer discarded by a redirect, or a failure swallowed by `&&`, has sent a red push to
   `main` more than once. It does not cover what needs a runner (the conformance suite, the

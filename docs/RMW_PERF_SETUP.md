@@ -1,9 +1,18 @@
-# rmw_tickle performance runner setup (`tickle-perf`)
+# rmw_tickle same-host benchmark box setup (`buildfarm_perf_tests`)
 
 > Formerly `.github/scripts/README-rmw-perf.md`. Citations of `rmw_tickle/PLAN.md` refer to the text at `3c0c505b`
 > (`git show 3c0c505b:rmw_tickle/PLAN.md`).
 
-[`rmw-perf.yml`](../.github/workflows/rmw-perf.yml) tracks `rmw_tickle`'s own before/after performance
+> **`rmw-perf.yml` was retired on 2026-10-23** (the user's decision). It had been dispatch-only since 2026-09-24,
+> last ran that day, and its figures were used nowhere: `rmw_tickle`'s figures come from the rig harnesses in
+> `examples/perf_hil/experiments/` and are published in [RESULTS.md](RESULTS.md). The one thing only it did - a live
+> two-process exchange through `rclcpp`, failing on a timestamp-ordering violation, on a "Data consistency violated"
+> abort, and on a matrix cell that never ran - moved to `rmw_tickle/scripts/check_ros2_interfaces.sh -S`, which
+> `check-all.yml` runs on every push on GitHub-hosted runners (with a control per failure) and `make
+> test-rmw-behaviour` runs in a netns. What follows is kept for `.github/scripts/compare_rmw_perf.sh`, which still
+> runs by hand on a box provisioned this way; read every mention of `rmw-perf.yml` below as history.
+
+`rmw-perf.yml` (`git show 2590bdd9:.github/workflows/rmw-perf.yml`) tracked `rmw_tickle`'s own before/after performance
 using [`ros2/buildfarm_perf_tests`](https://github.com/ros2/buildfarm_perf_tests) (which wraps
 [`ros2/performance_test`](https://github.com/ros2/performance_test)), on a self-hosted runner
 registered with the `tickle-perf` label. This is a **different rig from `tickle-hil`**
@@ -26,7 +35,7 @@ when dispatched by hand** (`workflow_dispatch`) since 2026-09-24 - not on push; 
 top of `rmw-perf.yml` for why, and for what per-push CI no longer covers as a result. Each run's own Actions
 summary page shows a Markdown table (`.github/scripts/rmw_perf_summary.py`, parsing
 `buildfarm_perf_tests`' own per-test `.benchmark.json` output), and the full raw CSV/PNG/JSON
-results are uploaded as a build artifact regardless.
+results were uploaded as a build artifact regardless.
 
 This only needs to be set up once per runner; a normal contributor never runs any of this by hand,
 and `rmw-perf.yml` itself never provisions anything - it only rebuilds `rmw_tickle`'s own two
@@ -287,7 +296,7 @@ report of the problem destroyed the evidence for it. Both are now counters that 
 - The **timestamp** variant (`ros2_communicator.hpp`) has never been seen under either DDS vendor,
   and fired in 2 of 12 cells on the two-socket build against 5 of 1751 historically. It is treated
   as ours until shown otherwise, and `rmw-perf.yml`'s "Fail on a timestamp-ordering violation" step
-  **fails the job** on it. Removing the throw is about keeping the evidence, not forgiving the
+  **failed the job** on it - now `check_ros2_interfaces.sh -S` fails `check-all.yml` on the same condition. Removing the throw is about keeping the evidence, not forgiving the
   condition.
 
 ### Patch (g) is not a patch: `performance_test` cannot currently be rebuilt (2026-09-24, open)
@@ -299,8 +308,8 @@ exceed one datagram. The generator processes every type in `rosidl_generate_inte
 uses**. This workspace was provisioned on 2026-09-15 with an older generator and nothing rebuilt it
 for nine days, which is why the regression was invisible until something did.
 
-**Consequence**: `~/rmw_perf_ws/install/performance_test` is empty and the `rmw-perf.yml` job cannot
-run until this is fixed. Narrowing the interface list is **not** a workaround - `perf_test`'s own
+**Consequence**: `~/rmw_perf_ws/install/performance_test` is empty and `compare_rmw_perf.sh` (and the `rmw-perf.yml`
+job, before it was retired) cannot run until this is fixed. Narrowing the interface list is **not** a workaround - `perf_test`'s own
 sources reference the wider type set. The fix belongs in the generator: decline to generate for a
 type that cannot fit one datagram, and let `rmw_create_publisher` report it at runtime, which it
 already does clearly ("no rmw_tickle typesupport for this message type").
@@ -317,8 +326,7 @@ Steps 1-3 above are idempotent - re-running them after e.g. an Ubuntu point rele
 procedure. A fresh `ros2_dependencies.repos` upstream update (step 2) will overwrite step 4's own
 local patches to `performance_test`/`buildfarm_perf_tests` sources (they were never upstreamed) -
 re-apply step 4 after any `vcs import`/re-clone of `~/rmw_perf_ws/src`. If the runner ever moves to
-a different machine, register the new one with the same `tickle-perf` label (no workflow change
-needed) and repeat provisioning there.
+a different machine, repeat provisioning there; no runner is needed any more.
 
 ## Troubleshooting
 

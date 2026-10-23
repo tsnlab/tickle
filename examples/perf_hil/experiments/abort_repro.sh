@@ -36,7 +36,7 @@ ln -sfn "$OUT" "/tmp/tickle_abort_repro_latest.txt"
 CAPDIR="${CAPDIR:-/tmp/tickle_abort_caps}"
 mkdir -p "$CAPDIR"
 
-# Match rmw-perf.yml, which sets this and which is the condition the abort was observed under. The
+# Match rmw-perf.yml (retired 2026-10-23), which set this and which is the condition the abort was observed under. The
 # first version of this script did not, so it ran on the compiled-in 255.255.255.255 default - which
 # has no subnet to be scoped by and follows the default route, i.e. out ens18 onto the shared lab
 # network. Two consequences, both found by looking at the capture rather than by reasoning: the runs

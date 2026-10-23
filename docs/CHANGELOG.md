@@ -162,6 +162,23 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   or latency row WORSE, 1/88 rows listed (c15 p4 server user instructions +0.55%), against 12/88 at +0.42% to +0.84%
   for the bitmap form.
 
+### Removed
+
+- **`.github/workflows/rmw-perf.yml`** (the user, 2026-10-23). Dispatch-only since 2026-09-24 and last run that day; its
+  `buildfarm_perf_tests` figures were used nowhere (rmw_tickle's figures come from the rig harnesses in
+  `examples/perf_hil/experiments/`, published in [RESULTS.md](RESULTS.md)). The one thing only it did moved first: a live
+  two-process stream through `rclcpp` is now `rmw_tickle/scripts/check_ros2_interfaces.sh -S` (`stream_check.cpp`), run
+  by `check-all.yml` on every push on GitHub-hosted runners and by `make test-rmw-behaviour` (the gate table's `rmw
+  suite` row) in a netns. Its shape is the old matrix's - BEST_EFFORT, KEEP_LAST 10, 1000 Hz from default rclcpp nodes,
+  a 1 KiB array and a nested `std_msgs/Header` - now across the block and poll receive paths (4 cells), and so are its
+  gates: a sample whose publish time is not strictly newer than the last ("Fail on a timestamp-ordering violation"), a
+  "Data consistency violated" or `std::terminate` abort, a cell that received nothing, and fewer cells printing a result
+  than the matrix holds ("Verify every expected cell actually ran"). CI runs a control per failure (an injected
+  timestamp regression, a cell that prints nothing, an injected abort), each of which must fail for its own reason.
+  `check-rig-lock` (`check_rig_lock_coverage.sh`), which read only `rmw-perf.yml`, goes with it, from `make test-all`,
+  `test-all.yml` and the gate table. The lab PC's `buildfarm_perf_tests` workspace stays for `compare_rmw_perf.sh`
+  ([RMW_PERF_SETUP.md](RMW_PERF_SETUP.md)).
+
 ### Fixed
 
 - A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a

@@ -128,7 +128,7 @@
 +    // So the throw is removed only to stop losing the evidence. std::terminate() ran before any
 +    // teardown, which discarded exactly the per-Subscriber delivery counters built to diagnose
 +    // this. Counting instead lets the process exit cleanly and print them. The run must still
-+    // FAIL - that is enforced outside this file, by rmw-perf.yml failing on this line - because a
++    // FAIL - by rmw-perf.yml until 2026-10-23, by check_ros2_interfaces.sh -S since - because a
 +    // gate that stops failing while the defect is open is worse than no gate.
      if (m_prev_timestamp >= data.time) {
 -      throw std::runtime_error(

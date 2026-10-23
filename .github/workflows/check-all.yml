@@ -582,12 +582,12 @@ jobs:
           # Testing", and the official "Creating an rmw implementation" tutorial names it as *the*
           # way to test a new rmw. Its own CMakeLists.txt auto-discovers every available rmw via
           # rmw_implementation_cmake's call_for_each_rmw_implementation() (the same get_available_
-          # rmw_implementations() mechanism buildfarm_perf_tests already uses for rmw-perf.yml) -
+          # rmw_implementations() mechanism buildfarm_perf_tests uses) -
           # rmw_tickle needs no test executables of its own, only to be present in AMENT_PREFIX_PATH
           # (already true - it was just built into install/ above) when this configures.
           #
           # Cloned fresh every run (this is a GitHub-hosted runner with no persistent state, unlike
-          # rmw-perf.yml's own tickle-perf underlay) rather than provisioned once - its own
+          # the lab PC's buildfarm_perf_tests underlay) rather than provisioned once - its own
           # dependencies (rmw_dds_common, osrf_testing_tools_cpp, test_msgs, ament_cmake_ros) are
           # all plain apt-installable ROS 2 packages (confirmed from test_rmw_implementation's own
           # package.xml), unlike buildfarm_perf_tests' own two-DDS-vendor + performance_test
@@ -626,7 +626,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           # This GitHub-hosted runner is fresh every run - ros-tooling/setup-ros installs rosdep
           # itself but never actually initializes/updates its own sources cache, unlike a real
-          # persistent box (tickle-perf's own provisioning, docs/RMW_PERF_SETUP.md, does this once by
+          # persistent box (the lab PC's provisioning, docs/RMW_PERF_SETUP.md, does this once by
           # hand) - found the hard way via a real CI failure ("rosdep installation has not been
           # initialized yet"). `rosdep init` itself fails loudly if a cache already exists (not the
           # case here, but harmless to guard anyway); `rosdep update` alone is not enough on a truly
@@ -732,7 +732,7 @@ jobs:
           # below ever gets written - the one time that table is most worth having. Still exits
           # non-zero at the very end so a real regression still fails the job, same as before.
           colcon test-result --test-result-base test_ws/build --verbose && test_result_exit=0 || test_result_exit=$?
-          # Same treatment rmw-perf.yml's own rmw_perf_summary.py already gives the performance
+          # Same treatment rmw_perf_summary.py gives compare_rmw_perf.sh's performance
           # numbers - a Markdown table on this run's own Actions summary page, not just the
           # console log above, so a skim of the summary tab shows pass/skip/fail counts directly.
           echo "## rmw_tickle conformance (test_rmw_implementation)" >> "$GITHUB_STEP_SUMMARY"
@@ -769,6 +769,28 @@ jobs:
           # rosidl_typesupport_tickle_c generates for a .action, the TRANSIENT_LOCAL status topic,
           # and a GetResult answered only once the goal finishes.
           rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -A
+          # The live two-process stream rmw-perf.yml checked until it was retired (2026-10-23): BEST_EFFORT,
+          # KEEP_LAST 10, 1000 Hz between two default rclcpp::Nodes, per cell array1k/header x block/poll. Fails
+          # on a timestamp-ordering violation, on a "Data consistency violated" or std::terminate abort, on a
+          # cell that received nothing, and on fewer cells printing a result than the matrix holds.
+          rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -S
+          # Its controls, one cell each: each injected fault must fail the check, and for its own reason -
+          # a check that has never failed on purpose is not known to be able to.
+          for control in "timestamp_regress:timestamp-ordering violation" \
+              "drop_result:only 0 of 1 cells produced a result" "abort:a process aborted"; do
+            if STREAM_CHECK_INJECT="${control%%:*}" STREAM_CHECK_TYPES=header STREAM_CHECK_MODES=block \
+                rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -S \
+                > "$RUNNER_TEMP/stream_control.log" 2>&1; then
+              cat "$RUNNER_TEMP/stream_control.log"
+              echo "control: the stream check passed with ${control%%:*} injected"
+              exit 1
+            fi
+            grep "FAIL: .*${control#*:}" "$RUNNER_TEMP/stream_control.log" || {
+              cat "$RUNNER_TEMP/stream_control.log"
+              echo "control: ${control%%:*} failed the stream check, but not for its own reason"
+              exit 1
+            }
+          done
           # Its control: example_interfaces again, built with only ROS 2 visible - so without TickLE
           # typesupport - and overlaid on the full workspace. The default nodes then start, and
           # creating the action must fail, for exactly that reason. The control proves it is one

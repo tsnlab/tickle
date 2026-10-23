@@ -7,11 +7,11 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""Turn buildfarm_perf_tests' own per-test .benchmark.json output into one Markdown table of
-rmw_tickle's own numbers, written to GITHUB_STEP_SUMMARY by rmw-perf.yml so every run's own
-Actions summary page shows the numbers directly - no separate dashboard needed for this first
+"""Turn buildfarm_perf_tests' own per-test .benchmark.json output into one Markdown table, printed by
+compare_rmw_perf.sh. Written for rmw-perf.yml (retired 2026-10-23), which put it on GITHUB_STEP_SUMMARY so
+every run's own Actions summary page showed the numbers directly - no separate dashboard needed for this first
 pass (see rmw_tickle/PLAN.md's own benchmark plan on why raw artifacts, not a dashboard, were the
-deliberate starting point). rmw-perf.yml's own PERF_TEST_RMW_IMPLEMENTATIONS is rmw_tickle-only -
+deliberate starting point). rmw-perf.yml's own PERF_TEST_RMW_IMPLEMENTATIONS was rmw_tickle-only -
 this script never compares against rmw_fastrtps_cpp/rmw_cyclonedds_cpp; buildfarm_perf_tests'
 "two-process" test shape always runs both sides as local child processes on one host (no remote-
 host launch capability at all), which structurally favors any rmw with a same-host shared-memory
@@ -27,7 +27,7 @@ parsed from the *filename*, not the JSON body, since the body's own single inner
 --benchmark-json-dir additionally writes rmw-latency-benchmark.json/rmw-throughput-benchmark.json
 in benchmark-action/github-action-benchmark's own flat "custom" array format (see run_perf.sh's
 own write_benchmark_json() for the identical convention performance.yml already uses) - one array
-entry per (topic, sync) combination, so rmw-perf.yml can hand these straight to that action and
+entry per (topic, sync) combination, so rmw-perf.yml could hand these straight to that action and
 get the same gh-pages dev/bench history/graphing performance.yml's own TickLE-core numbers
 already have, instead of only this run's own GITHUB_STEP_SUMMARY table (which has no history).
 """
