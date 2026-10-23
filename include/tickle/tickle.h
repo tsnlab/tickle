@@ -1623,6 +1623,10 @@ struct tt_Context {
     // enum for why the reason is kept rather than a yes/no: every failure here falls back to UDP
     // and works, so a module that never attaches anywhere is invisible without it.
     uint32_t segment_attach[tt_SEGMENT_ATTACH_COUNT];
+    // Revalidations that found the name still holding the region we map, owned (tt_segment_identify()), and so kept
+    // the mapping instead of attaching again. Not in segment_attach[]: nothing was attached. One per peer per
+    // segment.revalidate_ns on a healthy pair; a revalidation that remaps is counted there, by its reason, as before.
+    uint32_t segment_revalidated;
     // Datagrams that went over UDP although the segment was working, because they were larger than a
     // slot - a service request or response, which do not fragment (config.h's tt_SEGMENT_BYTES).
     // Kept apart from segment_attach[] deliberately: "this datagram was not for the segment" and
@@ -1782,6 +1786,9 @@ struct tt_Context {
         uint32_t ip;
         uint16_t port;
         uint32_t incarnation; // what was in the header when we attached; a change means a new peer
+        // Which region the name held when we attached (tt_segment_identify(), hal.h). A revalidation that finds the
+        // same one, still owned, keeps this mapping and its bell; anything else gives them up and attaches again.
+        uintptr_t file_identity;
         // Slots of this mapping claimed by a publisher of ours and not yet published or abandoned
         // (tt_Publisher_claim()): an application is writing into them, so nothing unmaps this region - not the
         // revalidation, not the dead-reader rule - until it is 0 again.

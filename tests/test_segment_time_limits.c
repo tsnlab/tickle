@@ -27,7 +27,7 @@
 //   - the summary tick is what ages the answers (node_update() calls the sweep);
 //   - an answer asked again and refused again stands again, from a new stamp (remember_absent() resets both flags);
 //   - an announce from a peer at our own address makes a "no" due at once (note_same_host_peer());
-//   - the same for a "yes": ten thousand sends at a standing clock re-attach nothing, the deadline tick re-attaches,
+//   - the same for a "yes": ten thousand sends at a standing clock re-attach nothing, the deadline tick revalidates,
 //     at segment.revalidate_ns and not at the "no"'s interval, and the sweep ages attached entries at all;
 //   - an attach that follows a "no" is a new answer, stamped by the next tick, not the "no"'s due flag or deadline.
 
@@ -92,8 +92,9 @@ static void make_owner(struct tt_Context* owner, const struct tt_InitOptions* op
     EXPECT_TRUE(owner->own_segment != NULL);
 }
 
+// Each "yes" given: an attach, or a revalidation that found the same owned region and kept the mapping (2026-10-23).
 static uint32_t attaches(const struct tt_Context* writer) {
-    return writer->segment_attach[tt_SEGMENT_ATTACHED];
+    return writer->segment_attach[tt_SEGMENT_ATTACHED] + writer->segment_revalidated;
 }
 
 static void send_to_attached(struct tt_Context* writer, const struct tt_Context* owner) {
@@ -233,6 +234,9 @@ static void test_a_yes_falls_due_on_the_tick_at_its_deadline(void) {
     EXPECT_EQ_U32(2, attaches(&writer)); // revalidated
     send_to_attached(&writer, &owner);
     EXPECT_EQ_U32(2, attaches(&writer)); // and the new answer stands
+    segment_recheck_sweep(&writer, stamp + (33U * UNIT_NS));
+    send_to_attached(&writer, &owner);
+    EXPECT_EQ_U32(2, attaches(&writer)); // from a new stamp, not the old deadline
     release_segments(&writer);
     release_own_segment(&owner);
     test_mock_segments_free();

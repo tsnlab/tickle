@@ -303,6 +303,21 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return region;
 }
 
+// Which entry holds the name: a successor takes a new one, as a real successor gets a new file.
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
+    pthread_mutex_lock(&tsan_segments_lock);
+    for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
+        if (tsan_segments[i].region != NULL && tsan_segments[i].present && strcmp(tsan_segments[i].path, path) == 0) {
+            *identity = (uintptr_t)i + 1U;
+            why = (uint8_t)tt_SEGMENT_ATTACHED;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&tsan_segments_lock);
+    return why;
+}
+
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)mapping;
     (void)bytes; // the region outlives its attachers here, as a real mapping's file does

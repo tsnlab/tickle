@@ -180,6 +180,13 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return NULL;
 }
 
+// NOLINTNEXTLINE(readability-non-const-parameter) - the HAL's signature; an absent segment leaves it untouched
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    (void)path;
+    (void)identity;
+    return (uint8_t)tt_SEGMENT_ABSENT;
+}
+
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)mapping;
     (void)bytes;

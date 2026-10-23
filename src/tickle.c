@@ -2743,8 +2743,16 @@ static void ensure_own_segment(struct tt_Context* node);
 // instead of one, on a path that runs once per peer and is cached, not once per datagram.
 //
 // NULL with *out_verdict set on every refusal, so the caller has one failure path and this has one job.
+//
+// *out_identity is which region the name held BEFORE either open (tt_segment_identify()), 0 if it could not be told: a
+// replacement between that look and the attach leaves the old identity against the new mapping, and the next
+// revalidation then remaps rather than keeping a region it never identified. Its own verdict decides nothing here -
+// the attaches below give the reason, as they always have.
 static struct tt_SegmentHeader* attach_peer_segment(const char* path, uint32_t ip, uint16_t port, uint8_t context_id,
-                                                    size_t* out_bytes, enum tt_SegmentAttach* out_verdict) {
+                                                    size_t* out_bytes, uintptr_t* out_identity,
+                                                    enum tt_SegmentAttach* out_verdict) {
+    *out_identity = 0;
+    (void)tt_segment_identify(path, out_identity);
     uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
     struct tt_SegmentHeader* probe = tt_segment_attach(path, sizeof(struct tt_SegmentHeader), &why);
     if (probe == NULL) {
@@ -2862,6 +2870,40 @@ static struct tt_SegmentHeader* segment_attach_fenced(struct tt_Context* node, c
     return NULL;
 }
 
+// A revalidation's question, asked without remapping (2026-10-23): is the region under the peer's name still the one
+// `entry` maps, and does its owner live? The three answers a re-attach used to find are all a "no" here - the file gone
+// (ABSENT), replaced by a successor's (another identity: create unlinks first, so a successor always has a new file),
+// or orphaned (its owner dead, the file and its header intact) - and a "no" gives the mapping up and attaches again,
+// which counts the reason as before. Only the "yes" is new, and it was the commonest answer by far: a re-attach per
+// revalidation cost a 1 Hz reliable server 9 attaches a run instead of 5 and +1.95% kernel instructions per sample on
+// the rig (munmap of 768 KiB, the bell closed and reopened, and the ring faulted in again).
+static bool segment_still_ours(const struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port, uint8_t context_id) {
+    char path[tt_SEGMENT_PATH_LENGTH];
+    if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
+        return false;
+    }
+    uintptr_t identity = 0;
+    const uint8_t verdict = tt_segment_identify(path, &identity);
+    return verdict == (uint8_t)tt_SEGMENT_ATTACHED && identity == entry->file_identity;
+}
+
+// Whether `entry`'s mapping, of an owner it still names, stands: not due (one byte read, the common case), or due and
+// still ours - then kept, mapping and bell, and a new answer stands from the next summary tick: no munmap, no
+// open-fstat-flock-mmap, no faulting the ring in again.
+static bool segment_answer_stands(struct tt_Context* node, struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port,
+                                  uint8_t context_id) {
+    if (!entry->recheck_due) {
+        return true;
+    }
+    if (!segment_still_ours(entry, ip, port, context_id)) {
+        return false;
+    }
+    entry->recheck_due = false;
+    entry->recheck_stamped = false;
+    node->segment_revalidated++;
+    return true;
+}
+
 static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, uint8_t context_id, uint32_t ip,
                                                      uint16_t port) {
     if (context_id == tt_CONTEXT_ID_INVALID) {
@@ -2890,7 +2932,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
         // clone however it is written out.
         const bool same_address = entry->ip == ip && entry->port == port;
         const bool same_owner = same_address && entry->mapping->incarnation == entry->incarnation;
-        if (same_owner && !entry->recheck_due) {
+        if (same_owner && segment_answer_stands(node, entry, ip, port, context_id)) {
             return entry->mapping; // the common case, and the only one that costs nothing: one byte read
         }
         if (same_address && !same_owner) {
@@ -2902,12 +2944,13 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
             note_attach(node, tt_SEGMENT_STALE);
         }
         // Given up, for whichever of the three reasons brought us here: a different address behind
-        // this id, an owner replaced, or simply that the recheck has fallen due. That last one is
-        // not housekeeping - an owner killed since we attached leaves this region mapped, readable,
-        // and carrying the incarnation we recorded, so nothing read *through* this mapping can ever
-        // report its death. Only asking the name again can, and a peer that never asks writes into
-        // a ring nobody drains for as long as it lives. The file at that name is now either gone,
-        // the same one, or the successor's, and the attach below answers all three.
+        // this id, an owner replaced, or a recheck fallen due that found the name no longer holding
+        // this region, owned (segment_still_ours() above). That last one is not housekeeping - an
+        // owner killed since we attached leaves this region mapped, readable, and carrying the
+        // incarnation we recorded, so nothing read *through* this mapping can ever report its death.
+        // Only asking the name again can, and a peer that never asks writes into a ring nobody drains
+        // for as long as it lives. The file at that name is now gone, orphaned, or the successor's,
+        // and the attach below answers all three.
         // The dead-reader clock survives this, and that is the whole of a defect shipped in
         // f938461e. A revalidation is bookkeeping about the MAPPING; it says nothing about whether
         // the reader is consuming. Clearing it here - and the entry was recomputed every
@@ -2934,7 +2977,8 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     }
     size_t bytes = 0;
     enum tt_SegmentAttach verdict = tt_SEGMENT_ABSENT;
-    struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &verdict);
+    uintptr_t identity = 0;
+    struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &identity, &verdict);
     header = segment_attach_fenced(node, entry, header, bytes, ip, port, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
@@ -2947,6 +2991,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     entry->ip = ip;
     entry->port = port;
     entry->incarnation = header->incarnation;
+    entry->file_identity = identity;
     entry->missing = false;
     entry->recheck_due = false; // a new answer, which the next summary tick stamps (segment_recheck_sweep())
     entry->recheck_stamped = false;
@@ -7786,6 +7831,7 @@ static void reset_node_state(struct tt_Context* node) {
     for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
         node->segment_attach[reason] = 0;
     }
+    node->segment_revalidated = 0;
     node->segment_broadcast_to_udp = 0;
     node->segment_oversized_to_udp = 0;
     node->segment_unattached_to_udp = 0;
