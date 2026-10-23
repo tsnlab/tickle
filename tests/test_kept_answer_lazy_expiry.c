@@ -297,7 +297,7 @@ static struct tt_SubmessageHeader* write_fake_response(struct tt_Context* node, 
 }
 
 static void keep(struct tt_Context* node, struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
-    EXPECT_TRUE(set_server_cache(server, write_fake_response(node, receiver, seq_no), receiver, 0));
+    EXPECT_TRUE(set_server_cache(server, write_fake_response(node, receiver, seq_no), receiver, 0, 0));
 }
 
 // Served until one lifetime after it went out, and not from then on; expired, the slot still names the call and when

@@ -11,7 +11,9 @@
 #   mutant1  this tree with the default seed the options resolve to changed by 1 ms - must DIFFER, or the scenario
 #            does not read the client's resolved options;
 #   mutant2  this tree with the default deferred-response timeout the options resolve to cut to 4 s - must DIFFER, or
-#            the scenario does not read the server's.
+#            the scenario does not read the server's;
+#   mutant3  this tree with the server's launch rule (a request from another source port is a new client, 2026-10-23)
+#            firing on equal ports - must DIFFER, or the scenario never passes through it.
 #
 # Usage: tests/wire_identity_service.sh [PARENT]     PARENT defaults to 25a658b0, the parent of the service options.
 # Prints one line per check and exits non-zero if any check fails.
@@ -90,6 +92,10 @@ verdict mutant1 differ "$TMP/parent_a.bin" "$TMP/mutant1.bin"
 mutant mutant2 "service->server_deferred_response_timeout = (uint64_t)tt_SERVER_DEFERRED_RESPONSE_TIMEOUT;" \
     "service->server_deferred_response_timeout = 4 * tt_SECOND;"
 verdict mutant2 differ "$TMP/parent_a.bin" "$TMP/mutant2.bin"
+# Since 2026-10-23 the server tells a client's launches apart by the request's source port; every request here comes
+# from one port, so the change must be inert - and is only shown inert if the scenario passes through the rule.
+mutant mutant3 "    return cached != asking && cached != 0 && asking != 0;" "    return cached != 0 && asking != 0;"
+verdict mutant3 differ "$TMP/parent_a.bin" "$TMP/mutant3.bin"
 
 cleanup # the trap does it too, on any earlier exit
 trap - EXIT
