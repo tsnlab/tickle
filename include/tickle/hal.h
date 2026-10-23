@@ -244,6 +244,19 @@ void* tt_segment_create(const char* path, size_t bytes);
 // context maps it (Linux: an exclusive flock() held by the mapping), and attach asks before mapping.
 // A platform whose regions cannot outlive their owner (no named files) never produces it.
 void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why);
+// tt_segment_identify(): which region is under `path` now, without mapping it - what a writer asks at each
+// revalidation (segment.revalidate_ns) so that a mapping it already holds is kept when the name still holds the same,
+// owned region, and given up only when it does not (2026-10-23; a re-attach per revalidation cost a 1 Hz reliable
+// server +1.95% kernel instructions per sample on the rig). Returns, as an `enum tt_SegmentAttach`:
+//   tt_SEGMENT_ATTACHED - a region is there and its owner lives; *identity says which region.
+//   tt_SEGMENT_ORPHANED - a region is there and nobody owns it; *identity is still written.
+//   tt_SEGMENT_ABSENT / tt_SEGMENT_REFUSED - nothing to ask about, as attach answers them; *identity untouched.
+// *identity is the platform's own name for the region, pointer-sized so that it costs a 32-bit target's peer table
+// nothing (Linux: the file's device and inode; FreeRTOS: the region's address). Two answers are equal only for the same
+// region, and a region a caller still maps cannot be freed, so its identity cannot pass to a successor's while the
+// caller holds it. Asked before the attach whose identity it records, so a replacement in between records the
+// old identity against the new mapping, and the next revalidation remaps - the safe direction.
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity);
 void tt_segment_detach(void* mapping, size_t bytes);
 // Removes the name. The mapping survives in anyone who still holds it, which is why a reader checks
 // the incarnation rather than trusting that a name still resolves to the segment it attached to.

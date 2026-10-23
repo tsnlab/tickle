@@ -621,10 +621,11 @@ static void test_a_claimed_mapping_stays_mapped(void) {
     EXPECT_TRUE(peer_segment(&arm->sender, OWNER_ID, OWNER_IP, OWNER_PORT) == mapping);
     EXPECT_TRUE(entry->mapping == mapping);
     EXPECT_TRUE(entry->recheck_due); // put off, not done
-    uint64_t attached = arm->sender.segment_attach[tt_SEGMENT_ATTACHED];
+    uint64_t attached = arm->sender.segment_attach[tt_SEGMENT_ATTACHED] + arm->sender.segment_revalidated;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_abandon_claim(&arm->pub, payload));
     EXPECT_TRUE(peer_segment(&arm->sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
-    EXPECT_EQ_U64(attached + 1, arm->sender.segment_attach[tt_SEGMENT_ATTACHED]); // the control: revalidated now
+    EXPECT_EQ_U64(attached + 1, arm->sender.segment_attach[tt_SEGMENT_ATTACHED] +
+                                    arm->sender.segment_revalidated); // the control: revalidated now
     teardown(arm);
 }
 

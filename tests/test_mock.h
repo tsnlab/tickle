@@ -651,6 +651,8 @@ int test_mock_segment_attaches = 0;
 // see that at all.
 int test_mock_segment_attach_calls = 0;
 int test_mock_segment_double_detaches = 0;
+// Every call to tt_segment_identify(): what a revalidation that keeps its mapping costs instead of an attach.
+int test_mock_segment_identifies = 0;
 // Detaches of a region the mock never handed out: on Linux, an munmap() of whatever the pointer held - an entry read
 // before it was set up (segment_peer()) is how one happens.
 int test_mock_segment_stray_detaches = 0;
@@ -721,6 +723,18 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return found->region; // one region, two users - which is the point
 }
 
+// Which entry holds the name: a successor takes a new one (tt_segment_create() above), as a real successor gets a new
+// file. Never orphaned: the mock's attach never is either (tests/test_segment_owner.c asks that of the real HAL).
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    test_mock_segment_identifies++;
+    struct test_mock_segment* found = test_mock_find_segment(path);
+    if (found == NULL) {
+        return (uint8_t)tt_SEGMENT_ABSENT;
+    }
+    *identity = (uintptr_t)(found - test_mock_segments) + 1U;
+    return (uint8_t)tt_SEGMENT_ATTACHED;
+}
+
 // The region outlives its attachers here, as a real mapping's file does - but a *second* detach of
 // the same pointer without a re-attach is recorded, because that is the one thing a no-op cannot
 // otherwise reproduce. A real munmap makes the page inaccessible, so a double detach followed by any
@@ -785,6 +799,7 @@ static void test_mock_segments_free(void) {
     test_mock_segment_attaches = 0;
     test_mock_segment_attach_calls = 0;
     test_mock_segment_double_detaches = 0;
+    test_mock_segment_identifies = 0;
     test_mock_segment_stray_detaches = 0;
     test_mock_segment_unlinks = 0;
 }

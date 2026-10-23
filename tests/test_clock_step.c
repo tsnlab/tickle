@@ -289,6 +289,11 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     *why = (uint8_t)tt_SEGMENT_ABSENT;
     return NULL;
 }
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    (void)path;
+    (void)identity;
+    return (uint8_t)tt_SEGMENT_ABSENT;
+}
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)mapping;
     (void)bytes;

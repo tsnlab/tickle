@@ -5184,6 +5184,27 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return mapping;
 }
 
+// The same three questions attach asks - is there a file, which one, does its owner live - and no mapping: open, fstat,
+// the shared flock() look, close. The device rotated into the high half and XORed with the inode: exact for inodes and
+// device numbers of 32 bits each, which is what tmpfs hands out, and the mapping a caller holds keeps its inode in use,
+// so a successor's file at the same name cannot carry the same number. On a 32-bit build the identity is the low half.
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    int segment_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (segment_fd < 0) {
+        return (uint8_t)(errno == ENOENT ? tt_SEGMENT_ABSENT : tt_SEGMENT_REFUSED);
+    }
+    struct stat info;
+    if (fstat(segment_fd, &info) != 0) {
+        (void)close(segment_fd);
+        return (uint8_t)tt_SEGMENT_REFUSED;
+    }
+    const uint64_t device = (uint64_t)info.st_dev;
+    *identity = (uintptr_t)((uint64_t)info.st_ino ^ ((device << 32U) | (device >> 32U)));
+    const bool orphaned = segment_owner_gone(segment_fd);
+    (void)close(segment_fd);
+    return (uint8_t)(orphaned ? tt_SEGMENT_ORPHANED : tt_SEGMENT_ATTACHED);
+}
+
 void tt_segment_detach(void* mapping, size_t bytes) {
     if (mapping != NULL) {
         (void)munmap(mapping, bytes);

@@ -305,6 +305,17 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return NULL;
 }
 
+// Which entry holds the name: a successor takes a new one, as a real successor gets a new file.
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    for (int i = 0; i < MAX_SEGMENTS; i++) {
+        if (segments[i].region != NULL && segments[i].present && strcmp(segments[i].path, path) == 0) {
+            *identity = (uintptr_t)i + 1U;
+            return (uint8_t)tt_SEGMENT_ATTACHED;
+        }
+    }
+    return (uint8_t)tt_SEGMENT_ABSENT;
+}
+
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)mapping;
     (void)bytes; // the region outlives its attachers, as a real mapping's file does
@@ -625,14 +636,14 @@ static void test_a_fence_whose_datagram_came_first_passes_at_once(void) {
     teardown(false);
 }
 
-// Revalidation (tt_SEGMENT_REVALIDATE_NS after the summary tick stamped the answer) re-attaches the same mapping with
-// nothing sent over UDP in
-// between: no fence, so the steady state never holds its ring.
+// Revalidation (tt_SEGMENT_REVALIDATE_NS after the summary tick stamped the answer) keeps the same mapping - or, where
+// the name no longer holds it, re-attaches - with nothing sent over UDP in between: no fence, so the steady state never
+// holds its ring.
 static void test_a_revalidation_sends_no_fence(void) {
     setup(false);
     (void)switch_writer(&node_a, &pub_a, 0);
     drain_reader();
-    const uint32_t attaches = node_a.segment_attach[tt_SEGMENT_ATTACHED];
+    const uint32_t attaches = node_a.segment_attach[tt_SEGMENT_ATTACHED] + node_a.segment_revalidated;
     for (uint32_t i = 0; i < 3 * 64; i++) {
         if (i % 64 == 0) {
             drain_reader();
@@ -642,9 +653,10 @@ static void test_a_revalidation_sends_no_fence(void) {
         publish(&pub_a, 0);
     }
     drain_reader();
-    printf("revalidation: %u attaches, %lu fences sent\n", node_a.segment_attach[tt_SEGMENT_ATTACHED] - attaches,
+    const uint32_t answered = node_a.segment_attach[tt_SEGMENT_ATTACHED] + node_a.segment_revalidated - attaches;
+    printf("revalidation: %u answers (%u kept), %lu fences sent\n", answered, node_a.segment_revalidated,
            (unsigned long)node_a.segment_fences_sent);
-    EXPECT_TRUE(node_a.segment_attach[tt_SEGMENT_ATTACHED] - attaches >= 2); // treatment: it did revalidate
+    EXPECT_TRUE(answered >= 2); // treatment: it did revalidate
     EXPECT_EQ_U64(1, node_a.segment_fences_sent);
     EXPECT_EQ_U64(1, node_b.segment_fences_passed + node_b.segment_fences_expired);
     EXPECT_EQ_U32(published[0], delivered[0]);

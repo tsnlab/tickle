@@ -83,14 +83,14 @@ MUTANTS = [
     (
         "an attached send never revalidating",
         "src/tickle.c",
-        "        if (same_owner && !entry->recheck_due) {",
-        "        if (same_owner) {",
+        "    if (!entry->recheck_due) {\n        return true;",
+        "    if (true) {\n        return true;",
     ),
     (
         "an attached send revalidating every time",
         "src/tickle.c",
-        "        if (same_owner && !entry->recheck_due) {",
-        "        if (same_owner && false) {",
+        "    if (!entry->recheck_due) {\n        return true;",
+        "    if (false) {\n        return true;",
     ),
     (
         "the sweep not aging a yes",
@@ -115,6 +115,19 @@ MUTANTS = [
         "src/tickle.c",
         "(segment_recheck_sweep())\n    entry->recheck_stamped = false;\n",
         "(segment_recheck_sweep())\n",
+    ),
+    # 2026-10-23: a revalidation that keeps its mapping is a new answer too.
+    (
+        "a kept revalidation left due",
+        "src/tickle.c",
+        "    entry->recheck_due = false;\n    entry->recheck_stamped = false;\n    node->segment_revalidated++;",
+        "    entry->recheck_stamped = false;\n    node->segment_revalidated++;",
+    ),
+    (
+        "a kept revalidation keeping its old stamp",
+        "src/tickle.c",
+        "    entry->recheck_due = false;\n    entry->recheck_stamped = false;\n    node->segment_revalidated++;",
+        "    entry->recheck_due = false;\n    node->segment_revalidated++;",
     ),
 ]
 

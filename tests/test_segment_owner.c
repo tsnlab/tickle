@@ -25,6 +25,8 @@
 //   still passes every header check, so ownership is the only thing refusing it;
 // - a writer attached BEFORE the death leaves at its next revalidation instead of re-attaching to the corpse;
 // - a successor at the same name is attached, at its own incarnation;
+// - a revalidation that finds the same file, owned, keeps the mapping and its bell and attaches nothing, and one that
+//   finds a successor's file (its owner alive) or no file leaves it (2026-10-23);
 // - in one process, unmapping the owner's region is what ends ownership, with the name still in place;
 // - a writer's check does not refuse its neighbour's: another holder of a shared check lock changes nothing;
 // - owners restarting in a loop while a writer attaches concurrently: every owner's create succeeds, and the writer
@@ -231,6 +233,83 @@ static void test_a_dead_owners_segment_is_never_written(void) {
     remove_owner_files();
 }
 
+// Every attach this context made, by any outcome: the bench's shm_attach_attempts.
+static uint32_t attach_attempts(const struct tt_Context* node) {
+    uint32_t total = 0;
+    for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
+        total += node->segment_attach[reason];
+    }
+    return total;
+}
+
+// Makes the writer's answer about the owner due - two summary ticks, the first stamping it - and asks again. *was_due
+// says the treatment was applied: a revalidation that never fell due would keep every mapping and prove nothing.
+static struct tt_SegmentHeader* revalidate(struct tt_Context* writer, bool* was_due) {
+    tick_ns += TICK_STEP_NS;
+    segment_recheck_sweep(writer, tick_ns);
+    tick_ns += TICK_STEP_NS;
+    segment_recheck_sweep(writer, tick_ns);
+    *was_due = writer->segment_peers[OWNER_ID].recheck_due;
+    return peer_segment(writer, OWNER_ID, OWNER_IP, owner_port);
+}
+
+// 2026-10-23: a revalidation that finds the name still holding the region it maps, owned, keeps the mapping and its
+// bell - no attach, no munmap - and each of the three things a revalidation exists to catch is still caught: the file
+// replaced by a successor's (with the successor alive, so only the file's identity can tell), the file gone, and (in
+// test_a_dead_owners_segment_is_never_written above) the file orphaned.
+static void test_a_revalidation_keeps_a_live_owners_mapping(void) {
+    remove_owner_files();
+    pid_t first = spawn_owner();
+    EXPECT_TRUE(first > 0);
+    if (first <= 0) {
+        return;
+    }
+    struct tt_Context writer;
+    init_context(&writer, WRITER_ID, 1U);
+    struct tt_SegmentHeader* mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, owner_port);
+    EXPECT_TRUE(mapping != NULL);
+    const uint32_t attached = attach_attempts(&writer);
+    EXPECT_EQ_U32(1, writer.segment_attach[tt_SEGMENT_ATTACHED]);
+    const int32_t bell = writer.segment_peers[OWNER_ID].bell_fd_plus1;
+
+    // The same file, its owner alive: kept, three times over, and nothing attached.
+    for (int round = 0; round < 3; round++) {
+        bool was_due = false;
+        EXPECT_TRUE(revalidate(&writer, &was_due) == mapping);
+        EXPECT_TRUE(was_due); // the treatment: it was asked
+    }
+    EXPECT_EQ_U32(attached, attach_attempts(&writer)); // no attach: on origin/main each revalidation added one
+    EXPECT_EQ_U32(3, writer.segment_revalidated);
+    EXPECT_EQ_INT(bell, writer.segment_peers[OWNER_ID].bell_fd_plus1); // the bell kept with it
+    EXPECT_EQ_U32((uint32_t)first, mapping != NULL ? mapping->incarnation : 0U);
+
+    // Replaced: the owner dies and a successor builds its own file at the name. The old mapping still reads the old
+    // incarnation and the successor is alive, so the file's identity is all that tells them apart.
+    kill_owner(first);
+    pid_t second = spawn_owner();
+    EXPECT_TRUE(second > 0);
+    if (second > 0) {
+        bool was_due = false;
+        struct tt_SegmentHeader* now = revalidate(&writer, &was_due);
+        EXPECT_TRUE(was_due);
+        EXPECT_TRUE(now != NULL);
+        EXPECT_EQ_U32((uint32_t)second, now != NULL ? now->incarnation : 0U);
+        EXPECT_EQ_U32(2, writer.segment_attach[tt_SEGMENT_ATTACHED]);
+        EXPECT_EQ_U32(3, writer.segment_revalidated);
+
+        // Gone: the successor dies and its files are removed. The next revalidation finds no file and leaves.
+        kill_owner(second);
+        remove_owner_files();
+        now = revalidate(&writer, &was_due);
+        EXPECT_TRUE(was_due);
+        EXPECT_TRUE(now == NULL);
+        EXPECT_EQ_U32(1, writer.segment_attach[tt_SEGMENT_ABSENT]);
+        EXPECT_EQ_U32(3, writer.segment_revalidated);
+    }
+    release_segments(&writer);
+    remove_owner_files();
+}
+
 // In one process: ownership ends exactly when the owner's region is unmapped, the name and the header untouched -
 // which is what a process death does to it. And another writer's shared check, held at that moment, refuses nothing.
 static void test_ownership_is_the_mapping(void) {
@@ -422,6 +501,7 @@ int main(void) {
     owner_port = (uint16_t)(PORT_BASE + ((uint32_t)getpid() % PORT_SPAN));
     owner_ip = OWNER_IP_BASE | ((uint32_t)getpid() & 0xFFFFU);
     test_a_dead_owners_segment_is_never_written();
+    test_a_revalidation_keeps_a_live_owners_mapping();
     test_ownership_is_the_mapping();
     test_owners_restarting_under_a_writer();
     test_dead_owners_files_are_swept();

@@ -54,6 +54,49 @@ MUTANTS = [
         "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode) && segment_owner_gone(file_fd)) {",
         "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode)) {",
     ),
+    # 2026-10-23: a revalidation keeps the mapping when the name still holds the same, owned file.
+    (
+        "a revalidation keeping a mapping the name still holds",
+        "src/tickle.c",
+        "    if (!segment_still_ours(entry, ip, port, context_id)) {\n        return false;",
+        "    if (true) {\n        return false;",
+    ),
+    (
+        "a kept mapping being the file attached",
+        "src/tickle.c",
+        "    return verdict == (uint8_t)tt_SEGMENT_ATTACHED && identity == entry->file_identity;",
+        "    return verdict == (uint8_t)tt_SEGMENT_ATTACHED;",
+    ),
+    (
+        "a kept mapping's owner being alive",
+        "src/tickle.c",
+        "    return verdict == (uint8_t)tt_SEGMENT_ATTACHED && identity == entry->file_identity;",
+        "    return identity == entry->file_identity;",
+    ),
+    (
+        "the attach recording which file it mapped",
+        "src/tickle.c",
+        "    entry->file_identity = identity;",
+        "    entry->file_identity = 0;",
+    ),
+    (
+        "the identity being asked before the attach",
+        "src/tickle.c",
+        "    (void)tt_segment_identify(path, out_identity);",
+        "    (void)path;",
+    ),
+    (
+        "identify asking whether the owner lives",
+        "src/hal_linux.c",
+        "    const bool orphaned = segment_owner_gone(segment_fd);",
+        "    const bool orphaned = false;",
+    ),
+    (
+        "identify telling files apart by inode",
+        "src/hal_linux.c",
+        "    *identity = (uintptr_t)((uint64_t)info.st_ino ^ ((device << 32U) | (device >> 32U)));",
+        "    *identity = (uintptr_t)device;",
+    ),
 ]
 
 

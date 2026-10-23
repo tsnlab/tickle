@@ -431,8 +431,9 @@ static void test_attach_retry_ns_is_when_a_missing_segment_is_asked_again(void) 
     expect_about(50U * tt_MILLISECOND, ns_between_attach_attempts(&opts));
 }
 
-// How long after the summary tick that first sees an attached segment the writer asks its name again (the attach is two
-// calls: header, then region): summary ticks every 2^20 ns, a send after each.
+// How long after the summary tick that first sees an attached segment the writer asks its name again - by
+// tt_segment_identify(), which keeps the mapping when the name still holds it (2026-10-23), or by an attach (two calls:
+// header, then region): summary ticks every 2^20 ns, a send after each.
 static uint64_t ns_before_revalidation(const struct tt_InitOptions* opts) {
     struct tt_InitOptions created = resolved(opts);
     struct tt_Context owner;
@@ -441,11 +442,11 @@ static uint64_t ns_before_revalidation(const struct tt_InitOptions* opts) {
     whitebox(&writer, &created, WRITER_ID, WRITER_IP, WRITER_PORT);
     create_own_segment(&owner);
     EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
-    const int attached = test_mock_segment_attach_calls;
+    const int asked = test_mock_segment_attach_calls + test_mock_segment_identifies;
     const uint64_t stamp = (5U * tt_SECOND) + 12345U;
     segment_recheck_sweep(&writer, stamp);
     uint64_t now = stamp;
-    while (test_mock_segment_attach_calls == attached && now - stamp < 100U * tt_SECOND) {
+    while (test_mock_segment_attach_calls + test_mock_segment_identifies == asked && now - stamp < 100U * tt_SECOND) {
         now += AGE_STEP_NS;
         segment_recheck_sweep(&writer, now);
         EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);

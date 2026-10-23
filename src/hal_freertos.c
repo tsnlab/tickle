@@ -332,6 +332,20 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     return base;
 }
 
+// The region under the name, by its address: a region an attacher still uses keeps its entry and its memory, so no
+// successor can be given that address while the caller holds it. Never ORPHANED, as attach never is (above).
+uint8_t tt_segment_identify(const char* path, uintptr_t* identity) {
+    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
+    taskENTER_CRITICAL();
+    const struct segment_region* region = region_named(path);
+    if (region != NULL) {
+        *identity = (uintptr_t)region->base;
+        why = (uint8_t)tt_SEGMENT_ATTACHED;
+    }
+    taskEXIT_CRITICAL();
+    return why;
+}
+
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)bytes; // a region is detached whole, whatever part of it the attach asked for (the header probe)
     if (mapping == NULL) {
