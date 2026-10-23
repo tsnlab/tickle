@@ -59,7 +59,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 - **Wi-Fi repair timing** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2):
   `tt_LinkOptions.repair_timing` (0 = the profile's: WIFI on, the rest off). A reliable reader's first recovery is timed
   even past the back-off, and after it only one its first request answered. Without it the WB Wi-Fi arms never timed a
-  recovery and retried every 1 ms for good. Every other profile resolves it off: recoveries timed as before.
+  recovery and retried every 1 ms for good. Every other profile resolves it off: recoveries timed as before. Rig core
+  gate v2 (A c3c58cbf, B ef191c5f, each before its rebase): PASS, no CPU or latency row WORSE, 2/88 listed; Array1m
+  (0/0.1/1% loss) and Array4m reliable KL10, 5 reps per arm: every rep complete, p50 and CPU equal to A.
 - **Wi-Fi discovery** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2): a WIFI link sends each
   discovery summary also by unicast to its known peers (`tt_LinkOptions.summary_unicast`, at most 16 a round, one round
   per update interval), repeats a change's broadcast announce 3 times at 100/200/400 ms gaps
@@ -184,6 +186,14 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   ([RMW_PERF_SETUP.md](RMW_PERF_SETUP.md)).
 
 ### Fixed
+
+- **A reliable HEARTBEAT went out with batched broadcast content** (RESULTS `WB`, corrected): a unicast HEARTBEAT
+  now first flushes the batched content, so it goes the way its data went (`heartbeat_unicast_count()`). The WB 1 MiB
+  control stormed in 7 of 20 pinned reps before, 0 of 20 after. Rig (A 25dd0fb0, B cfebd755, each before its rebase):
+  core gate v2 PASS, 0/88 WORSE; Array4m equal; Array1m at 0.1% loss lost samples in 2 of 10 head-binary reps against
+  0 of 5, so it was re-run 12 reps an arm with the reading registered first: 0 of 12 against 0 of 12, LAND.
+  Not fixed: the 1 ms first retry and no per-unit hold-down for large samples; small DATA with a batched summary
+  still goes broadcast; request_ack flushes batched broadcast content unicast.
 
 - A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a
   successor at the same name replacing them, and the name carries the ephemeral data port. A context building its own
