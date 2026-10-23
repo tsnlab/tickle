@@ -831,7 +831,9 @@ instructions unchanged (+0.00%), so not the sweep. Break-even is about 2,000 sen
 piece 1 (A c4c7e194, B bbe395b6; `coreAB_bbe395b6_20261023-091236`) PASS, 0/96, c10 RTT +1.24% held; piece 3 (A
 66d74ed4, B 2fa07cc9; `coreAB_2fa07cc9_20261023-105010`) PASS with 3/96 listed, not blocking - client user
 instructions on c4 (p4) +0.29%, c6 (p4, 5% loss) +0.11%, c15 (p4, Q1) +0.31% - and c6 wire bytes -0.15%, c6 CPU held,
-c1/c8 throughput held. Landed on the user's overall judgement (2026-10-23) despite the formal same-host WORSE: the
+c1/c8 throughput held. Piece 2 alone, run after landing (A bbe395b6, B 66d74ed4;
+`coreAB_66d74ed4_20261023-184819`): PASS with 2/88 listed, server user instructions +0.21% (c4 p4) and +0.25% (c15
+p4). Landed on the user's overall judgement (2026-10-23) despite the formal same-host WORSE: the
 times do not depend on the testbed, and the costs are small against what they remove.
 
 **One path per peer, and drop on full.** Once attached, every datagram to the peer goes through the ring; a full ring

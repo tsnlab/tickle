@@ -40,7 +40,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   p3 and server kernel instructions +1.95% on reliable_latency p3 (a re-attach every ~2 s instead of every 4096 sends,
   ~4 s at 1,000 sends a second), against 22 rows better - throughput +7.6% to +17.0%, CPU per sample -5.8% to -12.8%.
   Core gate v2 with c6: piece 1 PASS 0/96 (`coreAB_bbe395b6_20261023-091236`), piece 3 PASS with 3/96 listed, client
-  user instructions +0.11..+0.31% on c4/c6/c15 (`coreAB_2fa07cc9_20261023-105010`).
+  user instructions +0.11..+0.31% on c4/c6/c15 (`coreAB_2fa07cc9_20261023-105010`). Piece 2, run after landing (A
+  bbe395b6, B 66d74ed4): PASS with 2/88 listed, server user instructions +0.21% c4 p4 and +0.25% c15 p4
+  (`coreAB_66d74ed4_20261023-184819`).
 
 ### Added
 
