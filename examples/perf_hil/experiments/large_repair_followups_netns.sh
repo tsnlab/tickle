@@ -9,7 +9,7 @@
 #   (b) small DATA with a batched discovery summary goes broadcast.
 #   (c) tt_Publisher_request_ack() flushes batched broadcast-only content (a summary, an announce) to its peers alone.
 #
-# PHASES (PHASE=routes|amp|both, default both):
+# PHASES (PHASE=routes|amp|both|slow|all, default both; all adds slow):
 #   routes  (b) and (c). The WB shape (two prio bands, broadcast in its own netem, slot 1-4 ms x 42), arms ctl and
 #           ge5b4, cells rel_small (100 B RELIABLE KEEP_LAST 10 at 100 Hz, echoed) and rel_large (1 MiB RELIABLE at
 #           5 Hz), and rel_large again with a KEEP_ALL writer (-A, OUT/keepall), which solicits acknowledgements
@@ -17,6 +17,7 @@
 #           flush_tx(): broadcast_with_data (a datagram broadcast with a sample DATA in it), broadcast_with_reliable_control
 #           (one broadcast with a non-discovery HEARTBEAT or ACKNACK), addressed_with_discovery (one sent to peers while
 #           it held a batched announce or summary - which then reached those peers alone).
+#   (slow: see AMENDED below)
 #   amp     (a), on a rig-like ETHERNET path: one band (broadcast shares the unicast queue, as on the rig's NIC), netem
 #           "limit 100000 delay 100us rate 1gbit", Bernoulli loss (gemodel with mean burst 1) at 0 / 0.1 / 1% - the
 #           rig's Array1m cells (rig_queue: rmw_keepall_rig.sh, Array1m 30 Hz) - 1 MiB RELIABLE KEEP_LAST 10 at 30 Hz.
@@ -43,6 +44,22 @@
 #     resends each lost unit until one copy arrives - OR the reader's duplicate units (large_duplicate) exceed 20% of the
 #     resends. FALSIFIED (nothing is changed for (a) on ETHERNET) when both stay under in both lossy arms. The ctl arm
 #     must resend 0 (a resend with nothing lost is a false gap, a different defect: the phase is VOID and named).
+#
+# AMENDED 2026-10-23 19:25, AFTER THE FIRST PARENT RUN (parent_947e) AND BEFORE ANY RUN OF THE PHASE IT ADDS. That run
+#   was loaded by other sessions (load 9-28 at most reps' start): every amp rep and every keepall rep VOID by the rule
+#   above, and none is read for (a). What they showed, as a lead and not a result: the reps whose READER dropped in
+#   its socket (socket_drops 222-6,658, a CPU-starved reader) resent 8,179-532,481 units with duplicates 47-97% of the
+#   resends - the ctl rep resent 532,481 with nothing lost on the path - while the reps without socket drops resent
+#   1.03-1.05 per lost unit with 2-4% duplicates. So the amplifier may need loss AT THE READER, which the amp phase's
+#   path loss does not make. Hence:
+#   slow    (a) under reader-side loss, the treatment made on purpose: the amp phase's path, ctl only (no path loss),
+#           the reader spinning W us in each sample's callback (large_sample_bench sub -w W), W = 0 (the control) and
+#           W = 25000 (75% of the 33.3 ms sample period, so the next sample's 8.4 ms burst arrives while it spins).
+#   VOID for slow: the W = 0 control with any socket drop or any resend; a W = 25000 rep with no socket drop (the
+#     treatment did not apply); tc drops on any rep (nothing is configured to drop); the load rule above.
+#   (a) REAL under reader-side loss when, pooled over usable W = 25000 reps, resends per missing unit exceed 1.25 or
+#     duplicates exceed 20% of resends (an ideal ARQ resends each unit lost in the socket once: the path loses
+#     nothing). FALSIFIED when both stay under. Either way the reading is about ETHERNET's default repair.
 #
 # Usage: TREES="P=/tree [F=/tree ...]" [PHASE=both] [REPS=3] [DUR=30] [OUT=dir] large_repair_followups_netns.sh
 #   Each tree holds this harness, wifi_burst_loss_netns.sh, wifi_link_node.c, large_sample_bench.c, src/ include/ and
@@ -80,9 +97,18 @@ if [ "${READ_ONLY:-0}" != 1 ]; then
             dir=${t#*=}
             mkdir -p "$OUT/$label"
             echo "rep $rep tree $label $(date -Is) load=$(cut -d' ' -f1 /proc/loadavg)" >>"$SUM"
-            if [ "$PHASE" != amp ]; then
+            if [ "$PHASE" != amp ] && [ "$PHASE" != slow ]; then
                 job "$label" "$dir" routes "$rep" ARMS="ctl ge5b4" CELLS="rel_small rel_large"
                 job "$label" "$dir" keepall "$rep" ARMS="ctl ge5b4" CELLS="rel_large" LARGE_PUB_ARGS="-A"
+            fi
+            if [ "$PHASE" = slow ] || [ "$PHASE" = all ]; then
+                for w in 0 25000; do
+                    job "$label" "$dir" "slow_w$w" "$rep" ARMS="ctl" CELLS="rel_large" LARGE_HZ=30 BANDS=1 \
+                        NETEM_BASE="limit 100000 delay 100us rate 1gbit" LARGE_SUB_ARGS="-w $w"
+                done
+            fi
+            if [ "$PHASE" = slow ]; then
+                continue
             fi
             if [ "$PHASE" != routes ]; then
                 job "$label" "$dir" amp "$rep" ARMS="ctl ge0.1b1 ge1b1" CELLS="rel_large" LARGE_HZ=30 BANDS=1 \
@@ -139,7 +165,42 @@ def runs(base):
 trees = sorted(p.name for p in out.iterdir() if p.is_dir())
 ROUTE_KEYS = ("broadcast_with_data", "broadcast_with_reliable_control", "addressed_with_discovery")
 verdicts = []
-if phase != "amp":
+if phase in ("slow", "all"):
+    print("--- slow: per tree and W, pooled over usable reps: resent, reader missing units, socket drops, resends per "
+          "missing unit (limit 1.25), duplicates / resent (limit 20%), delivered")
+    for tree in trees:
+        for w in ("0", "25000"):
+            ok = []
+            for run in runs(out / tree / f"slow_w{w}"):
+                r = read_run(run)
+                why = usable(r, "ctl")
+                sd = num(r["e_result"], "socket_drops") if r["e_result"] else 0
+                rs = num(r["p_result"], "retransmitted") if r["p_result"] else 0
+                if not why and w == "0" and (sd or rs):
+                    why = f"the control dropped {sd:.0f} in the socket / resent {rs:.0f}"
+                if not why and w != "0" and not sd:
+                    why = "no socket drop: the treatment did not apply"
+                if why:
+                    print(f"VOID  {tree} slow_w{w} {r['name']}: {why}")
+                else:
+                    ok.append(r)
+            if not ok:
+                continue
+            resent = sum(num(r["p_result"], "retransmitted") for r in ok)
+            missing = sum(num(r["e_rstats"], "missing_opened") for r in ok)
+            dups = sum(num(r["e_result"], "large_duplicate") for r in ok)
+            sd = sum(num(r["e_result"], "socket_drops") for r in ok)
+            dlv = sum(num(r["e_result"], "delivered") for r in ok)
+            pub = sum(num(r["p_result"], "published") for r in ok)
+            per = resent / missing if missing else float("nan")
+            share = dups / resent if resent else 0.0
+            print(f"{tree:4} W={w:5} reps {len(ok)} resent {resent:.0f} missing {missing:.0f} socket_drops {sd:.0f} "
+                  f"per_missing {per:.3f} dups {dups:.0f} ({100 * share:.1f}%) delivered {dlv:.0f}/{pub:.0f}")
+            if w != "0":
+                real = per > 1.25 or share > 0.20
+                verdicts.append(f"{'REAL' if real else 'NONE'}  (a, reader-side) {tree}: per_missing {per:.3f} "
+                                f"dups {100 * share:.1f}%")
+if phase not in ("amp", "slow"):
     print("--- routes: per tree, sub-run, arm-cell; per node p/e/i: broadcast_with_data / broadcast_with_reliable_control / "
           "addressed_with_discovery, summed over usable reps (min..max per rep); delivery")
     ranges = {}
@@ -180,7 +241,7 @@ if phase != "amp":
                 c = sum(ranges[(tree, sub, arm_cell, n, "addressed_with_discovery")][0] for n in "pe")
                 verdicts.append(f"{'REAL' if b else 'NONE'}  (b) {tree} {sub} {arm_cell}: ping broadcast_with_data {b}")
                 verdicts.append(f"{'REAL' if c else 'NONE'}  (c) {tree} {sub} {arm_cell}: addressed_with_discovery p+e {c}")
-if phase != "routes":
+if phase not in ("routes", "slow"):
     print("--- amp: per tree and arm, pooled over usable reps: resent, reader missing units, resends per lost unit "
           "(limit 1.25/(1-L)), reader duplicate units / resent (limit 20%), timer/immediate ACKNACKs, p50/p99 ms")
     for tree in trees:
