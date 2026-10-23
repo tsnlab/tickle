@@ -482,7 +482,10 @@ releases at ge1b1 not falling.
   parent outside the control's spread; or any wire difference in a lossless run.
 - **Measured** (RESULTS `LRO`): no storm in the sim at any seed or in 12 netns reps (the parent: 3 of 11 at 0.1%);
   WIFI NOT WORSE. The cost: a lost repair that is the last of its burst has nothing after it to show it lost and
-  waits the timeout - ETHERNET 1% loss median rep p99 11.0 -> 17.2 ms.
+  waits the timeout - ETHERNET 1% loss median rep p99 11.0 -> 17.2 ms. With RACK's time rule (RESULTS `LRT`):
+  19.6 -> 14.1 ms against the order's 11.3 parent in the same run, two thirds of the cost back, no storm; 0.1% loss
+  10.6 -> 11.0 ms, a COST as registered. The rest is RACK.rtt itself: a drain-length round trip, 1-4 ms after the
+  reader's request.
 - **Small reliable DATA** keeps its count-then-interval suppression (section 6): a sample of at most 45 datagrams does
   not build a queue-deep burst, and `LRF` measured no storm there. The same rule fits it if one is ever measured.
 

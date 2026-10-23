@@ -68,6 +68,9 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   ab/large-resend-order): storms stopped in the sim and netns, WIFI NOT WORSE; its cost, 1% loss p99 +6 ms on
   ETHERNET, is the lead's to weigh. Rig: `~/rig_jobs/large_resend_order_queue.sh` (core gate v2, Array1m 0/0.1/1%,
   Array4m), prepared, not run. Left: the slow reader's repair bursts (36,999 resent for 10 samples) - flow control.
+  The tail cost, two thirds back with RACK's time rule (RESULTS `LRT`, ab/large-resend-order-tail; rig:
+  `~/rig_jobs/large_resend_order_tail_queue.sh`, prepared, not run); the rest is RACK.rtt's drain. Also open: on the
+  rig, Array1m 1% reps that stay on IP-fragment runs carry the p99/CPU cost on any build (RESULTS `LRT`).
 
 ### Other open items
 
