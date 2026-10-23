@@ -203,7 +203,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   core gate v2 PASS, 0/88 WORSE; Array4m equal; Array1m at 0.1% loss lost samples in 2 of 10 head-binary reps against
   0 of 5, so it was re-run 12 reps an arm with the reading registered first: 0 of 12 against 0 of 12, LAND.
   Not fixed: the 1 ms first retry and no per-unit hold-down for large samples; small DATA with a batched summary
-  still goes broadcast; request_ack flushes batched broadcast content unicast.
+  still goes broadcast; request_ack flushes batched broadcast content unicast. Measured after (RESULTS `LRF`,
+  `large_repair_followups_netns.sh`, RSTATS route counters): small DATA never went broadcast on the default path (an
+  unbatched publish flushes batched content first; `test_publish_sends_batched_discovery_first()` holds it);
+  request_ack's case is real and rare (2 summaries in 8 usable lossy KEEP_ALL reps), its fix kept off this branch on
+  `ab/large-repair-followups-c`; the large-sample amplifier is real on ETHERNET - a 1 Gbit/s queued path at 1% loss
+  stormed one rep in three (251,028 resent, 75 of 900 samples lost), reproduced in `test_large_sample`'s sim - and is
+  left open for a time-ordered resend rule (ROADMAP, "Large-sample repair storm").
 
 - A client killed and started again under the same context id, before the server heard of the new launch (no farewell,
   discovery not yet updated or not attached), got its predecessor's kept answer to its first call and its callback never

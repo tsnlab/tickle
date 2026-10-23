@@ -550,6 +550,46 @@ Cost (`initoptions_insn_pc.sh`, A = the parent, P = A placement-shifted, B = the
 instructions per sample B vs A (P vs A) p1 -0.01% (-0.01%), p3 +0.00% (-0.01%), t1 -0.00% (-0.00%), t3 +0.01%
 (+0.00%), 1% loss l1 +0.00% (+0.01%), l3 +0.02% (+0.02%); every row EQUAL, server rows within their spread.
 
+### The reliable HEARTBEAT fix's follow-ups, PC netns (`LRF`)
+
+The three items the fix left open (CHANGELOG), measured on its successor before anything changed:
+`large_repair_followups_netns.sh` (the WB harness, PROFILE=ethernet, offload off; reading registered in it first), its
+RSTATS route counters (`flush_tx()`: broadcast with a sample, broadcast with a reliable HEARTBEAT/ACKNACK, addressed
+while a batched announce or summary was in it), and test_large_sample's sim. Two of three parent runs were loaded by
+other sessions (load 9-38: every amp, slow and keepall rep VOID); the third ran at load 2.5-6. The idle-node control
+read 0 on every counter.
+
+| item | measured on the parent (usable reps) | reading |
+|---|---|---|
+| (b) small DATA broadcast with a batched summary | writer `broadcast_with_data` 0 in every cell (rel_small, rel_large, KEEP_ALL rel_large; ctl, ge5b4; 3 reps each) | NOT SHOWN: an unbatched publish flushes batched content first (`flush_pending_before_unicast()`); holds only for a batching Publisher, by design. Nothing changed; `test_publish_sends_batched_discovery_first()` holds it |
+| (c) `request_ack` sends batched broadcast-only content to its peers | `addressed_with_discovery` 0 in every KEEP_LAST cell; 2 in one of 3 KEEP_ALL ge5b4 reps (the cell whose writer solicits) | REAL by the rule, rare: a summary waits <= 1 ms for its tick each interval. Fixed on the side branch (below), not landed |
+| (a) large samples: 1 ms first retry, no per-unit hold-down | rig-like path (1 Gbit/s netem, one queue, Bernoulli loss), 1 MiB at 30 Hz: 0.1% 1.05 resends per lost unit, duplicates 5.2%; **1% 3.83 and 79%** - one rep of three stormed (251,028 resent, 83% duplicates, 75 of 900 samples lost, p99 421 ms; the other two 1.01-1.02); ctl 0 | **REAL on ETHERNET.** Not fixed here (below) |
+
+(c), the fix and its A/B. On `ab/large-repair-followups-c`: `tt_Publisher_request_ack()` sends what is batched first,
+where its flush tick would (`flush_batched()`); `test_publisher_request_ack_sends_batched_discovery_first()` fails on
+the parent, two mutants die, and `tests/wire_identity_repair_routes.sh` shows the wire unchanged without batched content
+at a solicitation and, with it, the same submessages at the same times with only the batched summary and the batching
+Publisher's sample moved from the solicited reader to broadcast. Its netns A/B (`ab_c_routes`, 5 reps a tree in
+alternation, 4-5 usable): the parent counted 0 in every KEEP_ALL rep this time, so UNDECIDED by the rule; the fix's tree
+counted 1, in a ge5b4 rel_small rep, from the echo's writer - an addressed send the fix does not touch (a retransmission
+or an initial HEARTBEAT to one reader, which also flush batched content to that reader). The class costs at most one
+summary for the nodes that are not peers, once in minutes of lossy traffic; left for the lead to take or drop. Readers'
+ACKNACKs ride a batched summary broadcast 1-2 times a 30 s rep (`broadcast_with_reliable_control` on the reader), by
+design (the receiver field confines them).
+
+(a), what the storm is. In the reps that stormed the reader dropped nothing in its socket and the ACKNACK count was the
+calm reps' (777 immediate, 219 timer): each ACKNACK named hundreds of units whose repairs were still queued behind the
+path's drain, and the writer resent every named unit each time. The sim reproduces it without a PC: a path that takes
+12 us a datagram and queues 4,000, 1% loss, 30 x 1 MiB at 30 Hz - 34,813-475,436 resent for 352-574 lost, 19,989-445,111
+dropped at the queue, in each of 4 seeds (the committed case: 427 lost, 243,128 dropped, 259,042 resent). A per-unit writer hold-down (explored, not landed; seeds 7 and 11, 475,436 and
+50,045 resent without it) cut it to 26,823 / 24,767 at 5 ms and 9,144 / 7,153 at 20 ms. A fixed hold is a testbed constant (ROADMAP 5a); the landing design is a time-ordered
+rule - resend a unit again only once the reader shows it received something sent after that unit's last resend (RACK) -
+for a separate A/B with the rig. A slow reader (20 us a datagram, 400 in its socket) loses to the same repair bursts:
+564,402 resent for 10 samples, 1.01 per socket drop; the registered per-drop criterion cannot decide there (a mutant
+resending every unit twice read 1.09), so that sim case is a measurement and the per-unit guard is the path-loss test. The
+netns slow phase (the reader spinning 25 ms of each 33 ms) dropped nothing in its socket in two reps (VOID, the treatment
+did not apply) and in the third collapsed the path's queue: 4,644,237 resent, 212 of 900 delivered (VOID by tc drops).
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -589,6 +629,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | WW | the same, amended 2026-10-23 (PROFILE=ethernet and wifi, `TT_UDP_OFFLOAD=0`) | `ca540c2c` (af4ca9ab before its rebase) | 2026-10-23 | `wifi_live/eth_af4ca9ab/`, `wifi_live/wifi_af4ca9ab/` (`summary.txt`) |
 | WBS | `large_storm_netns.sh`, `large_storm_ab_netns.sh`, the WB harness (offload off) | `25dd0fb0` core, and with the HEARTBEAT fix | 2026-10-23 | `large_storm/variants_20261023/`, `ab_pinned_20261023/`, `ab_pinned2_20261023/`, `r34_fix_20261023/` |
 | WR | `wifi_repair_pair.sh` (the WB harness, R2 amended), `wifi_repair_ab.sh` (`CLOCK_PPS`), `initoptions_insn_pc.sh` | ab/wifi-repair (WIFI repair timing) | 2026-10-23 | `wifi_repair/final2_04be_{ethernet,wifi}/`, `final2_04be_clock_*`, `ab_clock{,2,3}.ab.txt`, `ab_seed.ab.txt`, `insn_pc_04be.txt` |
+| LRF | `large_repair_followups_netns.sh` (the WB harness; routes, amp, slow; RSTATS route counters), `test_large_sample` sim cases | ab/large-repair-followups (parent: its RSTATS commit), ab/large-repair-followups-c (the (c) fix) | 2026-10-23 | `large_repair/parent_947e/`, `parent2_947e/` (load-voided), `parent3_947e/`, `ab_c_routes/` (`summary.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |

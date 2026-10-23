@@ -432,6 +432,7 @@ timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is 
 | **unicast to a few, broadcast to the rest** | per-endpoint `peers[]` (`tt_MAX_PEER_COUNT`); more than `tt_UNICAST_PEER_THRESHOLD` peers, or a full table, means broadcast. A Server answers unicast; a Client with no known Server broadcasts |
 | **a Publisher with no matched reader sends nothing** (the user, 2026-10-15) | BEST_EFFORT drops (`tx_unmatched_dropped`); RELIABLE/durable keep it in history (`tx_unmatched_kept`). Matched by announce or, for RELIABLE, by ACKNACK. Covers every send path and unprompted HEARTBEAT; not local delivery, discovery or ACKNACK answers. Wait for `tt_Publisher_matched_count()` to keep first samples |
 | one system call | datagrams ready together go in one `tt_send_batch()` (`sendmmsg()`) |
+| **batched broadcast-only content leaves as broadcast** | a batched announce or summary goes out first, on its own, where its flush tick would send it, before an unbatched publish, a call and every reliable HEARTBEAT sent to peers (`flush_pending_before_unicast()`, `heartbeat_unicast_count()`). Not yet before a solicitation, a retransmission or an initial/eviction HEARTBEAT to one reader, which carry it to their peers alone (rare: RESULTS `LRF`); a reader's ACKNACK rides it broadcast, confined by its receiver field |
 
 **UDP offload (Linux).** On by default (the user, 2026-10-12); `TT_UDP_OFFLOAD=0` turns it off; needs `tt_LARGE_SAMPLES`.
 

@@ -56,6 +56,14 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - **FreeRTOS segment**: done 2026-10-21 (`23064e69`), off by default, README says when and how to turn it on.
 - **rmw shared-memory kill test**: done 2026-10-22 (`test_shm_kill`, in the rmw suite); it found two leaks, both fixed
   (DESIGN.md section 10, "Lifecycle").
+- **Large-sample repair storm on a queued path** (found 2026-10-23, RESULTS `LRF`, item (a)): on a 1 Gbit/s netem path
+  at 1% loss one rep in three resent 251,028 units, 83% duplicates, 75 of 900 1 MiB samples lost; the sim reproduces it
+  (`test_large_sample`, queued-path case). Each ACKNACK names units whose repairs still queue behind the drain and the
+  writer resends every named unit each time. A fixed per-unit hold-down cuts it (explored: 20 ms, 475,436 -> 9,144) but
+  is a testbed constant; the candidate is time-ordered (RACK-like): resend a unit again only once the reader has
+  received something sent after its last resend - per-unit send order kept by the writer, or request order by the
+  reader. The same bursts overflow a slow reader's socket (564,402 resent for 10 samples in the sim). Needs its own
+  design, A/B and rig cells (Array1m 0.1/1%, whose 0.1% head arm lost samples in 2 of 10 reps on 2026-10-23).
 
 ### Other open items
 
