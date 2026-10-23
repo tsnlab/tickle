@@ -240,9 +240,10 @@ rx_direct_check_raw: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle
 	    -lm -lpthread
 
 # The wait ring against the real HAL (wr_check.c), in the default build and in rmw's (large samples: the writable
-# watch). Built with the ring moving after 8 waits at first and 64 at most, so two threads sharing the poll role move it
-# often; the mutant sweep (tests/mutants_wait_ring.py) builds the same with a mutant HAL in place of HAL_SRC.
-WR_CHECK_DEFS = -DTT_RX_RING_MOVE_WAITS=8U -DTT_RX_RING_MOVE_MAX=64U
+# watch). Built with the default first run a move needs (TT_RX_RING_MOVE_WAITS, which the handover check is about) and
+# 64 at most, so two threads sharing the poll role move it often; the mutant sweep (tests/mutants_wait_ring.py) builds
+# the same with a mutant HAL in place of HAL_SRC.
+WR_CHECK_DEFS = -DTT_RX_RING_MOVE_MAX=64U
 wr_check: wr_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WR_CHECK_DEFS) -o $@ wr_check.c $(SRC_FILES) -lm -lpthread -ldl
 wr_check_large: wr_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)

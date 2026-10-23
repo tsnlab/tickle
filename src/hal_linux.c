@@ -3480,10 +3480,12 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 //     enables it (IORING_REGISTER_ENABLE_RINGS) and owns it (wr_owner). The owner waits and reads through it; any
 //     other thread waits on the epoll set and reads with recvfrom(), exactly as without the ring.
 //   - The ring follows the thread that keeps the poll role: once another thread has made wr_move_after waits in a row
-//     (TT_RX_RING_MOVE_WAITS, 64, at first) while the owner made none, the ring is closed and made again, enabled by
+//     (TT_RX_RING_MOVE_WAITS, 2, at first) while the owner made none, the ring is closed and made again, enabled by
 //     that thread; each move doubles the run the next one needs (to TT_RX_RING_MOVE_MAX), so two threads that share
-//     the role turn and turn about cannot make it move often. rmw's poll thread is the first waiter of every context
-//     (it polls from the start), and the executor that then holds the role takes the ring after 64 waits.
+//     the role turn and turn about cannot make it move often: at most log2(MAX / 2) moves before the cap, then one
+//     per MAX waits at most. rmw's poll thread is the first waiter of every context (it polls from the start), and
+//     the executor that then holds the role takes the ring at its second wait (at its 64th until 2026-10-24, which
+//     kept the first 64 waits of every rmw_tickle executor on the epoll path - RESULTS KH2).
 //   - Both paths see every event: the ring holds a one-shot poll on the well-known socket and the wake eventfd,
 //     re-armed at the next wait after each completion (a re-armed poll on a member still readable completes at once,
 //     so the two are reported as the level-triggered epoll set reports them); multishot polls on the deadline timer and

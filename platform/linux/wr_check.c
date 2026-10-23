@@ -17,8 +17,11 @@
 //   3. other      - another thread's wait while the ring is owned reads with epoll and recvfrom(): the datagram
 //   arrives,
 //                   ring_others rises, the owner stays.
-//   4. move       - another thread that waits TT_RX_RING_MOVE_WAITS times in a row takes the ring, and reads by it (two
-//                   shorter runs with the owner's wait between them do not);
+//   4. handover   - the context's first move: the first waiter stops waiting (as rmw's poll thread does when it hands
+//                   the poll role to the executor) and another thread waits - it takes the ring at its second wait and
+//                   reads by it (2026-10-24: at its 64th before, so an rmw executor's first 64 waits used epoll).
+//      move       - another thread that waits the run a move needs (wr_move_after: twice the last move's) in a row
+//                   takes the ring, and reads by it (two shorter runs with the owner's wait between them do not);
 //                   moving it back takes twice the waits, not the same.
 //   5. wake       - tt_wake_signal() from another thread ends the owner's wait with no timeout (-3).
 //   6. both       - a wake and a datagram ready in the same wait: the datagram is handed out (it was read), and the
@@ -295,12 +298,70 @@ static void check_first_owner_other(void) {
 
 // ---- 4
 
+#define HANDOVER_WAITS 2U // the most waits the first move may take (TT_RX_RING_MOVE_WAITS, hal_linux.h)
+
+static uint64_t handover_moves = 0;
+static uint64_t handover_others = 0;
+static int handover_id = 0;
+static void* handover_waits(void* arg) {
+    (void)arg;
+    static uint8_t buf[BUFFER_BYTES];
+    handover_id = self_id();
+    for (uint32_t wait = 0; wait < HANDOVER_WAITS && ctx.hal.wr_owner != handover_id; wait++) {
+        uint32_t seq = 0;
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+    }
+    handover_moves = ctx.hal.wr_moves;
+    handover_others = ctx.hal.wr_others;
+    const uint64_t reads = ctx.hal.wr_reads;
+    send_seq(next_seq);
+    (void)expect_seq(buf, next_seq++);
+    if (ctx.hal.wr_owner == handover_id && ctx.hal.wr_reads != reads + 1U) {
+        fail("the thread the ring moved to did not read by it", (long)(ctx.hal.wr_reads - reads));
+    }
+    return NULL;
+}
+
+static void check_handover(void) {
+    check_name = "handover";
+    if (ctx.hal.wr_moves != 0) {
+        fail("not the context's first move", (long)ctx.hal.wr_moves);
+        return;
+    }
+    const uint64_t others = ctx.hal.wr_others;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    pthread_create(&thread, NULL, handover_waits, NULL);
+    pthread_join(thread, NULL);
+    if (handover_moves != 1U || ctx.hal.wr_owner != handover_id) {
+        fail("the ring did not move within two waits of a thread that took over from the first waiter",
+             (long)handover_moves);
+    }
+    if (handover_others - others + 1U != HANDOVER_WAITS) {
+        fail("the waits before the move were not on the epoll path, or not the run expected",
+             (long)(handover_others - others));
+    }
+    // Back to this thread, for the checks after: the next move needs twice the run.
+    static uint8_t buf[BUFFER_BYTES];
+    for (uint32_t wait = 0; wait <= 2U * HANDOVER_WAITS && ctx.hal.wr_owner != self_id(); wait++) {
+        uint32_t seq = 0;
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+    }
+    if (ctx.hal.wr_owner != self_id() || ctx.hal.wr_moves != 2U) {
+        fail("the ring did not move back after twice the waits", ctx.hal.wr_owner);
+    }
+}
+
+static uint32_t move_need = 0; // the run the next move needs, when check_move() starts
 static int mover_id = 0;
 static void* mover(void* arg) {
     (void)arg;
     static uint8_t buf[BUFFER_BYTES];
     mover_id = self_id();
-    for (uint32_t wait = 0; wait < TT_RX_RING_MOVE_WAITS; wait++) {
+    for (uint32_t wait = 0; wait < move_need; wait++) {
         uint32_t seq = 0;
         uint32_t ip = 0;
         uint16_t port = 0;
@@ -315,11 +376,11 @@ static void* mover(void* arg) {
     return NULL;
 }
 
-// Short runs: TT_RX_RING_MOVE_WAITS - 1 waits, then the owner waits once, then as many again - never a run long enough.
+// Short runs: move_need - 1 waits, then the owner waits once, then as many again - never a run long enough.
 static pthread_barrier_t halves; // NOLINT(misc-include-cleaner) - <pthread.h> is included
 static void short_waits(void) {
     static uint8_t buf[BUFFER_BYTES];
-    for (uint32_t wait = 0; wait + 1U < TT_RX_RING_MOVE_WAITS; wait++) {
+    for (uint32_t wait = 0; wait + 1U < move_need; wait++) {
         uint32_t seq = 0;
         uint32_t ip = 0;
         uint16_t port = 0;
@@ -337,6 +398,11 @@ static void* short_runs(void* arg) {
 
 static void check_move(void) {
     check_name = "move";
+    move_need = ctx.hal.wr_move_after;
+    if (move_need < 2U) {
+        fail("a move needs a run of fewer than two waits", (long)move_need);
+        return;
+    }
     const uint64_t moves = ctx.hal.wr_moves;
     const int owner = ctx.hal.wr_owner;
     pthread_barrier_init(&halves, NULL, 2);
@@ -361,8 +427,8 @@ static void check_move(void) {
     }
     // Back to this thread for the checks below: not after as many waits, only after twice as many.
     static uint8_t buf[BUFFER_BYTES];
-    for (uint32_t wait = 0; wait < 2U * TT_RX_RING_MOVE_WAITS; wait++) {
-        if (wait == TT_RX_RING_MOVE_WAITS && ctx.hal.wr_owner != mover_id) {
+    for (uint32_t wait = 0; wait < 2U * move_need; wait++) {
+        if (wait == move_need && ctx.hal.wr_owner != mover_id) {
             fail("the ring moved back without twice the waits", (long)wait);
         }
         uint32_t seq = 0;
@@ -821,6 +887,7 @@ int main(void) {
     }
     alarm(ALARM_S);
     check_first_owner_other();
+    check_handover();
     check_move();
     check_wake();
     check_deadline();
@@ -841,7 +908,8 @@ int main(void) {
     if (alternate != CHECK_PASS) {
         return alternate;
     }
-    printf("wr_check: PASS - first, owner, other, move, wake, both, deadline, bell, stolen id, alternate%s, refused, "
+    printf("wr_check: PASS - first, owner, other, handover, move, wake, both, deadline, bell, stolen id, alternate%s, "
+           "refused, "
            "switch\n",
            tt_LARGE_SAMPLES ? ", writable" : "");
     return CHECK_PASS;
