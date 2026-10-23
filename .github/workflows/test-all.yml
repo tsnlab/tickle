@@ -70,7 +70,6 @@ jobs:
     outputs:
       build_linux: ${{ steps.build_linux.outcome }}
       doc_shas: ${{ steps.doc_shas.outcome }}
-      rig_lock: ${{ steps.rig_lock.outcome }}
       headers: ${{ steps.headers.outcome }}
       unit: ${{ steps.unit.outcome }}
       tsan: ${{ steps.tsan.outcome }}
@@ -431,7 +430,6 @@ jobs:
             'Build FreeRTOS=${{ needs.freertos.outputs.build_freertos }}' \
             'Lint FreeRTOS=${{ needs.freertos.outputs.lint_freertos }}' \
             'Doc commit ids=${{ needs.linux-unit.outputs.doc_shas }}' \
-            'Rig lock coverage=${{ needs.linux-unit.outputs.rig_lock }}' \
             'Headers C/C++=${{ needs.linux-unit.outputs.headers }}' \
             'Unit tests=${{ needs.linux-unit.outputs.unit }}' \
             'Sanitizers=${{ needs.sanitize.outputs.sanitize }}' \
