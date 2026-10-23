@@ -379,10 +379,16 @@ MUTANTS = [
         "test_the_resend_order_rules",
     ),
     (
-        "resend order: units above the highest request read as received",
-        "    if (acknack_named_range(bitmap, words, &low, &high)) {\n        for",
-        "    if (acknack_named_range(bitmap, words, &low, &high)) {\n        high = ((uint32_t)words * 64U) - 1U;\n        for",
+        "resend order: units in the last word above the highest request read as received",
+        "        high = known > high + 1U ? known - 1U : high;",
+        "        high = ((uint32_t)words * 64U) - 1U;",
         "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: the words below the reader's highest unit not read",
+        "        high = known > high + 1U ? known - 1U : high;",
+        "",
+        "test_the_resend_order_rules, test_a_queued_path_does_not_storm",
     ),
     (
         "resend order: a unit resent twice timed (no Karn)",

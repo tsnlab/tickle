@@ -11731,6 +11731,10 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
     uint32_t high = 0;
     bool bounded = false;
     if (acknack_named_range(bitmap, words, &low, &high)) {
+        // The reader sends the words up to the highest unit it knows of, received or announced: every word but the
+        // last lies wholly below it, so a unit there it does not name has arrived too (send_acknack_skipping()).
+        uint32_t known = ((uint32_t)words - 1U) * tt_RELIABLE_BITMAP_WORD_BITS;
+        high = known > high + 1U ? known - 1U : high;
         for (uint32_t bit = high; bit > low; bit--) { // from the top down
             if ((bitmap[bit / tt_RELIABLE_BITMAP_WORD_BITS] >> (bit % tt_RELIABLE_BITMAP_WORD_BITS)) & 1U) {
                 continue;

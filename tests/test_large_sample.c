@@ -1686,7 +1686,7 @@ static void test_a_queued_path_does_not_storm(void) {
     // one each time it was named: the repairs became the queue, and its drops more repairs.
     // The criterion (DESIGN.md section 4, "Large-sample resend order", its falsifier): STORM when the writer resends
     // more datagrams than its samples carry (30 x 724). The parent, seeds 7 13 23: 259,042, 29,331 and 27,024 resent -
-    // a storm at every seed. The resend order: 15,934, 10,148 and 8,959 (2026-10-23). Mutants (mutants_large_sample.py,
+    // a storm at every seed. The resend order: 9,541, 8,235 and 6,049 (2026-10-24). Mutants (mutants_large_sample.py,
     // "resend order"): every request answered at once; no seed for the repair timeout before the first timing.
     enum { QUEUED_SAMPLES = 30 };
     static const uint32_t seeds[] = {7, 13, 23};
@@ -1824,7 +1824,7 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 30, &reader, &order));
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 40), &pub, S + 40, RECEIVER_ID)); // still pending
 
-    // The watermark passing a resent unit shows it: S + 40 below the new watermark S + 41, S + 30 asked for again.
+    // The watermark passing a resent unit shows it: S + 30 and S + 40 below the new watermark S + 41.
     order_read(&reader, S, S + 41, (uint32_t[]) {S + 41}, 1, &order);
     EXPECT_TRUE(order.shown && large_serial_after(order.shown_serial, large_repair_slot(&sender, S + 30)->serial));
     EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 40), &pub, S + 40, RECEIVER_ID));
@@ -1863,6 +1863,21 @@ static void test_the_resend_order_rules(void) {
     order_read(&reader, S + 80, S + 81, (uint32_t[]) {S + 81}, 1, &order);
     EXPECT_EQ_U32(srtt, writable->repair_srtt_ns);
     EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 80), &pub, S + 80, RECEIVER_ID)); // but done with
+
+    // A reader sends the words up to the highest unit it knows of: what it leaves out in every word but the last has
+    // arrived, above its highest request too. S + 90, S + 95, S + 140 resent; asked for S + 90 alone in three words:
+    // S + 95 (word 1) arrived after S + 90's resend, so S + 90 goes; S + 140 (the last word) says nothing yet.
+    large_note_resent(&sender, &pub, record, S + 90, &reader);
+    large_note_resent(&sender, &pub, record, S + 95, &reader);
+    large_note_resent(&sender, &pub, record, S + 140, &reader);
+    {
+        uint64_t bitmap[tt_RELIABLE_BITMAP_MAX_WORDS] = {0};
+        bitmap[1] = 1ULL << (90U - 64U); // from base S + 0: S + 90 is bit 90
+        large_order_begin(&sender, &pub, &reader, sub.endpoint.entity_id, S, S, bitmap, 3, &order);
+    }
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 90, &reader, &order));
+    EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 95), &pub, S + 95, RECEIVER_ID));  // shown, done with
+    EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 140), &pub, S + 140, RECEIVER_ID)); // still pending
 
     // A Publisher going away takes its pending repairs: none left for its entity.
     large_repairs_forget(&sender, &pub);
