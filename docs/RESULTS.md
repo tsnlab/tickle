@@ -562,7 +562,7 @@ read 0 on every counter.
 | item | measured on the parent (usable reps) | reading |
 |---|---|---|
 | (b) small DATA broadcast with a batched summary | writer `broadcast_with_data` 0 in every cell (rel_small, rel_large, KEEP_ALL rel_large; ctl, ge5b4; 3 reps each) | NOT SHOWN: an unbatched publish flushes batched content first (`flush_pending_before_unicast()`); holds only for a batching Publisher, by design. Nothing changed; `test_publish_sends_batched_discovery_first()` holds it |
-| (c) `request_ack` sends batched broadcast-only content to its peers | `addressed_with_discovery` 0 in every KEEP_LAST cell; 2 in one of 3 KEEP_ALL ge5b4 reps (the cell whose writer solicits) | REAL by the rule, rare: a summary waits <= 1 ms for its tick each interval. Fixed on the side branch (below), not landed |
+| (c) `request_ack` sends batched broadcast-only content to its peers | `addressed_with_discovery` 0 in every KEEP_LAST cell; 2 in one of 3 KEEP_ALL ge5b4 reps (the cell whose writer solicits) | REAL by the rule, rare: a summary waits <= 1 ms for its tick each interval. Fixed (below), landed 2026-10-24 |
 | (a) large samples: 1 ms first retry, no per-unit hold-down | rig-like path (1 Gbit/s netem, one queue, Bernoulli loss), 1 MiB at 30 Hz: 0.1% 1.05 resends per lost unit, duplicates 5.2%; **1% 3.83 and 79%** - one rep of three stormed (251,028 resent, 83% duplicates, 75 of 900 samples lost, p99 421 ms; the other two 1.01-1.02); ctl 0 | **REAL on ETHERNET.** Not fixed here (below) |
 
 (c), the fix and its A/B. On `ab/large-repair-followups-c`: `tt_Publisher_request_ack()` sends what is batched first,
@@ -575,7 +575,10 @@ counted 1, in a ge5b4 rel_small rep, from the echo's writer - an addressed send 
 or an initial HEARTBEAT to one reader, which also flush batched content to that reader). The class costs at most one
 summary for the nodes that are not peers, once in minutes of lossy traffic; left for the lead to take or drop. Readers'
 ACKNACKs ride a batched summary broadcast 1-2 times a 30 s rep (`broadcast_with_reliable_control` on the reader), by
-design (the receiver field confines them).
+design (the receiver field confines them). Rig (2026-10-24, A 896d4a29, B 1b54c2f1 before its rebase): core gate v2
+`coreAB_1b54c2f1_20261023-223424` PASS, 0/88 WORSE; `lrf_1m_20261024-000628` (Array1m 30 Hz reliable, loss 0/0.1/1%)
+and `lrf_4m_20261024-000628` (Array4m 15 Hz, loss 0), pre/head/aa 5 reps each: every rep delivered 100% (lost 0), median
+latency and CPU ms/MB equal across arms within the aa spread (1 MiB 1%: 9.39-9.47 ms; 4 MiB: 36.47-36.62 ms). Landed.
 
 (a), what the storm is. In the reps that stormed the reader dropped nothing in its socket and the ACKNACK count was the
 calm reps' (777 immediate, 219 timer): each ACKNACK named hundreds of units whose repairs were still queued behind the
