@@ -6030,6 +6030,10 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].tracking_words = 0;     // set by the caller from the announce
             pub->peer_acks[i].first_owed_seq_no = 0;
             pub->peer_acks[i].match_heartbeats_left = 0;
+#if tt_LARGE_SAMPLES
+            pub->peer_acks[i].repair_srtt_ns = 0; // its large repairs not yet timed (the resend order)
+            pub->peer_acks[i].repair_rttvar_ns = 0;
+#endif
 #if tt_HYBRID_TRANSPORT
             pub->peer_watch[i].nack_high = 0;
             pub->peer_watch[i].watch_count = 0; // no sample watched: the fragment path presumed fine
@@ -11596,6 +11600,214 @@ static struct tt_LargeRecord* large_find(struct tt_Publisher* pub, uint32_t seq_
     return NULL;
 }
 
+// --- The resend order (DESIGN.md section 4, "Large-sample resend order") ---------------------------------------------
+//
+// A reader asks for every unit still missing at each request, and on a path that queues - a 1 Gbit/s link draining a
+// burst, a slow reader's socket - the repair of a unit it names may still be on its way, behind the rest. Resending
+// each named unit each time it is named made the repairs themselves the queue (RESULTS `LRF`, item (a): 251,028 resent
+// in a 30 s rep, 83% duplicates). So a unit already resent to a reader goes again only once that reader has shown the
+// resend lost: it has received something this context sent after it - which, on a path that keeps order, the resend
+// would have reached it ahead of - or a repair timeout has passed with nothing shown. Nothing here is a fixed time:
+// the order is a send counter, and the timeout is RFC 6298 over this reader's own repairs, or before the first of them
+// how long it took to ask for the unit after the unit went.
+
+#define LARGE_REPAIR_SHIFT 10U // tt_LargeRepair.resent_at and hold, tt_LargeRecord.first_sent_at: ns >> 10 (~us)
+
+// The next number in the context's order of large sends: every resend and every large sample's first send. Never 0,
+// which stands for "none".
+static uint32_t large_next_serial(struct tt_Context* node) {
+    node->large.repair_serial++;
+    if (node->large.repair_serial == 0) {
+        node->large.repair_serial = 1;
+    }
+    return node->large.repair_serial;
+}
+
+// a went after b, in the context's order of large sends (wrap past 2^32 as seq_delta()).
+static bool large_serial_after(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) > 0;
+}
+
+static struct tt_LargeRepair* large_repair_slot(struct tt_Context* node, uint32_t seq_no) {
+    return &node->large.repairs[seq_no % tt_LARGE_REPAIR_SLOTS];
+}
+
+static bool large_repair_is(const struct tt_LargeRepair* slot, const struct tt_Publisher* pub, uint32_t seq_no,
+                            uint8_t context_id) {
+    return slot->context_id == context_id && slot->seq_no == seq_no && slot->entity_id == pub->endpoint.entity_id;
+}
+
+static void large_repair_free(struct tt_Context* node, struct tt_LargeRepair* slot) {
+    slot->context_id = tt_CONTEXT_ID_INVALID;
+    node->large.repairs_live--;
+}
+
+// What one ACKNACK shows its reader has received, for large_resend_due(): read before its requests are answered, and
+// held in tt_LargeState.acknack_order while they are.
+struct large_order {
+    bool active;           // some unit's resend is pending in this context: the rule applies to this ACKNACK
+    bool shown;            // shown_serial is set
+    uint32_t shown_serial; // the latest large send this reader has shown received
+    uint32_t timeout;      // the repair timeout to this reader (tt_get_ns() >> 10); 0: not measured yet
+};
+
+// The bit positions (from the ACKNACK's seq_no) of its lowest and highest request; false when it names nothing.
+static bool acknack_named_range(const uint64_t* bitmap, uint16_t words, uint32_t* low, uint32_t* high) {
+    bool any = false;
+    for (uint16_t word = 0; word < words; word++) {
+        if (bitmap[word] == 0) {
+            continue;
+        }
+        uint32_t base = (uint32_t)word * tt_RELIABLE_BITMAP_WORD_BITS;
+        if (!any) {
+            *low = base + (uint32_t)__builtin_ctzll(bitmap[word]);
+            any = true;
+        }
+        *high = base + (tt_RELIABLE_BITMAP_WORD_BITS - 1U - (uint32_t)__builtin_clzll(bitmap[word]));
+    }
+    return any;
+}
+
+// The point in the context's order of large sends that every copy of a unit of `record` went after: its first send,
+// and when (*went_at). 0 before it began to go.
+static uint32_t large_unit_sent_after(const struct tt_LargeRecord* record, uint32_t* went_at) {
+    *went_at = record->first_sent_at;
+    return record->first_serial;
+}
+
+static void large_order_show(struct large_order* order, uint32_t serial) {
+    if (serial != 0 && (!order->shown || large_serial_after(serial, order->shown_serial))) {
+        order->shown = true;
+        order->shown_serial = serial;
+    }
+}
+
+// A unit whose resend is pending arrived: its resend is a send the reader has shown received, and its slot is done
+// with. If it went once (Karn), the time from its resend to here - to the first of the reader's ACKNACKs to show it -
+// is a sample of the repair timeout's srtt.
+static void large_order_arrived(struct tt_Context* node, struct tt_PeerAck* ack, struct tt_LargeRepair* slot,
+                                uint32_t now, struct large_order* order) {
+    large_order_show(order, slot->serial);
+    if (slot->resends == 1 && ack != NULL) {
+        rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns,
+                          (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);
+    }
+    large_repair_free(node, slot);
+}
+
+// Reads one ACKNACK from `target`'s Subscriber `reader_entity_id` to `pub` for the resend order, before its requests
+// are answered. Received, for certain: every unit below its seq_no, the watermark - those it passed since the reader's
+// last ACKNACK (from `prev_ack`), and the first send of the sample just below it. A unit the request leaves out between
+// its lowest and highest request is received too, as far as the writer can tell: the reader names every unit missing
+// below its highest, but for repairs it reckons still on their way (answer_ack_request()), which it names again once
+// they are due. Of those, the highest whose resend is not pending shows its sample's first send, which every copy of it
+// followed.
+static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_Peer* target,
+                              uint32_t reader_entity_id, uint32_t prev_ack, uint32_t seq_no, const uint64_t* bitmap,
+                              uint16_t words, struct large_order* order) {
+    *order = (struct large_order) {0};
+    if (node->large.repairs_live == 0) {
+        return; // no resend pending anywhere: every request is answered at once, as before the rule
+    }
+    order->active = true;
+    struct tt_PeerAck* ack = find_peer_ack(pub, target->context_id, reader_entity_id);
+    uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
+    uint32_t passed = seq_delta(seq_no, prev_ack) > 0 ? seq_no - prev_ack : 0;
+    if (passed > tt_LARGE_REPAIR_SLOTS) {
+        passed = tt_LARGE_REPAIR_SLOTS; // older ones share slots with these
+    }
+    for (uint32_t unit = seq_no - passed; unit != seq_no; unit++) {
+        struct tt_LargeRepair* slot = large_repair_slot(node, unit);
+        if (large_repair_is(slot, pub, unit, target->context_id)) {
+            large_order_arrived(node, ack, slot, now, order);
+        }
+    }
+    uint32_t went_at = 0;
+    const struct tt_LargeRecord* below = large_find(pub, seq_no - 1U);
+    if (below != NULL) {
+        large_order_show(order, large_unit_sent_after(below, &went_at));
+    }
+    uint32_t low = 0;
+    uint32_t high = 0;
+    bool bounded = false;
+    if (acknack_named_range(bitmap, words, &low, &high)) {
+        for (uint32_t bit = high; bit > low; bit--) { // from the top down
+            if ((bitmap[bit / tt_RELIABLE_BITMAP_WORD_BITS] >> (bit % tt_RELIABLE_BITMAP_WORD_BITS)) & 1U) {
+                continue;
+            }
+            uint32_t unit = seq_no + bit;
+            struct tt_LargeRepair* slot = large_repair_slot(node, unit);
+            if (large_repair_is(slot, pub, unit, target->context_id)) {
+                large_order_arrived(node, ack, slot, now, order);
+            } else if (!bounded) {
+                const struct tt_LargeRecord* record = large_find(pub, unit);
+                if (record != NULL) {
+                    large_order_show(order, large_unit_sent_after(record, &went_at));
+                }
+                bounded = true;
+            }
+        }
+    }
+    if (ack != NULL && ack->repair_srtt_ns != 0) {
+        // RACK-TLP's probe timeout (RFC 8985, 7.2): twice the time a repair takes to be shown arrived
+        order->timeout = (uint32_t)(((uint64_t)ack->repair_srtt_ns * 2U) >> LARGE_REPAIR_SHIFT) + 1U;
+    }
+}
+
+// Whether the unit seq_no a reader just asked for is due a resend: never resent to it, its last resend shown lost
+// (the reader received something sent after it), or a repair timeout past it. Otherwise the request is left unanswered
+// and counted (resend_held); the reader asks again.
+static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t seq_no,
+                             const struct tt_Peer* target, const struct large_order* order) {
+    const struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
+    if (order == NULL || !order->active || !large_repair_is(slot, pub, seq_no, target->context_id)) {
+        return true;
+    }
+    if (order->shown && large_serial_after(order->shown_serial, slot->serial)) {
+        return true; // something sent after its resend arrived: on a path that keeps order, the resend was lost
+    }
+    uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
+    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {
+        return true; // nothing shown for a repair timeout: lost where nothing later shows it, as a tail is
+    }
+    node->large.resend_held++;
+    return false;
+}
+
+// seq_no of `record` went to target again: its slot says when, in the context's order and in time. A unit resent for
+// the first time takes, as its timeout until this reader's repairs are timed, how long the reader took to ask for it
+// after its sample began to go.
+static void large_note_resent(struct tt_Context* node, const struct tt_Publisher* pub,
+                              const struct tt_LargeRecord* record, uint32_t seq_no, const struct tt_Peer* target) {
+    struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
+    uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
+    if (large_repair_is(slot, pub, seq_no, target->context_id)) {
+        slot->resends = (uint8_t)(slot->resends < UINT8_MAX ? slot->resends + 1U : UINT8_MAX);
+    } else {
+        if (slot->context_id == tt_CONTEXT_ID_INVALID) {
+            node->large.repairs_live++;
+        }
+        slot->seq_no = seq_no;
+        slot->entity_id = pub->endpoint.entity_id;
+        slot->context_id = target->context_id;
+        slot->resends = 1;
+        uint32_t sent_at = 0;
+        slot->hold = large_unit_sent_after(record, &sent_at) != 0 ? now - sent_at : 0;
+    }
+    slot->serial = large_next_serial(node);
+    slot->resent_at = now;
+}
+
+// A Publisher going away takes its pending repairs with it.
+static void large_repairs_forget(struct tt_Context* node, const struct tt_Publisher* pub) {
+    for (uint32_t i = 0; i < tt_LARGE_REPAIR_SLOTS && node->large.repairs_live != 0; i++) {
+        struct tt_LargeRepair* slot = &node->large.repairs[i];
+        if (slot->context_id != tt_CONTEXT_ID_INVALID && slot->entity_id == pub->endpoint.entity_id) {
+            large_repair_free(node, slot);
+        }
+    }
+}
+
 #if tt_LARGE_SHM
 static bool large_ref_give_back(struct tt_Context* node, const uint8_t* buffer);
 #endif
@@ -12542,6 +12754,10 @@ static bool large_cursor_next(struct tt_Context* node, struct tt_Publisher* pub)
     }
     pub->large_cursor.seq_no = next->seq_no;
     pub->large_cursor.active = true;
+    if (next->first_serial == 0) {
+        next->first_serial = large_next_serial(node); // every copy of its units goes after this (large_order_begin())
+        next->first_sent_at = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
+    }
     large_cursor_destinations(node, pub, next);
     return true;
 }
@@ -12736,6 +12952,9 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
         record->ref_resent = node->large_ref.acknack_serial - 1U; // not taken after all: its datagrams go below
     }
 #endif
+    if (!large_resend_due(node, pub, seq_no, target, node->large.acknack_order)) {
+        return LARGE_RESEND_SENT; // its last resend is not yet shown lost: on its way, or the reader asks again
+    }
     uint32_t length = large_length(index, record->cdr_len);
     uint8_t framing[LARGE_FRAMING_MAX];
     uint32_t skip = 0;
@@ -12753,6 +12972,7 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
         RSTAT_INC(retransmit_tx_fail);
         return LARGE_RESEND_SENT;
     }
+    large_note_resent(node, pub, record, seq_no, target);
     RSTAT_INC(retransmitted);
     pub->retransmitted++;
     return LARGE_RESEND_SENT;
@@ -14414,6 +14634,7 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
     publisher_abandon_all_claims_locked(pub);
 #if tt_LARGE_SAMPLES
     large_release_publisher(node, pub); // its send in progress stops, and every large buffer goes back
+    large_repairs_forget(node, pub);
 #endif
 
     if (!remove_endpoint_from_node(node, endpoint)) {
@@ -21738,6 +21959,10 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // legitimately solicit and track an ACKNACK reply too (tt_Publisher_request_ack()'s own
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
+#if tt_LARGE_SAMPLES
+    const struct tt_PeerAck* before = find_peer_ack(pub, header->source, sender_entity_id);
+    uint32_t prev_ack = before != NULL ? before->ack_seq_no : seq_no; // the watermark's advance, for the resend order
+#endif
     claim_from_acknack(node, pub, header->source, endpoint_id, sender_entity_id, sender_ip, sender_port);
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
 #if tt_LARGE_SAMPLES
@@ -21772,7 +21997,19 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
             hybrid_note_nacks(node, pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
         }
 #endif
+#if tt_LARGE_SAMPLES
+        // The resend order (large_resend_due()) reads what this ACKNACK shows while its requests are answered.
+        struct large_order large_order;
+        if (pub->large_count != 0) {
+            large_order_begin(node, pub, &target, sender_entity_id, prev_ack, seq_no, bitmap, bitmap_words,
+                              &large_order);
+            node->large.acknack_order = &large_order;
+        }
+#endif
         retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);
+#if tt_LARGE_SAMPLES
+        node->large.acknack_order = NULL;
+#endif
     }
 
     return true;
@@ -26827,14 +27064,14 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 #if tt_LARGE_SAMPLES
     TT_LOG_INFO("Node %u large: published=%lu reassembled=%lu abandoned=%lu no_buffer=%lu dropped=%lu duplicate=%lu "
                 "tail_abandoned=%lu window_too_small=%lu send_waits=%lu encoded_by_range=%lu encode_failed=%lu "
-                "send_writable=%lu discovery_replies_skipped=%lu",
+                "send_writable=%lu discovery_replies_skipped=%lu resend_held=%lu",
                 node->id, (unsigned long)node->large.published, (unsigned long)node->large.reassembled,
                 (unsigned long)node->large.abandoned, (unsigned long)node->large.no_buffer,
                 (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
                 (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
                 (unsigned long)node->large.send_waits, (unsigned long)node->large.encoded_by_range,
                 (unsigned long)node->large.encode_failed, (unsigned long)node->large.send_writable,
-                (unsigned long)node->large.discovery_replies_skipped);
+                (unsigned long)node->large.discovery_replies_skipped, (unsigned long)node->large.resend_held);
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #if tt_LARGE_SHM
     TT_LOG_INFO("Node %u large_ref: sent=%lu received=%lu refused=%lu dropped=%lu region_full=%lu", node->id,

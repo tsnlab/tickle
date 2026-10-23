@@ -1010,6 +1010,12 @@
 #ifndef tt_LARGE_ASSEMBLIES
 #define tt_LARGE_ASSEMBLIES 4
 #endif
+// Large-sample units a context remembers resending and not yet seen received, for the resend order (DESIGN.md section
+// 4): a slot per seq_no modulo this, 24 B each (192 KiB). A capacity, not a timing: a unit whose slot another took is
+// resent at its next request, as before the rule. The default is the widest reader window.
+#ifndef tt_LARGE_REPAIR_SLOTS
+#define tt_LARGE_REPAIR_SLOTS tt_LARGE_MAX_FRAGMENTS
+#endif
 // A RELIABLE writer sends a non-FINAL HEARTBEAT after the last fragment of each large sample, so a lost tail is asked
 // for one round trip later rather than at the next sample (DESIGN.md L3: removed if it does not pay). 0: none.
 #ifndef tt_LARGE_END_HEARTBEAT
