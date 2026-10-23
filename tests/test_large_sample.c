@@ -1603,13 +1603,18 @@ static void test_a_heartbeat_takes_the_path_of_its_data(void) {
 // overflows the socket and the reader loses its tail there, as a CPU-starved reader did on the PC (the LRF netns runs
 // under other sessions' load, 2026-10-23: socket drops 222-6,658 a rep, resends 8,179-532,481, duplicates up to 97%).
 // Answers the writer's resends, the socket drops and the reader's duplicate datagrams.
-static void resent_to_a_slow_reader(int samples, uint64_t* resent, uint64_t* drops, uint64_t* duplicates) {
+// `service_ns` a datagram, `capacity` waiting, `loss_per_mille` on the path after the queue: with no loss it is the
+// slow reader above; with loss and a deep queue it is a rate-limited path (12 us a datagram ~ 1 Gbit/s at the MTU).
+static void resent_through_a_queue(int samples, uint64_t service_ns, uint32_t capacity, uint32_t loss_per_mille,
+                                   uint64_t* resent, uint64_t* drops, uint64_t* duplicates) {
+    EXPECT_TRUE(capacity <= SIM_HELD);
     init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
     sim_start(0);
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
     sim_settle(1, tt_SECOND);
-    sim_reader_service_ns = 20 * tt_MICROSECOND;
-    sim_reader_capacity = 400;
+    sim_reader_service_ns = service_ns;
+    sim_reader_capacity = capacity;
+    sim_loss_per_mille = loss_per_mille;
     sample_len = ONE_MB;
     test_mock_nonblocking_room = -1; // each sample goes out whole at once
     uint32_t before = pub.retransmitted;
@@ -1649,13 +1654,25 @@ static void test_a_slow_readers_repairs_are_measured(void) {
     uint64_t resent = 0;
     uint64_t drops = 0;
     uint64_t duplicates = 0;
-    resent_to_a_slow_reader(SAMPLES, &resent, &drops, &duplicates);
+    resent_through_a_queue(SAMPLES, 20 * tt_MICROSECOND, 400, 0, &resent, &drops, &duplicates);
     printf("test_large_sample: %d x 1 MiB at 30 Hz to a slow reader (20 us a datagram, 400 waiting) - %llu dropped in "
            "its socket, %llu resent (%.2f per drop), %llu duplicates at the reader, %d delivered\n",
            SAMPLES, (unsigned long long)drops, (unsigned long long)resent,
            drops != 0 ? (double)resent / (double)drops : 0.0, (unsigned long long)duplicates, delivered_count);
     EXPECT_TRUE(drops > 0); // the treatment applied
     EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+
+    // A rate-limited path (12 us a datagram, 4,000 queued) at 1% loss after it: item (a)'s storm. Each ACKNACK names
+    // the units whose repairs still queue behind the drain and the writer resends every one each time it is named
+    // (RESULTS `LRF`: 34,813-475,436 resent for 352-574 lost over four seeds; the WB-harness netns path at 1% stormed
+    // one rep in three). A measurement for the follow-up's design, not a guard: nothing here fixes it.
+    enum { QUEUED_SAMPLES = 30 };
+    resent_through_a_queue(QUEUED_SAMPLES, 12 * tt_MICROSECOND, 4000, 10, &resent, &drops, &duplicates);
+    printf("test_large_sample: %d x 1 MiB at 30 Hz through a 1 Gbit/s-like queue of 4000 at 1%% loss - %llu lost on "
+           "the path, %llu dropped at the queue, %llu resent, %llu duplicates at the reader, %d delivered\n",
+           QUEUED_SAMPLES, (unsigned long long)sim_dropped[SENDER_ID], (unsigned long long)drops,
+           (unsigned long long)resent, (unsigned long long)duplicates, delivered_count);
+    EXPECT_EQ_INT(QUEUED_SAMPLES + 1, delivered_count);
 }
 
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
