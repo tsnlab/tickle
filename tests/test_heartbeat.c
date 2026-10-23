@@ -851,6 +851,95 @@ static void test_publisher_request_ack_sends_to_matched_peers(void) {
     EXPECT_EQ_U32(0, sent->flags & tt_HEARTBEAT_FLAG_FINAL); // response required, unlike a normal Heartbeat
 }
 
+// What one sent datagram carried, and where it went: its discovery summaries, reliable HEARTBEATs and sample DATA, in
+// either form (classic or single-submessage). ip 0 is the broadcast address (test_mock_send_hook_ip).
+#define ROUTE_MAX 8
+struct route_datagram {
+    uint32_t ip;
+    int summaries;
+    int heartbeats;
+    int samples;
+};
+static struct route_datagram routes[ROUTE_MAX];
+static int route_count;
+
+static void route_classify(struct route_datagram* datagram, uint8_t type, const uint8_t* body) {
+    uint32_t endpoint_id = 0;
+    memcpy(&endpoint_id, body, sizeof(endpoint_id)); // first in tt_HeartbeatHeader and tt_DataHeader alike
+    bool discovery = endpoint_id == tt_DISCOVERY_ENDPOINT_ID;
+    if (type == tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        *(discovery ? &datagram->summaries : &datagram->heartbeats) += 1;
+    } else if (type == tt_SUBMESSAGE_TYPE_DATA && !discovery) {
+        datagram->samples++;
+    }
+}
+
+static void route_capture(const void* buf, size_t len) {
+    if (route_count >= ROUTE_MAX) {
+        return;
+    }
+    struct route_datagram* datagram = &routes[route_count++];
+    memset(datagram, 0, sizeof(*datagram));
+    datagram->ip = test_mock_send_hook_ip;
+    const uint8_t* bytes = buf;
+    if ((bytes[0] & tt_SINGLE_MARKER_FLAG) != 0) {
+        route_classify(datagram, ((const struct tt_SingleHeader*)bytes)->type, bytes + sizeof(struct tt_SingleHeader));
+        return;
+    }
+    size_t pos = sizeof(struct tt_Header);
+    while (pos + sizeof(struct tt_SubmessageHeader) <= len) {
+        const struct tt_SubmessageHeader* submessage = (const struct tt_SubmessageHeader*)(bytes + pos);
+        if (submessage->length == 0) {
+            break;
+        }
+        route_classify(datagram, submessage->type, bytes + pos + sizeof(*submessage));
+        pos += submessage->length;
+    }
+}
+
+// A RELIABLE sample published with a discovery summary batched goes to its one matched reader, and the summary
+// broadcast, on its own: an unbatched publish sends what is batched first (flush_pending_before_unicast()). The
+// follow-up the HEARTBEAT fix listed as "small DATA with a batched summary still goes broadcast" holds only for a
+// batching Publisher, whose flush tick sends everything batched together (flush_batched()); measured on the default
+// path, it did not occur (RESULTS `LRF`, 2026-10-23). This holds the default path to it.
+static void test_publish_sends_batched_discovery_first(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].context_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    send_discovery_summary(&node);
+    EXPECT_TRUE(node.tx_has_pending_update);
+
+    route_count = 0;
+    test_mock_send_hook = route_capture;
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    test_mock_send_hook = NULL;
+
+    int summaries_broadcast = 0;
+    int summaries_addressed = 0;
+    int samples_to_peer = 0;
+    int samples_elsewhere = 0;
+    for (int i = 0; i < route_count; i++) {
+        *(routes[i].ip == 0 ? &summaries_broadcast : &summaries_addressed) += routes[i].summaries;
+        *(routes[i].ip == TEST_SENDER_IP ? &samples_to_peer : &samples_elsewhere) += routes[i].samples;
+    }
+    EXPECT_EQ_INT(1, summaries_broadcast);
+    EXPECT_EQ_INT(0, summaries_addressed);
+    EXPECT_EQ_INT(1, samples_to_peer);
+    EXPECT_EQ_INT(0, samples_elsewhere);
+}
+
 // No currently-matched peers - nothing to solicit, a harmless no-op (tt_RET_OK, not an error - the
 // caller's own peer_ack_seq_no[] scan afterward would just trivially see nothing to wait on).
 static void test_publisher_request_ack_noop_with_no_peers(void) {
@@ -1370,6 +1459,7 @@ int main(void) {
     test_heartbeat_final_flag_clear_forces_acknack_without_gap();
     test_heartbeat_final_flag_set_stays_silent_without_gap();
     test_publisher_request_ack_sends_to_matched_peers();
+    test_publish_sends_batched_discovery_first();
     test_publisher_request_ack_noop_with_no_peers();
     test_publisher_request_ack_requires_reliable_cache();
     test_publisher_destroy_cancels_armed_heartbeat();
