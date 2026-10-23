@@ -85,6 +85,13 @@ struct tt_ReliableStats {
     uint64_t datagrams_with_data; // ...of which carried >=1 DATA submessage
     uint64_t data_in_datagrams;   // DATA submessages across those
     uint64_t max_data_per_datagram;
+    // Where reliable traffic and discovery went (2026-10-23, the follow-ups of the reliable HEARTBEAT fix): a datagram
+    // broadcast with a sample DATA in it, one broadcast with a non-discovery HEARTBEAT or ACKNACK in it, and one sent
+    // addressed (to peers) while it held broadcast-only content - a batched announce or discovery summary
+    // (tt_Context.tx_has_pending_update) - which then reached those peers alone.
+    uint64_t broadcast_with_data;
+    uint64_t broadcast_with_reliable_control;
+    uint64_t addressed_with_discovery;
 };
 
 void tt_reliable_stats_get(struct tt_ReliableStats* out);

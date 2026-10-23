@@ -125,7 +125,8 @@
 #
 # Usage: [REPS=3] [REP_FIRST=1] [DUR=30] [ARMS="ctl ge1b2 ..."] [CELLS="be_small rel_small rel_large"] [PROFILE=ethernet|wifi]
 #        [OUT=dir] wifi_burst_loss_netns.sh
-#   OUT defaults to ~/rig_results_safe/wifi_baseline/<stamp>: raw logs per run under OUT/runs/, the summary in
+#   LARGE_HZ (default 5) sets rel_large's rate. OUT defaults to ~/rig_results_safe/wifi_baseline/<stamp>: raw logs per run
+#   under OUT/runs/, the summary in
 #   OUT/summary.txt, which always ends with "=== wifi_burst_loss_netns ended". READ_ONLY=1 re-reads an existing OUT.
 #   Needs `sudo -n ip` (tc runs under `ip netns exec`). Takes ~1 min a rep of a cell: 9 arms x 3 cells x 3 reps ~ 80 min.
 set -uo pipefail
@@ -142,7 +143,7 @@ PHASE_S=${PHASE_S:-5}
 SMALL_HZ=100
 SMALL_BYTES=100
 LARGE_BYTES=1048576
-LARGE_HZ=5
+LARGE_HZ=${LARGE_HZ:-5}
 OUT=${OUT:-$HOME/rig_results_safe/wifi_baseline/$(date +%Y%m%d-%H%M%S)}
 T0=$(date +%s)
 mkdir -p "$OUT/runs" || exit 1

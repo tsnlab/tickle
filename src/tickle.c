@@ -4085,6 +4085,7 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
 #ifdef tt_RELIABLE_STATS
     {
         uint64_t data_count = 0;
+        uint64_t control_count = 0;
         uint32_t pos = sizeof(struct tt_Header);
         while (pos + sizeof(struct tt_SubmessageHeader) <= len) {
             const struct tt_SubmessageHeader* submsg = (const struct tt_SubmessageHeader*)(node->tx_buffer + pos);
@@ -4095,8 +4096,18 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
                 ((const struct tt_DataHeader*)(submsg + 1))->endpoint_id != tt_DISCOVERY_ENDPOINT_ID) {
                 data_count++; // a sample - an announce is a DATA too since tt_VERSION 7
             }
+            if ((submsg->type == tt_SUBMESSAGE_TYPE_HEARTBEAT &&
+                 ((const struct tt_HeartbeatHeader*)(submsg + 1))->endpoint_id != tt_DISCOVERY_ENDPOINT_ID) ||
+                (submsg->type == tt_SUBMESSAGE_TYPE_ACKNACK &&
+                 ((const struct tt_AckNackHeader*)(submsg + 1))->endpoint_id != tt_DISCOVERY_ENDPOINT_ID)) {
+                control_count++; // a reliable writer's HEARTBEAT or a reader's ACKNACK, not discovery's
+            }
             pos += submsg->length;
         }
+        bool broadcast = peers == NULL || peer_count == 0;
+        g_rstats.broadcast_with_data += broadcast && data_count > 0;
+        g_rstats.broadcast_with_reliable_control += broadcast && control_count > 0;
+        g_rstats.addressed_with_discovery += !broadcast && node->tx_has_pending_update;
         g_rstats.datagrams++;
         if (data_count > 0) {
             g_rstats.datagrams_with_data++;

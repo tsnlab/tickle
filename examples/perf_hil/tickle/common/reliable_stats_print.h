@@ -66,6 +66,10 @@ static void print_reliable_stats(const char* role) {
            role, U(stats.datagrams), U(stats.datagrams_with_data), U(stats.data_in_datagrams),
            stats.datagrams_with_data > 0 ? (double)stats.data_in_datagrams / (double)stats.datagrams_with_data : 0.0,
            U(stats.max_data_per_datagram));
+    printf("RSTATS: role=%s tx broadcast_with_data=%llu broadcast_with_reliable_control=%llu "
+           "addressed_with_discovery=%llu\n",
+           role, U(stats.broadcast_with_data), U(stats.broadcast_with_reliable_control),
+           U(stats.addressed_with_discovery));
 #undef U
     print_reliable_hist(role, "detect_to_recover", stats.detect_to_recover_hist);
     print_reliable_hist(role, "request_to_recover", stats.request_to_recover_hist);
