@@ -67,7 +67,7 @@ case "$REPS$ROUNDS$WARMUP$GAP_US$RX_CPU${TX_CPU:-0}$PORT$ECHO_PORT" in
     *[!0-9]*) echo "REPS ROUNDS WARMUP GAP_US RX_CPU TX_CPU PORT ECHO_PORT are whole numbers" >&2; exit 64 ;;
 esac
 for a in $ARMS; do
-    case "$a" in recvfrom | recvfrom_aa | recvmsg | epoll3 | uring | uring_dt | uring_ms | uring_ms_dt | prod | prod_dt) ;;
+    case "$a" in recvfrom | recvfrom_aa | recvmsg | epoll3 | uring | uring_dt | uring_ms | uring_ms_dt | prod | prod_dt | prod_dt_msg) ;;
         *) echo "unknown arm '$a'" >&2; exit 64 ;; esac
 done
 [ "$ROUNDS" -ge 20000 ] || echo "note: ROUNDS $ROUNDS < 20000 - every run will read VOID (n < 20000)" >&2

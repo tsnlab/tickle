@@ -37,6 +37,8 @@ URING = ["uring", "uring_dt", "uring_ms", "uring_ms_dt"]
 PROD_BASE = "prod"
 PROD_CANDIDATE = "prod_dt"
 ARMS = ["recvfrom", "recvfrom_aa", "recvmsg", "epoll3"] + URING + [PROD_BASE, PROD_CANDIDATE]
+# prod_dt_msg (2026-10-24, RESULTS KH2): prod_dt with production's RECVMSG and address - listed and pooled, decides nothing.
+ARMS += ["prod_dt_msg"]
 
 PREREG = f"""recv_wake_xhost - reading rules (written 2026-10-21 before any rig run; enforced by recv_wake_xhost_read.py)
 Measured, per datagram, on the receiving Pi's own clock: kernel software receive stamp (skb->tstamp, read with
