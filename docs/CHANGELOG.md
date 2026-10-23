@@ -243,6 +243,17 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (`tt_Publisher_request_ack()`, `tests/wire_identity_repair_routes.sh`; rig core A/B PASS 0/88, large cells 60 reps lost 0); the large-sample amplifier is real on ETHERNET - a 1 Gbit/s queued path at 1% loss
   stormed one rep in three (251,028 resent, 75 of 900 samples lost), reproduced in `test_large_sample`'s sim - and is
   left open for a time-ordered resend rule (ROADMAP, "Large-sample repair storm").
+- **A large sample's repair storm on a queued path** (RESULTS `LRF` item (a), `LRO`): each ACKNACK named units whose
+  repairs were still queued and the writer resent every named unit each time. Now a large unit already resent to a
+  reader's context goes again only once the reader has shown the resend lost - it received something sent after it,
+  read from the watermark and from what the ACKNACK leaves out below the reader's highest known unit - or RACK-TLP's
+  2 x srtt over its own repairs has passed ([DESIGN.md](DESIGN.md) section 4, "Large-sample resend order"; counted as
+  `large resend_held`). No wire change; the default build and FreeRTOS are untouched; rmw contexts +192 KiB. Sim: the
+  queued-path storm 259,042 / 29,331 / 27,024 resent at three seeds -> 9,541 / 8,235 / 6,049, now a guard; the slow
+  reader 564,402 -> 36,999. Netns (PROFILE=ethernet, 1 Gbit/s queue): the parent stormed in 3 of 11 reps at 0.1% loss
+  and lost 1,262 samples, the rule in 0 of 12 and lost none; the cost is 1% loss's median rep p99, 11.0 -> 17.2 ms (a
+  lost repair the last of its burst waits the timeout). WIFI: NOT WORSE in all 18 cells, copies after delivery down
+  up to 26 times. Rig cells prepared, not run.
 
 - A client killed and started again under the same context id, before the server heard of the new launch (no farewell,
   discovery not yet updated or not attached), got its predecessor's kept answer to its first call and its callback never
