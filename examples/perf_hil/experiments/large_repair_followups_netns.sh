@@ -78,6 +78,21 @@
 #   slow (reader-side loss, W = 25000): F's pooled resends / socket drops, against P's - a measurement, the hold's
 #     effect where the reader's own socket drops repairs (the sim: 564,402 -> 36,999); not a verdict.
 #
+# AMENDED 2026-10-24 05:30, BEFORE ITS FIRST RUN: the resend order's tail (DESIGN.md section 4, "The tail: RACK's time
+#   rule"; branch ab/large-resend-order-tail). PHASE=tail runs amp only, on trees labelled O (optional: the resend
+#   order's parent, 896d4a29), P (the resend order, the base) and F (the change), rep by rep in alternation; the
+#   python's "tail" section applies this reading:
+#   VOID and STORM as for order, per rep. CONTROL the change cannot touch: the ctl arm (nothing lost, no unit named):
+#     every tree resends 0 there, else VOID; N = |median rep p99 F - P| on ctl.
+#   FALSIFIED when F has a STORM rep at ge0.1b1 or ge1b1, or delivers fewer samples than P in either.
+#   ge1b1 SHOWN when F's median rep p99 is below P's by more than N; COST when above by more than N; NOT SHOWN
+#     otherwise. Printed beside it, not a verdict: the share of P's cost over O that F takes back, (P - F) / (P - O).
+#   ge0.1b1 COST when F's median rep p99 is above P's by more than N; else NO COST.
+#   The price in copies, a measurement: resent per missing unit and the reader's duplicate units per tree and arm.
+#   RSTATS lro (F only: the base does not print it): held units released by the order, RACK's time rule, the timeout.
+#   LOAD: the PC is shared; before each rep the harness waits (at most 120 s) for the 1-minute load to fall to 4, and a
+#     rep that starts above 4 is VOID for this phase (stricter than nproc/2 above).
+#
 # Usage: TREES="P=/tree [F=/tree ...]" [PHASE=both] [REPS=3] [DUR=30] [OUT=dir] large_repair_followups_netns.sh
 #   Each tree holds this harness, wifi_burst_loss_netns.sh, wifi_link_node.c, large_sample_bench.c, src/ include/ and
 #   examples/perf_hil/tickle/common/ (a git archive or a worktree). OUT defaults to
@@ -113,8 +128,15 @@ if [ "${READ_ONLY:-0}" != 1 ]; then
             label=${t%%=*}
             dir=${t#*=}
             mkdir -p "$OUT/$label"
+            if [ "$PHASE" = tail ]; then
+                waited=0
+                while awk '{ exit !($1 > 4) }' /proc/loadavg && [ "$waited" -lt 120 ]; do
+                    sleep 10
+                    waited=$((waited + 10))
+                done
+            fi
             echo "rep $rep tree $label $(date -Is) load=$(cut -d' ' -f1 /proc/loadavg)" >>"$SUM"
-            if [ "$PHASE" != amp ] && [ "$PHASE" != slow ] && [ "$PHASE" != order ]; then
+            if [ "$PHASE" != amp ] && [ "$PHASE" != slow ] && [ "$PHASE" != order ] && [ "$PHASE" != tail ]; then
                 job "$label" "$dir" routes "$rep" ARMS="ctl ge5b4" CELLS="rel_small rel_large"
                 job "$label" "$dir" keepall "$rep" ARMS="ctl ge5b4" CELLS="rel_large" LARGE_PUB_ARGS="-A"
             fi
@@ -349,6 +371,78 @@ if phase == "order" and {"P", "F"} <= set(trees):
             fewer = fa["dlv"] < pa["dlv"]
             verdicts.append(f"{'COST' if worse or fewer else 'NO COST'}  order {arm}: median p99 P {pa['p99']:.1f} F "
                             f"{fa['p99']:.1f} ms (N {noise:.2f}); delivered P {pa['dlv']:.0f} F {fa['dlv']:.0f}")
+if phase == "tail" and {"P", "F"} <= set(trees):
+    import statistics
+    print("--- tail: per tree and arm, usable amp reps: STORM reps, resent / missing, reader duplicates, delivered, "
+          "median rep p99 ms (rep p99s)")
+    view = {}
+    for tree in [t for t in ("O", "P", "F") if t in trees]:
+        groups = {}
+        for run in runs(out / tree / "amp"):
+            groups.setdefault(run.name.split("-")[0], []).append(read_run(run))
+        for arm in ("ctl", "ge0.1b1", "ge1b1"):
+            all_reps = groups.get(arm, [])
+
+            def why_void(r):
+                return usable(r, arm) or (f"load {r['load']} > 4" if r["load"] > 4 else "")
+
+            ok = [r for r in all_reps if not why_void(r)]
+            for r in all_reps:
+                if why_void(r):
+                    print(f"  void {tree} {arm} {r['name']}: {why_void(r)}")
+            storms = 0
+            for r in ok:
+                rs = num(r["p_result"], "retransmitted")
+                ms = num(r["e_rstats"], "missing_opened")
+                storms += arm != "ctl" and ms > 0 and rs / ms > 2
+            p99 = [num(r["e_result"], "latency_p99_us") / 1000 for r in ok]
+            dlv = sum(num(r["e_result"], "delivered") for r in ok)
+            pub = sum(num(r["p_result"], "published") for r in ok)
+            resent = sum(num(r["p_result"], "retransmitted") for r in ok)
+            missing = sum(num(r["e_rstats"], "missing_opened") for r in ok)
+            dups = sum(num(r["e_result"], "large_duplicate") for r in ok)
+            lro = {k: sum(num(r["p_rstats"], k) for r in ok)
+                   for k in ("released_shown", "rack", "released_timeout", "timeout_tail")}
+            med = statistics.median(p99) if p99 else float("nan")
+            view[(tree, arm)] = {"n": len(ok), "storms": storms, "resent": resent, "dlv": dlv, "pub": pub, "p99": med}
+            per = resent / missing if missing else float("nan")
+            print(f"{tree} {arm:8} reps {len(ok)} storms {storms} resent {resent:.0f} / missing {missing:.0f} = "
+                  f"{per:.3f} dups {dups:.0f} delivered {dlv:.0f}/{pub:.0f} median p99 {med:.1f} "
+                  f"({' '.join(f'{x:.1f}' for x in sorted(p99))}) lro shown/rack/timeout(tail) "
+                  f"{lro['released_shown']:.0f}/{lro['rack']:.0f}/{lro['released_timeout']:.0f}({lro['timeout_tail']:.0f})")
+    ctl = [view.get((t, "ctl")) for t in ("O", "P", "F") if (t, "ctl") in view]
+    ctl_p, ctl_f = view.get(("P", "ctl")), view.get(("F", "ctl"))
+    if not ctl_p or not ctl_f or not ctl_p["n"] or not ctl_f["n"]:
+        verdicts.append("VOID  tail: no usable control rep on P or F")
+    elif any(c["resent"] for c in ctl if c["n"]):
+        verdicts.append("VOID  tail: the control resent on a tree: " +
+                        " ".join(f"{t} {view[(t, 'ctl')]['resent']:.0f}" for t in ("O", "P", "F") if (t, "ctl") in view))
+    else:
+        noise = abs(ctl_f["p99"] - ctl_p["p99"])
+        print(f"control noise band N = |p99 F - p99 P| on ctl = {noise:.2f} ms")
+        bad = []
+        for arm in ("ge0.1b1", "ge1b1"):
+            pa, fa = view.get(("P", arm)), view.get(("F", arm))
+            if not pa or not fa or not pa["n"] or not fa["n"]:
+                verdicts.append(f"VOID  tail {arm}: no usable rep on P or F")
+                continue
+            if fa["storms"]:
+                bad.append(f"F stormed in {fa['storms']} of {fa['n']} {arm} reps")
+            if fa["dlv"] < pa["dlv"]:
+                bad.append(f"F delivered {fa['dlv']:.0f} < P {pa['dlv']:.0f} at {arm}")
+            d = fa["p99"] - pa["p99"]
+            if arm == "ge1b1":
+                word = "SHOWN" if d < -noise else ("COST" if d > noise else "NOT SHOWN")
+                oa = view.get(("O", arm))
+                share = ""
+                if oa and oa["n"] and pa["p99"] != oa["p99"]:
+                    share = f"; O {oa['p99']:.1f} ms, share of P's cost taken back {(pa['p99'] - fa['p99']) / (pa['p99'] - oa['p99']):.2f}"
+                verdicts.append(f"{word}  tail ge1b1: median p99 P {pa['p99']:.1f} F {fa['p99']:.1f} ms (N {noise:.2f}){share}")
+            else:
+                verdicts.append(f"{'COST' if d > noise else 'NO COST'}  tail {arm}: median p99 P {pa['p99']:.1f} F "
+                                f"{fa['p99']:.1f} ms (N {noise:.2f})")
+        if bad:
+            verdicts.append("FALSIFIED  tail: " + "; ".join(bad))
 print("--- verdicts")
 for v in verdicts:
     print(v)
