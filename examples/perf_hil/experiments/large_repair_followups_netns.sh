@@ -9,7 +9,7 @@
 #   (b) small DATA with a batched discovery summary goes broadcast.
 #   (c) tt_Publisher_request_ack() flushes batched broadcast-only content (a summary, an announce) to its peers alone.
 #
-# PHASES (PHASE=routes|amp|both|slow|all, default both; all adds slow):
+# PHASES (PHASE=routes|amp|both|slow|all|order, default both; all adds slow; order is amp and slow, read as an A/B):
 #   routes  (b) and (c). The WB shape (two prio bands, broadcast in its own netem, slot 1-4 ms x 42), arms ctl and
 #           ge5b4, cells rel_small (100 B RELIABLE KEEP_LAST 10 at 100 Hz, echoed) and rel_large (1 MiB RELIABLE at
 #           5 Hz), and rel_large again with a KEEP_ALL writer (-A, OUT/keepall), which solicits acknowledgements
@@ -61,6 +61,23 @@
 #     duplicates exceed 20% of resends (an ideal ARQ resends each unit lost in the socket once: the path loses
 #     nothing). FALSIFIED when both stay under. Either way the reading is about ETHERNET's default repair.
 #
+# AMENDED 2026-10-23 23:00, BEFORE ITS FIRST RUN: the resend order's A/B (DESIGN.md section 4, "Large-sample resend
+#   order"; branch ab/large-resend-order). PHASE=order runs amp and slow on two trees, labelled P (the parent) and F
+#   (the change), rep by rep in alternation; the python's "order" section applies this reading:
+#   VOID as above, per rep. STORM: a usable lossy amp rep whose writer resent more than 2 units per unit its reader
+#     found missing (retransmitted / missing_opened > 2; the calm parent reps of LRF read 1.01-1.02, the storm 3.83
+#     pooled with 251,028 resent in its one rep).
+#   CONTROL the change cannot touch: the ctl arm (nothing lost: no unit is ever named, the wire is the parent's -
+#     tests/wire_identity_resend_order.sh). Both trees must resend 0 there; |p99(F) - p99(P)| over its usable reps (the
+#     medians of the rep p99s) is the noise band N.
+#   ge1b1 SHOWN when F has no STORM rep, P has at least one, and F delivers no fewer samples than P. UNDECIDED when P has
+#     no STORM rep either (the parent did not storm this run: nothing to stop), and then read only for cost.
+#     FALSIFIED when F has a STORM rep.
+#   COST, ge0.1b1 and ge1b1, read even when UNDECIDED: F's median rep p99 above P's by more than N, or F delivering
+#     fewer samples than P, is a COST (named, with numbers); none is NO COST.
+#   slow (reader-side loss, W = 25000): F's pooled resends / socket drops, against P's - a measurement, the hold's
+#     effect where the reader's own socket drops repairs (the sim: 564,402 -> 36,999); not a verdict.
+#
 # Usage: TREES="P=/tree [F=/tree ...]" [PHASE=both] [REPS=3] [DUR=30] [OUT=dir] large_repair_followups_netns.sh
 #   Each tree holds this harness, wifi_burst_loss_netns.sh, wifi_link_node.c, large_sample_bench.c, src/ include/ and
 #   examples/perf_hil/tickle/common/ (a git archive or a worktree). OUT defaults to
@@ -97,11 +114,11 @@ if [ "${READ_ONLY:-0}" != 1 ]; then
             dir=${t#*=}
             mkdir -p "$OUT/$label"
             echo "rep $rep tree $label $(date -Is) load=$(cut -d' ' -f1 /proc/loadavg)" >>"$SUM"
-            if [ "$PHASE" != amp ] && [ "$PHASE" != slow ]; then
+            if [ "$PHASE" != amp ] && [ "$PHASE" != slow ] && [ "$PHASE" != order ]; then
                 job "$label" "$dir" routes "$rep" ARMS="ctl ge5b4" CELLS="rel_small rel_large"
                 job "$label" "$dir" keepall "$rep" ARMS="ctl ge5b4" CELLS="rel_large" LARGE_PUB_ARGS="-A"
             fi
-            if [ "$PHASE" = slow ] || [ "$PHASE" = all ]; then
+            if [ "$PHASE" = slow ] || [ "$PHASE" = all ] || [ "$PHASE" = order ]; then
                 for w in 0 25000; do
                     job "$label" "$dir" "slow_w$w" "$rep" ARMS="ctl" CELLS="rel_large" LARGE_HZ=30 BANDS=1 \
                         NETEM_BASE="limit 100000 delay 100us rate 1gbit" LARGE_SUB_ARGS="-w $w"
@@ -165,7 +182,7 @@ def runs(base):
 trees = sorted(p.name for p in out.iterdir() if p.is_dir())
 ROUTE_KEYS = ("broadcast_with_data", "broadcast_with_reliable_control", "addressed_with_discovery")
 verdicts = []
-if phase in ("slow", "all"):
+if phase in ("slow", "all", "order"):
     print("--- slow: per tree and W, pooled over usable reps: resent, reader missing units, socket drops, resends per "
           "missing unit (limit 1.25), duplicates / resent (limit 20%), delivered")
     for tree in trees:
@@ -200,7 +217,7 @@ if phase in ("slow", "all"):
                 real = per > 1.25 or share > 0.20
                 verdicts.append(f"{'REAL' if real else 'NONE'}  (a, reader-side) {tree}: per_missing {per:.3f} "
                                 f"dups {100 * share:.1f}%")
-if phase not in ("amp", "slow"):
+if phase not in ("amp", "slow", "order"):
     print("--- routes: per tree, sub-run, arm-cell; per node p/e/i: broadcast_with_data / broadcast_with_reliable_control / "
           "addressed_with_discovery, summed over usable reps (min..max per rep); delivery")
     ranges = {}
@@ -279,6 +296,59 @@ if phase not in ("routes", "slow"):
             elif missing:
                 real = per > 1.25 / (1 - loss) or share > 0.20
                 verdicts.append(f"{'REAL' if real else 'NONE'}  (a) {tree} {arm}: per_lost {per:.3f} dups {100 * share:.1f}%")
+if phase == "order" and {"P", "F"} <= set(trees):
+    import statistics
+    print("--- order: per tree and arm, usable amp reps: STORM reps (resent / missing > 2), resent, delivered, "
+          "median rep p99 ms")
+    view = {}
+    for tree in ("P", "F"):
+        groups = {}
+        for run in runs(out / tree / "amp"):
+            groups.setdefault(run.name.split("-")[0], []).append(read_run(run))
+        for arm in ("ctl", "ge0.1b1", "ge1b1"):
+            ok = [r for r in groups.get(arm, []) if not usable(r, arm)]
+            storms, rows = 0, []
+            for r in ok:
+                rs = num(r["p_result"], "retransmitted")
+                ms = num(r["e_rstats"], "missing_opened")
+                storm = arm != "ctl" and ms > 0 and rs / ms > 2
+                storms += storm
+                rows.append(f"{rs:.0f}/{ms:.0f}{'*' if storm else ''}")
+            p99 = [num(r["e_result"], "latency_p99_us") / 1000 for r in ok]
+            dlv = sum(num(r["e_result"], "delivered") for r in ok)
+            pub = sum(num(r["p_result"], "published") for r in ok)
+            resent = sum(num(r["p_result"], "retransmitted") for r in ok)
+            med = statistics.median(p99) if p99 else float("nan")
+            view[(tree, arm)] = {"n": len(ok), "storms": storms, "resent": resent, "dlv": dlv, "pub": pub, "p99": med}
+            print(f"{tree} {arm:8} reps {len(ok)} storms {storms} resent/missing per rep {' '.join(rows)} "
+                  f"delivered {dlv:.0f}/{pub:.0f} median p99 {med:.1f}")
+    ctl_p, ctl_f = view.get(("P", "ctl")), view.get(("F", "ctl"))
+    if not ctl_p or not ctl_f or not ctl_p["n"] or not ctl_f["n"]:
+        verdicts.append("VOID  order: no usable control rep on one tree")
+    elif ctl_p["resent"] or ctl_f["resent"]:
+        verdicts.append(f"VOID  order: the control resent (P {ctl_p['resent']:.0f}, F {ctl_f['resent']:.0f})")
+    else:
+        noise = abs(ctl_f["p99"] - ctl_p["p99"])
+        print(f"control noise band N = |p99 F - p99 P| on ctl = {noise:.2f} ms")
+        p1, f1 = view.get(("P", "ge1b1")), view.get(("F", "ge1b1"))
+        if p1 and f1 and p1["n"] and f1["n"]:
+            if f1["storms"]:
+                verdicts.append(f"FALSIFIED  order ge1b1: F stormed in {f1['storms']} of {f1['n']} reps")
+            elif not p1["storms"]:
+                verdicts.append(f"UNDECIDED  order ge1b1: the parent did not storm in its {p1['n']} reps")
+            elif f1["dlv"] < p1["dlv"]:
+                verdicts.append(f"FALSIFIED  order ge1b1: F delivered {f1['dlv']:.0f} < P {p1['dlv']:.0f}")
+            else:
+                verdicts.append(f"SHOWN  order ge1b1: P stormed {p1['storms']}/{p1['n']}, F 0/{f1['n']}; resent "
+                                f"{p1['resent']:.0f} -> {f1['resent']:.0f}")
+        for arm in ("ge0.1b1", "ge1b1"):
+            pa, fa = view.get(("P", arm)), view.get(("F", arm))
+            if not pa or not fa or not pa["n"] or not fa["n"]:
+                continue
+            worse = fa["p99"] - pa["p99"] > noise
+            fewer = fa["dlv"] < pa["dlv"]
+            verdicts.append(f"{'COST' if worse or fewer else 'NO COST'}  order {arm}: median p99 P {pa['p99']:.1f} F "
+                            f"{fa['p99']:.1f} ms (N {noise:.2f}); delivered P {pa['dlv']:.0f} F {fa['dlv']:.0f}")
 print("--- verdicts")
 for v in verdicts:
     print(v)
