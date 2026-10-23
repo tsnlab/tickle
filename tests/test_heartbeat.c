@@ -897,6 +897,52 @@ static void route_capture(const void* buf, size_t len) {
     }
 }
 
+// tt_Publisher_request_ack() with a discovery summary batched in tx_buffer, waiting for its flush tick: the summary is
+// broadcast-only content (tx_has_pending_update), so it goes as its flush would send it - broadcast - and the
+// flag-clear HEARTBEAT to the matched peer. The solicitation used to be appended to it and the datagram flushed to the
+// peer: the summary reached that peer and no other node, which counted it missing (2026-10-23).
+static void test_publisher_request_ack_sends_batched_discovery_first(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    pub.peers[0].context_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    send_discovery_summary(&node);
+    EXPECT_TRUE(node.tx_has_pending_update);
+
+    route_count = 0;
+    test_mock_send_hook = route_capture;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_request_ack(&pub));
+    test_mock_send_hook = NULL;
+
+    int summaries_broadcast = 0;
+    int summaries_addressed = 0;
+    int heartbeats_to_peer = 0;
+    int heartbeats_elsewhere = 0;
+    for (int i = 0; i < route_count; i++) {
+        *(routes[i].ip == 0 ? &summaries_broadcast : &summaries_addressed) += routes[i].summaries;
+        *(routes[i].ip == TEST_SENDER_IP ? &heartbeats_to_peer : &heartbeats_elsewhere) += routes[i].heartbeats;
+    }
+    EXPECT_EQ_INT(1, summaries_broadcast);
+    EXPECT_EQ_INT(0, summaries_addressed);
+    EXPECT_EQ_INT(1, heartbeats_to_peer);
+    EXPECT_EQ_INT(0, heartbeats_elsewhere);
+    EXPECT_TRUE(!node.tx_has_pending_update);
+    EXPECT_EQ_U32((uint32_t)sizeof(struct tt_Header), node.tx_tail);
+}
+
 // A RELIABLE sample published with a discovery summary batched goes to its one matched reader, and the summary
 // broadcast, on its own: an unbatched publish sends what is batched first (flush_pending_before_unicast()). The
 // follow-up the HEARTBEAT fix listed as "small DATA with a batched summary still goes broadcast" holds only for a
@@ -1459,6 +1505,7 @@ int main(void) {
     test_heartbeat_final_flag_clear_forces_acknack_without_gap();
     test_heartbeat_final_flag_set_stays_silent_without_gap();
     test_publisher_request_ack_sends_to_matched_peers();
+    test_publisher_request_ack_sends_batched_discovery_first();
     test_publish_sends_batched_discovery_first();
     test_publisher_request_ack_noop_with_no_peers();
     test_publisher_request_ack_requires_reliable_cache();

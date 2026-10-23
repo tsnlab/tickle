@@ -14292,6 +14292,14 @@ static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
         return tt_RET_INVALID_ARGUMENT; // nothing published yet - see this function's own doc comment
     }
 
+    // Whatever is batched goes first, where its flush tick would send it (flush_batched()), as ahead of the other
+    // HEARTBEATs (heartbeat_unicast_count()): the solicitation used to be appended to it and the datagram sent to
+    // live_peers, so a batched discovery summary or announce - broadcast-only - reached those peers and no other node
+    // (test_heartbeat.c, test_publisher_request_ack_sends_batched_discovery_first(), 2026-10-23). A failed flush leaves
+    // it there, to ride the solicitation as before.
+    if (pub->node->tx_tail != sizeof(struct tt_Header)) {
+        flush_batched(pub->node);
+    }
     encode_and_send_heartbeat(pub->node, pub, first_seq_no, live_peers, live_count, 0);
     return tt_RET_OK;
 }

@@ -206,8 +206,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   still goes broadcast; request_ack flushes batched broadcast content unicast. Measured after (RESULTS `LRF`,
   `large_repair_followups_netns.sh`, RSTATS route counters): small DATA never went broadcast on the default path (an
   unbatched publish flushes batched content first; `test_publish_sends_batched_discovery_first()` holds it);
-  request_ack's case is real and rare (2 summaries in 8 usable lossy KEEP_ALL reps), its fix kept off this branch on
-  `ab/large-repair-followups-c`; the large-sample amplifier is real on ETHERNET - a 1 Gbit/s queued path at 1% loss
+  request_ack's case is real and rare (2 summaries in 8 usable lossy KEEP_ALL reps), fixed: a solicitation sends what is batched first
+  (`tt_Publisher_request_ack()`, `tests/wire_identity_repair_routes.sh`); the large-sample amplifier is real on ETHERNET - a 1 Gbit/s queued path at 1% loss
   stormed one rep in three (251,028 resent, 75 of 900 samples lost), reproduced in `test_large_sample`'s sim - and is
   left open for a time-ordered resend rule (ROADMAP, "Large-sample repair storm").
 
