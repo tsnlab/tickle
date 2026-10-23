@@ -63,6 +63,7 @@
 
 #include <sys/wait.h>
 #include <tickle/config.h>
+#include <tickle/hal.h> // tt_get_ns()
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -431,7 +432,9 @@ static const char* const scenario_names[] = {"ring",        "udp",        "pinne
 // only a pinned slot can make the ring refuse the talker, never a listener that load kept off the CPU (the held case
 // read 342 refusals unpaced under make check-gates, 2026-10-21, with no loan in the ring).
 #define FLOOD_WINDOW 32U
-#define ACK_TIMEOUT_MS 2000 // a paced talker waiting this long for a take has a stopped listener (wait_for_window())
+#define ACK_TIMEOUT_MS 2000   // a paced talker waiting this long for a take has a stopped listener (wait_for_window())
+#define LATE_ACK_WAIT_MS 2000 // after a failed flood publish, how long report_failed_flood_publish() waits for writable
+#define NS_PER_MS 1000000ULL
 
 static bool is_held(enum scenario which) {
     return HELD == which || HELD_PINNED == which || HELD_SMALL == which;
@@ -479,9 +482,41 @@ static rmw_ret_t publish_array1k_loaned(rmw_publisher_t* pub, uint64_t id) {
     void* message = NULL;
     assert(RMW_RET_OK == rmw_borrow_loaned_message(pub, &array1k_handle, &message));
     fill_array1k(message, id);
+    uint64_t start_ns = tt_get_ns();
     rmw_ret_t ret = rmw_publish_loaned_message(pub, message, NULL);
+    if (RMW_RET_OK != ret) {
+        printf("talker: publish of sample %llu failed after %llu ms (rmw %d): %s\n", (unsigned long long)id,
+               (unsigned long long)((tt_get_ns() - start_ns) / NS_PER_MS), (int)ret, rmw_get_error_string().str);
+    }
     rmw_reset_error();
     return ret;
+}
+
+// A flood publish that failed (2026-10-23: held-pinned in a gate run, 1 of 1415, after the matching and 1414 samples
+// had gone): what its KEEP_ALL state was, and whether the acknowledgements it waited for came later or never - a
+// late ACKNACK (the listener's or this poll thread off the CPU) or a stalled one (nothing answers the solicitation).
+static void report_failed_flood_publish(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* data) {
+    struct tt_Publisher* pub = &((rmw_tickle_publisher_t*)data->data)->tickle_publisher;
+    uint64_t start_ns = tt_get_ns();
+    bool writable = false;
+    while (!writable && tt_get_ns() - start_ns < (uint64_t)LATE_ACK_WAIT_MS * NS_PER_MS) {
+        tt_Context_lock(&context_impl->tickle_context);
+        writable = tt_Publisher_writable(pub);
+        tt_Context_unlock(&context_impl->tickle_context);
+        if (!writable) {
+            sleep_poll();
+        }
+    }
+    tt_Context_lock(&context_impl->tickle_context);
+    printf("talker: KEEP_ALL at the failure: seq_no %u, acknowledged below %u by all, bound %u; writable %s; "
+           "rx_datagrams %llu, doorbells received %llu\n",
+           (unsigned)pub->seq_no, (unsigned)tt_Publisher_min_acked_seq_no(pub),
+           (unsigned)tt_Publisher_unacked_bound(pub), writable ? "again within the wait" : "still not, after the wait",
+           (unsigned long long)context_impl->tickle_context.rx_datagrams,
+           (unsigned long long)context_impl->tickle_context.segment_doorbells_received);
+    tt_Context_unlock(&context_impl->tickle_context);
+    printf("talker: watched writable for %llu ms after the failed publish returned (at most %d ms)\n",
+           (unsigned long long)((tt_get_ns() - start_ns) / NS_PER_MS), LATE_ACK_WAIT_MS);
 }
 
 enum window_wait { WINDOW_OPEN, WINDOW_STALLED, WINDOW_BROKEN };
@@ -547,6 +582,9 @@ static int talk_held(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* d
             report->published = id;
         } else {
             report->failed++;
+            if (WINDOW_OPEN == window) {
+                report_failed_flood_publish(context_impl, data);
+            }
         }
     }
     return 0;
