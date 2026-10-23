@@ -447,6 +447,25 @@ context goes again only when that reader has shown the resend lost:
 Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
 is answered at once, as before; with nothing pending in the context nothing is read.
 
+**The tail: RACK's time rule** (2026-10-24, branch ab/large-resend-order-tail). Instrumented first (RSTATS `lro`,
+PC netns ge1b1, 2 reps of 900 samples): 12 and 14 held units a rep were released by the timeout, 8 and 12 of them with
+nothing at all sent after their resend; each had been asked for again within a fraction of a millisecond of its
+resend and then waited 4-16 ms more, the timeout itself (2 x srtt = 4-16 ms: most repairs queue behind a sample's
+8 ms burst, so srtt is a drain-length round trip). 12-14 late samples of 900 are the rep's p99 (16.0, 19.7 ms). A
+third condition, RFC 8985 6.2's time rule, now answers such a request:
+
+| condition | measured quantity |
+|---|---|
+| **or the reader still names it, asking later than RACK.rtt + reo_wnd after its resend** | RACK.rtt: the round trip of this reader's most recently resent repair shown arrived (Karn: one resend), so it follows the path's queue now - short after a drain, long during one - where srtt averages over both. reo_wnd: a quarter of the least such round trip seen (RFC 8985 6.2's min_RTT / 4) |
+
+It answers a unit's first resend only (`resends` 1): a copy it sends early, into a queue longer than RACK.rtt said,
+costs that one datagram, and the unit then waits for the order rule or the timeout as before - a unit goes at most
+twice before a timeout, so no storm can grow from it. No wire change; 12 B more in each ack entry (rack serial,
+RACK.rtt, min). **Falsified by:** the queued-path sim (`test_large_sample`) resending more than its samples carry at
+any seed, or the 40 ms tail case more than twice per tail; the netns A/B (PHASE=order) storming at ge0.1b1 or ge1b1,
+or ge1b1's median rep p99 not lower than the base's by more than the control's band; the instrument's timeout
+releases at ge1b1 not falling.
+
 - **No fixed time.** The order is a counter; the timeout is measured on the path it guards, like the reader's retry
   interval (section 6). Each estimate errs one way: a sample's first send bounds when its units went from below, so
   "sent after" is never claimed for a copy that went earlier. What a skipping ACKNACK leaves out may still be on its way (a reader
