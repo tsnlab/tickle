@@ -205,7 +205,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   window. Each launch starts its call seq_no at a value drawn with its entity_id base, not at 0. On FreeRTOS lwIP draws
   its first local port from `LWIP_RAND` (`board_lwip_rand()`), so a rebooted board does not rebind its predecessor's
   port. `tests/test_client_incarnation.c` and six cases in `tests/test_process_callrequest.c` fail on the parent and
-  pass; `tests/mutants_client_incarnation.py` kills 8 of 8.
+  pass; `tests/mutants_client_incarnation.py` kills 8 of 8. Rig core gate v2 (A 64e72418, B 431ec866 before its
+  rebase, `coreAB_431ec866_20261023-165158`): PASS, 0/88 WORSE.
 - A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a
   successor at the same name replacing them, and the name carries the ephemeral data port. A context building its own
   segment now removes every one at its address that no live owner holds (`sweep_orphaned_segments()`, Linux HAL).
