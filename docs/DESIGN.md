@@ -434,6 +434,35 @@ timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is 
 | one system call | datagrams ready together go in one `tt_send_batch()` (`sendmmsg()`) |
 | **batched broadcast-only content leaves as broadcast** | a batched announce or summary goes out first, on its own, where its flush tick would send it, before an unbatched publish, a call, every reliable HEARTBEAT and a solicitation sent to peers (`flush_pending_before_unicast()`, `heartbeat_unicast_count()`, `tt_Publisher_request_ack()`). Not yet before a retransmission or an initial/eviction HEARTBEAT to one reader, which carry it to their peers alone (rare: RESULTS `LRF`); a reader's ACKNACK rides it broadcast, confined by its receiver field |
 
+**Large-sample resend order** (2026-10-23, RESULTS `LRF` item (a); `tt_LARGE_SAMPLES` only). A reader names every
+unit still missing at each request; on a path that queues, the repair of a unit it names may still be on its way, and
+resending each named unit each time made the repairs the queue. So a large-sample unit already resent to a reader's
+context goes again only when that reader has shown the resend lost:
+
+| condition | how the writer knows it, from one ACKNACK |
+|---|---|
+| **it received something sent after that resend** (RACK's order rule) | every send of a large unit - each resend, and each send call of a sample's first send to its only destination - takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed, the send call the unit just below it went in) and units it leaves out between its lowest and highest request (a pending resend's own serial; the highest other one's send call). On a path that keeps order, the resend would have arrived first |
+| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the first ACKNACK that shows it arrived, units resent once (Karn). Before the first sample: how long the reader took to ask for the unit after the send call it went in |
+
+Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
+is answered at once, as before; with nothing pending in the context nothing is read.
+
+- **No fixed time.** The order is a counter; the timeout is measured on the path it guards, like the reader's retry
+  interval (section 6). Each estimate errs one way: a send call bounds when its units went from below, so "sent after"
+  is never claimed for a copy that went earlier. What a skipping ACKNACK leaves out may still be on its way (a reader
+  leaves out repairs it reckons in flight); read as received, it ends a hold early - one resend, as before the rule.
+- **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
+  reader context, serial, time, seed, resends - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
+  resend at its next request, as before. Per Publisher `tt_LARGE_SEND_MARKS` (8) send calls of 12 B, and 8 B in each
+  large record and each ack entry. **FreeRTOS RV32: nothing** - large samples compile out there (section 8, "scope").
+- **Wire: none.** Without loss no unit is named, so nothing changes: the default context's bytes are the parent's.
+- **Falsified by:** the queued-path sim (`test_large_sample`) still resending more units than its samples carry, at any
+  of its seeds, while the parent's control does; the netns A/B (`large_repair_followups_netns.sh`, PROFILE=ethernet
+  and wifi) showing no fewer resends or duplicates in the storm cells, or worse delivery or p99 latency than the
+  parent outside the control's spread; or any wire difference in a lossless run.
+- **Small reliable DATA** keeps its count-then-interval suppression (section 6): a sample of at most 45 datagrams does
+  not build a queue-deep burst, and `LRF` measured no storm there. The same rule fits it if one is ever measured.
+
 **UDP offload (Linux).** On by default (the user, 2026-10-12); `TT_UDP_OFFLOAD=0` turns it off; needs `tt_LARGE_SAMPLES`.
 
 - **Send, `UDP_SEGMENT`:** a run of a large sample's MTU fragments (types 11/12) to one destination goes as one
@@ -491,7 +520,7 @@ are measured, not fixed.
 | rule | detail |
 |---|---|
 | history | caller-owned `reliable_cache` (index + arena), one record per datagram; `capacity`/`arena_size` are its RESOURCE_LIMITS; `sample_depth` makes KEEP_LAST count samples |
-| no resend cap | the first `tt_RELIABLE_RETRY` resends answer at once, then at most once per retry interval (nack suppression) |
+| no resend cap | the first `tt_RELIABLE_RETRY` resends answer at once, then at most once per retry interval (nack suppression); a large sample's units follow the resend order instead (section 4) |
 | evicted seq_no | answered with a HEARTBEAT carrying the real `first_available_seq_no` |
 | repairs go to the asker alone | matched or not; an ACKNACK matches a reader only to a writer with history (`claim_from_acknack()`) |
 | ack state per remote reader | `tt_MAX_ACK_ENTRIES` entries (24 B, + 40 B hybrid); the next reader is not matched (logged) |
