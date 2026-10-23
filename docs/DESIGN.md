@@ -441,7 +441,7 @@ context goes again only when that reader has shown the resend lost:
 
 | condition | how the writer knows it, from one ACKNACK |
 |---|---|
-| **it received something sent after that resend** (RACK's order rule) | each resend, and each large sample's first send, takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed; the sample of the unit just below it) and units it leaves out between its lowest and highest request (a pending resend's own serial; the sample of the highest other one). On a path that keeps order, the resend would have arrived first |
+| **it received something sent after that resend** (RACK's order rule) | each resend, and each large sample's first send, takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed; the sample of the unit just below it) and units it leaves out between its lowest request and its highest request or known unit - every bitmap word but the last lies below the highest unit it knows of (a pending resend's own serial; the sample of the highest other one). On a path that keeps order, the resend would have arrived first |
 | **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the first ACKNACK that shows it arrived, units resent once (Karn). Before the first sample: how long the reader took to ask for the unit after its sample began to go |
 
 Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
