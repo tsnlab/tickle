@@ -2963,6 +2963,12 @@ struct tt_PeerAck {
     // large unit's one resend to the first ACKNACK of this reader's that showed it arrived. 0: none timed yet.
     uint32_t repair_srtt_ns;
     uint32_t repair_rttvar_ns;
+    // RFC 8985's RACK.rtt to this reader: the round trip of the most recently resent repair (the latest serial, Karn:
+    // resent once) shown arrived, and that serial; repair_min_rtt_ns the least such round trip seen (reo_wnd's
+    // min_RTT). 0: none timed yet.
+    uint32_t repair_rack_serial;
+    uint32_t repair_rack_rtt_ns;
+    uint32_t repair_min_rtt_ns;
 #endif
 };
 

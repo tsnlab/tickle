@@ -402,6 +402,37 @@ MUTANTS = [
         "        next->first_serial = 1U; // every copy",
         "test_the_resend_order_rules",
     ),
+    # The tail (DESIGN.md section 4, "The tail: RACK's time rule"): one mutant per part.
+    (
+        "resend order tail: no RACK time rule",
+        "    if (order->rack != 0 && slot->resends == 1 && now - slot->resent_at >= order->rack) {",
+        "    if (false) {",
+        "test_the_resend_order_rules, test_a_tail_waits_rack_rtt_and_its_reordering_window",
+    ),
+    (
+        "resend order tail: the time rule answers every resend, not the first",
+        "    if (order->rack != 0 && slot->resends == 1 && now - slot->resent_at >= order->rack) {",
+        "    if (order->rack != 0 && now - slot->resent_at >= order->rack) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order tail: RACK.rtt follows the last repair shown, not the last sent",
+        "        if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {",
+        "        if (true) {",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order tail: no reordering window",
+        "        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + ack->repair_min_rtt_ns / 4U;",
+        "        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns;",
+        "test_a_tail_waits_rack_rtt_and_its_reordering_window",
+    ),
+    (
+        "resend order tail: min_RTT never lowered",
+        "        if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {",
+        "        if (ack->repair_min_rtt_ns == 0) {",
+        "test_a_tail_waits_rack_rtt_and_its_reordering_window",
+    ),
 ]
 
 # Survivors with no unit test that sees them (2026-10-16, srtt_busy_writer_pc_ab.sh): the cadence of the retries while

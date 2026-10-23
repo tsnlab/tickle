@@ -92,6 +92,24 @@ struct tt_ReliableStats {
     uint64_t broadcast_with_data;
     uint64_t broadcast_with_reliable_control;
     uint64_t addressed_with_discovery;
+
+    // --- The large-sample resend order (tickle.c large_resend_due(), 2026-10-24) ---
+    // A held unit's resend released: because something sent after it was shown received (shown), or by the repair
+    // timeout (timeout). Of the timeout releases: tail - nothing at all went in the context's order of large sends
+    // after its resend; unshown - later sends went, none shown received yet. rack: released by RACK's time rule.
+    uint64_t lro_released_shown;
+    uint64_t lro_released_timeout;
+    uint64_t lro_timeout_tail;
+    uint64_t lro_timeout_unshown;
+    uint64_t lro_released_rack;
+    uint64_t lro_held_first; // units held at least once (their first held request stamped)
+    // For timeout releases: resend -> release, the reader's first held request -> release (what waiting the timeout
+    // cost against answering that request, as the parent did), and the timeout itself; us.
+    uint64_t lro_timeout_wait_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
+    uint64_t lro_timeout_extra_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
+    uint64_t lro_timeout_value_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
+    uint64_t lro_shown_extra_hist[tt_RELIABLE_STATS_HIST_BUCKETS]; // the same for shown releases
+    uint64_t lro_rack_extra_hist[tt_RELIABLE_STATS_HIST_BUCKETS];  // ... and for RACK releases
 };
 
 void tt_reliable_stats_get(struct tt_ReliableStats* out);

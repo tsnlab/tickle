@@ -136,6 +136,9 @@ static struct tt_ReliableStats g_rstats;
 #define RSTAT_SEQ_SLOTS 4096
 static uint64_t g_rstats_missing_since_ns[RSTAT_SEQ_SLOTS]; // 0 = not currently missing
 static uint64_t g_rstats_requested_ns[RSTAT_SEQ_SLOTS];     // 0 = not yet named in an ACKNACK
+// The resend order's held units (large_resend_due()): when the reader first asked again for a unit whose resend was
+// pending, by seq_no % RSTAT_SEQ_SLOTS; 0 = not held since its last resend.
+static uint64_t g_rstats_lro_held_ns[RSTAT_SEQ_SLOTS];
 
 #define RSTAT_INC(field) (g_rstats.field++)
 #define RSTAT_ADD(field, n) (g_rstats.field += (uint64_t)(n))
@@ -148,6 +151,7 @@ void tt_reliable_stats_reset(void) {
     memset(&g_rstats, 0, sizeof(g_rstats));
     memset(g_rstats_missing_since_ns, 0, sizeof(g_rstats_missing_since_ns));
     memset(g_rstats_requested_ns, 0, sizeof(g_rstats_requested_ns));
+    memset(g_rstats_lro_held_ns, 0, sizeof(g_rstats_lro_held_ns));
 }
 
 static void rstat_hist(uint64_t* hist, uint64_t delta_ns) {
@@ -183,6 +187,53 @@ static void rstat_recovered(uint32_t seq_no) {
     g_rstats_requested_ns[slot] = 0;
 }
 
+#if tt_LARGE_SAMPLES
+static void rstat_lro_held(uint32_t seq_no) {
+    uint32_t slot = seq_no % RSTAT_SEQ_SLOTS;
+    if (g_rstats_lro_held_ns[slot] == 0) {
+        g_rstats_lro_held_ns[slot] = tt_get_ns();
+        g_rstats.lro_held_first++;
+    }
+}
+
+// A held unit released by RACK's time rule: the reader's first held request -> release.
+static void rstat_lro_rack(uint32_t seq_no) {
+    uint32_t slot = seq_no % RSTAT_SEQ_SLOTS;
+    g_rstats.lro_released_rack++;
+    if (g_rstats_lro_held_ns[slot] != 0) {
+        rstat_hist(g_rstats.lro_rack_extra_hist, tt_get_ns() - g_rstats_lro_held_ns[slot]);
+    }
+    g_rstats_lro_held_ns[slot] = 0;
+}
+
+// A held unit released: by the timeout (`tail`: nothing sent after its resend at all; else later sends went, none
+// shown) or because a later send was shown received.
+static void rstat_lro_released(uint32_t seq_no, bool by_timeout, bool tail, uint64_t waited_ns, uint64_t timeout_ns) {
+    uint32_t slot = seq_no % RSTAT_SEQ_SLOTS;
+    uint64_t now = tt_get_ns();
+    uint64_t held = g_rstats_lro_held_ns[slot];
+    g_rstats_lro_held_ns[slot] = 0;
+    if (by_timeout) {
+        g_rstats.lro_released_timeout++;
+        if (tail) {
+            g_rstats.lro_timeout_tail++;
+        } else {
+            g_rstats.lro_timeout_unshown++;
+        }
+        rstat_hist(g_rstats.lro_timeout_wait_hist, waited_ns);
+        rstat_hist(g_rstats.lro_timeout_value_hist, timeout_ns);
+        if (held != 0) {
+            rstat_hist(g_rstats.lro_timeout_extra_hist, now - held);
+        }
+    } else {
+        g_rstats.lro_released_shown++;
+        if (held != 0) {
+            rstat_hist(g_rstats.lro_shown_extra_hist, now - held);
+        }
+    }
+}
+#endif
+
 static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap, uint16_t words) {
     uint32_t count = 0;
     for (uint16_t word = 0; word < words; word++) {
@@ -193,6 +244,18 @@ static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap, uint16_t words) {
 #else
 #define RSTAT_INC(field) ((void)0)
 #define RSTAT_ADD(field, n) ((void)0)
+#endif
+#if defined(tt_RELIABLE_STATS) && tt_LARGE_SAMPLES
+#define RSTAT_LRO_HELD(seq_no) rstat_lro_held(seq_no)
+#define RSTAT_LRO_DONE(seq_no) (g_rstats_lro_held_ns[(seq_no) % RSTAT_SEQ_SLOTS] = 0)
+#define RSTAT_LRO_RACK(seq_no) rstat_lro_rack(seq_no)
+#define RSTAT_LRO_RELEASED(seq_no, by_timeout, tail, waited_ns, timeout_ns) \
+    rstat_lro_released(seq_no, by_timeout, tail, waited_ns, timeout_ns)
+#else
+#define RSTAT_LRO_HELD(seq_no) ((void)0)
+#define RSTAT_LRO_DONE(seq_no) ((void)0)
+#define RSTAT_LRO_RACK(seq_no) ((void)0)
+#define RSTAT_LRO_RELEASED(seq_no, by_timeout, tail, waited_ns, timeout_ns) ((void)0)
 #endif
 
 // Saturates at UINT32_MAX (~4.3 s) rather than wrapping: a call answered after 5 s would otherwise read as 0.7 s.
@@ -6033,6 +6096,9 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
 #if tt_LARGE_SAMPLES
             pub->peer_acks[i].repair_srtt_ns = 0; // its large repairs not yet timed (the resend order)
             pub->peer_acks[i].repair_rttvar_ns = 0;
+            pub->peer_acks[i].repair_rack_serial = 0;
+            pub->peer_acks[i].repair_rack_rtt_ns = 0;
+            pub->peer_acks[i].repair_min_rtt_ns = 0;
 #endif
 #if tt_HYBRID_TRANSPORT
             pub->peer_watch[i].nack_high = 0;
@@ -11650,6 +11716,7 @@ struct large_order {
     bool shown;            // shown_serial is set
     uint32_t shown_serial; // the latest large send this reader has shown received
     uint32_t timeout;      // the repair timeout to this reader (tt_get_ns() >> 10); 0: not measured yet
+    uint32_t rack;         // RACK.rtt + reo_wnd to this reader, the same units; 0: not measured yet
 };
 
 // The bit positions (from the ACKNACK's seq_no) of its lowest and highest request; false when it names nothing.
@@ -11690,9 +11757,20 @@ static void large_order_arrived(struct tt_Context* node, struct tt_PeerAck* ack,
                                 uint32_t now, struct large_order* order) {
     large_order_show(order, slot->serial);
     if (slot->resends == 1 && ack != NULL) {
-        rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns,
-                          (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);
+        uint64_t sample = (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT;
+        rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns, sample);
+        uint32_t rtt = sample < UINT32_MAX ? (uint32_t)sample : UINT32_MAX;
+        rtt = rtt != 0 ? rtt : 1U; // 0 stands for "none"
+        // RACK.rtt follows the most recently sent repair shown arrived (RFC 8985 6.2), not the latest to be shown
+        if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {
+            ack->repair_rack_serial = slot->serial;
+            ack->repair_rack_rtt_ns = rtt;
+        }
+        if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {
+            ack->repair_min_rtt_ns = rtt;
+        }
     }
+    RSTAT_LRO_DONE(slot->seq_no);
     large_repair_free(node, slot);
 }
 
@@ -11757,6 +11835,11 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
         // RACK-TLP's probe timeout (RFC 8985, 7.2): twice the time a repair takes to be shown arrived
         order->timeout = (uint32_t)(((uint64_t)ack->repair_srtt_ns * 2U) >> LARGE_REPAIR_SHIFT) + 1U;
     }
+    if (ack != NULL && ack->repair_rack_rtt_ns != 0) {
+        // RACK's time rule (RFC 8985 6.2): lost once RACK.rtt + reo_wnd (min_RTT / 4) has passed since it went
+        uint64_t rack = (uint64_t)ack->repair_rack_rtt_ns + ack->repair_min_rtt_ns / 4U;
+        order->rack = (uint32_t)(rack >> LARGE_REPAIR_SHIFT) + 1U;
+    }
 }
 
 // Whether the unit seq_no a reader just asked for is due a resend: never resent to it, its last resend shown lost
@@ -11769,12 +11852,21 @@ static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher*
         return true;
     }
     if (order->shown && large_serial_after(order->shown_serial, slot->serial)) {
+        RSTAT_LRO_RELEASED(seq_no, false, false, 0, 0);
         return true; // something sent after its resend arrived: on a path that keeps order, the resend was lost
     }
     uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
+    if (order->rack != 0 && slot->resends == 1 && now - slot->resent_at >= order->rack) {
+        RSTAT_LRO_RACK(seq_no);
+        return true; // still named past the round trip the path takes now: lost, though nothing later shows it
+    }
     if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {
+        RSTAT_LRO_RELEASED(seq_no, true, node->large.repair_serial == slot->serial,
+                           (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT,
+                           (uint64_t)(order->timeout != 0 ? order->timeout : slot->hold) << LARGE_REPAIR_SHIFT);
         return true; // nothing shown for a repair timeout: lost where nothing later shows it, as a tail is
     }
+    RSTAT_LRO_HELD(seq_no);
     node->large.resend_held++;
     return false;
 }

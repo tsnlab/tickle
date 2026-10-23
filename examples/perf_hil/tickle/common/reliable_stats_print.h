@@ -70,7 +70,16 @@ static void print_reliable_stats(const char* role) {
            "addressed_with_discovery=%llu\n",
            role, U(stats.broadcast_with_data), U(stats.broadcast_with_reliable_control),
            U(stats.addressed_with_discovery));
+    printf("RSTATS: role=%s lro released_shown=%llu released_timeout=%llu timeout_tail=%llu timeout_unshown=%llu "
+           "rack=%llu held_first=%llu\n",
+           role, U(stats.lro_released_shown), U(stats.lro_released_timeout), U(stats.lro_timeout_tail),
+           U(stats.lro_timeout_unshown), U(stats.lro_released_rack), U(stats.lro_held_first));
 #undef U
+    print_reliable_hist(role, "lro_timeout_wait", stats.lro_timeout_wait_hist);
+    print_reliable_hist(role, "lro_timeout_extra", stats.lro_timeout_extra_hist);
+    print_reliable_hist(role, "lro_timeout_value", stats.lro_timeout_value_hist);
+    print_reliable_hist(role, "lro_shown_extra", stats.lro_shown_extra_hist);
+    print_reliable_hist(role, "lro_rack_extra", stats.lro_rack_extra_hist);
     print_reliable_hist(role, "detect_to_recover", stats.detect_to_recover_hist);
     print_reliable_hist(role, "request_to_recover", stats.request_to_recover_hist);
 }

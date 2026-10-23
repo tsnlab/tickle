@@ -1845,7 +1845,9 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 50, &reader, &order));
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 60, &reader, &order));
 
-    // The repair timeout: S + 70 resent, nothing shown, held until twice the reader's srtt has passed.
+    // The repair timeout: S + 70 resent, nothing shown, held until twice the reader's srtt has passed. Resent twice, so
+    // RACK's time rule (below), which answers a unit's first resend only, cannot release it first.
+    large_note_resent(&sender, &pub, record, S + 70, &reader);
     large_note_resent(&sender, &pub, record, S + 70, &reader);
     order_read(&reader, S, S, (uint32_t[]) {S + 70}, 1, &order);
     EXPECT_TRUE(order.timeout != 0);
@@ -1879,9 +1881,65 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 95), &pub, S + 95, RECEIVER_ID));  // shown, done with
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 140), &pub, S + 140, RECEIVER_ID)); // still pending
 
+    // RACK's time rule (the tail, DESIGN.md section 4): a unit still named RACK.rtt + reo_wnd after its one resend
+    // goes, with nothing sent after it and before the repair timeout. RACK.rtt follows the most recently resent repair
+    // shown arrived, not the last to be shown: S + 100 resent, S + 101 8 ms later, both shown 1 ms after that - 9 ms
+    // and 1 ms round trips, read top down (S + 101 first), so RACK.rtt is S + 101's 1 ms while srtt takes both.
+    // Written against the base's fields only, so the base's tickle.c builds against it and fails (S + 120 held).
+    large_note_resent(&sender, &pub, record, S + 100, &reader);
+    test_mock_now += 8 * tt_MILLISECOND;
+    large_note_resent(&sender, &pub, record, S + 101, &reader);
+    test_mock_now += 1 * tt_MILLISECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 99, S + 110}, 2, &order);
+    // S + 120 resent once, nothing after it: held at half RACK.rtt, due at one and a half - before the timeout.
+    large_note_resent(&sender, &pub, record, S + 120, &reader);
+    test_mock_now += 500 * tt_MICROSECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 120}, 1, &order);
+    EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 120, &reader, &order));
+    test_mock_now += 1 * tt_MILLISECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 120}, 1, &order);
+    EXPECT_TRUE(((uint64_t)order.timeout << LARGE_REPAIR_SHIFT) > 2 * tt_MILLISECOND); // the timeout would hold it
+    printf("test_large_sample: resend order - repair timeout %.2f ms, a tail resent once due 1.5 ms after it went\n",
+           (double)((uint64_t)order.timeout << LARGE_REPAIR_SHIFT) / (double)tt_MILLISECOND);
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 120, &reader, &order));
+    // ... once: resent again, the same wait past its second resend leaves it to the order rule and the timeout.
+    large_note_resent(&sender, &pub, record, S + 120, &reader);
+    test_mock_now += 1500 * tt_MICROSECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 120}, 1, &order);
+    EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 120, &reader, &order));
+
     // A Publisher going away takes its pending repairs: none left for its entity.
     large_repairs_forget(&sender, &pub);
     EXPECT_EQ_U32(0, sender.large.repairs_live);
+}
+#endif
+
+#ifdef tt_LARGE_REPAIR_SLOTS
+static void test_a_tail_waits_rack_rtt_and_its_reordering_window(void) {
+    // RACK's time rule on a reader whose timed repairs took 4 ms, then 1 ms: RACK.rtt and min_RTT 1 ms, reo_wnd a
+    // quarter of it, the repair timeout twice srtt (7.25 ms). A tail resent once, nothing after it, still named: held
+    // 1.1 ms after it went (inside RACK.rtt + reo_wnd), due at 1.3 ms - where the base held it to the timeout.
+    struct tt_Peer reader;
+    struct tt_LargeRecord* record = order_fixture(&reader);
+    if (record == NULL) {
+        return;
+    }
+    const uint32_t S = record->seq_no;
+    struct large_order order;
+    large_note_resent(&sender, &pub, record, S + 10, &reader);
+    test_mock_now += 4 * tt_MILLISECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 9, S + 11}, 2, &order); // S + 10 left out between them: arrived
+    large_note_resent(&sender, &pub, record, S + 12, &reader);
+    test_mock_now += 1 * tt_MILLISECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 11, S + 13}, 2, &order); // S + 12 arrived
+    large_note_resent(&sender, &pub, record, S + 20, &reader);
+    test_mock_now += 1100 * tt_MICROSECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 20}, 1, &order);
+    EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 20, &reader, &order));
+    test_mock_now += 200 * tt_MICROSECOND;
+    order_read(&reader, S, S, (uint32_t[]) {S + 20}, 1, &order);
+    EXPECT_TRUE(((uint64_t)order.timeout << LARGE_REPAIR_SHIFT) > 7 * tt_MILLISECOND);
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 20, &reader, &order));
 }
 #endif
 
@@ -2715,6 +2773,7 @@ int main(void) {
     test_a_repair_on_its_way_is_not_resent();
 #ifdef tt_LARGE_REPAIR_SLOTS
     test_the_resend_order_rules();
+    test_a_tail_waits_rack_rtt_and_its_reordering_window();
 #endif
     teardown_pair();
 
