@@ -195,6 +195,17 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   Not fixed: the 1 ms first retry and no per-unit hold-down for large samples; small DATA with a batched summary
   still goes broadcast; request_ack flushes batched broadcast content unicast.
 
+- A client killed and started again under the same context id, before the server heard of the new launch (no farewell,
+  discovery not yet updated or not attached), got its predecessor's kept answer to its first call and its callback never
+  ran; a predecessor's answer still on its way could also be taken as the new launch's (the user, 2026-10-23; ROADMAP
+  5a; [DESIGN.md](DESIGN.md) section 7, "launch identity"). No wire change. The server keeps each answer with its
+  request's source port (`struct tt_Server.cache_client_port`): a context sends everything from its data port, bound
+  afresh at each launch, and a same-host record carries the same port, so a request from another port under the same
+  id is a new client - its callback runs, and the predecessor's answers neither answer it nor count toward its call
+  window. Each launch starts its call seq_no at a value drawn with its entity_id base, not at 0. On FreeRTOS lwIP draws
+  its first local port from `LWIP_RAND` (`board_lwip_rand()`), so a rebooted board does not rebind its predecessor's
+  port. `tests/test_client_incarnation.c` and six cases in `tests/test_process_callrequest.c` fail on the parent and
+  pass; `tests/mutants_client_incarnation.py` kills 8 of 8.
 - A SIGKILLed context's segment (768 KiB by default) and doorbell stayed in `/dev/shm` for good: release relied on a
   successor at the same name replacing them, and the name carries the ephemeral data port. A context building its own
   segment now removes every one at its address that no live owner holds (`sweep_orphaned_segments()`, Linux HAL).

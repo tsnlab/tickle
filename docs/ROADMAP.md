@@ -17,8 +17,9 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
     on a send and no 64-bit atomic (DESIGN 10 "Counts made times"). Rig: core gate v2 PASS (pieces 1 and 3), same-host
     gate v2 formally WORSE (piece 1 user instructions +0.03..+0.06% on latency cells, piece 2 a latency server's kernel
     instructions +1.95%), landed on the user's overall judgement.
-  - A client restarted under the same context id can get its predecessor's cached answer. Fixing it needs a per-launch
-    tag in CallRequest, a wire change.
+  - Done 2026-10-23 without a wire change: a client restarted under the same context id no longer gets its
+    predecessor's cached answer. The server tells launches apart by the request's source port, and each launch starts
+    its seq_no at a drawn value (DESIGN.md section 7, "launch identity"; its limits are listed there).
 
 ## Next
 
