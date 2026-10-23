@@ -328,6 +328,13 @@ MUTANTS = [
         "    return node->tx_tail",
         "test_a_heartbeat_takes_the_path_of_its_data",
     ),
+    (
+        "a large unit resent twice for each request (a per-unit amplifier)",
+        '    if (!send_datagram(node, &dgram, target, 1)) {\n        TT_LOG_WARNING("Cannot retransmit large sample',
+        '    (void)send_datagram(node, &dgram, target, 1);\n    RSTAT_INC(retransmitted);\n    pub->retransmitted++;\n'
+        '    if (!send_datagram(node, &dgram, target, 1)) {\n        TT_LOG_WARNING("Cannot retransmit large sample',
+        "test_a_sending_writer_is_not_asked_for_repairs_on_their_way",
+    ),
 ]
 
 # Survivors with no unit test that sees them (2026-10-16, srtt_busy_writer_pc_ab.sh): the cadence of the retries while

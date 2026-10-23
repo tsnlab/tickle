@@ -494,6 +494,14 @@ static uint32_t sim_late_tail;
 // broadcast path does not cross - a netem band of its own, a Wi-Fi AP's multicast queue, another NIC queue. Not with
 // sim_reverse_delay, which shares the late queue and would leave it out of due order.
 static uint64_t sim_unicast_delay;
+// A slow reader (0: none): it takes sim_reader_service_ns to read each datagram the writer sent it, and its socket
+// holds sim_reader_capacity of them waiting; one arriving at a full socket is dropped there (sim_socket_drops) - loss
+// at the reader, not on the path. Its timers run meanwhile, as a reader's own do while it is behind. Not with the two
+// delays above, which share the late queue.
+static uint64_t sim_reader_service_ns;
+static uint32_t sim_reader_capacity;
+static uint64_t sim_reader_free_ns;
+static uint64_t sim_socket_drops;
 
 // The fragment header of a captured datagram, whichever form it went in: its type, and for FRAG_CONT_L its index,
 // count and seq_no.
@@ -565,6 +573,18 @@ static bool sim_writer_sending(void) {
 static void sim_deliver_now(struct sim_datagram* d);
 
 static void sim_deliver(struct sim_datagram* d) {
+    if (sim_reader_service_ns != 0 && d->from == SENDER_ID) {
+        if (sim_late_tail - sim_late_head >= sim_reader_capacity) {
+            sim_socket_drops++;
+            return;
+        }
+        uint64_t start = sim_reader_free_ns > test_mock_now ? sim_reader_free_ns : test_mock_now;
+        sim_reader_free_ns = start + sim_reader_service_ns;
+        sim_late[sim_late_tail % SIM_HELD] = *d;
+        sim_late_due[sim_late_tail % SIM_HELD] = sim_reader_free_ns;
+        sim_late_tail++;
+        return;
+    }
     if ((sim_reverse_delay != 0 && d->from == RECEIVER_ID) ||
         (sim_unicast_delay != 0 && d->from == SENDER_ID && d->to_ip != 0)) {
         EXPECT_TRUE(sim_late_tail - sim_late_head < SIM_HELD);
@@ -699,6 +719,10 @@ static void sim_start(uint32_t loss_per_mille) {
     }
     sim_reverse_delay = 0;
     sim_unicast_delay = 0;
+    sim_reader_service_ns = 0;
+    sim_reader_capacity = 0;
+    sim_reader_free_ns = 0;
+    sim_socket_drops = 0;
     sim_late_head = sim_late_tail = 0;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -1574,6 +1598,66 @@ static void test_a_heartbeat_takes_the_path_of_its_data(void) {
     EXPECT_EQ_U32(0, batched);
 }
 
+// `samples` 1 MiB samples at 30 Hz over a lossless path to a reader that reads a datagram every 20 us (~73 MB/s, faster
+// than the 31 MB/s offered, slower than a sample's burst) with room for 400 waiting in its socket: each sample's burst
+// overflows the socket and the reader loses its tail there, as a CPU-starved reader did on the PC (the LRF netns runs
+// under other sessions' load, 2026-10-23: socket drops 222-6,658 a rep, resends 8,179-532,481, duplicates up to 97%).
+// Answers the writer's resends, the socket drops and the reader's duplicate datagrams.
+static void resent_to_a_slow_reader(int samples, uint64_t* resent, uint64_t* drops, uint64_t* duplicates) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_reader_service_ns = 20 * tt_MICROSECOND;
+    sim_reader_capacity = 400;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    uint32_t before = pub.retransmitted;
+    uint64_t duplicates_before = receiver.large.duplicate;
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        uint64_t next = t0 + ((uint64_t)(i + 1) * tt_SECOND / 30U);
+        while (test_mock_now < next && sim_step()) {
+        }
+        if (test_mock_now < next) {
+            test_mock_now = next;
+        }
+    }
+    sim_settle(samples + 1, 2 * tt_SECOND);
+    *resent = pub.retransmitted - before;
+    *drops = sim_socket_drops;
+    *duplicates = receiver.large.duplicate - duplicates_before;
+}
+
+static void test_a_slow_readers_repairs_are_measured(void) {
+    // Loss at the reader, not on the path: what the large-sample repair amplifies when the first retry is 1 ms (nothing
+    // timed yet) and the writer resends a unit each time it is named. Registered before the first run (2026-10-23, the
+    // follow-ups of the reliable HEARTBEAT fix, item (a), with large_repair_followups_netns.sh's slow phase): REAL when
+    // the writer resends more than 1.25 per unit dropped in the socket, or the reader's duplicate datagrams exceed 20%
+    // of the resends; the ideal resends each dropped unit once, the path losing nothing.
+    // Read on the parent (RESULTS `LRF`): NOT REAL as registered - 1.01 resends per drop, duplicates 1.0% of resends.
+    // But the criterion cannot decide here: with every unit resent twice (a mutant) it read 1.09 and 8.4%, because a
+    // resend into a full socket is dropped again and counted as loss. So it is a measurement, not a guard; the
+    // per-unit guard is test_a_sending_writer_is_not_asked_for_repairs_on_their_way() (path loss: duplicates bounded),
+    // which kills that mutant. What the reader pays is something else: 564,402 resends for 10 samples of 723
+    // datagrams, nearly all dropped again. Each of its ~200 ACKNACKs names up to thousands of units and the writer
+    // resends them in one burst, which overflows the socket it was asked to fill; a later first retry (5 or 20 ms,
+    // explored after the reading) changed that little. Repair flow control against the reader's capacity - no item of
+    // this change, a lead (ROADMAP).
+    enum { SAMPLES = 10 };
+    uint64_t resent = 0;
+    uint64_t drops = 0;
+    uint64_t duplicates = 0;
+    resent_to_a_slow_reader(SAMPLES, &resent, &drops, &duplicates);
+    printf("test_large_sample: %d x 1 MiB at 30 Hz to a slow reader (20 us a datagram, 400 waiting) - %llu dropped in "
+           "its socket, %llu resent (%.2f per drop), %llu duplicates at the reader, %d delivered\n",
+           SAMPLES, (unsigned long long)drops, (unsigned long long)resent,
+           drops != 0 ? (double)resent / (double)drops : 0.0, (unsigned long long)duplicates, delivered_count);
+    EXPECT_TRUE(drops > 0); // the treatment applied
+    EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+}
+
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
     // Three samples published back to back while the first is still going out: the second waits behind it and the
     // third replaces it before any of it has gone. The reader sees samples 1 and 3, in order, with no gap in between -
@@ -2399,6 +2483,7 @@ int main(void) {
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();
+    test_a_slow_readers_repairs_are_measured();
     teardown_pair();
 
     allocator_reset(&sender_alloc);
