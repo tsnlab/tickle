@@ -461,6 +461,9 @@ is answered at once, as before; with nothing pending in the context nothing is r
   of its seeds, while the parent's control does; the netns A/B (`large_repair_followups_netns.sh`, PROFILE=ethernet
   and wifi) showing no fewer resends or duplicates in the storm cells, or worse delivery or p99 latency than the
   parent outside the control's spread; or any wire difference in a lossless run.
+- **Measured** (RESULTS `LRO`): no storm in the sim at any seed or in 12 netns reps (the parent: 3 of 11 at 0.1%);
+  WIFI NOT WORSE. The cost: a lost repair that is the last of its burst has nothing after it to show it lost and
+  waits the timeout - ETHERNET 1% loss median rep p99 11.0 -> 17.2 ms.
 - **Small reliable DATA** keeps its count-then-interval suppression (section 6): a sample of at most 45 datagrams does
   not build a queue-deep burst, and `LRF` measured no storm there. The same rule fits it if one is ever measured.
 

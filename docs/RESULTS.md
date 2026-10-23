@@ -593,6 +593,57 @@ resending every unit twice read 1.09), so that sim case is a measurement and the
 netns slow phase (the reader spinning 25 ms of each 33 ms) dropped nothing in its socket in two reps (VOID, the treatment
 did not apply) and in the third collapsed the path's queue: 4,644,237 resent, 212 of 900 delivered (VOID by tc drops).
 
+### The large-sample resend order, sim and PC netns (`LRO`)
+
+LRF item (a)'s fix (DESIGN.md section 4, "Large-sample resend order"): a large unit already resent to a reader goes
+again only once that reader has shown the resend lost, or a repair timeout has passed. Branch ab/large-resend-order;
+P = 896d4a29, its parent. Sim (`test_large_sample`, the parent's tickle.c built against the same test):
+
+| case | parent | the rule |
+|---|---|---|
+| queued path (12 us a datagram, 4,000 queued, 1% loss), 30 x 1 MiB, resent at seeds 7 / 13 / 23 | 259,042 / 29,331 / 27,024 | 9,541 / 8,235 / 6,049 (the guard: below the samples' 21,720 datagrams) |
+| slow reader (20 us a datagram, 400 in its socket), 10 x 1 MiB, resent | 564,402 | 36,999 |
+| a tail lost once on a 40 ms unicast path, 4 x 1 MiB, resent | 41 | 4 (the 0 ms control: 4 and 4) |
+| busy writer, first 4 MB sample whole after its send ended | 1.95 ms | 2.95 ms (later samples equal) |
+| quiet path at 5% loss, the reader's recovery srtt over 2 ms | 1.80 ms | 1.87 ms |
+
+Wire (`tests/wire_identity_resend_order.sh`, both contexts' datagrams with times): the parent against itself the same
+in all three scenarios; this tree the same as the parent with nothing lost (5 x 1 MiB + a small sample) and with each
+tail lost once on a 0 ms path; different, as designed, with the tail's repair on its way for 40 ms (3,706 writer
+datagrams against 3,661); a mutant starting each large send at its second unit different. The default build's object
+code is the parent's; FreeRTOS RV32 sizes are equal (`tt_Context` 29,632 B, `tt_Publisher` 960 B, `tt_PeerAck` 24 B:
+large samples compile out). rmw builds: `tt_Context` 969,328 -> 1,165,960 B, `tt_Publisher` 2,680 -> 2,944 B.
+
+Netns A/B (`large_repair_followups_netns.sh` PHASE=order, its reading registered first; PROFILE=ethernet, offload off,
+1 Gbit/s netem, one queue, 1 MiB RELIABLE KEEP_LAST 10 at 30 Hz, 6 reps a tree in alternation, 30 s each; load-voided
+reps left out):
+
+| run (F) | arm | P: storm reps, delivered | F: storm reps, delivered | median rep p99 P / F |
+|---|---|---|---|---|
+| 1 (the rule) | ge0.1b1 | 2 of 5 (3,980,759 resent in one), 3,685 / 4,390 | 0 of 6, 5,400 / 5,400 | 10.3 / 10.4 ms |
+| 1 | ge1b1 | 0 of 6, 5,400 | 0 of 6, 5,400 | 10.7 / 21.4 ms |
+| 2 (+ the words below the reader's highest) | ge0.1b1 | 1 of 6 (3,665,344 resent), 4,604 / 5,161 | 0 of 6, 5,400 / 5,400 | 10.6 / 10.6 ms |
+| 2 | ge1b1 | 0 of 6, 5,400 | 0 of 6, 5,400 | 11.0 / 17.2 ms |
+
+The control arm (nothing lost) resent 0 on both trees each run, its p99 within 0.00-0.04 ms between them. By the
+registered rule ge1b1 is UNDECIDED both times (the parent did not storm there) and a COST: F's 1% p99 is 6-11 ms
+higher. The storms came at 0.1% this time, where P stormed in 3 of 11 reps and lost 1,262 of the 9,551 it published, F in
+none of 12 and lost none (outside the registered arm: a reading, not the verdict). The cost's likely cause (read from
+the design and the sim, not instrumented in the run): a lost repair that is the highest a burst resent has nothing
+sent after it to show it lost, and waits the repair timeout (2 x srtt) where the parent resent it at the reader's
+next request; run 2's change cut that from 21.4 to 17.2 ms. A third run
+(`ab_order_v7`, not landed) timed the srtt only from ACKNACKs that bracket the arrival: 16.3 against 11.0 ms, no
+better, and a busy writer's seventh sample 8.35 ms late in the sim, so it was dropped.
+
+WIFI (`wifi_repair_ab.sh` TAG=lro_685a, its reading registered in it; PROFILE=wifi with its own repair timing,
+run 2's tree against P, rel_small - small samples, which the change cannot touch - and rel_large, 9 arms, 4 reps, the
+two trees at once): NOT WORSE in all 18 cells; no STORM rep on either tree; rel_small medians within the reps' spread
+(ge5b2 43.9 / 43.7 ms, ge5b4 70.0 / 65.3). rel_large, pooled: copies after delivery P / F 5,959 / 225 at ge1b2, 3,590 /
+1,544 at ge5b4, 20,010 / 1,579 at ge10b4, 17,059 / 1,925 at tv; resends per lost datagram 2.57 / 1.28, 1.14 / 1.08,
+1.38 / 1.02, 1.86 / 1.29; delivery 100% on both; one-way p99 mixed (ge1b2 217.7 / 92.9 ms, ge5b4 257.3 / 385.7, tv
+739.5 / 661.0; 4 reps at 5 Hz, ~1% of 600 samples each). The harness's own R1-R7: F fails R2-as-registered at
+ge5b2/ge5b4, R4 at ge10b4 and R7 at tv, as P does; P alone fails R1 at ge5b4 (99.41%), R2 at ge5b2 and R6.
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -633,6 +684,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | WBS | `large_storm_netns.sh`, `large_storm_ab_netns.sh`, the WB harness (offload off) | `25dd0fb0` core, and with the HEARTBEAT fix | 2026-10-23 | `large_storm/variants_20261023/`, `ab_pinned_20261023/`, `ab_pinned2_20261023/`, `r34_fix_20261023/` |
 | WR | `wifi_repair_pair.sh` (the WB harness, R2 amended), `wifi_repair_ab.sh` (`CLOCK_PPS`), `initoptions_insn_pc.sh` | ab/wifi-repair (WIFI repair timing) | 2026-10-23 | `wifi_repair/final2_04be_{ethernet,wifi}/`, `final2_04be_clock_*`, `ab_clock{,2,3}.ab.txt`, `ab_seed.ab.txt`, `insn_pc_04be.txt` |
 | LRF | `large_repair_followups_netns.sh` (the WB harness; routes, amp, slow; RSTATS route counters), `test_large_sample` sim cases | ab/large-repair-followups (parent: its RSTATS commit), ab/large-repair-followups-c (the (c) fix) | 2026-10-23 | `large_repair/parent_947e/`, `parent2_947e/` (load-voided), `parent3_947e/`, `ab_c_routes/` (`summary.txt`) |
+| LRO | `test_large_sample` (sim, parent's tickle.c against the same test), `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=order, `wifi_repair_ab.sh` | ab/large-resend-order (its two core commits: run 1 the first, run 2 both; P `896d4a29`) | 2026-10-24 | `large_repair/ab_order_c7e9/`, `ab_order_685a/`, `ab_order_v7/` (not landed), `wifi_repair/lro_685a.ab.txt`, `lro_685a_{P,F}/` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
