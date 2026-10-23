@@ -18,6 +18,8 @@
 #   79  could not create or could not PROVE a private netns -> SKIP; the suite did not run
 #   80  the build could not be PROVEN to come from this checkout -> NOT THIS CHECKOUT, which fails the
 #       run: whatever the suite would say is about some other source tree
+#   81  the workspace's interfaces were generated against typesupport headers that differ from this
+#       checkout's -> STALE INTERFACES, which fails the run: the suite would mix two layouts
 #   1+  the suite ran and something failed -> FAIL
 #
 # Which checkout is tested (2026-10-05). The workspace is shared by every checkout on this machine, and
@@ -76,10 +78,41 @@ source "$ROS_SETUP"
 source "$WS/ifaces/install/setup.bash"
 set -u
 
+# The typesupport the workspace's interfaces were generated against, before this checkout's own is built - the first
+# prefix on the underlay chain that provides it. Its headers are what every interface library's message callbacks were
+# compiled with.
+ifaces_ts_prefix() {
+    local pkg="$1" prefix
+    local IFS=:
+    for prefix in ${AMENT_PREFIX_PATH:-}; do
+        [ -f "$prefix/share/ament_index/resource_index/packages/$pkg" ] && {
+            echo "$prefix"
+            return
+        }
+    done
+}
+ifaces_ts_c=$(ifaces_ts_prefix rosidl_typesupport_tickle_c)
+ifaces_ts_cpp=$(ifaces_ts_prefix rosidl_typesupport_tickle_cpp)
+
 cd "$WS/rmw" || exit 90
 echo "run_rmw_suite: checkout $TOP -> $BASE"
-if ! colcon build --base-paths "$SRC" --packages-select rmw_tickle \
-    --build-base "$BUILD_BASE" --install-base "$INSTALL_BASE"; then
+# This checkout's typesupport, built into the same base, and rmw_tickle against it. Until 2026-10-23 only rmw_tickle was
+# built here, and it took rosidl_typesupport_tickle_c/_cpp from whichever underlay the workspace's ifaces chained - and
+# CMake keeps the *_DIR find_package() first resolved in CMakeCache.txt and never searches again. The shared
+# checkout's base, configured before the ifaces were rebuilt on 2026-10-18, still named a typesupport installed on
+# 09-28, without inplace_bytes, and the row failed to compile there while every fresh worktree base passed against
+# the 10-18 one: two checkouts of the same commit, two typesupports, neither of them the checkout's. The *_DIR is now
+# passed on every build (colcon reconfigures when its CMake arguments change), and checked below.
+TS_C_DIR="$INSTALL_BASE/rosidl_typesupport_tickle_c/share/rosidl_typesupport_tickle_c/cmake"
+TS_CPP_DIR="$INSTALL_BASE/rosidl_typesupport_tickle_cpp/share/rosidl_typesupport_tickle_cpp/cmake"
+override=()
+if colcon build --help 2>/dev/null | grep -q -- --allow-overriding; then
+    override=(--allow-overriding rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle)
+fi
+if ! colcon build --base-paths "$SRC" \
+    --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle "${override[@]}" \
+    --build-base "$BUILD_BASE" --install-base "$INSTALL_BASE" \
+    --cmake-args "-Drosidl_typesupport_tickle_c_DIR=$TS_C_DIR" "-Drosidl_typesupport_tickle_cpp_DIR=$TS_CPP_DIR"; then
     echo "run_rmw_suite: build failed - the previous binary is still on disk, so NOTHING was tested"
     exit 1
 fi
@@ -103,6 +136,39 @@ core_obj_d="$BUILD_BASE/rmw_tickle/CMakeFiles/rmw_tickle.dir$TOP/src/tickle.c.o.
 grep -qF "$TOP/src/tickle.c" "$core_obj_d" \
     || not_this_checkout "$core_obj_d does not name $TOP/src/tickle.c"
 echo "run_rmw_suite: source proof cache=$cache_src core_obj=${core_obj_d#"$BUILD_BASE"/}"
+# The typesupport rmw_tickle was configured against must be the one built above, from this checkout: the CMake cache's
+# *_DIR, and the TICKLE_ROOT (core sources and headers) the installed typesupport records.
+for ts in c cpp; do
+    want="$INSTALL_BASE/rosidl_typesupport_tickle_$ts/share/rosidl_typesupport_tickle_$ts/cmake"
+    got=$(sed -n "s/^rosidl_typesupport_tickle_${ts}_DIR:[A-Z]*=//p" "$cache") # PATH, or UNINITIALIZED when set by -D
+    [ "$(realpath -m "${got:-/nonexistent}")" = "$(realpath -m "$want")" ] \
+        || not_this_checkout "rmw_tickle found rosidl_typesupport_tickle_${ts} at '${got:-nothing}', expected '$want'"
+done
+ts_extras="$INSTALL_BASE/rosidl_typesupport_tickle_c/share/rosidl_typesupport_tickle_c/cmake"
+ts_extras="$ts_extras/rosidl_typesupport_tickle_c-extras.cmake"
+ts_root=$(sed -n 's/^set(rosidl_typesupport_tickle_c_TICKLE_ROOT "\(.*\)")$/\1/p' "$ts_extras" 2>/dev/null)
+[ "$(realpath -m "${ts_root:-/nonexistent}")" = "$TOP" ] \
+    || not_this_checkout "the typesupport built here records TICKLE_ROOT='${ts_root:-nothing}', expected '$TOP'"
+echo "run_rmw_suite: typesupport proof $INSTALL_BASE/rosidl_typesupport_tickle_{c,cpp}, TICKLE_ROOT=$ts_root"
+# The interfaces stay the workspace's, generated once against the typesupport found above. Their message callbacks were
+# compiled with that typesupport's headers; if this checkout's differ, the suite would run this checkout's rmw_tickle
+# over interface libraries built for another layout, so it does not run.
+for pair in "c:$ifaces_ts_c" "cpp:$ifaces_ts_cpp"; do
+    ts=${pair%%:*}
+    prefix=${pair#*:}
+    if [ -z "$prefix" ]; then
+        echo "run_rmw_suite: STALE INTERFACES - no rosidl_typesupport_tickle_$ts under the ifaces underlay of $WS"
+        exit 81
+    fi
+    if ! diff -r "$SRC/rosidl_typesupport_tickle_$ts/include" "$prefix/include" >/dev/null; then
+        echo "run_rmw_suite: STALE INTERFACES - $SRC/rosidl_typesupport_tickle_$ts/include differs from"
+        echo "run_rmw_suite: $prefix/include, the typesupport $WS/ifaces was generated against; the suite did NOT run"
+        echo "run_rmw_suite: build an interface workspace from this checkout (rmw_tickle/scripts/build_ros2_interfaces.sh)"
+        echo "run_rmw_suite: and name it in RMW_TEST_WS"
+        exit 81
+    fi
+done
+echo "run_rmw_suite: interfaces generated against $ifaces_ts_c, typesupport headers identical to this checkout's"
 lib="$INSTALL_BASE/rmw_tickle/lib/librmw_tickle.so"
 # The install step rewrites the RPATH, so the bytes differ; the GNU build ID is what the linker stamped.
 build_id() { readelf -n "$1" 2>/dev/null | sed -n 's/.*Build ID: //p'; }

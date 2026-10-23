@@ -25,7 +25,7 @@ Run from the repository root. Figures: [RESULTS.md](RESULTS.md).
 | `make test-freertos` | HAL selftest, two contexts in one image over the segment (4 arms, `-Dtt_SEGMENT_ENABLED=1` and the default off), then round trips under QEMU | RISC-V toolchain, QEMU |
 | `make test-all` | `test headers-cpp check-doc-shas check-bench-shapes test-samehost test-linux test-freertos` | all of the above |
 | `make test-typesupport` / `make regen` | generator pytest / regenerate codecs (CI fails on a diff) | Python |
-| `make test-rmw` / `make test-rmw-behaviour` | rmw ctest suite in a netns / plus CI's interface checks | ROS 2 workspace (`RMW_TEST_WS`, `~/rmw_accept_dev`, `~/rmw_accept_ws`) |
+| `make test-rmw` / `make test-rmw-behaviour` | rmw ctest suite in a netns / plus CI's interface checks; builds the checkout's own typesupport and rmw_tickle per checkout, and fails if the workspace's interfaces were built against other typesupport headers | ROS 2 workspace (`RMW_TEST_WS`, `~/rmw_accept_dev`, `~/rmw_accept_ws`) |
 | `rmw_tickle/scripts/rmw_gap_acceptance.sh -w ~/rmw_accept_ws` | acceptance; `rmw_cyclonedds_cpp` first as control | ROS 2 |
 | `make createns` ... `make deletens` | manual netns runs (`platform/linux/netns.mk`) | `sudo ip` |
 
@@ -36,8 +36,8 @@ FreeRTOS or `include/tickle/hal.h` change: also `make -C platform/freertos lint`
 `make check-gates` runs these rows in parallel: `lint (clang-format + clang-tidy)`, `lint-shell`, `check-doc-shas`,
 `check-bench-shapes`, `check-unsupported-list`, `check-context-reset`, `check-results-provenance`,
 `test (unit)`, `tsan (thread safety)`, `sanitize (ASan + UBSan, as CI)`, `test-typesupport (pytest)`,
-`lint-freertos-hal (as CI)`, `lint-rmw`, `rmw suite (as CI)`, `build configs (syntax)`, `build freertos (link, as CI)`.
-`DOCS_ONLY=1` runs only the document rows when only documents changed.
+`lint-freertos-hal (as CI)`, `lint-rmw`, `rmw suite (as CI)`, `build configs (syntax)`, `build freertos (link, as CI)`
+(the default, segment and socket images). `DOCS_ONLY=1` runs only the document rows when only documents changed.
 
 ```
 /tmp/lintenv/bin/clang-format -i <files> → stage <paths> → make check-gates → read the table → push only on exit 0

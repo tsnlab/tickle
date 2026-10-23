@@ -222,7 +222,9 @@ launch sweep sweep "build configs (syntax)" ./.github/scripts/sweep_build_config
 # Every gate above compiles for this host, and the sweep above never links. On 2026-10-06 a 64-bit relaxed
 # atomic store linked on x86-64 and failed only in CI's "Build - FreeRTOS RISC-V": RV32 lowers it to
 # __atomic_store_8, which picolibc does not provide. This is that build, from scratch, when the cross
-# compiler is here - and a loud SKIP with how to install it when it is not.
+# compiler is here - and a loud SKIP with how to install it when it is not. Three images since 2026-10-23: the default,
+# the segment compiled in, and the socket HAL (RX_PATH=socket), which only `make test-freertos` had built when a
+# struct timeval clash broke it.
 launch freertos freertos "build freertos (link, as CI)" ./.github/scripts/build_freertos.sh
 wait
 wall=$(($(date +%s) - wall_start))
@@ -240,6 +242,7 @@ verdict() {
         # The build came from some other checkout. Not a SKIP: the environment is fine and the gate
         # would otherwise report on code nobody asked about, which is the defect it was built to stop.
         rmw:80) echo "FAIL  $name - NOT THIS CHECKOUT: the build is not provably from $REPO" ;;
+        rmw:81) echo "FAIL  $name - STALE INTERFACES: the workspace's interfaces use other typesupport headers than $REPO" ;;
         sweep:77) echo "SKIP  $name -- no C compiler to sweep with - the configurations were NOT checked" ;;
         freertos:77) echo "SKIP  $name -- NO RISC-V CROSS COMPILER - the FreeRTOS link was NOT checked; install: sudo apt-get install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf" ;;
         freertos:78) echo "SKIP  $name -- FreeRTOS/lwIP submodules not checked out - the FreeRTOS link was NOT checked; git submodule update --init" ;;

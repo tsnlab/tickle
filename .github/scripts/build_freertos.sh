@@ -47,15 +47,21 @@ cleanup() { rm -rf "$OUT"; }
 trap cleanup EXIT # the only EXIT trap here - a second would silently replace it
 
 jobs="$(nproc 2>/dev/null || echo 4)"
-# Twice: the default image, as CI builds it, and with the shared-memory segment compiled in (-Dtt_SEGMENT_ENABLED=1;
-# off by default on FreeRTOS since 2026-10-21), so the segment's code still links for RV32 - a 64-bit atomic in it
-# would otherwise reach no gate.
-for variant in default segment; do
+# Three images: the default one, as CI builds it; the shared-memory segment compiled in (-Dtt_SEGMENT_ENABLED=1; off by
+# default on FreeRTOS since 2026-10-21), so the segment's code still links for RV32 - a 64-bit atomic in it would
+# otherwise reach no gate; and the BSD socket HAL (RX_PATH=socket, -Dtt_HAL_FREERTOS_NETCONN=0), which `make
+# test-freertos` builds and runs as the selftest's control. On 2026-10-23 a change included tickle/hal.h in
+# board/runtime_stubs.c: in the socket build lwIP's sockets.h then redefines the struct timeval <sys/time.h> declares,
+# the image did not compile, and this row - building the netconn image only - passed. Each image costs about two
+# seconds.
+for variant in default segment socket; do
     flags=""
+    rx_path=netconn
     [ "$variant" = segment ] && flags="-Dtt_SEGMENT_ENABLED=1"
+    [ "$variant" = socket ] && rx_path=socket
     elf="$OUT/RTOSDemo-selftest-1-$variant.elf"
     if ! make -s -C "$REPO/platform/freertos" -j"$jobs" CROSS="$CROSS" all \
-        OBJ_DIR="$OUT/obj-$variant" ELF="$elf" TT_FLAGS="$flags"; then
+        OBJ_DIR="$OUT/obj-$variant" ELF="$elf" TT_FLAGS="$flags" RX_PATH="$rx_path"; then
         echo "build_freertos: FAILED ($variant) - CI's 'Build - FreeRTOS RISC-V' would fail the same way"
         exit 1
     fi
