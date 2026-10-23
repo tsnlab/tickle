@@ -38,7 +38,9 @@ and HAL settings (35ea2d58); 7 hybrid estimators (05118219); 8 segment settings 
 context". Rig A/B verdicts: 3 and 6 PASS (core gate v2, 0 CPU/latency WORSE; 6 lists user instructions +0.04 to +0.08%
 on 7 of 88 rows); 7 PASS (`rmw_keepall_rig.sh`, Array1m/4m); 8 IMPROVED after its drain fix (same-host gate v2; the
 first build was WORSE, DESIGN section 2). 9 runtime capacities up to the compiled maxima (1c3f4227; core A/B PASS,
-Array1m KEEP_LAST and KEEP_ALL equal). Next: 10 large tables into caller storage. Rules for every bundle: the default
+Array1m KEEP_LAST and KEEP_ALL equal). 10 done without a caller-storage API (the user, 2026-10-22, after resident
+memory showed the large tables barely resident): a context no longer writes its large tables at creation (2590bdd9;
+core A/B PASS, DESIGN section 11) and the FreeRTOS service caches are sized to their use (cf022a84). Rules for every bundle: the default
 context byte-identical on the wire, each check refused with a test and a mutant, each field shown to change behaviour,
 no hot-path cost (rig A/B for 3, 6, 7, 9, 10). `tt_*_storage_size()` keeps its signature; interop timings stay identical
 by default and warn on a mismatch; rmw_tickle keeps its environment variables.
