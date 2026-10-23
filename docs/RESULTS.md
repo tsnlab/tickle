@@ -644,6 +644,52 @@ two trees at once): NOT WORSE in all 18 cells; no STORM rep on either tree; rel_
 739.5 / 661.0; 4 reps at 5 Hz, ~1% of 600 samples each). The harness's own R1-R7: F fails R2-as-registered at
 ge5b2/ge5b4, R4 at ge10b4 and R7 at tv, as P does; P alone fails R1 at ge5b4 (99.41%), R2 at ge5b2 and R6.
 
+### The resend order's tail, PC netns (`LRT`)
+
+The cost LRO left (ge1b1 median rep p99 11.0 -> 17.2 ms), instrumented and then fixed with RFC 8985's time rule
+(DESIGN.md section 4, "The tail: RACK's time rule"); branch ab/large-resend-order-tail, base P = d1c900fe.
+
+Cause (RSTATS `lro`, `tt_RELIABLE_STATS` only; the base's tree plus counters, ge1b1, 2 reps x 900 samples,
+`large_repair/lrt_diag1/`): 12 and 14 held units a rep released by the repair timeout, 8 and 12 of them with nothing at
+all sent after their resend; each asked for again soon after its resend and released 4-16 ms after that request
+(the timeout itself, 2 x srtt = 4-16 ms - the reader's request-to-recover is mostly 4-8 ms, repairs queuing behind a
+sample's 8 ms burst). 12-14 late samples of 900 are the rep's p99 (16.0, 19.7 ms). The hypothesis held.
+
+Sim (`test_large_sample`): the two new checks fail on the base's tickle.c and pass here; 16 resend-order mutants
+(5 new) die. Queued path, resent at seeds 7 / 13 / 23: 13,276 / 13,757 / 9,489 (base 9,541 / 8,235 / 6,049; the guard,
+21,720, holds); slow reader 38,893 (base 36,999); a tail lost once on a 40 ms path 4 and 4 (as the base); busy
+writer's first 4 MB sample 2.95 ms, quiet path srtt 1.87 ms (as the base). Wire (`wire_identity_resend_order.sh`):
+against the base identical in all three scenarios, the 40 ms one included; against the order's parent as the base was.
+
+Netns A/B (`large_repair_followups_netns.sh` PHASE=tail, its reading registered first; PROFILE=ethernet, offload off,
+1 Gbit/s netem, 1 MiB RELIABLE KEEP_LAST 10 at 30 Hz, 30 s reps, O = 896d4a29 the order's parent, P, F = ed46fcc6,
+5 reps a tree in alternation; reps starting above load 4 left out, `large_repair/ab_tail_ed46/`, re-read in
+`ab_tail_ed46_reread/` after the delivery comparison was corrected to a share - F lost no sample):
+
+| arm | O: reps, storms, median rep p99 | P | F | F's held units released by order / RACK / timeout |
+|---|---|---|---|---|
+| ctl | 4, -, 9.6 ms | 4, -, 9.8 | 3, -, 9.7 | 0 / 0 / 0 |
+| ge0.1b1 | 4, **2** (resent / missing 3.68), 10.6 | 4, 0, 10.6 | 3, 0, 11.0 | 233 / 501 / 332 |
+| ge1b1 | 5, 0, 11.3 | 3, 0, 19.6 | 3, 0, 14.1 (11.5 14.1 15.2) | 160 / 50 / 3 |
+
+Verdicts as registered (N = 0.18 ms): ge1b1 SHOWN, 19.6 -> 14.1 ms, 0.66 of P's cost over O taken back; ge0.1b1 COST,
+10.6 -> 11.0 ms (3 reps against 4); no storm on P or F, delivery 100% on all. Copies: reader duplicates a rep about
+equal to P's (ge0.1b1 354 / 347). What is left at ge1b1: the RACK releases still wait 1-4 ms past the reader's request
+(10-19 a rep) - RACK.rtt is a drain-length round trip too; timeout releases fell from 12-14 a rep to 0-2.
+
+WIFI (`wifi_repair_ab.sh` TAG=lrt_1157, PROFILE=wifi, F = `1157d024` against P, 9 arms, 3 reps, the two trees at
+once, no rep loaded): rel_large NOT WORSE in all 9 cells, no STORM rep, delivery 100%, writer resends within P's rep
+range or below (ge5b2 5,644-6,008 against 6,099-6,128). rel_small - built without large samples, so the change is not
+in its binary - read WORSE on delivery at ge1b8 (99.52 / 99.93%) and ge5b8 (98.24 / 98.82%): the control's own
+spread at 3 reps, the bar the large cells are read against.
+
+Rig, the base (d1c900fe) against e9efea98 and the `aa` arm (8d1c3712, an older pinned build, not A again;
+`lro_1m_20261024-043242`): Array1m 1%'s p99 and CPU split by rep on the hybrid transport's mode, not on the tree. Reps
+whose writer stayed on IP-fragment runs of 2 (hybrid runs ~640,000, GSO sends 0-660) read p99 13.7-14.0 ms and sub/pub
+CPU ~5.5 / 4.6 ms/MB on both aa (2 of 5) and head (3 of 5); MTU-mode reps (GSO sends ~39,580) 9.8-10.7 ms and
+~4.6 / 3.5 on all three arms; pre stayed MTU in 5 of 5. Whether the resend order makes the IP-run mode likelier
+(3/5 against aa's 2/5 and pre's 0/5) is not decided by 5 reps.
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -685,6 +731,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | WR | `wifi_repair_pair.sh` (the WB harness, R2 amended), `wifi_repair_ab.sh` (`CLOCK_PPS`), `initoptions_insn_pc.sh` | ab/wifi-repair (WIFI repair timing) | 2026-10-23 | `wifi_repair/final2_04be_{ethernet,wifi}/`, `final2_04be_clock_*`, `ab_clock{,2,3}.ab.txt`, `ab_seed.ab.txt`, `insn_pc_04be.txt` |
 | LRF | `large_repair_followups_netns.sh` (the WB harness; routes, amp, slow; RSTATS route counters), `test_large_sample` sim cases | ab/large-repair-followups (parent: its RSTATS commit), ab/large-repair-followups-c (the (c) fix) | 2026-10-23 | `large_repair/parent_947e/`, `parent2_947e/` (load-voided), `parent3_947e/`, `ab_c_routes/` (`summary.txt`) |
 | LRO | `test_large_sample` (sim, parent's tickle.c against the same test), `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=order, `wifi_repair_ab.sh` | ab/large-resend-order (its two core commits: run 1 the first, run 2 both; P `896d4a29`) | 2026-10-24 | `large_repair/ab_order_c7e9/`, `ab_order_685a/`, `ab_order_v7/` (not landed), `wifi_repair/lro_685a.ab.txt`, `lro_685a_{P,F}/` |
+| LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `ed46fcc6`, WIFI `1157d024`; P `d1c900fe`, O `896d4a29`) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |
