@@ -428,8 +428,10 @@ if phase == "tail" and {"P", "F"} <= set(trees):
                 continue
             if fa["storms"]:
                 bad.append(f"F stormed in {fa['storms']} of {fa['n']} {arm} reps")
-            if fa["dlv"] < pa["dlv"]:
-                bad.append(f"F delivered {fa['dlv']:.0f} < P {pa['dlv']:.0f} at {arm}")
+            # Delivered as a share of published: the usable rep counts differ between trees (CORRECTED 2026-10-24 06:15,
+            # after the first run - it compared sums, and read F's 2700/2700 against P's 3600/3600 as fewer delivered).
+            if fa["pub"] and pa["pub"] and fa["dlv"] / fa["pub"] < pa["dlv"] / pa["pub"]:
+                bad.append(f"F delivered {fa['dlv']:.0f}/{fa['pub']:.0f} < P {pa['dlv']:.0f}/{pa['pub']:.0f} at {arm}")
             d = fa["p99"] - pa["p99"]
             if arm == "ge1b1":
                 word = "SHOWN" if d < -noise else ("COST" if d > noise else "NOT SHOWN")
