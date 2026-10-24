@@ -220,6 +220,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (clean and 1%, ~57 s); `tests/test_data_frag.c` adds four cases, three red on `7694bc87`, the fourth red without the
   pin. Rig core gate v2 A/B (`coreAB_4eecd535_20261025-002604`): PASS, no CPU or latency row worse;
   1/88 instruction rows worse (c15 best-effort p4 server, +1.3%), listed.
+  Not changed, explained (2026-10-25, RESULTS `HFN`; DESIGN section 8, "Train losses and the stale rule"): the
+  GSO-on PC reps that sent a few samples at n = 45 had forgotten their first sample's events. A whole-train loss
+  breaks the stale rule's independent-loss assumption. Their runs filled the reader host's IP reassembly, and the
+  writer's rule (e) went to MTU for 60 s. Options for the user, none taken.
 - **A context restarted under a live id is answered at once** (2026-10-24). Every `ros2` CLI process on a host takes
   the same context id, so `ros2 node info` right after `ros2 node list` arrived while its predecessor was still believed
   alive. Its lists all came as replies to our requests, and a reply from a known id was never answered, so it learned of

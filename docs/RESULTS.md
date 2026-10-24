@@ -747,6 +747,29 @@ first p announced inside the band (the first tail's, or a GSO-burst dip's) held 
   MTU mode (> 38,000) have a median p99 of 9.91 ms, and pre's seven MTU reps 9.86 ms. The worst rep is better: pre's
   IP-run reps reach 10.23-10.88 ms and 5.2-5.5 sub CPU, head's worst is 10.42 ms and 4.85. Mean sub CPU over all reps is 3% lower.
 
+### The runs of 45 at 1%: a forgotten p, then a full reassembly (PC netns, `HFN`)
+
+**TL;DR.** The GSO-on reps above that sent a few samples at n = 45 forgot their first sample's events (stale rule)
+and announced "none seen". Their runs then filled the reader host's IP reassembly memory, and the writer's rule (e)
+went to MTU for 60 s. The drain was not where runs died. Nothing changed: each step is stated behaviour, and the fixes
+change the estimator (DESIGN.md section 8, "Train losses and the stale rule", options a-e).
+
+- **Run** (`hybrid_forget_netns.sh`, mech1, core `0f33a562`, 1 MiB 30 Hz RELIABLE, 10 s reps, writer-egress netem;
+  the reader namespace's `ipfrag_high_thresh` 4 MiB, `ipfrag_time` 30 s; every rep at load < 1). Reading registered
+  first. Amended once, for a reading defect only: "none seen" was looked for on the wrong stream. Same files, re-read.
+
+| arm | usable | CHAIN (writer's rule (e)) | reassembly FULL | ReasmFails | receiver drops | p99 ms |
+|---|---|---|---|---|---|---|
+| auto, 1% | 16 | 4 (each: stale forget of 7-8 events, "none seen", 8-10 samples at 45) | the 4 CHAIN reps only | 676-1,116 in CHAIN, 0 in the rest | 0 | 16.3-19.2 CHAIN, 10.6-13.4 the rest |
+| forced n = 45, 1% | 4 | 4 | 4 | ~209,000 | 0 | 42.7-43.2 |
+| forced n = 45, 0% (control) | 3 | 0 | 0 (peak 99 KB) | 0 | 0 | 9.6-9.8 |
+
+- Verdict **SHOWN** (re-read). The drain overran in 3 of the 4 CHAIN reps and in 4 of the 12 others; one CHAIN rep
+  had none. At n = 2 memory peaks at 0.5-2.6 MB and stays below the threshold, likely because the IP ID wraps every
+  ~6 s there (~11,000 runs/s) and recycles stale queues (inferred, not measured).
+- Archive (`hybrid_mode_netns.sh` runs of HMA): 12 of 37 GSO-on reps had a stale forget, each with the warning and
+  runs of 45; none of 44 GSO-off reps did. The sim reproduces the forget (`test_train_losses_outlast_the_stale_rule`).
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
@@ -792,6 +815,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `7c8389fd`, WIFI `9f6f5375`; P `53ed4e1f`, O `896d4a29`; ed46fcc6, 1157d024, d1c900fe before their rebase) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
 | LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
 | HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
+| HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |

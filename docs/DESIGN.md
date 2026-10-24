@@ -766,7 +766,8 @@ so none is made: options below, for the user.
    leaves an incomplete queue (~97 KB truesize) for `ipfrag_time`, 30 s: 43 of them, about 7 samples' lost runs, fill
    `ipfrag_high_thresh` (4 MiB). Above it the kernel refuses every fragment (`ReasmFails`) until they expire. The reader's
    socket and drain lose nothing; the drain's overrun (MTU repairs, one 65,600 B buffer each) hands over to the
-   socket as designed. At n = 2 the IP ID wraps every ~6 s, which recycles stale queues: memory stays at 2-2.6 MB.
+   socket as designed. At n = 2 memory stays below 2.6 MB, likely because the IP ID wraps every ~6 s
+   and recycles stale queues (inferred).
 3. **Rule (e) on the writer.** Every run refused with the tail through is rule (e): MTU for `path_clean_ns` (2 tau),
    then one run. For up to tau the reader host does drop every fragment, and at 1% MTU is n* anyway. Only the warning's
    cause is wrong: the reader's reassembly memory, filled by our own lost runs, not the path. Giving the writer the
