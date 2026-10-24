@@ -3576,6 +3576,95 @@ static void test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from
     test_mock_send_hook = sim_capture;
 }
 
+// --- train losses outlast the stale rule (2026-10-25, PC netns GSO on, 1%: 12 of 37 reps) ----------------------------
+//
+// The stale rule (loss_estimate_forget_stale()) reads the clean frames after the k-th event as k + 1 independent gaps
+// at one rate: (1 + C / F)^k >= 1e4 is a false forget one time in 10,000 on a steady path. Its first sample sent one
+// datagram a call (above), the writer goes back to UDP_SEGMENT trains, and a loss that takes a whole train (netem
+// above the segmentation; a queue that drops one GSO packet) comes ~30 frames at a time: the same p in frames, a
+// thirtieth as many chances. After a first sample with 8 events (F = 723, k = 8: forgotten at C >= 1,563, 2.2 samples)
+// two clean samples of trains are likely (0.99^~45 trains = 64%), the reader forgets its 8 real events, announces
+// "none seen" and the writer sends runs of n_max on a 1% path. This pins the rule's stated limit (DESIGN.md section 8,
+// "Train losses and the stale rule"); the control is the same link with the rule off. The link: the writer's MTU
+// datagrams lost by the send call that carried them, every FORGET_TRAIN_EVERY-th - the first sample's 723 calls lose
+// 8, the trains after it one in ~7 samples - and a fragmented datagram frame by frame at 1%.
+#define FORGET_TRAIN_EVERY 90U
+#define FORGET_FRAME_LOSS_PPM 10000U
+#define FORGET_SAMPLES 8U
+static uint32_t forget_frame_rng;
+
+static bool forget_train_drop(const struct sim_datagram* d) {
+    if (d->from != SENDER_ID) {
+        return false;
+    }
+    uint32_t frames = (d->len + 8U + FRAME_PAYLOAD - 1U) / FRAME_PAYLOAD;
+    if (frames > 1U) {
+        bool lost = false;
+        for (uint32_t i = 0; i < frames; i++) {
+            forget_frame_rng = (forget_frame_rng * 1103515245U) + 12345U;
+            lost = lost || ((forget_frame_rng >> 8) & 0xFFFFFFU) % 1000000U < FORGET_FRAME_LOSS_PPM;
+        }
+        return lost;
+    }
+    uint32_t call = train_call[(uint32_t)(d - sim_queue) % SIM_QUEUE];
+    if (call != train_last_call) {
+        train_last_call = call;
+        train_count++;
+        train_lost_now = train_count % FORGET_TRAIN_EVERY == FORGET_TRAIN_EVERY - 1U;
+    }
+    return train_lost_now;
+}
+
+// Returns the samples sent at n_max; *first_events the reader's events after the first sample.
+static uint32_t forget_train_stream(bool stale_off, uint32_t* first_events, uint64_t* forgets) {
+    hybrid_test_stale_off = stale_off;
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    test_mock_send_hook = train_capture;
+    sim_drop_hook = forget_train_drop;
+    train_last_call = UINT32_MAX;
+    train_count = 0;
+    train_lost_now = false;
+    forget_frame_rng = 7;
+    train_call_now = UINT32_MAX;
+    sim_announce();
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    uint32_t at_n_max = 0;
+    for (uint32_t s = 1; s <= FORGET_SAMPLES; s++) {
+        memset(&sent, 0, sizeof(sent));
+        test_mock_now = t + (tt_SECOND / 2U) + ((uint64_t)s * 34U * tt_MILLISECOND); // no reader tick in between
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, tt_SECOND);
+        *first_events = s == 1 ? readers[0].ctx.hybrid.rx_loss.events : *first_events;
+        at_n_max += sent.max_n == tt_HYBRID_N_MAX ? 1U : 0U;
+    }
+    *forgets = readers[0].ctx.hybrid.stale_forgets;
+    expect_intact_or_given_up(0, (int)FORGET_SAMPLES);
+    sim_drop_hook = NULL;
+    test_mock_send_hook = sim_capture;
+    hybrid_test_stale_off = false;
+    return at_n_max;
+}
+
+static void test_train_losses_outlast_the_stale_rule(void) {
+    uint32_t first_events = 0;
+    uint64_t forgets = 0;
+    uint32_t at_n_max = forget_train_stream(false, &first_events, &forgets);
+    EXPECT_EQ_U32(8, first_events); // the treatment: 8 independent events in the first sample's 723 calls
+    EXPECT_EQ_U64(1, forgets);      // forgotten after two or three clean samples of trains
+    EXPECT_EQ_U64(8, readers[0].ctx.hybrid.stale_events);
+    EXPECT_TRUE(at_n_max > 0); // and runs of n_max on a ~1% path
+    uint32_t control_first = 0;
+    uint64_t control_forgets = 0;
+    uint32_t control = forget_train_stream(true, &control_first, &control_forgets);
+    EXPECT_EQ_U32(8, control_first);
+    EXPECT_EQ_U64(0, control_forgets);
+    EXPECT_EQ_U32(0, control); // the rule off: the writer stays at n* of p ~ 1.2%, MTU units
+    printf("test_hybrid_send: train losses: %u samples at n_max after a stale forget, %u with the rule off\n", at_n_max,
+           control);
+}
+
 // --- a socket that overflows during the reader's first sample (2026-10-16, rig first-n2 r11) -----------------------
 //
 // The reader's socket dropped 158 datagrams during its first sample (its well-known socket flooded; "receiver_drops=158
@@ -3735,6 +3824,7 @@ int main(void) {
     test_a_sample_received_in_runs_is_lent_in_place();
     test_the_first_p_rests_on_frames_not_trains();
     test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from_its_acknack();
+    test_train_losses_outlast_the_stale_rule();
     test_receiver_drops_never_make_a_lossy_path_look_clean();
     free(sim_queue);
     printf("test_hybrid_send: %u samples owed when the link went quiet, asked for at the periodic Heartbeat\n",
