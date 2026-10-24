@@ -474,6 +474,12 @@ jobs:
             echo "::warning::sch_netem could not be loaded on kernel $(uname -r); besvc will report NOT RUN"
           fi
 
+      - name: Install tickle_typesupport for the system python3
+        # The generator imports tickle_typesupport (tools/typesupport), which Check all pip-installs into
+        # setup-python's interpreter; this job builds with the system python3 setup-ros installed ROS 2 against, so it
+        # goes there. --no-deps: its one dependency, empy, comes from ROS 2's own apt packages.
+        run: python3 -m pip install --user --break-system-packages --no-deps ./tools/typesupport
+
       - name: Build rmw_tickle and the interface workspace
         run: rmw_tickle/scripts/build_acceptance_ws.sh -w "$ACCEPT_WS"
 
