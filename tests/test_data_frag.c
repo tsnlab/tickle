@@ -823,6 +823,8 @@ static void test_durability_backlog_sends_fragmented_samples(void) {
 
 struct sim_datagram {
     uint8_t from;
+    int16_t tag_stream; // the multi-stream simulation's: which stream's original send this is, -1 for anything else
+    int16_t tag_sample; // and of which sample
     uint32_t len;
     uint8_t bytes[tt_MAX_BUFFER_LENGTH];
 };
@@ -834,12 +836,34 @@ static uint32_t sim_loss_per_mille;
 static uint32_t sim_rng;
 static uint64_t sim_sent[3];    // per node id: datagrams handed to the channel
 static uint64_t sim_dropped[3]; // per node id: of those, lost
+// The multi-stream simulation's tags (multi_run()): set around a publish, so its original datagrams can be told apart
+// from what the protocol sends; and per stream and sample, how many of them crossed the channel.
+#define MS_MAX_STREAMS 16
+#define MS_SAMPLES 40
+static int16_t sim_tag_stream = -1;
+static int16_t sim_tag_sample = -1;
+static uint32_t sim_tagged; // datagrams tagged since the tag was set
+static uint8_t sim_on_wire[MS_MAX_STREAMS][MS_SAMPLES];
 
 static void sim_capture(const void* buf, size_t len) {
     EXPECT_TRUE(sim_tail - sim_head < SIM_QUEUE);
     EXPECT_TRUE(len <= tt_MAX_BUFFER_LENGTH);
     struct sim_datagram* d = &sim_queue[sim_tail % SIM_QUEUE];
     d->from = sim_acting;
+    d->tag_stream = -1;
+    d->tag_sample = -1;
+    if (sim_tag_stream >= 0) { // a fragment of the tagged sample, not what else the publish sent (a HEARTBEAT)
+        static uint8_t classic[tt_MAX_BUFFER_LENGTH * 2];
+        size_t classic_len = test_classic_form(buf, len, classic);
+        uint8_t type = classic_len > sizeof(struct tt_Header)
+                           ? ((const struct tt_SubmessageHeader*)(classic + sizeof(struct tt_Header)))->type
+                           : 0;
+        if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST || type == tt_SUBMESSAGE_TYPE_FRAG_CONT) {
+            d->tag_stream = sim_tag_stream;
+            d->tag_sample = sim_tag_sample;
+            sim_tagged++;
+        }
+    }
     d->len = (uint32_t)len;
     memcpy(d->bytes, buf, len);
     sim_tail++;
@@ -859,6 +883,9 @@ static void sim_drain(void) {
         if (sim_lost()) {
             sim_dropped[d->from]++;
             continue;
+        }
+        if (d->tag_stream >= 0) {
+            sim_on_wire[d->tag_stream][d->tag_sample]++;
         }
         struct tt_Context* to = d->from == SENDER_ID ? &receiver : &sender;
         sim_acting = to->id;
@@ -1178,9 +1205,9 @@ static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
 
 // A DATA first, which the Subscriber records and delivers, and which makes it track the writer (seq_no 1); then the
 // fragmented sample under test, seq_no 2 on, captured and not yet delivered.
-static void tracked_none_pair(uint32_t len) {
-    init_pair_reliable_receiver(len, false);
-    EXPECT_EQ_U32(0, reorder_payload_capacity(&sub)); // the shape under test: no buffer
+static void tracked_pair(uint32_t len, bool with_buffer) {
+    init_pair_reliable_receiver(len, with_buffer);
+    EXPECT_TRUE(with_buffer || reorder_payload_capacity(&sub) == 0); // the shape under test: no buffer
     sample_len = 100;
     publish_captured();
     EXPECT_EQ_INT(1, datagram_count);
@@ -1191,6 +1218,10 @@ static void tracked_none_pair(uint32_t len) {
     sample_len = len;
     sample_seed = expected_seed = 9; // the sample's bytes differ from the DATA's, so a stale copy cannot pass
     publish_captured();
+}
+
+static void tracked_none_pair(uint32_t len) {
+    tracked_pair(len, false);
 }
 
 static void test_reliable_none_fragments_in_order_are_delivered(void) {
@@ -2386,6 +2417,575 @@ static void test_a_narrow_link_sends_no_runs(void) {
 }
 #endif
 
+// --- the pool as a reorder buffer: its residual risks (2026-10-25) -------------------------------------------------
+//
+// ffc93e11 made the reassembly pool the reorder buffer of a RELIABLE Subscriber with none. Its author listed four
+// risks it left untested: (a) an eviction HEARTBEAT past a whole sample held ahead, (b) more no-buffer streams than
+// the pool can pin, (c) a BEST_EFFORT Subscriber sharing the pool with such a one, (d) the cost of counting pins. Each
+// case below is the one that would show its risk.
+
+// (a) An eviction HEARTBEAT moves the watermark past a whole sample the reader holds ahead of an incomplete one. The
+// buffered path hands over what it holds behind a gap given up on (drain_reorder() after advance_past_unavailable()):
+// KEEP_LAST loses what the writer no longer has, not what the reader already has. The pool must do the same. Run with
+// a buffer as the control, then without, for both baselines a writer can announce: B's own first datagram (A evicted;
+// B is recorded, so the watermark absorbs it at once) and past B (both evicted). And with A wholly lost, so the pool
+// has no slot of A's and B is whole but not recorded (frag_pool_record_ahead()): the watermark then stops at B, and
+// B is delivered at once rather than after its resend.
+static void eviction_heartbeat_case(bool with_buffer, uint32_t first_available, bool a_lost) {
+    tracked_pair(4000, with_buffer); // A: seq_no 2..4, captured
+    static struct captured_sample a;
+    static struct captured_sample b;
+    static struct captured_sample c;
+    a.count = datagram_count;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    capture_sample(&pub, &b); // B: 5..7
+    capture_sample(&pub, &c); // C: 8..10
+    EXPECT_EQ_INT(3, a.count);
+    EXPECT_EQ_INT(3, b.count);
+    EXPECT_EQ_INT(3, c.count);
+    if (!a_lost) {
+        EXPECT_TRUE(process_packet(&receiver, a.bytes[0], 0, a.len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, b.bytes[d], 0, b.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(0, delivered_count); // B whole, behind A
+    EXPECT_TRUE(with_buffer || bitmap_test_bit(sender_proxy()->received_bitmap, 5 - sender_proxy()->ack_seq_no) ==
+                                   !a_lost); // recorded ahead, unless the pool holds nothing of A
+    struct tt_Header header;
+    memcpy(&header, a.bytes[0], sizeof(header)); // the writer's own header, so its byte order
+    struct heartbeat_ctx heartbeat = {
+        &header, SENDER_IP, PORT, pub.endpoint.entity_id, first_available, 10, tt_HEARTBEAT_FLAG_FINAL};
+    inform_subscriber_of_heartbeat(&receiver, &sub.endpoint, &heartbeat);
+    EXPECT_EQ_U32(8, sender_proxy()->ack_seq_no);
+    EXPECT_EQ_INT(1, delivered_count); // B, which the reader had whole
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(4000, delivered_len);
+    for (int d = a_lost ? 0 : 1; d < 3; d++) { // A's rest, late: A is never delivered, torn or whole
+        EXPECT_TRUE(process_packet(&receiver, a.bytes[d], 0, a.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(1, delivered_count);
+    for (int d = 0; d < 3; d++) { // and the stream goes on
+        EXPECT_TRUE(process_packet(&receiver, c.bytes[d], 0, c.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_U32(11, sender_proxy()->ack_seq_no);
+}
+
+static void test_reliable_none_eviction_heartbeat_keeps_a_whole_sample_ahead(void) {
+    for (int a_lost = 0; a_lost < 2; a_lost++) {
+        eviction_heartbeat_case(true, 5, a_lost); // the control: the buffered path
+        eviction_heartbeat_case(true, 8, a_lost);
+        eviction_heartbeat_case(false, 5, a_lost);
+        eviction_heartbeat_case(false, 8, a_lost);
+    }
+}
+
+// (c) A BEST_EFFORT Subscriber of the same writers, beside the RELIABLE one, on a topic of its own so that what each
+// decodes is counted apart (sub2, second_delivered; the RELIABLE one first_delivered).
+static void add_best_effort_subscriber(void) {
+    second_topic = receiver_topic;
+    second_topic.data_decode = second_checking_decode;
+    receiver_topic.data_decode = first_checking_decode;
+    memset(&sub2, 0, sizeof(sub2));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub2, &second_topic,
+                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+    first_delivered = second_delivered = 0;
+}
+
+// More writers for one receiver, each on a node of its own (id 3 on), each tracked by every Subscriber through one
+// DATA first.
+#define EXTRA_WRITERS 2
+static struct tt_Context extra_node[EXTRA_WRITERS];
+static struct tt_Publisher extra_pub[EXTRA_WRITERS];
+
+static void add_tracked_writers(void) {
+    uint32_t len = sample_len;
+    for (int k = 0; k < EXTRA_WRITERS; k++) {
+        init_bare_node(&extra_node[k], (uint8_t)(3 + k));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_publisher(tt_Context_default_node(&extra_node[k]), &extra_pub[k], &sender_topic,
+                                               ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+        match_by_broadcast(&extra_pub[k]);
+        static struct captured_sample data;
+        sample_len = 100;
+        capture_sample(&extra_pub[k], &data);
+        EXPECT_EQ_INT(1, data.count);
+        EXPECT_TRUE(process_packet(&receiver, data.bytes[0], 0, data.len[0], SENDER_IP + 2 + (uint32_t)k, PORT,
+                                   tt_TRANSPORT_UDP));
+    }
+    sample_len = len;
+}
+
+static void deliver_from(int k, const struct captured_sample* s, int d) {
+    uint32_t ip = k < 0 ? SENDER_IP : SENDER_IP + 2 + (uint32_t)k;
+    EXPECT_TRUE(process_packet(&receiver, s->bytes[d], 0, s->len[d], ip, PORT, tt_TRANSPORT_UDP));
+}
+
+// On a clean link, two writers interleaved datagram by datagram: each Subscriber gets every sample once, intact.
+static void test_best_effort_beside_reliable_none_gets_every_sample(void) {
+    tracked_none_pair(4000); // the first writer's sample A, seq_no 2..4, captured
+    add_best_effort_subscriber();
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(1, first_delivered);
+    EXPECT_EQ_INT(1, second_delivered);
+    add_tracked_writers();
+    first_delivered = second_delivered = 0;
+    static struct captured_sample one;
+    static struct captured_sample two;
+    for (int round = 0; round < 3; round++) {
+        capture_sample(&pub, &one);
+        capture_sample(&extra_pub[0], &two);
+        for (int d = 0; d < 3; d++) {
+            deliver_from(-1, &one, d);
+            deliver_from(0, &two, d);
+        }
+    }
+    EXPECT_EQ_INT(6, first_delivered);
+    EXPECT_EQ_INT(6, second_delivered);
+    EXPECT_TRUE(first_intact);
+    EXPECT_TRUE(second_intact);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+}
+
+// Every slot pinned by the RELIABLE Subscriber - its first writer's sample A waiting on two datagrams with five whole
+// samples recorded behind it, and two other writers' samples part-placed - when a sample G arrives whole. With a
+// buffer the RELIABLE Subscriber pins nothing (the control): the pool is the BEST_EFFORT one's, and G is delivered to
+// it on arrival. Without one there is no slot for G, and the BEST_EFFORT Subscriber gets it only from the resend the
+// RELIABLE one asks for - late, and only if no later sample of that writer reached it first (a known limit, 2026-10-25:
+// the pool's slots are the node's, and a sample waiting on a repair holds its slot for the round trip).
+struct pinned_outcome {
+    int best_effort_on_arrival; // G's original datagrams
+    int best_effort_after;      // and after A's repair and G's resend
+    int reliable;
+};
+
+static struct pinned_outcome pool_pinned_full_case(bool with_buffer) {
+    tracked_pair(4000, with_buffer); // A: seq_no 2..4, captured
+    static struct captured_sample a;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    add_best_effort_subscriber();
+    add_tracked_writers();
+    first_delivered = second_delivered = 0;
+    deliver_from(-1, &a, 0); // A's first datagram only: the watermark is in it
+    static struct captured_sample s;
+    for (int k = 0; k < 5; k++) {
+        capture_sample(&pub, &s); // whole, ahead of A: recorded while two slots stay unpinned
+        for (int d = 0; d < 3; d++) {
+            deliver_from(-1, &s, d);
+        }
+    }
+    for (int k = 0; k < EXTRA_WRITERS; k++) {
+        capture_sample(&extra_pub[k], &s); // their own watermark samples, part-placed
+        deliver_from(k, &s, 0);
+    }
+    EXPECT_EQ_INT(0, first_delivered);
+    EXPECT_EQ_INT(5, second_delivered); // BEST_EFFORT took the five whole ones
+    EXPECT_EQ_U32(with_buffer ? 0U : (uint32_t)tt_FRAG_REASSEMBLY_SLOTS, frag_pool_pinned(&receiver)); // the shape
+    int before = second_delivered;
+    capture_sample(&pub, &s); // G, whole on the wire
+    for (int d = 0; d < 3; d++) {
+        deliver_from(-1, &s, d);
+    }
+    struct pinned_outcome outcome = {.best_effort_on_arrival = second_delivered - before};
+    for (int d = 1; d < 3; d++) {
+        deliver_from(-1, &a, d); // A's repair: A and the five behind it are delivered, their slots unpinned
+    }
+    for (int d = 0; d < 3; d++) {
+        deliver_from(-1, &s, d); // G's resend, which the RELIABLE Subscriber asks for unless it has G already
+    }
+    outcome.best_effort_after = second_delivered - before;
+    outcome.reliable = first_delivered;
+    EXPECT_TRUE(first_intact);
+    EXPECT_TRUE(second_intact);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+    return outcome;
+}
+
+static void test_best_effort_beside_reliable_none_when_every_slot_is_pinned(void) {
+    struct pinned_outcome control = pool_pinned_full_case(true);
+    EXPECT_EQ_INT(1, control.best_effort_on_arrival);
+    EXPECT_EQ_INT(1, control.best_effort_after); // the resend is a duplicate to it
+    EXPECT_EQ_INT(7, control.reliable);          // A, the five, G
+    struct pinned_outcome none = pool_pinned_full_case(false);
+    EXPECT_EQ_INT(0, none.best_effort_on_arrival); // the limit: no slot for G
+    EXPECT_EQ_INT(1, none.best_effort_after);      // late, from the resend
+    EXPECT_EQ_INT(7, none.reliable);
+}
+
+// (a) again, the other way a watermark moves past a sample recorded ahead: a DATA. A writer's A (fragmented) has its
+// first datagram only, the DATA X after it is lost, and B (fragmented) after that arrives whole and is recorded. A's
+// repair delivers A, and the watermark stops at X; X's repair moves it past B's recorded datagrams at once. B must
+// follow X, as it does from a buffer (the control). The pool walk runs when a fragment lands, and none does. With A's
+// first datagram lost too, B is whole but not recorded (the pool held nothing of A's): X's repair moves the watermark
+// to B, and B follows X at once rather than after its resend.
+static void data_absorb_case(bool with_buffer, bool a_first_lost) {
+    tracked_pair(4000, with_buffer); // A: seq_no 2..4, captured
+    static struct captured_sample a;
+    static struct captured_sample x;
+    static struct captured_sample b;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    sample_len = 100;
+    capture_sample(&pub, &x); // X: 5, a DATA
+    sample_len = 4000;
+    capture_sample(&pub, &b); // B: 6..8
+    EXPECT_EQ_INT(1, x.count);
+    if (!a_first_lost) {
+        deliver_from(-1, &a, 0);
+    }
+    for (int d = 0; d < 3; d++) {
+        deliver_from(-1, &b, d);
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    for (int d = a_first_lost ? 0 : 1; d < 3; d++) {
+        deliver_from(-1, &a, d);
+    }
+    EXPECT_EQ_INT(1, delivered_count); // A; X is missing
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
+    deliver_from(-1, &x, 0);
+    EXPECT_EQ_U32(9, sender_proxy()->ack_seq_no);
+    EXPECT_EQ_INT(3, delivered_count); // X, then B
+    EXPECT_EQ_U32(4000, delivered_len);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(0, sub.out_of_order_discarded);
+}
+
+static void test_reliable_none_data_absorbs_a_whole_sample(void) {
+    for (int a_first_lost = 0; a_first_lost < 2; a_first_lost++) {
+        data_absorb_case(true, a_first_lost); // the control
+        data_absorb_case(false, a_first_lost);
+    }
+}
+
+// (b) Many no-buffer RELIABLE streams in one node, more than the pool can pin. Two real nodes as in sim_run(): the
+// sender has `streams` RELIABLE KEEP_ALL Publishers, each on a topic of its own, and the receiver a RELIABLE
+// Subscriber of each - with no reorder buffer, or with a window-wide one (the control: it never touches the pool) -
+// and optionally a BEST_EFFORT Subscriber of each beside it, for (c). Each round every Publisher publishes one
+// 3-datagram sample, and the round's datagrams are shuffled before they cross the channel, so every stream's sample
+// is being put together at once. What would show a livelock or a starved stream: a RELIABLE stream short of
+// MS_SAMPLES, out of order, or torn when the budget ends.
+#define MS_CACHE_DEPTH 256
+#define MS_SAMPLE_LEN 4000 // 3 datagrams
+#define MS_SUB_STORAGE (TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES + 65536)
+static char ms_name[MS_MAX_STREAMS][16];
+static struct tt_TypeSupport ms_tx_topic[MS_MAX_STREAMS];
+static struct tt_TypeSupport ms_rx_topic[MS_MAX_STREAMS];
+static struct tt_Publisher ms_pub[MS_MAX_STREAMS];
+static struct tt_Subscriber ms_rel[MS_MAX_STREAMS];
+static struct tt_Subscriber ms_be[MS_MAX_STREAMS];
+static uint64_t ms_pub_storage[MS_MAX_STREAMS][(size_t)64U * 1024U / sizeof(uint64_t)];
+static uint64_t ms_sub_storage[MS_MAX_STREAMS][MS_SUB_STORAGE / sizeof(uint64_t)];
+static struct tt_ReliableCacheIndex ms_cache_index[MS_MAX_STREAMS][MS_CACHE_DEPTH];
+static uint8_t ms_cache_arena[MS_MAX_STREAMS]
+                             [tt_RELIABLE_CACHE_ARENA_BYTES(MS_CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
+static struct tt_ReliableCache ms_cache[MS_MAX_STREAMS];
+
+struct ms_tally {
+    int got;
+    uint16_t last;
+    bool in_order;
+    bool intact;
+    bool has[MS_SAMPLES];
+};
+static struct ms_tally ms_rel_tally[MS_MAX_STREAMS];
+static struct ms_tally ms_be_tally[MS_MAX_STREAMS];
+static int ms_decoded_stream;
+static bool ms_decoded_priming; // the DATA each stream starts with
+static bool ms_decoded_intact;
+static uint32_t ms_peak_pinned;
+
+// The stream is in the bytes: seed 20 + its index.
+static int32_t ms_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
+    (void)data;
+    (void)native;
+    uint8_t seed = len != 0 ? payload[0] : 0;
+    ms_decoded_priming = len == 100;
+    ms_decoded_stream = (int)seed - 20;
+    ms_decoded_intact = len == MS_SAMPLE_LEN;
+    for (uint32_t i = 0; i < len && ms_decoded_intact; i++) {
+        ms_decoded_intact = payload[i] == pattern(i, seed);
+    }
+    return 0;
+}
+
+static void ms_tally(struct ms_tally* t, int stream, int expected_stream, uint16_t seq_no) {
+    t->intact = t->intact && ms_decoded_intact && stream == expected_stream;
+    t->in_order = t->in_order && (t->got == 0 || (uint16_t)(seq_no - t->last) < 0x8000U);
+    t->last = seq_no;
+    t->got++;
+    uint32_t sample = ((uint32_t)seq_no - 2U) / 3U; // every sample takes three seq_no, the first from 2
+    if (sample < MS_SAMPLES) {
+        t->has[sample] = true;
+    }
+}
+
+static void ms_on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)time;
+    (void)data;
+    if (ms_decoded_priming) {
+        return;
+    }
+    if (s >= ms_rel && s < ms_rel + MS_MAX_STREAMS) {
+        ms_tally(&ms_rel_tally[s - ms_rel], ms_decoded_stream, (int)(s - ms_rel), seq_no);
+    } else if (s >= ms_be && s < ms_be + MS_MAX_STREAMS) {
+        ms_tally(&ms_be_tally[s - ms_be], ms_decoded_stream, (int)(s - ms_be), seq_no);
+    }
+}
+
+static bool ms_all_reliable_done(int streams) {
+    for (int w = 0; w < streams; w++) {
+        if (ms_rel_tally[w].got < MS_SAMPLES) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint32_t ms_shuffle_rng;
+static void ms_shuffle_in_flight(void) {
+    for (uint32_t i = sim_tail - sim_head; i > 1; i--) {
+        ms_shuffle_rng = (ms_shuffle_rng * 1103515245U) + 12345U;
+        uint32_t j = (ms_shuffle_rng >> 8) % i;
+        static struct sim_datagram tmp;
+        struct sim_datagram* x = &sim_queue[(sim_head + i - 1) % SIM_QUEUE];
+        struct sim_datagram* y = &sim_queue[(sim_head + j) % SIM_QUEUE];
+        tmp = *x;
+        *x = *y;
+        *y = tmp;
+    }
+}
+
+struct ms_result {
+    uint64_t took;     // simulated time from the last publish until every RELIABLE stream was complete, or budget
+    double per_sample; // datagrams the sender sent, a sample
+    uint64_t dropped;  // fragments dropped because every slot was pinned (frag_dropped)
+    int be_complete_on_wire;
+    int be_got_of_those;
+};
+
+// Stream w of multi_run(): its Publisher, with the simulation's own cache swapped in, and its Subscribers.
+static void ms_create_stream(int w, const struct tt_QosProfile* pub_qos, const struct tt_QosProfile* rel_qos,
+                             bool best_effort) {
+    ms_rel_tally[w].in_order = ms_rel_tally[w].intact = true;
+    ms_be_tally[w].in_order = ms_be_tally[w].intact = true;
+    (void)snprintf(ms_name[w], sizeof(ms_name[w]), "ms_topic_%d", w);
+    memset(&ms_tx_topic[w], 0, sizeof(ms_tx_topic[w]));
+    ms_tx_topic[w].name = ms_name[w];
+    ms_tx_topic[w].data_size = 8;
+    ms_tx_topic[w].data_encode_size = sized_encode_size;
+    ms_tx_topic[w].data_encode = sized_encode;
+    size_t pub_size = tt_Publisher_storage_size(&ms_tx_topic[w], pub_qos);
+    EXPECT_TRUE(pub_size <= sizeof(ms_pub_storage[w]));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(
+                                 tt_Context_default_node(&sender), &ms_pub[w], &ms_tx_topic[w], ENDPOINT_NAME, pub_qos,
+                                 &(struct tt_PublisherOptions) {.heartbeat_period_ns = 10 * tt_MILLISECOND},
+                                 ms_pub_storage[w], pub_size));
+    match_by_broadcast(&ms_pub[w]);
+    memset(ms_cache_index[w], 0, sizeof(ms_cache_index[w]));
+    memset(&ms_cache[w], 0, sizeof(ms_cache[w]));
+    ms_cache[w].index = ms_cache_index[w];
+    ms_cache[w].capacity = MS_CACHE_DEPTH;
+    ms_cache[w].depth = MS_CACHE_DEPTH;
+    ms_cache[w].arena = ms_cache_arena[w];
+    ms_cache[w].arena_size = (uint32_t)sizeof(ms_cache_arena[w]);
+    ms_pub[w].reliable_cache = &ms_cache[w];
+
+    memset(&ms_rx_topic[w], 0, sizeof(ms_rx_topic[w]));
+    ms_rx_topic[w].name = ms_name[w];
+    ms_rx_topic[w].data_size = 8;
+    ms_rx_topic[w].data_decode = ms_decode;
+    ms_rx_topic[w].data_free = free_nothing;
+    size_t sub_size = tt_Subscriber_storage_size(&ms_rx_topic[w], rel_qos);
+    EXPECT_TRUE(sub_size <= sizeof(ms_sub_storage[w]));
+    memset(ms_sub_storage[w], 0, sub_size);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &ms_rel[w], &ms_rx_topic[w],
+                                                       ENDPOINT_NAME, rel_qos,
+                                                       &(struct tt_SubscriberOptions) {.callback = ms_on_data},
+                                                       sub_size != 0 ? ms_sub_storage[w] : NULL, sub_size));
+    if (best_effort) {
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_subscriber(tt_Context_default_node(&receiver), &ms_be[w], &ms_rx_topic[w],
+                                                ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                &(struct tt_SubscriberOptions) {.callback = ms_on_data}, NULL, 0));
+    }
+}
+
+// Stream w's sample i, its original datagrams tagged; a publish that would block lets the protocol run until it can.
+static void ms_publish(int w, int i, uint64_t budget) {
+    sample_seed = (uint8_t)(20 + w);
+    tt_ret_t result = tt_RET_WOULD_BLOCK;
+    uint64_t blocked_since = test_mock_now;
+    for (;;) {
+        sim_tag_stream = (int16_t)w;
+        sim_tag_sample = (int16_t)i;
+        sim_tagged = 0;
+        sim_acting = SENDER_ID;
+        result = tt_Publisher_publish(&ms_pub[w], (struct tt_Data*)&sample_len);
+        sim_tag_stream = sim_tag_sample = -1;
+        if (result != tt_RET_WOULD_BLOCK || test_mock_now - blocked_since >= budget) {
+            break;
+        }
+        sim_drain();
+        if (!sim_step()) {
+            break;
+        }
+    }
+    EXPECT_EQ_INT(tt_RET_OK, result);
+    EXPECT_EQ_U32(3, sim_tagged); // the sample's own datagrams, and nothing else
+}
+
+static void ms_note_pinned(void) {
+    uint32_t pinned = frag_pool_pinned(&receiver);
+    ms_peak_pinned = pinned > ms_peak_pinned ? pinned : ms_peak_pinned;
+}
+
+static struct ms_result multi_run(int streams, bool with_buffer, bool best_effort, uint32_t loss_per_mille,
+                                  uint64_t budget) {
+    const struct tt_QosProfile pub_qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = 1},
+                                          .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    struct tt_QosProfile rel_qos = TEST_QOS_RELIABLE_READER;
+    if (with_buffer) {
+        rel_qos.reliability.reorder_slots = TEST_REORDER_SLOTS;
+    }
+    test_mock_reset();
+    sample_len = MS_SAMPLE_LEN;
+    init_bare_node(&sender, SENDER_ID);
+    init_bare_node(&receiver, RECEIVER_ID);
+    memset(ms_rel_tally, 0, sizeof(ms_rel_tally));
+    memset(ms_be_tally, 0, sizeof(ms_be_tally));
+    memset(sim_on_wire, 0, sizeof(sim_on_wire));
+    for (int w = 0; w < streams; w++) {
+        ms_create_stream(w, &pub_qos, &rel_qos, best_effort);
+        EXPECT_TRUE(with_buffer || reorder_payload_capacity(&ms_rel[w]) == 0);
+    }
+    sim_head = sim_tail = 0;
+    sim_rng = 1;
+    ms_shuffle_rng = 7;
+    ms_peak_pinned = 0;
+    memset(sim_sent, 0, sizeof(sim_sent));
+    memset(sim_dropped, 0, sizeof(sim_dropped));
+    test_mock_send_hook = sim_capture;
+    test_mock_now = tt_SECOND;
+    // A DATA first on each stream (seq_no 1), over a clean channel, so every Subscriber tracks its writer before the
+    // first fragment: a RELIABLE one with no buffer takes no fragment from a writer it does not track yet
+    // (accept_reliable_fragment()), and a VOLATILE one would then start from the writer's first HEARTBEAT, past what
+    // was sent before it.
+    sim_loss_per_mille = 0;
+    sample_len = 100;
+    for (int w = 0; w < streams; w++) {
+        sample_seed = (uint8_t)(20 + w);
+        sim_acting = SENDER_ID;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&ms_pub[w], (struct tt_Data*)&sample_len));
+    }
+    sample_len = MS_SAMPLE_LEN;
+    sim_drain();
+    sim_loss_per_mille = loss_per_mille;
+    for (int i = 0; i < MS_SAMPLES; i++) {
+        sim_run_due(&sender);
+        sim_run_due(&receiver);
+        for (int w = 0; w < streams; w++) { // nothing crosses the channel until the round is out, unless one blocks
+            ms_publish(w, i, budget);
+        }
+        ms_shuffle_in_flight();
+        sim_drain();
+        ms_note_pinned();
+        test_mock_now += SIM_PUBLISH_SPACING;
+    }
+    uint64_t published = test_mock_now;
+    while (!ms_all_reliable_done(streams) && test_mock_now - published < budget && sim_step()) {
+        ms_note_pinned();
+    }
+    test_mock_send_hook = NULL;
+    struct ms_result r = {.took = test_mock_now - published,
+                          .per_sample = (double)sim_sent[SENDER_ID] / (double)(streams * MS_SAMPLES),
+                          .dropped = receiver.frag_dropped};
+    for (int w = 0; w < streams; w++) {
+        for (int i = 0; i < MS_SAMPLES; i++) {
+            if (sim_on_wire[w][i] == 3) {
+                r.be_complete_on_wire++;
+                r.be_got_of_those += ms_be_tally[w].has[i] ? 1 : 0;
+            }
+        }
+    }
+    return r;
+}
+
+static void expect_every_reliable_stream_complete(int streams) {
+    for (int w = 0; w < streams; w++) {
+        if (ms_rel_tally[w].got != MS_SAMPLES) {
+            struct tt_WriterProxy* proxy = find_writer_proxy(&ms_rel[w], SENDER_ID, ms_pub[w].endpoint.entity_id);
+            printf("test_data_frag: stream %d of %d got %d of %d (last seq_no %u, watermark %u)\n", w, streams,
+                   ms_rel_tally[w].got, MS_SAMPLES, ms_rel_tally[w].last, proxy != NULL ? proxy->ack_seq_no : 0U);
+        }
+        EXPECT_EQ_INT(MS_SAMPLES, ms_rel_tally[w].got);
+        EXPECT_TRUE(ms_rel_tally[w].in_order);
+        EXPECT_TRUE(ms_rel_tally[w].intact);
+    }
+}
+
+static void test_many_reliable_none_streams_all_progress(void) {
+    static const int stream_counts[] = {4, 8, 12, 16};
+    static const uint32_t losses[] = {0, 10, 50};
+    for (size_t s = 0; s < sizeof(stream_counts) / sizeof(stream_counts[0]); s++) {
+        for (size_t l = 0; l < sizeof(losses) / sizeof(losses[0]); l++) {
+            int streams = stream_counts[s];
+            struct ms_result control = multi_run(streams, true, false, losses[l], 20 * tt_SECOND);
+            expect_every_reliable_stream_complete(streams);
+            struct ms_result none = multi_run(streams, false, false, losses[l], 20 * tt_SECOND);
+            expect_every_reliable_stream_complete(streams);
+            if (losses[l] == 0 && streams <= tt_FRAG_REASSEMBLY_SLOTS) {
+                EXPECT_EQ_U64(0, none.dropped); // a slot for every stream's sample: nothing to drop on a clean link
+            }
+            printf("test_data_frag: %2d no-buffer streams at %2u/1000 loss - recovery %6.1f ms, %.2f datagrams a "
+                   "sample, %lu dropped (all pinned), peak %u pinned; buffered control %6.1f ms, %.2f\n",
+                   streams, losses[l], (double)none.took / 1e6, none.per_sample, (unsigned long)none.dropped,
+                   ms_peak_pinned, (double)control.took / 1e6, control.per_sample);
+        }
+    }
+    // The fallback was reached: with more streams than slots and loss, fragments were dropped with every slot pinned.
+    struct ms_result crowded = multi_run(16, false, false, 50, 20 * tt_SECOND);
+    EXPECT_TRUE(crowded.dropped > 0);
+}
+
+// (c) again, under load: of the samples whose original datagrams all crossed the channel, how many the BEST_EFFORT
+// Subscriber got - beside a no-buffer RELIABLE one, and beside a buffered one (the control, which leaves it the pool).
+static void test_best_effort_beside_many_reliable_none_streams(void) {
+    static const int stream_counts[] = {3, 8, 16};
+    static const uint32_t losses[] = {0, 10, 50};
+    for (size_t s = 0; s < sizeof(stream_counts) / sizeof(stream_counts[0]); s++) {
+        for (size_t l = 0; l < sizeof(losses) / sizeof(losses[0]); l++) {
+            int streams = stream_counts[s];
+            struct ms_result control = multi_run(streams, true, true, losses[l], 20 * tt_SECOND);
+            expect_every_reliable_stream_complete(streams);
+            struct ms_result none = multi_run(streams, false, true, losses[l], 20 * tt_SECOND);
+            expect_every_reliable_stream_complete(streams);
+            for (int w = 0; w < streams; w++) {
+                EXPECT_TRUE(ms_be_tally[w].in_order);
+                EXPECT_TRUE(ms_be_tally[w].intact);
+            }
+            if (losses[l] == 0 && streams < tt_FRAG_REASSEMBLY_SLOTS) {
+                EXPECT_EQ_INT(streams * MS_SAMPLES, none.be_got_of_those);
+            }
+            printf("test_data_frag: BEST_EFFORT beside %2d no-buffer streams at %2u/1000 loss - got %d of %d whole on "
+                   "the wire (%lu dropped all pinned); beside buffered %d of %d\n",
+                   streams, losses[l], none.be_got_of_those, none.be_complete_on_wire, (unsigned long)none.dropped,
+                   control.be_got_of_those, control.be_complete_on_wire);
+        }
+    }
+}
+
 int main(void) {
     test_a_narrow_link_cuts_fragments_a_default_reader_reassembles();
     test_a_narrow_link_keeps_whole_only_what_fits_it();
@@ -2455,6 +3055,12 @@ int main(void) {
     test_lossless_link_sends_two_datagrams_a_sample();
     test_lossy_link_recovers_every_sample();
     test_loss_costs_the_lost_datagram_not_the_sample();
+    test_reliable_none_eviction_heartbeat_keeps_a_whole_sample_ahead();
+    test_reliable_none_data_absorbs_a_whole_sample();
+    test_best_effort_beside_reliable_none_gets_every_sample();
+    test_best_effort_beside_reliable_none_when_every_slot_is_pinned();
+    test_many_reliable_none_streams_all_progress();
+    test_best_effort_beside_many_reliable_none_streams();
 
     if (test_result() != 0) {
         return 1;
