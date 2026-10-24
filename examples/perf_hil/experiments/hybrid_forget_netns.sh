@@ -105,6 +105,7 @@ FRAGTIME=$(sudo -n ip netns exec "$NS_R" cat /proc/sys/net/ipv4/ipfrag_time)
 say "reader netns: ipfrag_high_thresh=$THRESH ipfrag_time=$FRAGTIME"
 
 # The sampler: root inside the reader's namespace, bounded by its own count (ends by itself; nothing kills it).
+# shellcheck disable=SC2016 # expanded by the sampler's own sh, not here
 SAMPLER='fast=$1; slow=$2; i=0
 while [ $i -lt $((fast + slow)) ]; do
   echo "T $(date +%s.%N)"; grep FRAG /proc/net/sockstat; grep "^Ip:" /proc/net/snmp | tail -1
