@@ -30,12 +30,29 @@
 #     UNDECIDED when P has fewer than 3 IP-RUN reps (the parent did not show the split: nothing to remove).
 #   With P's IP-RUN rate r ~ 0.45 (the rig), 16 usable reps of F show none by chance only if F did not change it with
 #   (1 - 0.45)^16 = 7e-5; at r = 0.2, 3e-2.
+#
+# AMENDED 2026-10-24 23:00, AFTER THE MECHANISM RUNS AND DURING THE FIRST A/B, BEFORE ANY RUN OF WHAT IT ADDS. Off the
+#   rig the parent's IP-RUN rate is low (no GSO: 1 of 21 reps, only a first tail of exactly 5 events in 723 frames
+#   lands in [0.781%, 0.886%)), so the rule above may well read UNDECIDED. STEP=L1:S:L2 makes every rep decide: loss L1
+#   for the first S seconds of the writer, then L2 (tc qdisc change), both inside one loss_p band on opposite sides of
+#   0.886% (STEP=0.8:6:1.2: n* 2, then 1). The reader's windowed p crosses 0.886% about 2 s after the step.
+#   VOID as above. In a STEP run a rep is LATCHED (any mode) when the writer's final p and the reader's final p are on
+#     opposite sides of 0.886%.
+#   STEP SHOWN when at least 3 of P's usable reps are LATCHED and none of F's; FALSIFIED when any F rep is LATCHED;
+#     UNDECIDED when P has fewer than 3 (its first tail landed it on n = 1 above 0.886% from the start, which the step
+#     cannot move either: no latch to remove).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 REPS=${REPS:-16}
 DUR=${DUR:-30}
 LOSS=${LOSS:-1}
+STEP=${STEP:-} # L1:S:L2 - loss L1 for the writer's first S seconds, then L2 (AMENDED 2026-10-24 23:00)
+STEP_S=0
+STEP_L2=
+if [ -n "$STEP" ]; then
+    IFS=: read -r LOSS STEP_S STEP_L2 <<<"$STEP"
+fi
 OFFLOAD=${OFFLOAD:-1}
 TREES=${TREES:-"P=$REPO"}
 OUT=${OUT:-$HOME/tmp_build/hyb_mode/run_$(date +%Y%m%d_%H%M%S)}
@@ -75,7 +92,7 @@ for t in $TREES; do
     dirty=$(git -C "$tree" status --porcelain -- src include 2>/dev/null | wc -l)
     say "tree $label: $tree sha=$sha dirty_core_paths=$dirty"
 done
-say "=== hybrid_mode_netns $(date -Is) reps=$REPS dur=${DUR}s loss=$LOSS% offload=$OFFLOAD nproc=$(nproc) ==="
+say "=== hybrid_mode_netns $(date -Is) reps=$REPS dur=${DUR}s loss=$LOSS% step=${STEP:--} offload=$OFFLOAD nproc=$(nproc) ==="
 
 # --- namespaces -----------------------------------------------------------------------------------------------------
 sudo -n ip netns add "$NS_W" || exit 1
@@ -109,11 +126,23 @@ for ((rep = 1; rep <= REPS; rep++)); do
         sudo -n ip netns exec "$NS_R" timeout $((DUR + 20)) ${ENVS[@]+"${ENVS[@]}"} prlimit --as=2000000000 \
             "$OUT/bench_$label" sub -s 1048576 -d $((DUR + 6)) -R -b 10.77.0.255 >"$dir/sub.log" 2>"$dir/sub.err" &
         sub_pid=$!
+        step_pid=
+        if [ -n "$STEP" ]; then
+            sudo -n ip netns exec "$NS_W" tc qdisc change dev hmw0 root netem limit 100000 delay 100us rate 1gbit \
+                loss "$LOSS%" || exit 1
+            (
+                sleep $((STEP_S + 1)) # the writer starts a second after this
+                sudo -n ip netns exec "$NS_W" tc qdisc change dev hmw0 root netem limit 100000 delay 100us \
+                    rate 1gbit loss "$STEP_L2%" && echo "step to $STEP_L2% at $(date +%T.%N)" >"$dir/step.txt"
+            ) &
+            step_pid=$!
+        fi
         sleep 1
         # shellcheck disable=SC2024
         sudo -n ip netns exec "$NS_W" timeout $((DUR + 20)) ${ENVS[@]+"${ENVS[@]}"} prlimit --as=2000000000 \
             "$OUT/bench_$label" pub -s 1048576 -r 30 -d "$DUR" -R -b 10.77.0.255 >"$dir/pub.log" 2>"$dir/pub.err"
         wait "$sub_pid"
+        [ -n "$step_pid" ] && wait "$step_pid"
         for f in "$dir"/*.err; do # cap what a trace build writes
             [ "$(stat -c %s "$f")" -gt 20000000 ] && truncate -s 20000000 "$f"
         done
@@ -125,9 +154,9 @@ for ((rep = 1; rep <= REPS; rep++)); do
 done
 
 # --- the reading (applies the PRE-REGISTERED rules above) -----------------------------------------------------------
-python3 -I - "$RESULTS" "$(nproc)" "$LOSS" <<'PY' | tee -a "$RESULTS"
+python3 -I - "$RESULTS" "$(nproc)" "$LOSS" "$STEP" <<'PY' | tee -a "$RESULTS"
 import re, sys
-path, nproc, loss = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+path, nproc, loss, step = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
 U, H = 1454.0, 26.0
 def n_star(p, n_max=45):
     if p <= 0: return n_max
@@ -167,14 +196,14 @@ for line in open(path):
     p_meas = (ev + 1) / fr if fr else 1.0
     p_w = decode(int(f(pub, 'hybrid_peer_loss_p') or '0', 16))
     mode = 'IP-RUN' if ru > mu else 'MTU'
-    latched = mode == 'IP-RUN' and ((p_w < THRESH) != (p_meas < THRESH))
+    latched = (step or mode == 'IP-RUN') and ((p_w < THRESH) != (p_meas < THRESH))
     a['ip' if mode == 'IP-RUN' else 'mtu'] += 1
     a['latched'] += latched
     a['ip_above'] += (mode == 'IP-RUN' and p_meas >= THRESH)
     a['rows'].append('%s %s %-6s n_hist=%s p_reader=%.4f%% n*=%d p_writer=%.4f%% n*=%d%s lat_p99=%s cpu_sub=%s cpu_pub=%s' % (
         label, rep, mode, f(pub, 'hybrid_n_hist'), 100 * p_meas, n_star(p_meas), 100 * p_w, n_star(p_w),
         ' LATCHED' if latched else '', f(sub, 'latency_p99_us'), f(sub, 'cpu_ms_per_mb'), f(pub, 'cpu_ms_per_mb')))
-print('=== reading (loss %g%%) ===' % loss)
+print('=== reading (loss %g%%%s) ===' % (loss, ', step ' + step if step else ''))
 for label, a in arms.items():
     for r in a['rows']: print('  ' + r)
     print('%s: usable %d, IP-RUN %d, MTU %d, LATCHED %d, IP-RUN at n*(p)=1 %d, VOID %s' % (
@@ -182,6 +211,14 @@ for label, a in arms.items():
 if loss == 0:
     for label, a in arms.items():
         print('CONTROL %s: %s' % (label, 'VOID (an MTU rep at 0%% loss)' if a['mtu'] else 'ok (every rep in runs)'))
+elif step and 'P' in arms and 'F' in arms:
+    P, F = arms['P'], arms['F']
+    if F['latched']:
+        print('STEP VERDICT FALSIFIED: %d F rep(s) LATCHED' % F['latched'])
+    elif P['latched'] < 3:
+        print('STEP VERDICT UNDECIDED: P has %d LATCHED reps (< 3)' % P['latched'])
+    else:
+        print('STEP VERDICT SHOWN: P LATCHED %d/%d, F 0/%d' % (P['latched'], P['usable'], F['usable']))
 elif 'P' in arms and 'F' in arms:
     P, F = arms['P'], arms['F']
     if F['ip_above'] or F['latched']:
