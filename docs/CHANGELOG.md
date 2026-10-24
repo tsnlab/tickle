@@ -208,6 +208,18 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   inside 1%'s band: the rig's Array1m 1% cell sent IP-fragment runs of 2 in 41 of 93 reps, on every build, while its
   readers measured 0.94-1.05% (n = 1), at ~17% more sub and ~27% more pub CPU per MB. No wire change. Rig A/B: runs
   of 2 in 5 of 12 reps on main, 0 of 24 with the fix; median p99 +0.22 ms from the estimate's noise near 0.886%.
+- **A RELIABLE stream of fragmented samples to a Subscriber with no reorder buffer is whole again, with and without
+  loss** (2026-10-24). The repair below (`a0d6ea3a`) put such a sample together in the scratch, one sample at a time,
+  unrecorded, and dropped it when disturbed: the new acceptance case `fragstream` (two writers of 60,000-byte Images,
+  one of 30,000-byte PointCloud2s, RELIABLE VOLATILE KEEP_LAST 10, 30 Hz, 600 samples) delivered 444 on a clean link,
+  121 at 1% loss and 36 at 5% on `7694bc87` (CycloneDDS 600, 600, 39-65; `d25c12a2^` 600, 600, 600). The two writers
+  dropped each other's samples, and a lost datagram cost the rest of its writer's stream until KEEP_LAST gave it up
+  (151 datagrams a sample at 1%). The reassembly pool is now such a Subscriber's reorder buffer: datagrams are recorded
+  as they are placed, in any order and from any number of writers, a slot holding a recorded one is never reclaimed,
+  and samples are delivered in order when whole: 600, 600, 600 at 36-38 datagrams a sample. `fragstream` runs in CI
+  (clean and 1%, ~57 s); `tests/test_data_frag.c` adds four cases, three red on `7694bc87`, the fourth red without the
+  pin. Rig core gate v2 A/B (`coreAB_4eecd535_20261025-002604`): PASS, no CPU or latency row worse;
+  1/88 instruction rows worse (c15 best-effort p4 server, +1.3%), listed.
 - **A context restarted under a live id is answered at once** (2026-10-24). Every `ros2` CLI process on a host takes
   the same context id, so `ros2 node info` right after `ros2 node list` arrived while its predecessor was still believed
   alive. Its lists all came as replies to our requests, and a reply from a known id was never answered, so it learned of

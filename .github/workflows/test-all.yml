@@ -375,7 +375,7 @@ jobs:
           path: ~/apt-debs
           key: ${{ steps.apt_collect.outputs.key }}
 
-  # rmw_tickle's acceptance suite (rmw_tickle/scripts/rmw_gap_acceptance.sh, 16 ordinary ROS 2 scenarios across two
+  # rmw_tickle's acceptance suite (rmw_tickle/scripts/rmw_gap_acceptance.sh, 17 ordinary ROS 2 scenarios across two
   # network namespaces, each run on rmw_cyclonedds_cpp as the control and then on rmw_tickle), added 2026-10-24 at the
   # user's decision. CI had never run it, and `durable` - a late TRANSIENT_LOCAL subscriber - delivered 0 of 4 samples
   # from d25c12a2 (2026-10-20) for four days before anyone ran the suite by hand.
@@ -390,7 +390,7 @@ jobs:
   # rmw_tickle defect. jazzy, like Check all: the suite was written against lyrical locally, so ROS_DISTRO_DIR says so.
   rmw-acceptance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50 # setup-ros ~3 min on a good mirror, the two builds ~6 min, the suite 19 min on this PC
+    timeout-minutes: 50 # setup-ros ~3 min on a good mirror, the two builds ~6 min, the suite 20 min on this PC
     outputs:
       acceptance: ${{ steps.acceptance.outcome }}
     env:
@@ -462,12 +462,13 @@ jobs:
           required-ros-distributions: jazzy
 
       # What the suite runs beyond rmw_tickle: the control rmw, rclpy and ros2cli, rosbag2 for bag and bagstall,
-      # sensor_msgs and std_srvs for durable, inprocess and besvc. Most come with setup-ros's desktop install; naming them
-      # makes a missing one an apt error here instead of a VOID case later. iproute2 is ip netns and tc.
+      # sensor_msgs and std_srvs for durable, fragstream, inprocess and besvc. Most come with setup-ros's desktop
+      # install; naming them makes a missing one an apt error here instead of a VOID case later. iproute2 is ip netns
+      # and tc.
       #
-      # sch_netem is besvc's lossy arm. Azure's kernel ships it in linux-modules-extra on some images and not at all on
-      # others; loading it is attempted, and whether it worked is printed, but not enforced here - the suite probes tc
-      # netem itself and reports besvc NOT RUN (exit 4) if it is missing.
+      # sch_netem is the lossy arm of besvc and fragstream. Azure's kernel ships it in linux-modules-extra on some
+      # images and not at all on others; loading it is attempted, and whether it worked is printed, not enforced - the
+      # suite probes tc netem itself and reports besvc and fragstream NOT RUN (exit 4) if it is missing.
       - name: Install the suite's runtime packages and load sch_netem
         run: |
           sudo apt-get install -y iproute2 \

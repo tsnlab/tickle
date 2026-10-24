@@ -22,6 +22,12 @@ A role prints one line "RESULT: key=value ..." when it ends; the script reads on
   itype_match_sub  a std_msgs/String subscription on the same topic, counting receipts and type events
   durable_pub   TRANSIENT_LOCAL KEEP_LAST 4, publishes 6 sensor_msgs/Image samples of 60,000 bytes, then keeps running
   durable_sub   created later with the same QoS: reports how many backlog samples arrived, which, and whether in order
+  fragstream_pub  RELIABLE VOLATILE KEEP_LAST 10 writer(s) of fragmented unbounded types at 30 Hz, from ARG
+                "TAG:START:COUNT" - TAG a: sensor_msgs/Image (60,000 data bytes) AND sensor_msgs/PointCloud2 (30,000);
+                TAG b: a second Image writer on the same topic. Publishing starts at the epoch time START, so two
+                publisher processes send their fragments at the same instants and interleave at the reader.
+  fragstream_sub  the same QoS on both topics: per writer stream, how many arrived, missing, duplicated, out of order
+                or with wrong contents (one STREAM: line each)
   inprocess     a talker node and a listener node in ONE process and executor, then a std_srvs/Trigger call between them
   besvc_server  a BEST_EFFORT std_srvs/Trigger service on /accept_besvc, counting the requests it served
   besvc_client  a BEST_EFFORT client of it: ARG calls one at a time, each lost if unanswered within BESVC_WAIT_S
@@ -439,6 +445,90 @@ def main():
             print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s not_applicable=%s'
                   % (len(infos), len(fails), ','.join(fails) if fails else 'none',
                      ','.join(not_applicable) if not_applicable else 'none'), flush=True)
+    elif role in ('fragstream_pub', 'fragstream_sub'):
+        # A live RELIABLE VOLATILE stream of unbounded mid-size types (2026-10-24): samples longer than one datagram
+        # and shorter than 64 KiB go as DATA_FRAG fragments, and rmw_tickle gives such a type's Subscriber no reorder
+        # buffer (d25c12a2), so it assembles them unrecorded and drops a disturbed sample to be asked for again
+        # (a0d6ea3a). `durable` covers six samples to a late reader; this is the steady stream, with loss, two writers
+        # interleaving on one topic and a second topic in the same reader. Sample n of a stream carries frame_id
+        # "<tag>-<n>" and data of n % 251 in every byte, so contents are checked as well as the count.
+        from rclpy.qos import DurabilityPolicy
+        from rclpy.qos import HistoryPolicy
+        from rclpy.qos import QoSProfile
+        from rclpy.qos import ReliabilityPolicy
+        from sensor_msgs.msg import Image
+        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs.msg import PointField
+        qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.VOLATILE)
+        image_bytes, cloud_bytes, period = 60000, 30000, 1.0 / 30
+        node = Node('accept_' + role + ('_' + arg.split(':')[0] if role == 'fragstream_pub' else ''))
+        if role == 'fragstream_pub':
+            tag, start, count = arg.split(':')
+            start, count = float(start), int(count)
+            pubs = [('image', node.create_publisher(Image, '/accept_fragstream_image', qos))]
+            if tag == 'a':
+                pubs.append(('cloud', node.create_publisher(PointCloud2, '/accept_fragstream_cloud', qos)))
+            fields = [PointField(name=c, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+                      for i, c in enumerate(('x', 'y', 'z', 'intensity'))]
+            # VOLATILE: a sample published before the reader matched is not its to receive, so wait for the match.
+            while time.time() < start and rclpy.ok() and not all(p.get_subscription_count() > 0 for _, p in pubs):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            matched = int(all(p.get_subscription_count() > 0 for _, p in pubs))
+            sent = 0
+            for n in range(1, count + 1 if matched else 1):
+                due = start + (n - 1) * period
+                while time.time() < due:
+                    rclpy.spin_once(node, timeout_sec=max(0.0, min(0.005, due - time.time())))
+                fill = bytes([n % 251])
+                for kind, pub in pubs:
+                    frame = '%s-%d' % (tag, n)
+                    if kind == 'image':
+                        msg = Image(height=1, width=image_bytes, encoding='mono8', step=image_bytes,
+                                    data=fill * image_bytes)
+                    else:
+                        msg = PointCloud2(height=1, width=cloud_bytes // 16, fields=fields, point_step=16,
+                                          row_step=cloud_bytes, is_dense=True, data=fill * cloud_bytes)
+                    msg.header.frame_id = frame
+                    pub.publish(msg)
+                    sent += 1
+            spin_for(node, max(0.0, seconds - (time.time() - start)))  # repairs after the last sample
+            print('RESULT: role=fragstream_pub tag=%s matched=%d sent=%d' % (tag, matched, sent), flush=True)
+        else:
+            streams = {}
+
+            def make_cb(kind, length):
+                def on_msg(msg):
+                    tag, _, num = msg.header.frame_id.partition('-')
+                    s = streams.setdefault((kind, tag), {'seen': set(), 'last': 0, 'dup': 0, 'ooo': 0, 'bad': 0})
+                    n = int(num) if num.isdigit() else -1
+                    data = bytes(msg.data)
+                    if n < 1 or len(data) != length or data != bytes([n % 251]) * length:
+                        s['bad'] += 1
+                        return
+                    if n in s['seen']:
+                        s['dup'] += 1
+                    elif n < s['last']:
+                        s['ooo'] += 1
+                    s['seen'].add(n)
+                    s['last'] = max(s['last'], n)
+                return on_msg
+            node.create_subscription(Image, '/accept_fragstream_image', make_cb('image', image_bytes), qos)
+            node.create_subscription(PointCloud2, '/accept_fragstream_cloud', make_cb('cloud', cloud_bytes), qos)
+            spin_for(node, seconds)
+            total = 0
+            for (kind, tag), s in sorted(streams.items()):
+                total += len(s['seen'])
+                # missing: below the highest received (a gap); the harness compares 'last' with what was published
+                missing = s['last'] - len(s['seen'])
+                print('STREAM: %s_%s received=%d last=%d missing=%d dup=%d ooo=%d bad=%d' % (
+                    kind, tag, len(s['seen']), s['last'], missing, s['dup'], s['ooo'], s['bad']), flush=True)
+            # Which rmw library this process really loaded (a shadowed workspace loads another one silently).
+            with open('/proc/self/maps') as maps:
+                libs = sorted({line.split()[-1] for line in maps
+                               if line.rstrip().endswith(('/librmw_tickle.so', '/librmw_cyclonedds_cpp.so'))})
+            print('MAPS: %s' % (' '.join(libs) or 'none'), flush=True)
+            print('RESULT: role=fragstream_sub streams=%d received=%d' % (len(streams), total), flush=True)
     elif role in ('besvc_server', 'besvc_client'):
         # A BEST_EFFORT service (D6): both ends BEST_EFFORT, as DDS needs to match them. The client makes ARG calls
         # one at a time, giving each BESVC_WAIT_S for its answer and counting it lost otherwise.

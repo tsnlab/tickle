@@ -21,6 +21,8 @@
 #   samehost talker and listener as two processes on ONE host, and `ros2 topic echo` next to a talker (g8)
 #   durable  a late TRANSIENT_LOCAL KEEP_LAST 4 subscriber on the other host gets exactly the last 4 of 6 60,000-byte
 #            samples, in order (g10)
+#   fragstream a live RELIABLE VOLATILE stream of 60,000-byte Images and 30,000-byte PointCloud2s (fragmented,
+#            unbounded types) from two writers, clean and lossy: all delivered, no repair storm (d25c12a2/a0d6ea3a)
 #   inprocess a talker node and a listener node in ONE process, and a service call between them    (g9)
 #   range    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST isolates the two hosts; SUBNET does not        (g6)
 #   peers    LOCALHOST plus ROS_STATIC_PEERS naming the other host connects them again            (g6)
@@ -80,7 +82,7 @@ shift $((OPTIND - 1))
 WS=$(cd "$WS" && pwd -P)
 # run_in drops back to this user inside each namespace; a container or a bare `env -i` may not set USER.
 USER=${USER:-$(id -un)}
-TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names besvc}
+TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable fragstream range peers introspect names besvc}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -615,6 +617,156 @@ t_besvc() {
     margin=$(awk -v n="$BESVC_LOSSY" -v a="$ctl" 'BEGIN { p = 1 - a / n; m = 2.5 * sqrt(2 * n * p * (1 - p)); print int(m) + (m > int(m)) }')
     if [ "$clean" = "$BESVC_CLEAN" ] && [ "$lossy" -ge $((ctl - margin)) ]; then echo "PASS($detail control_lossy=$ctl margin=$margin)"
     else echo "FAIL($detail control_lossy=$ctl margin=$margin)"; fi
+}
+# fragstream: a live RELIABLE VOLATILE KEEP_LAST 10 stream of fragmented unbounded types (2026-10-24). rmw_tickle gives
+# an unbounded or large type's Subscriber no reorder buffer (d25c12a2), so its fragmented samples (more than a datagram,
+# under 64 KiB: DATA_FRAG) take another path, and `durable` - six samples to a late reader - is all that covered it.
+# This is the steady stream: two publisher processes in NS1 - writer a with sensor_msgs/Image (60,000 data bytes) and
+# sensor_msgs/PointCloud2 (30,000), writer b with a second Image writer on the same topic, both sending at the same
+# 30 Hz instants so their fragments interleave - and one reader process in NS2 subscribed to both topics. Arms: a clean
+# link, then each loss in FRAGSTREAM_LOSSES as netem loss on both veth ends (DATA and ACKNACK both lost).
+#
+# Measured when it was added (FRAGSTREAM_COUNT=200, delivered of 600 at 0/1/5% loss; CycloneDDS 600/600/39-65):
+#   d25c12a2^ 600/600/600            d25c12a2 and a0d6ea3a^ 0/0/0 (1.7 M datagrams an arm)
+#   7694bc87 (a0d6ea3a's scratch path) 444/121/36, 151 datagrams a sample at 1%; the pool path after it 600/600/600, 36
+#
+# Pre-registered reading, enforced below (fragstream_judge, t_fragstream):
+#   every arm, both rmws  each of the three streams must arrive without a duplicate, an out-of-order sample or a
+#                         wrong byte (bad), and its last sample must arrive: a RELIABLE stream that stops short is
+#                         one that stalled. Treatment checks first: the reader must have mapped WS's librmw_tickle.so,
+#                         a lossy arm whose netem dropped nothing tested nothing, and on rmw_tickle the clean arm must
+#                         have sent at least 2 datagrams a sample, or the samples were not fragmented (all ERROR).
+#   clean arm             every published sample delivered (received = published), both rmws.
+#   lossy arm, control    PASS on the every-arm rules; samples it misses (KEEP_LAST 10 gives up) are its baseline.
+#   lossy arm, rmw_tickle delivered >= the control's delivered at that loss less a margin (2.5 sd of the difference
+#                         of two binomial counts at the control's miss rate, at least 1/n, rounded up, plus 1), and
+#                         its publishers sent at most FRAGSTREAM_STORM datagrams a sample: cut at the MTU these
+#                         samples are 36 datagrams a sample on average (43 + 22 + 43 for one of each), which a repair
+#                         that resends only what was lost adds a few percent to, and a lossy link makes the hybrid path
+#                         cut at the MTU. Twice that is a repair resending whole samples or the stream (151 on
+#                         7694bc87 at 1%), not loss being repaired.
+FRAGSTREAM_COUNT=${FRAGSTREAM_COUNT:-100}
+FRAGSTREAM_LOSSES=${FRAGSTREAM_LOSSES:-1}
+FRAGSTREAM_STORM=${FRAGSTREAM_STORM:-72}
+FRAGSTREAM_LEAD=4 # seconds from launch to the first publish: processes start and match
+FRAGSTREAM_TAIL=2 # seconds the publishers keep running after the last publish, for repairs
+# fragstream_arm RMW LOSS DIR: runs one arm; prints "key=value ..." (published, per stream, netem drops, datagrams)
+fragstream_arm() {
+    local rmw=$1 loss=$2 d=$3 ns dev
+    if [ "$loss" != 0 ]; then
+        sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root netem loss "$loss%" || { echo "error=netem"; return; }
+        sudo -n ip netns exec "$NS2" tc qdisc add dev accv2 root netem loss "$loss%" || { echo "error=netem"; return; }
+    fi
+    local pub_secs start
+    pub_secs=$((FRAGSTREAM_LEAD + FRAGSTREAM_COUNT / 30 + 1 + FRAGSTREAM_TAIL))
+    start=$(($(date +%s) + FRAGSTREAM_LEAD))
+    run_in "$NS2" "$rmw" 2 $((pub_secs + 1)) "" python3 "$NODE" fragstream_sub $((pub_secs + 1)) > "$d/sub_$loss.log" 2>&1 &
+    local sp=$!
+    run_in "$NS1" "$rmw" 1 "$pub_secs" "" python3 "$NODE" fragstream_pub "$pub_secs" "a:$start:$FRAGSTREAM_COUNT" > "$d/pub_a_$loss.log" 2>&1 &
+    local pa=$!
+    run_in "$NS1" "$rmw" 1 "$pub_secs" "" python3 "$NODE" fragstream_pub "$pub_secs" "b:$start:$FRAGSTREAM_COUNT" > "$d/pub_b_$loss.log" 2>&1
+    wait "$pa"; wait "$sp"
+    local dropped=0 n out=""
+    # The library the reader really mapped: rmw_tickle's must be WS's (the prefix check resolves it; this sees it).
+    local maps
+    maps=$(grep -h '^MAPS: ' "$d/sub_$loss.log" | tail -1)
+    if [ "$rmw" = rmw_tickle ] && [[ "$maps" != "MAPS: $WS/rmw/install/rmw_tickle/lib/librmw_tickle.so" ]]; then
+        out="error=maps "
+    fi
+    if [ "$loss" != 0 ]; then
+        for ns in "$NS1:accv1" "$NS2:accv2"; do
+            dev=${ns#*:}
+            n=$(sudo -n ip netns exec "${ns%%:*}" tc -s qdisc show dev "$dev" | grep -oE 'dropped [0-9]+' | head -1 | grep -oE '[0-9]+')
+            dropped=$((dropped + ${n:-0}))
+        done
+        sudo -n ip netns exec "$NS1" tc qdisc del dev accv1 root
+        sudo -n ip netns exec "$NS2" tc qdisc del dev accv2 root
+    fi
+    out="${out}sent_a=$(field "$d/pub_a_$loss.log" sent) sent_b=$(field "$d/pub_b_$loss.log" sent) dropped=$dropped"
+    # rmw_tickle's own traffic line, from each publisher process (CycloneDDS prints none): datagrams sent
+    local tx=0 t
+    for t in a b; do
+        n=$(grep -oE 'tx_datagrams=[0-9]+' "$d/pub_${t}_$loss.log" | tail -1 | cut -d= -f2)
+        tx=$((tx + ${n:-0}))
+    done
+    out="$out tx=$tx"
+    local s
+    for s in image_a cloud_a image_b; do
+        n=$(grep -h "^STREAM: $s " "$d/sub_$loss.log" | tail -1)
+        out="$out ${s}_received=$(echo "$n" | grep -oE 'received=[0-9]+' | cut -d= -f2) ${s}_last=$(echo "$n" | grep -oE 'last=[0-9]+' | cut -d= -f2)"
+        out="$out ${s}_faults=$(echo "$n" | grep -oE '(dup|ooo|bad)=[0-9]+' | cut -d= -f2 | awk '{ s += $1 } END { print s + 0 }')"
+    done
+    echo "$out" | tee "$d/arm_$loss.txt"
+}
+kv() { echo "$1" | grep -oE "(^| )$2=[0-9]+" | cut -d= -f2; } # kv "a=1 b=2" b -> 2
+# fragstream_judge ARM LOSS: the every-arm rules; prints nothing when they hold, else the reason
+fragstream_judge() {
+    local a=$1 loss=$2 s
+    [[ "$a" != *error=* ]] || { echo "ERROR(loss $loss%: ${a%% *} - not the workspace's librmw_tickle.so, or no netem)"; return; }
+    [ "$(kv "$a" sent_a)" = $((2 * FRAGSTREAM_COUNT)) ] && [ "$(kv "$a" sent_b)" = "$FRAGSTREAM_COUNT" ] ||
+        { echo "ERROR(loss $loss%: a publisher did not publish everything: $a)"; return; }
+    [ "$loss" = 0 ] || [ "$(kv "$a" dropped)" -gt 0 ] || { echo "ERROR(loss $loss%: netem dropped nothing)"; return; }
+    for s in image_a cloud_a image_b; do
+        [ "$(kv "$a" "${s}_faults")" = 0 ] || { echo "FAIL(loss $loss%: $s duplicated, reordered or corrupted: $a)"; return; }
+        [ "$(kv "$a" "${s}_last")" = "$FRAGSTREAM_COUNT" ] || { echo "FAIL(loss $loss%: $s stopped short: $a)"; return; }
+        [ "$loss" != 0 ] || [ "$(kv "$a" "${s}_received")" = "$FRAGSTREAM_COUNT" ] ||
+            { echo "FAIL(loss 0%: $s lost samples on a clean link: $a)"; return; }
+    done
+}
+fragstream_delivered() {
+    local s n total=0
+    for s in image_a cloud_a image_b; do n=$(kv "$1" "${s}_received"); total=$((total + ${n:-0})); done
+    echo "$total"
+}
+t_fragstream() {
+    local rmw=$1 d=$OUTDIR/fragstream_$1
+    mkdir -p "$d"
+    local why
+    if ! why=$(sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root netem loss 0% 2>&1); then
+        echo "NOT RUN(tc netem unavailable: $(echo "$why" | head -1))"
+        return
+    fi
+    sudo -n ip netns exec "$NS1" tc qdisc del dev accv1 root
+    # Every arm runs even after one fails, so a failing build still reports each arm's counts; the verdict is the
+    # first failure.
+    local clean bad loss arm detail first="" total=$((3 * FRAGSTREAM_COUNT)) got ctl margin clean_tx tx
+    clean=$(fragstream_arm "$rmw" 0 "$d")
+    first=$(fragstream_judge "$clean" 0)
+    clean_tx=$(kv "$clean" tx)
+    if [ -z "$first" ] && [ "$rmw" = rmw_tickle ] && [ "${clean_tx:-0}" -lt $((2 * total)) ]; then
+        first="ERROR(clean arm sent ${clean_tx:-0} datagrams for $total samples: not fragmented)"
+    fi
+    detail="clean=$(fragstream_delivered "$clean")/$total"
+    [ "$rmw" != rmw_tickle ] || detail="$detail tx=${clean_tx:-0}"
+    for loss in $FRAGSTREAM_LOSSES; do
+        arm=$(fragstream_arm "$rmw" "$loss" "$d")
+        bad=$(fragstream_judge "$arm" "$loss")
+        got=$(fragstream_delivered "$arm")
+        if [ "$rmw" != rmw_tickle ]; then
+            # A control count only from an arm that passed the every-arm rules; otherwise the rmw_tickle arm has none.
+            [ -n "$bad" ] || echo "$got" > "$OUTDIR/fragstream_control_$loss"
+            detail="$detail loss$loss=$got/$total"
+            first=${first:-$bad}
+            continue
+        fi
+        tx=$(kv "$arm" tx)
+        ctl=$(cat "$OUTDIR/fragstream_control_$loss" 2>/dev/null)
+        if [ -z "$ctl" ]; then
+            detail="$detail loss$loss=$got/$total tx=$tx"
+            first=${first:-${bad:-"ERROR(no control count at $loss%)"}}
+            continue
+        fi
+        margin=$(awk -v n="$total" -v a="$ctl" 'BEGIN { p = 1 - a / n; if (p < 1 / n) p = 1 / n;
+            m = 2.5 * sqrt(2 * n * p * (1 - p)); print int(m) + (m > int(m)) + 1 }')
+        detail="$detail loss$loss=$got/$total control=$ctl margin=$margin tx=$tx"
+        if [ -z "$bad" ] && [ "$got" -lt $((ctl - margin)) ]; then
+            bad="FAIL(loss $loss%: delivered fewer than the control)"
+        elif [ -z "$bad" ] && [ "$tx" -gt $((FRAGSTREAM_STORM * total)) ]; then
+            bad="FAIL(loss $loss%: repair storm, more than $FRAGSTREAM_STORM datagrams a sample)"
+        fi
+        first=${first:-$bad}
+    done
+    if [ -n "$first" ]; then echo "${first%)}; $detail)"; else echo "PASS($detail)"; fi
 }
 # The control per test: CycloneDDS, except where it does not produce the behaviour at all (set after checking it).
 declare -A CONTROL=([itype]=${CONTROL_ITYPE:-rmw_cyclonedds_cpp})

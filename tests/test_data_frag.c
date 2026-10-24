@@ -1173,7 +1173,8 @@ static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
 // than the slots its budget pays for, and core refuses a buffer narrower than the window). Such a Subscriber took no
 // fragment at all - the in-order fast path needed a slot for each, the buffer had none - so every fragmented sample was
 // re-requested forever and none was delivered: the rmw acceptance case `durable` (TRANSIENT_LOCAL, 60,000-byte
-// sensor_msgs/Image) received 0 of 4. These pin the repair: put together in order, unrecorded until whole.
+// sensor_msgs/Image) received 0 of 4. These pin the repair: put together unrecorded until whole - in frag_scratch at
+// first (a0d6ea3a), in the reassembly pool since (frag_pool_offer_unbuffered(), and the tests after the fast path's).
 
 // A DATA first, which the Subscriber records and delivers, and which makes it track the writer (seq_no 1); then the
 // fragmented sample under test, seq_no 2 on, captured and not yet delivered.
@@ -1198,22 +1199,22 @@ static void test_reliable_none_fragments_in_order_are_delivered(void) {
     deliver(0);
     deliver(1);
     EXPECT_EQ_INT(0, delivered_count);
-    EXPECT_EQ_U32(2, sender_proxy()->ack_seq_no); // part of a sample: nothing recorded, so nothing acknowledged
+    EXPECT_EQ_U32(4, sender_proxy()->ack_seq_no); // each datagram recorded as it lands; the sample is not whole yet
     deliver(2);
     expect_delivered_once(4000);
-    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no); // whole: all three recorded at once
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
     EXPECT_EQ_U32(0, sub.reorder_overflow);
 }
 
 static void test_reliable_none_lost_fragment_is_asked_for_and_completes(void) {
     tracked_none_pair(4000);
     deliver(0);
-    deliver(2); // seq_no 3 lost: 4 cannot be taken, and stays unrecorded
+    deliver(2); // seq_no 3 lost: 4 waits in the pool, recorded
     EXPECT_EQ_INT(0, delivered_count);
     struct tt_WriterProxy* proxy = sender_proxy();
-    EXPECT_EQ_U32(2, proxy->ack_seq_no);
-    EXPECT_TRUE(!bitmap_test_bit(proxy->received_bitmap, 2)); // seq_no 4 is not received: it will be asked for
-    // The writer resends what the ACKNACK names, from the watermark: all three. The first, already in the scratch, is
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);                     // the gap is seq_no 3 alone: what an ACKNACK names
+    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, 1)); // seq_no 4 is received
+    // The writer resends what the ACKNACK names, from the watermark: all three. The first, already in the pool, is
     // a duplicate that must not disturb the sample; the other two complete it.
     deliver(0);
     deliver(1);
@@ -1223,7 +1224,7 @@ static void test_reliable_none_lost_fragment_is_asked_for_and_completes(void) {
 }
 
 static void test_reliable_none_duplicate_does_not_disturb_the_sample(void) {
-    // A resend of a fragment already in the scratch (the writer answering an ACKNACK sent while the sample was being
+    // A resend of a fragment already in the pool (the writer answering an ACKNACK sent while the sample was being
     // put together) arrives mid-sample: it is not taken, and the part-built sample must survive it.
     tracked_none_pair(4000);
     deliver(0);
@@ -1236,9 +1237,9 @@ static void test_reliable_none_duplicate_does_not_disturb_the_sample(void) {
     EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
 }
 
-static void test_reliable_none_sample_given_up_on_frees_the_scratch(void) {
+static void test_reliable_none_sample_given_up_on_frees_the_pool(void) {
     // Its first fragment arrives, the writer then declares the sample gone (an eviction Heartbeat). The part-built
-    // sample is never delivered, and the next one - which needs the same scratch - still arrives intact.
+    // sample is never delivered, and the next one - which needs a pool slot - still arrives intact.
     tracked_none_pair(4000);
     deliver(0);
     advance_past_unavailable(sender_proxy(), 5);
@@ -1492,6 +1493,129 @@ static void test_reliable_two_writers_interleaved_after_first_contact(void) {
     EXPECT_TRUE(reorder_untouched());
 }
 
+// --- RELIABLE receiver with no reorder buffer: the reassembly pool holds what order cannot (2026-10-24) ------------
+//
+// The first repair (a0d6ea3a) put a no-buffer Subscriber's sample together in frag_scratch, one sample at a time and
+// only in order, and dropped it when anything disturbed it. The rmw acceptance case `fragstream` (two writers of
+// 60,000-byte Images and one of 30,000-byte PointCloud2s, RELIABLE VOLATILE KEEP_LAST 10, 30 Hz) then lost 11 of 30
+// Images of one writer on a clean link and 42 of 90 samples at 1% loss. Each of these was red on that version.
+
+// A fragment lost: only it is resent, and the sample completes - the fragments after it were kept.
+static void test_reliable_none_lost_fragment_alone_completes(void) {
+    tracked_none_pair(4000); // seq_no 2..4
+    deliver(0);
+    deliver(2); // seq_no 3 lost
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_EQ_U32(3, sender_proxy()->ack_seq_no); // the gap is seq_no 3 alone
+    deliver(1);
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
+}
+
+// A whole sample ahead of an incomplete one waits for it, and follows it in order.
+static void test_reliable_none_sample_ahead_follows_in_order(void) {
+    tracked_none_pair(4000);
+    static struct captured_sample first;
+    static struct captured_sample second;
+    first.count = datagram_count; // tracked_none_pair()'s sample, seq_no 2..4
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(first.bytes[d], datagrams[d], datagram_len[d]);
+        first.len[d] = datagram_len[d];
+    }
+    capture_sample(&pub, &second); // seq_no 5..7
+    EXPECT_EQ_INT(3, first.count);
+    EXPECT_EQ_INT(3, second.count);
+    EXPECT_TRUE(process_packet(&receiver, first.bytes[0], 0, first.len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, second.bytes[d], 0, second.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(0, delivered_count);            // whole, but not next
+    EXPECT_EQ_U32(3, sender_proxy()->ack_seq_no); // the gap is the first sample's seq_no 3 and 4
+    for (uint32_t offset = 2; offset <= 4; offset++) {
+        EXPECT_TRUE(bitmap_test_bit(sender_proxy()->received_bitmap, offset)); // the second one recorded: 5..7
+    }
+    for (int d = 1; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, first.bytes[d], 0, first.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, delivered_count); // both, so in order: a later one first would have discarded the earlier
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(0, sub.out_of_order_discarded);
+    EXPECT_EQ_U32(8, sender_proxy()->ack_seq_no);
+}
+
+// Two tracked writers whose fragments interleave datagram by datagram: every sample of both arrives once.
+static void test_reliable_none_two_writers_interleaved(void) {
+    tracked_none_pair(4000);
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(4000);
+    delivered_count = 0;
+    static struct tt_Context second;
+    static struct tt_Publisher second_pub;
+    init_bare_node(&second, 3);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&second), &second_pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    match_by_broadcast(&second_pub);
+    static struct captured_sample one;
+    static struct captured_sample two;
+    sample_len = 100; // a DATA from the second writer first, so the Subscriber tracks it
+    capture_sample(&second_pub, &two);
+    EXPECT_TRUE(process_packet(&receiver, two.bytes[0], 0, two.len[0], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+    EXPECT_EQ_INT(1, delivered_count);
+    delivered_count = 0;
+    sample_len = 4000;
+    for (int round = 0; round < 3; round++) {
+        capture_sample(&pub, &one);
+        capture_sample(&second_pub, &two);
+        for (int d = 0; d < 3; d++) {
+            EXPECT_TRUE(process_packet(&receiver, one.bytes[d], 0, one.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+            EXPECT_TRUE(process_packet(&receiver, two.bytes[d], 0, two.len[d], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+        }
+    }
+    EXPECT_EQ_INT(6, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(4000, delivered_len);
+    EXPECT_EQ_U32(0, sub.reorder_overflow);
+}
+
+// A sample part-recorded in the pool is not reclaimed for a newer one when the pool is full: its recorded datagrams
+// would be lost for good. Here a second writer's partial samples fill the pool while the first writer's sample, its
+// first datagram recorded, waits on the other two.
+static void test_reliable_none_recorded_sample_survives_a_full_pool(void) {
+    tracked_none_pair(4000); // the first writer's sample, seq_no 2..4
+    static struct captured_sample waited;
+    waited.count = datagram_count;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(waited.bytes[d], datagrams[d], datagram_len[d]);
+        waited.len[d] = datagram_len[d];
+    }
+    EXPECT_TRUE(process_packet(&receiver, waited.bytes[0], 0, waited.len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    EXPECT_EQ_U32(3, sender_proxy()->ack_seq_no); // seq_no 2 recorded
+    static struct tt_Context second;
+    static struct tt_Publisher second_pub;
+    init_bare_node(&second, 3);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&second), &second_pub, &sender_topic,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    match_by_broadcast(&second_pub);
+    static struct captured_sample other;
+    sample_len = 100; // tracked first
+    capture_sample(&second_pub, &other);
+    EXPECT_TRUE(process_packet(&receiver, other.bytes[0], 0, other.len[0], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+    delivered_count = 0;
+    sample_len = 4000;
+    for (int k = 0; k < 2 * tt_FRAG_REASSEMBLY_SLOTS; k++) {
+        capture_sample(&second_pub, &other); // only its last datagram arrives: never whole
+        EXPECT_TRUE(process_packet(&receiver, other.bytes[2], 0, other.len[2], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_TRUE(receiver.frag_abandoned > 0); // control: the pool really was full, and reclaimed
+    for (int d = 1; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, waited.bytes[d], 0, waited.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    expect_delivered_once(4000);
+    EXPECT_EQ_U32(5, sender_proxy()->ack_seq_no);
+}
+
 // A second Subscriber of the same endpoint, on a topic of its own so that what it decodes is checked apart
 // from what the first one does: the two share frag_scratch, and one corrupting the other's sample would
 // otherwise be hidden by whichever decoded last.
@@ -1588,14 +1712,25 @@ static void test_reliable_buffer_delivery_does_not_overwrite_the_fast_path(void)
     sample_seed = expected_seed = 50;
     static struct captured_sample x;
     capture_sample(&pub, &x); // seq_no 4..6
-    sub2.reorder_storage = NULL;
+    // No room for X in the second one's buffer: its slots taken by another writer's datagrams. (Not by taking the
+    // buffer away, as this test first did: a Subscriber with no buffer now puts X together in the reassembly pool.)
+    struct tt_WriterProxy* proxy2 = find_writer_proxy(&sub2, SENDER_ID, pub.endpoint.entity_id);
+    struct tt_ReorderSlot* taken[3];
+    for (uint32_t i = 0; i < 3; i++) {
+        taken[i] = reorder_writer_slot(&sub2, proxy2, SENDER_ID, pub.endpoint.entity_id, 4 + i);
+        EXPECT_TRUE(!taken[i]->occupied);
+        taken[i]->occupied = true;
+        taken[i]->context_id = 99;
+    }
     for (int d = 0; d < 3; d++) {
         EXPECT_TRUE(process_packet(&receiver, x.bytes[d], 0, x.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     }
     EXPECT_EQ_INT(2, first_delivered);
     EXPECT_EQ_INT(1, second_delivered);
     EXPECT_EQ_U32(4, find_writer_proxy(&sub2, SENDER_ID, pub.endpoint.entity_id)->ack_seq_no); // X unrecorded
-    sub2.reorder_storage = reorder2;
+    for (uint32_t i = 0; i < 3; i++) {
+        taken[i]->occupied = false;
+    }
 
     sample_seed = 60;
     static struct captured_sample y;
@@ -2282,13 +2417,17 @@ int main(void) {
     test_reliable_none_fragments_in_order_are_delivered();
     test_reliable_none_lost_fragment_is_asked_for_and_completes();
     test_reliable_none_duplicate_does_not_disturb_the_sample();
-    test_reliable_none_sample_given_up_on_frees_the_scratch();
+    test_reliable_none_sample_given_up_on_frees_the_pool();
     test_reliable_two_writers_interleaved();
     test_reliable_in_order_sample_never_touches_the_reorder_buffer();
     test_reliable_out_of_order_fragments_still_deliver_through_the_buffer();
     test_reliable_fast_path_interrupted_by_a_lost_fragment();
     test_reliable_fast_path_sample_given_up_on_is_never_delivered_torn();
     test_reliable_two_writers_interleaved_after_first_contact();
+    test_reliable_none_lost_fragment_alone_completes();
+    test_reliable_none_sample_ahead_follows_in_order();
+    test_reliable_none_two_writers_interleaved();
+    test_reliable_none_recorded_sample_survives_a_full_pool();
     test_reliable_two_subscribers_share_the_scratch();
     test_reliable_buffer_delivery_does_not_overwrite_the_fast_path();
     test_reliable_fast_path_does_not_overtake_a_lost_sample();
