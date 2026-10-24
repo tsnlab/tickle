@@ -686,18 +686,25 @@ Verdicts as registered (N = 0.18 ms): ge1b1 SHOWN, 19.6 -> 14.1 ms, 0.66 of P's 
 equal to P's (ge0.1b1 354 / 347). What is left at ge1b1: the RACK releases still wait 1-4 ms past the reader's request
 (10-19 a rep) - RACK.rtt is a drain-length round trip too; timeout releases fell from 12-14 a rep to 0-2.
 
-WIFI (`wifi_repair_ab.sh` TAG=lrt_1157, PROFILE=wifi, F = `1157d024` against P, 9 arms, 3 reps, the two trees at
+WIFI (`wifi_repair_ab.sh` TAG=lrt_1157, PROFILE=wifi, F = `9f6f5375` (1157d024 before its rebase) against P, 9 arms, 3 reps, the two trees at
 once, no rep loaded): rel_large NOT WORSE in all 9 cells, no STORM rep, delivery 100%, writer resends within P's rep
 range or below (ge5b2 5,644-6,008 against 6,099-6,128). rel_small - built without large samples, so the change is not
 in its binary - read WORSE on delivery at ge1b8 (99.52 / 99.93%) and ge5b8 (98.24 / 98.82%): the control's own
 spread at 3 reps, the bar the large cells are read against.
 
-Rig, the base (d1c900fe) against e9efea98 and the `aa` arm (8d1c3712, an older pinned build, not A again;
-`lro_1m_20261024-043242`): Array1m 1%'s p99 and CPU split by rep on the hybrid transport's mode, not on the tree. Reps
-whose writer stayed on IP-fragment runs of 2 (hybrid runs ~640,000, GSO sends 0-660) read p99 13.7-14.0 ms and sub/pub
-CPU ~5.5 / 4.6 ms/MB on both aa (2 of 5) and head (3 of 5); MTU-mode reps (GSO sends ~39,580) 9.8-10.7 ms and
-~4.6 / 3.5 on all three arms; pre stayed MTU in 5 of 5. Whether the resend order makes the IP-run mode likelier
-(3/5 against aa's 2/5 and pre's 0/5) is not decided by 5 reps.
+Rig, the base (d1c900fe) against e9efea98 (`lro_1m_20261024-043242`; `aa` is head's own library again, an A/A of
+B - an earlier version of this paragraph called it the older build 8d1c3712, read from the `libs: requested` line):
+Array1m 1%'s p99 and CPU split by rep on the hybrid transport's mode, not on the tree. Reps whose writer stayed on
+IP-fragment runs of 2 (GSO sends 0-660) read p99 13.7-14.0 ms and sub/pub CPU ~5.5 / 4.6 ms/MB; MTU-mode reps (GSO
+sends ~39,580) 9.8-10.7 ms and ~4.6 / 3.5 on all three arms. The tail, core gate v2 `coreAB_f002166c_20261024-094912`
+PASS 0/88; `lrt_4m_20261024-111914` (Array4m 0%) equal on all arms, lost 0.
+
+Rig, 12 reps an arm (`LRTR`, `hmr_1m_20261024-192010`, Array1m 30 Hz reliable KEEP_LAST 10, 1%; main 36700555, base d1c900fe,
+tail f002166c, aa = the tail again; every rep delivered 100%). The IP-run mode (publisher GSO sends < 10,000) is not the
+tree's: main 9/12, base 5/12, tail 5/12, aa 4/12 (Fisher, main against each, p 0.10-0.21; tail against aa p 1). Within
+a mode CPU is equal on all four (IP ~5.4 / 4.4 ms/MB, MTU ~4.6 / 3.45). Median p99, IP / MTU mode: main 10.01 / 9.64
+ms, base 13.87 / 10.29, tail 10.75 / 10.09, aa 10.85 / 10.00 - the tail's cost against main is 0.4-0.8 ms (5-8%) at
+1%, its gain the 0.1% storm the PC shows and the rig does not. Landed on the user's call.
 
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
@@ -741,7 +748,8 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | WR | `wifi_repair_pair.sh` (the WB harness, R2 amended), `wifi_repair_ab.sh` (`CLOCK_PPS`), `initoptions_insn_pc.sh` | ab/wifi-repair (WIFI repair timing) | 2026-10-23 | `wifi_repair/final2_04be_{ethernet,wifi}/`, `final2_04be_clock_*`, `ab_clock{,2,3}.ab.txt`, `ab_seed.ab.txt`, `insn_pc_04be.txt` |
 | LRF | `large_repair_followups_netns.sh` (the WB harness; routes, amp, slow; RSTATS route counters), `test_large_sample` sim cases | ab/large-repair-followups (parent: its RSTATS commit), ab/large-repair-followups-c (the (c) fix) | 2026-10-23 | `large_repair/parent_947e/`, `parent2_947e/` (load-voided), `parent3_947e/`, `ab_c_routes/` (`summary.txt`) |
 | LRO | `test_large_sample` (sim, parent's tickle.c against the same test), `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=order, `wifi_repair_ab.sh` | ab/large-resend-order (its two core commits: run 1 the first, run 2 both; P `896d4a29`) | 2026-10-24 | `large_repair/ab_order_c7e9/`, `ab_order_685a/`, `ab_order_v7/` (not landed), `wifi_repair/lro_685a.ab.txt`, `lro_685a_{P,F}/` |
-| LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `ed46fcc6`, WIFI `1157d024`; P `d1c900fe`, O `896d4a29`) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
+| LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `7c8389fd`, WIFI `9f6f5375`; P `53ed4e1f`, O `896d4a29`; ed46fcc6, 1157d024, d1c900fe before their rebase) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
+| LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |

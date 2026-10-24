@@ -253,13 +253,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   reader 564,402 -> 36,999. Netns (PROFILE=ethernet, 1 Gbit/s queue): the parent stormed in 3 of 11 reps at 0.1% loss
   and lost 1,262 samples, the rule in 0 of 12 and lost none; the cost is 1% loss's median rep p99, 11.0 -> 17.2 ms (a
   lost repair the last of its burst waits the timeout). WIFI: NOT WORSE in all 18 cells, copies after delivery down
-  up to 26 times. Rig cells prepared, not run.
-- **The resend order's tail** (RESULTS `LRT`; branch ab/large-resend-order-tail): a held unit resent once, still named
+  up to 26 times. Rig: core gate v2 PASS 0/88; on Array1m 1% the cost follows the hybrid transport's mode, not the
+  tree (RESULTS `LRT`).
+- **The resend order's tail** (RESULTS `LRT`): a held unit resent once, still named
   later than RACK.rtt + reo_wnd after its resend (RFC 8985 6.2: the round trip of the most recently resent repair
   shown arrived, plus a quarter of the least), goes again without waiting for the 2 x srtt timeout. Instrumented first
   (RSTATS `lro`): at 1% loss 12-14 units a rep waited the timeout, 4-16 ms past the reader's request, most with nothing
   sent after them. Netns ETHERNET 1%: median rep p99 19.6 -> 14.1 ms (the order's parent 11.3), no storm; 0.1%
-  10.6 -> 11.0 ms. No wire change; 12 B more per ack entry in large-sample builds.
+  10.6 -> 11.0 ms. No wire change; 12 B more per ack entry in large-sample builds. Rig: core gate v2 PASS 0/88;
+  Array1m 1%, 12 reps an arm, CPU equal to main within each hybrid mode, p99 +0.4-0.8 ms (5-8%); landed on the user's
+  call.
 
 - A client killed and started again under the same context id, before the server heard of the new launch (no farewell,
   discovery not yet updated or not attached), got its predecessor's kept answer to its first call and its callback never

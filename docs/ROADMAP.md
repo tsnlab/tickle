@@ -64,13 +64,11 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   received something sent after its last resend - per-unit send order kept by the writer, or request order by the
   reader. The same bursts overflow a slow reader's socket (564,402 resent for 10 samples in the sim). Needs its own
   design, A/B and rig cells (Array1m 0.1/1%, whose 0.1% head arm lost samples in 2 of 10 reps on 2026-10-23).
-  **Designed and A/B'd on the PC 2026-10-24** (DESIGN.md section 4, "Large-sample resend order"; RESULTS `LRO`;
-  ab/large-resend-order): storms stopped in the sim and netns, WIFI NOT WORSE; its cost, 1% loss p99 +6 ms on
-  ETHERNET, is the lead's to weigh. Rig: `~/rig_jobs/large_resend_order_queue.sh` (core gate v2, Array1m 0/0.1/1%,
-  Array4m), prepared, not run. Left: the slow reader's repair bursts (36,999 resent for 10 samples) - flow control.
-  The tail cost, two thirds back with RACK's time rule (RESULTS `LRT`, ab/large-resend-order-tail; rig:
-  `~/rig_jobs/large_resend_order_tail_queue.sh`, prepared, not run); the rest is RACK.rtt's drain. Also open: on the
-  rig, Array1m 1% reps that stay on IP-fragment runs carry the p99/CPU cost on any build (RESULTS `LRT`).
+  **Landed 2026-10-24** (DESIGN.md section 4, "Large-sample resend order"; RESULTS `LRO`, `LRT`): storms stopped in the
+  sim and netns, WIFI NOT WORSE; RACK's time rule took back two thirds of the netns 1% p99 cost; rig core gate v2 PASS
+  0/88, Array1m 1% p99 +0.4-0.8 ms against main within each hybrid mode, CPU equal. Left: the slow reader's repair
+  bursts (36,999 resent for 10 samples) - flow control; and the hybrid transport's mode at 1% loss (IP-fragment runs in
+  4-9 of 12 reps on every build, carrying the CPU), not yet explained.
 
 ### Other open items
 
