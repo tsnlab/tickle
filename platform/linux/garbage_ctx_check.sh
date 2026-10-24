@@ -12,7 +12,8 @@
 #
 # Usage: garbage_ctx_check.sh <ns_a> <ns_b> <broadcast> <binary> <fill> [log prefix]   (a binary named without a
 # directory is this one's)
-#   GC_ROUND_S (environment) is passed through: the seconds a round lasts; MSAN_OPTIONS too.
+#   GC_ROUND_S (environment) is passed through: the seconds a round lasts; MSAN_OPTIONS too, and GC_WINDOW_WORDS
+#   (garbage_ctx_check.c's header: for checking the check, never set by test.sh).
 set -u
 cd "$(dirname "$0")" || exit 1
 NS_A=$1
@@ -28,11 +29,13 @@ esac
 
 rm -f "$LOG-a.log" "$LOG-b.log"
 # shellcheck disable=SC2024 # the redirect is this shell's, on purpose: the logs are this user's
-sudo ip netns exec "$NS_B" env GC_ROUND_S="${GC_ROUND_S:-14}" MSAN_OPTIONS="${MSAN_OPTIONS:-}" "$RUN" b "$FILL" "$BCAST" </dev/null >"$LOG-b.log" 2>&1 &
+sudo ip netns exec "$NS_B" env GC_ROUND_S="${GC_ROUND_S:-14}" MSAN_OPTIONS="${MSAN_OPTIONS:-}" \
+    GC_WINDOW_WORDS="${GC_WINDOW_WORDS:-0}" "$RUN" b "$FILL" "$BCAST" </dev/null >"$LOG-b.log" 2>&1 &
 b_pid=$!
 sleep 1
 # shellcheck disable=SC2024
-sudo ip netns exec "$NS_A" env GC_ROUND_S="${GC_ROUND_S:-14}" MSAN_OPTIONS="${MSAN_OPTIONS:-}" "$RUN" a "$FILL" "$BCAST" </dev/null >"$LOG-a.log" 2>&1
+sudo ip netns exec "$NS_A" env GC_ROUND_S="${GC_ROUND_S:-14}" MSAN_OPTIONS="${MSAN_OPTIONS:-}" \
+    GC_WINDOW_WORDS="${GC_WINDOW_WORDS:-0}" "$RUN" a "$FILL" "$BCAST" </dev/null >"$LOG-a.log" 2>&1
 a_rc=$?
 wait "$b_pid"
 b_rc=$?

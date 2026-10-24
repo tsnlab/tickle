@@ -40,7 +40,22 @@
 //             a round in which nothing was resent did not test repair, and FAILS rather than passes).
 //   The process exits 0 only when every round of every context passed, printing "garbage_ctx_check: PASS - all".
 //
+// WHY A RELIABLE TOPIC MAY BE HELD TO EVERY SAMPLE HERE. KEEP_LAST RELIABLE gives a gap up in two documented ways
+// (DESIGN.md section 8, "no give-up on a count"): the writer evicts it from its history (gap_evicted), or the writer
+// runs a whole ACK window past it before the repair lands (gap_abandoned, "Reliable gap too large to track"). Either is
+// correct behaviour and neither is what this check is about, so both are made impossible by the profile, and the
+// profile is checked in code (endpoint_covers_round()) rather than assumed: every reliable Publisher retains
+// RELIABLE_COUNT samples (history.bytes sized for DEPTH of the type's largest), and every reliable Subscriber's window
+// covers the whole round's datagrams (tracking_words). Until 2026-10-24 neither held for the fragmented topic:
+// history.bytes' 1 MiB default kept 50 of its 20,000-byte samples, and the default 256-datagram window is 18 of them,
+// about 0.18 s of publishing. CI run 40063368885 (shm-off) lost 3 of A2's frag samples to a window jump
+// (reorder_held_peak 253, gap_abandoned 4), and earlier CI runs had come within 11 datagrams of it (39999453967:
+// reorder_held_peak 245).
+//
 // Usage: garbage_ctx_check a|b <fill> <broadcast>   (env GC_ROUND_S: seconds a round lasts, default 14)
+//   GC_WINDOW_WORDS (environment, for checking this check, never set by test.sh): reliable Subscribers take this
+//   tracking_words instead, unchecked. 4 is the default window, as before 2026-10-24; 1 (64 datagrams, under 5
+//   fragmented samples) makes a window jump frequent, and must make this check FAIL with gap_abandoned.
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -191,6 +206,8 @@ struct gc_sub {
     uint32_t gaps;      // deliveries that skipped a seq: loss, which only a reliable topic must not show
     uint32_t backwards; // deliveries older than one already delivered: wrong on every topic
     uint32_t damaged;
+    uint32_t gap_from; // the first gap: the seqs [gap_from, gap_to) were skipped (gaps > 0)
+    uint32_t gap_to;
     void* storage;
 };
 
@@ -215,6 +232,10 @@ static void on_sample(struct tt_Subscriber* subscriber, uint64_t time, uint16_t 
     if (sub->received > 1U && sample->seq < sub->next) {
         sub->backwards++;
     } else {
+        if (sub->gaps == 0 && sample->seq != sub->next) {
+            sub->gap_from = sub->next;
+            sub->gap_to = sample->seq;
+        }
         sub->gaps += sample->seq - sub->next;
         sub->next = sample->seq + 1U;
     }
@@ -261,6 +282,7 @@ static uint8_t fill_byte;
 static bool fill_none; // leave malloc()'s storage as it is
 static bool fill_zero;
 static const char* broadcast;
+static uint16_t window_words; // GC_WINDOW_WORDS (header), 0 unset
 
 // The context's storage: allocated once, filled once (round 1), reused as it stands by every later round.
 static struct tt_Context* storage_for(void) {
@@ -292,10 +314,43 @@ static bool create(struct gc_context* ctx) {
     return true;
 }
 
+// A reliable topic's datagrams over a round: RELIABLE_COUNT samples, and one sample's more of slack.
+static uint32_t round_datagrams(const struct tt_TypeSupport* type) {
+    return (RELIABLE_COUNT + 1U) * tt_sample_datagrams(type->max_encoded_size);
+}
+
+// That neither give-up of KEEP_LAST RELIABLE can fire on this endpoint in a round (see the header): a reliable
+// Publisher retains every sample, a reliable Subscriber's window covers every datagram. A profile that does not is a
+// check that cannot hold a reliable topic to every sample, and FAILS as such rather than reading its losses as a
+// defect.
+static bool endpoint_covers_round(bool publisher, const char* topic, const struct tt_TypeSupport* type,
+                                  const struct tt_QosProfile* actual) {
+    bool covers = true;
+    if (actual->reliability.kind != tt_QOS_RELIABILITY_RELIABLE) {
+        return true;
+    }
+    if (publisher) {
+        covers = actual->history.depth >= RELIABLE_COUNT;
+    } else {
+        covers = (uint32_t)actual->reliability.tracking_words * tt_RELIABLE_BITMAP_WORD_BITS >= round_datagrams(type);
+    }
+    if (!covers) {
+        printf("garbage_ctx_check: %s %s: depth %u, window %u datagrams - cannot hold %u samples of %u datagrams to "
+               "every sample: FAIL\n",
+               publisher ? "publisher" : "subscriber", topic, (unsigned)actual->history.depth,
+               (unsigned)actual->reliability.tracking_words * tt_RELIABLE_BITMAP_WORD_BITS, RELIABLE_COUNT,
+               (unsigned)tt_sample_datagrams(type->max_encoded_size));
+    }
+    return covers;
+}
+
 static bool make_pub(struct tt_Context* node, struct gc_pub* pub, const struct tt_TypeSupport* type, const char* topic,
                      bool reliable) {
     struct tt_QosProfile qos = reliable ? tt_QOS_PROFILE_DEFAULT : tt_QOS_PROFILE_SENSOR_DATA;
     qos.history.depth = DEPTH;
+    if (reliable) {
+        qos.history.bytes = (DEPTH + 1U) * tt_sample_cache_bytes(type->max_encoded_size); // all DEPTH retained
+    }
     size_t size = tt_Publisher_storage_size_for(node, type, &qos);
     pub->storage = calloc(1, size);
     if (pub->storage == NULL) {
@@ -307,13 +362,21 @@ static bool make_pub(struct tt_Context* node, struct gc_pub* pub, const struct t
         printf("garbage_ctx_check: publisher %s: %d\n", topic, (int)ret);
         return false;
     }
-    return true;
+    struct tt_QosProfile actual;
+    return tt_Publisher_get_actual_qos(&pub->pub, &actual) == tt_RET_OK &&
+           endpoint_covers_round(true, topic, type, &actual);
 }
 
 static bool make_sub(struct tt_Context* node, struct gc_sub* sub, const struct tt_TypeSupport* type, const char* topic,
                      bool reliable) {
     struct tt_QosProfile qos = reliable ? tt_QOS_PROFILE_DEFAULT : tt_QOS_PROFILE_SENSOR_DATA;
     qos.history.depth = DEPTH;
+    uint32_t words = (round_datagrams(type) + tt_RELIABLE_BITMAP_WORD_BITS - 1U) / tt_RELIABLE_BITMAP_WORD_BITS;
+    if (reliable && window_words != 0) {
+        qos.reliability.tracking_words = window_words; // GC_WINDOW_WORDS
+    } else if (reliable && words > tt_RELIABLE_BITMAP_WORDS) {
+        qos.reliability.tracking_words = (uint16_t)words; // the round's datagrams; the reorder buffer follows
+    }
     size_t size = tt_Subscriber_storage_size_for(node, type, &qos);
     sub->storage = calloc(1, size);
     if (sub->storage == NULL) {
@@ -326,7 +389,9 @@ static bool make_sub(struct tt_Context* node, struct gc_sub* sub, const struct t
         printf("garbage_ctx_check: subscriber %s: %d\n", topic, (int)ret);
         return false;
     }
-    return true;
+    struct tt_QosProfile actual;
+    return tt_Subscriber_get_actual_qos(&sub->sub, &actual) == tt_RET_OK &&
+           (window_words != 0 || endpoint_covers_round(false, topic, type, &actual));
 }
 
 // --- role a ----------------------------------------------------------------------------------------------------------
@@ -424,8 +489,12 @@ static uint32_t be_bar(uint32_t bytes) {
 
 static bool sub_complete(const struct gc_sub* sub, const char* where, int round) {
     bool passed = sub->received == RELIABLE_COUNT && sub->gaps == 0 && sub->backwards == 0 && sub->damaged == 0;
-    printf("garbage_ctx_check: round %d %s %s received=%u/%u gaps=%u backwards=%u damaged=%u %s\n", round, where,
+    printf("garbage_ctx_check: round %d %s %s received=%u/%u gaps=%u backwards=%u damaged=%u %s", round, where,
            sub->label, sub->received, RELIABLE_COUNT, sub->gaps, sub->backwards, sub->damaged, passed ? "ok" : "FAIL");
+    if (sub->gaps != 0) {
+        printf(" (first gap: seq %u to %u)", sub->gap_from, sub->gap_to - 1U);
+    }
+    printf("\n");
     return passed;
 }
 
@@ -593,6 +662,9 @@ int main(int argc, char** argv) {
         fill_byte = (uint8_t)strtoul(argv[2], NULL, 16);
     }
     broadcast = argv[3];
+    const char* window_env = getenv("GC_WINDOW_WORDS");
+    unsigned long words = window_env != NULL ? strtoul(window_env, NULL, 10) : 0;
+    window_words = (uint16_t)(words <= tt_RELIABLE_BITMAP_MAX_WORDS ? words : tt_RELIABLE_BITMAP_MAX_WORDS);
     const char* round_env = getenv("GC_ROUND_S");
     uint64_t round_s = round_env != NULL ? strtoull(round_env, NULL, 10) : ROUND_S_DEFAULT;
     printf("garbage_ctx_check: role %s fill %s, sizeof(struct tt_Context) %zu, sample %u bytes (fragmented %d), "
