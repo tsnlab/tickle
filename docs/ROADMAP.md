@@ -67,7 +67,8 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 
 ### Other open items
 
-- rmw receive return on the Pi ~1.3-2.4 us behind the vendors' (RESULTS `KH2`, after the wait ring; ~4-5 us in `KH`).
+- rmw receive return on the Pi +2.0 / +1.1 us behind CycloneDDS / FastDDS (RESULTS `KH2B`, 2026-10-24, after the ring's
+  first move at 2 waits; ~1.3-2.4 us in `KH2`, ~4-5 in `KH`); the rest is the ring's DEFER_TASKRUN path itself.
   The poll-to-executor hand-off (~21 us) is gone: executor-driven receive, 3.3 us receive -> callback on the PC
   (`rmw_wake_split.py`, `9d87885c`), 8.3-10.5 us on the Pi against 25.5-40.9 for the vendors (`KH`). A C++ subscriber
   segfault seen once in ~370 runs (2026-09-25), not reproduced since: 0 in 1,200 runs of the same `-r` shape on

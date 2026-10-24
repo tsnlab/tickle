@@ -76,7 +76,12 @@ in one `io_uring_enter()`, so there is no separate wait return any more. Measure
 shipped build's raw syscalls are invisible to `sysstamp`, which adds 6-8 us to its round trip). The whole tap ->
 callback is still shorter: p50 24.9-26.4 (default build 22.3-23.4) against 38.8-39.7 / 49.4-53.6 us. Corrected
 2026-10-21: this line read "kernel wake ~6 us slower" (September, 18.2 against 12.6 us), not split further; corrected
-2026-10-23 from `KH`'s ~4-5 us to `KH2`'s.
+2026-10-23 from `KH`'s ~4-5 us to `KH2`'s. **2026-10-24, `KH2B`:** KH2's first ~20 round trips a run were read by epoll +
+recvfrom, not the ring (the executor needed 64 waits to take it over); with the first move at 2 waits (`ab/kh2-receive-return`,
+P e9efea98, B 11a838a5 before its rebase, the same call, `kh2ab_20261024-055604`) epoll round trips went 15-19 a rep -> 0
+and rmw_tickle@libc's p50 15.9 -> 15.0 us against CycloneDDS 13.0 and FastDDS 13.9 (vendors moved +-0.1): **behind by
++2.0 / +1.1 us**, NOT CLOSED. The rest is the ring's DEFER_TASKRUN path itself (rig `recv_wake_xhost`: blocking recvmsg
+8.43 against the ring 9.30 us, kernel stamp -> return); no user-space change found.
 zenoh-pico (reference) has the better figure in rows 5-7, 18-19, 24 and 35. Hybrid AUTO's p99 is above forced MTU at
 0.01% and 0.1% loss ([Hybrid](#hybrid-transport-large-samples-rig)).
 
@@ -623,6 +628,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | Wd, Jd | the same, ping warm-up | `d0650110` | 2026-10-18 | `creation_rtt_rmw{W,J}_d0650110_20261018-062244.*` |
 | WH, KH | `rmw_holdover_rig.sh` (WH: `rmw_crosshost_creation.py`; KH: `rmw_pcap_split.py`, capture + `sysstamp`) | `430ae86d` | 2026-10-21 | `holdover_rmw{W,K}_430ae86d_20261021-185529.*` (`.creation.txt`, `.split.txt`) |
 | KH2 | `rig_queue_s1_kh.sh` part KH (KH's call), `rmw_pcap_split.py`, `s1_kh_rig_read.py --kh` | `132548dd` | 2026-10-23 | `s1kh_rmwK_132548dd_20261022-230208.*`, `s1kh/132548dd_20261022-230208/kh_reading.txt` |
+| KH2B | `kh2_rig_ab.sh` (KH2's call for P and B under one lock), `rmw_pcap_split.py`, `kh2_pong_calls.py`, `s1_kh_rig_read.py --kh` | `e9efea98` (P), `b72eab0c` (B; 11a838a5 before its rebase) | 2026-10-24 | `kh2ab_20261024-055604.*`, `kh2ab_P_e9efea98_20261024-055604.*` |
 | S1R | `rig_queue_s1_kh.sh` part S1 (`campaign_ab_chain.sh` GATE=v2, cells 1-4), `s1_kh_rig_read.py --s1` | `132548dd` | 2026-10-22 | `s1kh/132548dd_20261022-230208/` (`s1_reading.txt`, `s1rig_*`) |
 | K, Ke | `rmw_keepall_rig.sh` (Ke: equal bounds) | `ae724688`, `29dff630` | 2026-10-06, -08 | `rmw_keepall_rig_O2_20261006-123017.txt`, `rmw_keepall_equal_main_29dff630_20261008-134901.*` |
 | Ctl | perf_test ping-pong | `4fca013b` | 2026-10-17 | `creation_latency_ctl_20261017-094944.*` |

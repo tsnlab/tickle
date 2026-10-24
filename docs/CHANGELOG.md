@@ -152,6 +152,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **The wait ring moves to the executor at its second wait, not its 64th** (`TT_RX_RING_MOVE_WAITS` 64 -> 2, Linux HAL;
+  [RESULTS.md](RESULTS.md) `KH2`). rmw's poll thread waits first and owns the ring; the executor that takes the poll role
+  needed 64 waits in a row, so the first ~20 measured round trips of every rmw_tickle run were received by epoll +
+  recvfrom (p50 17.0-18.9 against 14.6-15.8 us). The doubling after each move still bounds how often it moves. Rig
+  (`kh2ab_20261024-055604`, P e9efea98, B 11a838a5 before its rebase): epoll round trips 15-19 a rep -> 0, pong tap ->
+  receive return p50 15.9 -> 15.0 us, vendors +-0.1; core gate v2 `coreAB_11a838a5_20261024-064929` PASS, 0/88.
 - **A segment revalidation keeps its mapping when the name still holds the same, owned file** (`ab/revalidate-no-remap`;
   [DESIGN.md](DESIGN.md) section 10). New HAL call `tt_segment_identify()` (Linux: open, fstat, `flock()`
   look, close; FreeRTOS: the region's address); a file gone, replaced or orphaned still remaps, counted as before; kept
