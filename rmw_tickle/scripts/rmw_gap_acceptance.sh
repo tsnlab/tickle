@@ -66,6 +66,9 @@ CI_MODE=0
 while getopts "cw:" o; do case "$o" in c) CI_MODE=1 ;; w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 [-c] -w WS [TEST...]" >&2; exit 2; }
+# Canonical, so the shadowed-workspace check below compares like with like: CI passes .../tickle/../accept_ws, and ros2
+# pkg prefix answers with the resolved path (exit 3 on a workspace that was not shadowed, 2026-10-24).
+WS=$(cd "$WS" && pwd -P)
 # run_in drops back to this user inside each namespace; a container or a bare `env -i` may not set USER.
 USER=${USER:-$(id -un)}
 TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names besvc}

@@ -511,6 +511,14 @@ jobs:
           path: ${{ runner.temp }}/acceptance/
           if-no-files-found: warn
 
+      - name: Fail the job when the suite did not pass
+        # The suite step continues on error so the logs above are uploaded; without this step its failure would leave
+        # the job green, and the gate below reads the job's result (2026-10-24: an exit 3 passed as success).
+        if: always() && steps.acceptance.outcome != 'success'
+        run: |
+          echo "::error::the acceptance suite step ended '${{ steps.acceptance.outcome }}'"
+          exit 1
+
   # The gate, under the job name the workflow has always had, so a required "test" check keeps meaning "every tier".
   test:
     needs: [linux-unit, coverage, sanitize, linux-netns, linux-netns-shm-off, freertos, rmw-acceptance]
