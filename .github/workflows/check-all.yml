@@ -274,6 +274,22 @@ jobs:
       - name: Generate compile_commands.json
         run: |
           bear -- make all
+          # `make all` builds none of platform/linux's stand-alone checks (garbage_ctx_check.c, rx_*_check.c, ...;
+          # test.sh builds them), so they had no entry, and clang-tidy borrowed the flags of the nearest entry it had - a
+          # FreeRTOS one below, with -nostdinc. A push whose head commit changed one failed on "'pthread.h' file not
+          # found" (8d8fb609, garbage_ctx_check.c). Each check is the Makefile target of its own name: build them all
+          # into the database, and fail here if one still has no entry.
+          checks=()
+          for f in platform/linux/*.c; do checks+=("$(basename "$f" .c)"); done
+          bear --append -- make -C platform/linux -j"$(nproc)" "${checks[@]}"
+          missing=0
+          for f in platform/linux/*.c; do
+            if [ "$(jq --arg f "$PWD/$f" '[.[] | select(.file == $f)] | length' compile_commands.json)" = "0" ]; then
+              echo "No compile_commands.json entry for $f - clang-tidy would lint it with another file's flags" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ]
           # `make all` builds only the Linux platform, so any FreeRTOS-only source - src/
           # hal_freertos.c, and every examples/freertos/**/main_*.c role driver, each with its
           # own role-specific -I (platform/freertos/Makefile's own ROLE_INCLUDES table) - would
