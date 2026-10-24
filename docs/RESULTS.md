@@ -711,7 +711,7 @@ ms, base 13.87 / 10.29, tail 10.75 / 10.09, aa 10.85 / 10.00 - the tail's cost a
 **TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
 reader re-announced p only on a factor of 2, and the n = 1 / n = 2 boundary (0.886%) is inside 1%'s band, so the
 first p announced inside the band (the first tail's, or a GSO-burst dip's) held n for the stream (DESIGN.md section 8,
-"Announcing p"). Fixed by re-announcing when n* moves; the rig A/B is pending (`~/rig_jobs/hybrid_announce_ab.sh`).
+"Announcing p"). Fixed by re-announcing when n* moves; on the rig the IP-run mode went from 5 of 12 reps to 0 of 24 (Fisher p = 0.002).
 
 - **Rig, re-read** (LRF, LRO, LRT, LRTR: Array1m 30 Hz RELIABLE 1%, 93 reps, 4 builds): 41 reps in runs of 2, every one
   with its reader at 0.94-1.05% (n* = 1). The switch came at the first tail (sample 2, 10 reps) or an announce tick
@@ -730,6 +730,22 @@ first p announced inside the band (the first tail's, or a GSO-burst dip's) held 
 - **Why GSO matters**: netem drops a whole `UDP_SEGMENT` skb (~33 units), so MTU-mode loss comes in bursts and the
   estimate wanders (0.75-0.90% in the first seconds of a 1% rep) - the rig's later switches. That noise remains: the
   fix still crosses 0.886% with it (11.4% of samples at n = 2, against equal wire cost there by the objective).
+- **Rig A/B** (`HMAR`, `haa_1m_20261025-002405`, Array1m 30 Hz RELIABLE KEEP_LAST 10, 1%, 12 reps an arm; pre = main
+  7694bc87, head = the fix (3f0cf05e, docs 042da3bf), aa = head's own library). Reading registered in the queue script
+  first. Every rep delivered 100%.
+
+| arm | IP-run reps (`pub_gso_sends` < 20,000) | p99 ms, median | sub / pub CPU ms/MB, median | sub CPU ms/MB, mean |
+|---|---|---|---|---|
+| pre | 5 / 12 | 9.91 (11 usable) | 4.66 / 3.47 | 4.90 |
+| head | 0 / 12 | 10.13 | 4.72 / 3.53 | 4.75 |
+| aa | 0 / 12 | 10.14 | 4.68 / 3.50 | - |
+
+- Verdict **SHOWN**: pre >= 3, head and aa none, one-sided Fisher 5/12 against 0/24 p = 0.002. Not falsified: no
+  head or aa rep ran in runs.
+- Cost: the median p99 is 0.22 ms (2%) higher on the fix, with |head - aa| = 0.01. It comes from the reps whose estimate
+  still crosses 0.886% (the noise above: `pub_gso_sends` 24,000-37,000 in 6 of head's 12). head's six reps that stayed in
+  MTU mode (> 38,000) have a median p99 of 9.91 ms, and pre's seven MTU reps 9.86 ms. The worst rep is better: pre's
+  IP-run reps reach 10.23-10.88 ms and 5.2-5.5 sub CPU, head's worst is 10.42 ms and 4.85. Mean sub CPU over all reps is 3% lower.
 
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
@@ -775,6 +791,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LRO | `test_large_sample` (sim, parent's tickle.c against the same test), `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=order, `wifi_repair_ab.sh` | ab/large-resend-order (its two core commits: run 1 the first, run 2 both; P `896d4a29`) | 2026-10-24 | `large_repair/ab_order_c7e9/`, `ab_order_685a/`, `ab_order_v7/` (not landed), `wifi_repair/lro_685a.ab.txt`, `lro_685a_{P,F}/` |
 | LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `7c8389fd`, WIFI `9f6f5375`; P `53ed4e1f`, O `896d4a29`; ed46fcc6, 1157d024, d1c900fe before their rebase) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
 | LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
+| HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |
 | SB | `samehost_bundle_rig.sh` (SF, SP, SC readers; rotated order) | `60f49f6a` | 2026-10-19 | `samehost_bundle_60f49f6a_20261019-190222.*` |

@@ -206,7 +206,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 - **A reader re-announces its loss p when a writer's n would change** (2026-10-24; [DESIGN.md](DESIGN.md) section 8,
   "Announcing p"). p went out again only on a factor of 2, and at 1% loss the n = 1 / n = 2 boundary (0.886%) lies
   inside 1%'s band: the rig's Array1m 1% cell sent IP-fragment runs of 2 in 41 of 93 reps, on every build, while its
-  readers measured 0.94-1.05% (n = 1), at ~17% more sub and ~27% more pub CPU per MB. No wire change.
+  readers measured 0.94-1.05% (n = 1), at ~17% more sub and ~27% more pub CPU per MB. No wire change. Rig A/B: runs
+  of 2 in 5 of 12 reps on main, 0 of 24 with the fix; median p99 +0.22 ms from the estimate's noise near 0.886%.
 - **A context restarted under a live id is answered at once** (2026-10-24). Every `ros2` CLI process on a host takes
   the same context id, so `ros2 node info` right after `ros2 node list` arrived while its predecessor was still believed
   alive. Its lists all came as replies to our requests, and a reply from a known id was never answered, so it learned of
