@@ -726,6 +726,29 @@ keeps its seq_no. `n_max = min(45, peer's reassembly bytes / unit)`.
 alone** (runs only when `k >= 3`), so a reader sees its runs were lost. `loss_p`: 0 = none, else `(256 + m) / 2^(e + 9)`.
 Unicast peers get their own `n`; broadcast the minimum.
 
+#### Announcing p: when the writer's n would change (2026-10-24)
+
+**TL;DR.** The reader re-announced `p` only when it moved by a factor of 2 (`loss_p`'s exponent). At 1% loss the
+n = 1 / n = 2 boundary, `p(1 - p) = h / 2(u + h)`, is **p = 0.886%**, inside 1%'s band [0.781%, 1.5625%): whichever
+side the estimate was on when it entered the band, the writer kept for the rest of the stream. Now the reader also
+re-announces when `n*` at the measured `p` differs from `n*` at the announced one. No wire change.
+
+- **Evidence.** Rig, Array1m 30 Hz RELIABLE 1% (LRF, LRO, LRT, HMR: 93 reps over 4 builds): 41 switched from n = 1
+  to n = 2 once, at the first tail or an announce tick, and never back, while their readers measured 0.94-1.05%
+  (n* = 1); within a mode CPU and p99 were equal across builds (HMR IP-run sub/pub ~5.4/4.4 ms/MB, MTU ~4.6/3.45).
+  Netns (announce trace):
+  the first tail's `p` (5 events / 723 frames, 0.830%) or a GSO-burst dip below 0.781% (netem drops a whole
+  `UDP_SEGMENT` skb) is announced; the estimate then sits at 0.95-1.02% for the rest of the rep, unannounced.
+- **Rule.** At each announce: `loss_moved || n*(decode(measured)) != n*(decode(advertised))`, `n*` from
+  `hybrid_n_star()` with the writer's `u`, `h` and `tt_HYBRID_N_MAX`. `Cost(n)` is unimodal over `1..45` wherever
+  `n* > 1` (`n < 2(1 - p) / p`), so a writer's `n` under any smaller `n_max` changes only when this one does.
+- **Cost.** At most one announce per interval, only while `n*` moves; at 0% loss nothing changes ("none seen" is `n_max`
+  both ways). Near the boundary `n` may follow the estimate across it: equal wire cost by definition.
+- **Pre-registered** (`hybrid_mode_netns.sh`, written before the change's first run): SHOWN when the parent has >= 3
+  IP-run reps (runs carry more first-transmission units than MTU units) of 16 and the change none, and no rep's writer
+  ends on the other side of 0.886% from its reader. FALSIFIED by any change rep in runs at a measured `p >= 0.886%`.
+  The LOSS=0 control must be in runs on every tree. Rig A/B (lead): `~/rig_jobs/hybrid_announce_ab.sh`.
+
 #### Saturation: where I4s lost its samples, and the receive drain
 
 With no receive thread, the socket overflows while a callback decodes a large sample. The **receive drain**
