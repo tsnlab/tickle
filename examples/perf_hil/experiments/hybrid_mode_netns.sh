@@ -210,7 +210,13 @@ for label, a in arms.items():
         label, a['usable'], a['ip'], a['mtu'], a['latched'], a['ip_above'], ' '.join(a['void']) or '-'))
 if loss == 0:
     for label, a in arms.items():
-        print('CONTROL %s: %s' % (label, 'VOID (an MTU rep at 0%% loss)' if a['mtu'] else 'ok (every rep in runs)'))
+        # No usable rep is no answer, not "every rep in runs" (2026-10-24: a loaded PC voided all of one tree's).
+        print('CONTROL %s: %s' % (label, 'VOID (an MTU rep at 0%% loss)' if a['mtu'] else
+                                  'VOID (no usable rep)' if a['usable'] == 0 else 'ok (every rep in runs)'))
+elif 'P' in arms and 'F' in arms and min(arms['P']['usable'], arms['F']['usable']) < 8:
+    # Added 2026-10-24 23:40, after the GSO A/B (P 14, F 15 usable: unaffected): too few usable reps decide nothing -
+    # F with none would otherwise read as "F has no IP-RUN rep".
+    print('VERDICT VOID: usable reps P %d, F %d (< 8)' % (arms['P']['usable'], arms['F']['usable']))
 elif step and 'P' in arms and 'F' in arms:
     P, F = arms['P'], arms['F']
     if F['latched']:

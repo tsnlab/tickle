@@ -706,6 +706,31 @@ a mode CPU is equal on all four (IP ~5.4 / 4.4 ms/MB, MTU ~4.6 / 3.45). Median p
 ms, base 13.87 / 10.29, tail 10.75 / 10.09, aa 10.85 / 10.00 - the tail's cost against main is 0.4-0.8 ms (5-8%) at
 1%, its gain the 0.1% storm the PC shows and the rig does not. Landed on the user's call.
 
+### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
+
+**TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
+reader re-announced p only on a factor of 2, and the n = 1 / n = 2 boundary (0.886%) is inside 1%'s band, so the
+first p announced inside the band (the first tail's, or a GSO-burst dip's) held n for the stream (DESIGN.md section 8,
+"Announcing p"). Fixed by re-announcing when n* moves; the rig A/B is pending (`~/rig_jobs/hybrid_announce_ab.sh`).
+
+- **Rig, re-read** (LRF, LRO, LRT, LRTR: Array1m 30 Hz RELIABLE 1%, 93 reps, 4 builds): 41 reps in runs of 2, every one
+  with its reader at 0.94-1.05% (n* = 1). The switch came at the first tail (sample 2, 10 reps) or an announce tick
+  (samples 29-450), never back. Delivery 100% in both modes; IP-run costs ~17% sub / ~27% pub CPU per MB (LRTR).
+- **PC netns** (`hybrid_mode_netns.sh`, 1 MiB at 30 Hz, netem 1 Gbit/s, writer-egress loss; parent = main 7694bc87,
+  fix = this change; 30 s reps, usable after the load rule):
+
+| run | parent in runs (latched) | fix in runs | samples at n = 2, parent / fix | CPU sub ms/MB mean, parent / fix |
+|---|---|---|---|---|
+| GSO on, 1% | 5 / 14 (5) | 0 / 15 | 34.5% / 11.4% | 2.11 / 1.73 |
+| GSO off (`TT_UDP_OFFLOAD=0`), 1% | 0 / 16 | 0 / 16 | 0.4% / 1.2% | 3.88 / 3.88 |
+| step 0.8% for 6 s, then 1.2% (GSO off) | 8 / 12 (8) | 0 / 12 | - | - |
+
+- Reading (registered in the harness first): GSO on SHOWN; GSO off UNDECIDED (the parent latches there only on a first
+  tail of exactly 5 events in 723 frames); step SHOWN. LOSS=0 control: runs on both trees.
+- **Why GSO matters**: netem drops a whole `UDP_SEGMENT` skb (~33 units), so MTU-mode loss comes in bursts and the
+  estimate wanders (0.75-0.90% in the first seconds of a 1% rep) - the rig's later switches. That noise remains: the
+  fix still crosses 0.886% with it (11.4% of samples at n = 2, against equal wire cost there by the objective).
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
