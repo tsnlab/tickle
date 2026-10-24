@@ -224,6 +224,17 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (clean and 1%, ~57 s); `tests/test_data_frag.c` adds four cases, three red on `7694bc87`, the fourth red without the
   pin. Rig core gate v2 A/B (`coreAB_4eecd535_20261025-002604`): PASS, no CPU or latency row worse;
   1/88 instruction rows worse (c15 best-effort p4 server, +1.3%), listed.
+- **A whole sample the pool holds ahead of a gap is delivered when the watermark passes it other than by the pool**
+  (2026-10-25). After `ffc93e11` a no-buffer Subscriber's watermark could pass such a sample - an eviction HEARTBEAT
+  giving up on the gap, or the gap's missing DATA arriving and absorbing the sample's recorded datagrams - and nothing
+  delivered it: the pool's walk starts at the watermark and runs only when a fragment lands. A buffer delivers what it
+  holds behind a gap given up on (`drain_reorder()`), and so does the pool now. `tests/test_data_frag.c`: two cases,
+  each run against a buffer as the control, red on `ffc93e11` (21 assertions), green with the fix; each of the fix's
+  four parts removed turns them red. Also: the pin checks walk the node's endpoints less (a microbench, 3-datagram
+  samples, 64 other no-buffer Subscribers in the node: 68,216 instructions a sample in order and 108,421 with four of
+  five ahead of a gap, now 43,897 and 61,019; 9,847 and 12,854 with a buffer). Rig core gate v2 A/B (`coreAB_49d1f710_20261025-035302`):
+  PASS, no CPU or latency row worse; 2/88 instruction rows worse, listed (c15 best-effort p4 server +0.57%, on top of
+  the +1.3% of the entry above; c4 +0.10%).
 - **A context restarted under a live id is answered at once** (2026-10-24). Every `ros2` CLI process on a host takes
   the same context id, so `ros2 node info` right after `ros2 node list` arrived while its predecessor was still believed
   alive. Its lists all came as replies to our requests, and a reply from a known id was never answered, so it learned of
