@@ -40,17 +40,30 @@
 #   UNDECIDED when auto has fewer than 2 usable CHAIN reps. With the archive's rate r ~ 0.31 (12 of 37 GSO-on reps),
 #     16 reps give fewer than 2 with probability 0.69^16 + 16 x 0.31 x 0.69^15 = 2%.
 #   Also printed, not part of the verdict: non-CHAIN auto reps that went FULL (the chain without the writer's warning).
+#
+# AMENDED 2026-10-25 03:15, AFTER THE FIRST RUN (mech1), A READING DEFECT ONLY: "none seen" was looked for in the
+#   writer's stdout (pub.log), but the bench prints its PEER_P lines on stderr (pub.err), so every rep read
+#   none_seen=0 and mech1 printed "H1 FALSIFIED" from an instrument that could not see the line. The rule is unchanged;
+#   none_seen is now read from pub.err. REREAD=<an earlier OUT> applies the reading to that run's files again, runs
+#   nothing, and appends to its reread.txt.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 ARMS=${ARMS:-"auto:1:16 ip:1:4 ip:0:3"}
 DUR=${DUR:-10}
 OUT=${OUT:-$HOME/tmp_build/hyb_forget/run_$(date +%Y%m%d_%H%M%S)}
+REREAD=${REREAD:-}
 export TMPDIR=${TMPDIR:-$HOME/tmp_build}
+if [ -n "$REREAD" ]; then # the reading again, on an earlier run's files; nothing runs
+    RESULTS=$REREAD/results.txt
+    READING=$REREAD/reread.txt
+    THRESH=$(grep -o 'ipfrag_high_thresh=[0-9]*' "$RESULTS" | head -1 | cut -d= -f2)
+else
 mkdir -p "$OUT"
 NS_W=hfw$$
 NS_R=hfr$$
 RESULTS=$OUT/results.txt
+READING=$RESULTS
 say() { echo "$*" | tee -a "$RESULTS"; }
 
 cleanup() {
@@ -135,8 +148,10 @@ for arm in $ARMS; do
     done
 done
 
+fi # REREAD
+
 # --- the reading (applies the PRE-REGISTERED rules above) -----------------------------------------------------------
-python3 -I - "$RESULTS" "$(nproc)" "$THRESH" <<'PY' | tee -a "$RESULTS"
+python3 -I - "$RESULTS" "$(nproc)" "$THRESH" <<'PY' | tee -a "$READING"
 import re, sys
 path, nproc, thresh = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 def f(text, key):
@@ -182,7 +197,7 @@ for line in open(path):
     full = peak >= 0.9 * thresh
     drops = int(f(sub, 'hybrid_receiver_drops') or 0)
     forgets, fevents = int(f(sub, 'hybrid_stale_forgets') or 0), int(f(sub, 'hybrid_stale_events') or 0)
-    none_seen = 'code=0xff00' in pub
+    none_seen = 'code=0xff00' in perr # the PEER_P lines are on stderr (AMENDED 2026-10-25)
     r = dict(rep=rep, chain=chain, full=full, fails=fails, drops=drops, forgets=forgets, fevents=fevents,
              none_seen=none_seen, peak=peak)
     a['full'] += full
