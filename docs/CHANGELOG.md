@@ -203,6 +203,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A context restarted under a live id is answered at once** (2026-10-24). Every `ros2` CLI process on a host takes
+  the same context id, so `ros2 node info` right after `ros2 node list` arrived while its predecessor was still believed
+  alive. Its lists all came as replies to our requests, and a reply from a known id was never answered, so it learned of
+  the other node only at that node's next change or summary - past the CLI's 0.5 s discovery spin. `ros2 node info`
+  missed a live node in 8 of 40 back-to-back runs (0 of 38 with a fresh id), and the jazzy acceptance run's `graph`
+  case failed on it. An announce from a new data port with a new generation is now a first contact: answered, and not
+  ordered against the predecessor's generations.
 - **A RELIABLE Subscriber with no reorder buffer takes fragmented samples again** (2026-10-24). Since `d25c12a2` gave
   an unbounded or large rmw type no reorder buffer, its Subscriber took no DATA_FRAG fragment at all: the in-order fast
   path needed a slot for each to spill to, so every fragmented sample was re-requested forever and none delivered. The

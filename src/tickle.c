@@ -7815,6 +7815,7 @@ static void reset_node_state(struct tt_Context* node) {
         node->peer_silence_ns[i] = 0;
         node->summary_peer_ip[i] = 0;
         node->summary_peer_port[i] = 0;
+        node->update_sender_port[i] = 0;
         node->update_part_generation[i] = 0;
         node->update_part_count[i] = 0; // update_part_received[i] unread until this is set (update_parts_any())
         node->traffic_last_seen[i] = 0;
@@ -18032,6 +18033,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->update_last_seen[source] = 0;
     node->peer_silence_ns[source] = 0;   // its next summary says again
     node->summary_peer_port[source] = 0; // nor sent copies of ours until it is known again
+    node->update_sender_port[source] = 0;
     node->traffic_last_seen[source] = 0;
     update_parts_clear(node, source);
     node->liveliness_flags[source] = 0;
@@ -18706,10 +18708,25 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     TT_LOG_DEBUG("  ip_reassembly_max: %u, loss_p: 0x%04x", (unsigned)rd16(header, announce->ip_reassembly_max),
                  (unsigned)rd16(header, announce->loss_p));
 
-    if (discovery_generation_applied(node, source, generation)) {
+    // The same id from another data port is another incarnation: a context that restarted under this id while the old
+    // one was still believed alive (a `ros2 node info` run right after a `ros2 node list` - every CLI process on a host
+    // takes the same id). The port, not the address: a context has one data socket on one kernel-assigned port
+    // (tt_bind()), which every announce of it carries whatever link or path it took, while the address differs per
+    // link of a multi-homed sender. Its generations are not comparable with its predecessor's, and it knows nothing of
+    // us, so it is a first contact: answered with our announce even when its own came unicast, as the answer to our
+    // request. Before this, such a newcomer's lists all arrived as replies and none was answered, so it learned of this
+    // node only at our next change or summary - about one interval, against the CLI's 0.5 s discovery spin (`ros2
+    // node info` missed a live node in 8 of 40 runs, 0 of 38 with a fresh id; CI run 40057372247's graph case).
+    // The generation must differ as well: the applied one again from another port is a duplicate whose address is not
+    // to be believed (test_update_skipped_when_last_modified_unchanged_does_not_rerun_matching), and a restarted
+    // context landing on its predecessor's exact 32-bit generation is not a case worth trading that for.
+    bool new_incarnation = node->update_seen[source] && node->update_sender_port[source] != 0 && sender_port != 0 &&
+                           node->update_sender_port[source] != sender_port &&
+                           node->update_generation[source] != generation;
+    if (!new_incarnation && discovery_generation_applied(node, source, generation)) {
         return true; // the periodic resend of the announce we last acted on
     }
-    if (announce_superseded(node, source, generation)) {
+    if (!new_incarnation && announce_superseded(node, source, generation)) {
         node->rx_announces_superseded++;
         return true; // an older list than the one acted on, overtaken on the way: applying it would undo the newer
     }
@@ -18757,8 +18774,9 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // First time we've ever heard from this node, as opposed to it changing its endpoints since -
     // captured before update_seen[] is set, because that's the state reply_with_own_announce() needs
     // to not reply forever (see its own comment).
-    bool is_first_contact_from_sender = !node->update_seen[source];
+    bool is_first_contact_from_sender = !node->update_seen[source] || new_incarnation;
     note_discovery_round_trip(node, source, generation);
+    node->update_sender_port[source] = sender_port;
     node->update_generation[source] = generation;
     node->update_applied_ns[source] = tt_get_ns();
     node->update_seen[source] = true;

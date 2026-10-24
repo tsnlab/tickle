@@ -333,6 +333,48 @@ static void test_repeat_contact_is_answered_only_when_broadcast(void) {
     EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // its periodic resend is not
 }
 
+// A context that restarted under the same id while the old one was still believed alive - every `ros2` CLI process on a
+// host takes the same id, and `ros2 node info` runs right after `ros2 node list` - comes from a new data port. It is a
+// first contact: its announce is answered although it came unicast (the answer to our request for its summary), and a
+// generation that reads older than its predecessor's is applied, not taken for a reordered datagram. The control is the
+// same announce from the old port, which is a reply from the context we know and is not answered (CI run 40057372247:
+// `ros2 node info` missed a live node because none of the newcomer's lists was answered).
+static void test_restart_under_the_same_id_is_a_first_contact(void) {
+    for (int restarted = 0; restarted <= 1; restarted++) {
+        test_mock_reset();
+        test_mock_now = 5U * ANNOUNCE_REORDER_WINDOW_NS;
+        struct tt_Context node;
+        init_node(&node);
+        struct tt_Publisher pub;
+        init_publisher(&pub, &node);
+        struct tt_Header header;
+        init_header(&header, REMOTE_NODE_ID);
+
+        uint32_t tail =
+            write_update_one_entity(node.rx_buffer, 200, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+
+        // Unicast, inside the reorder window, with a generation that reads OLDER than the one applied.
+        test_mock_now += 1U;
+        node.rx_via_data_port = true;
+        uint16_t port = restarted != 0 ? 9393 : 8282;
+        tail = write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, port));
+        EXPECT_EQ_U32(restarted != 0 ? 2U : 1U, (uint32_t)test_mock_send_to_call_count);
+        EXPECT_EQ_U32((uint32_t)(restarted != 0 ? 9393 : 8282), (uint32_t)test_mock_send_to_last_port);
+        EXPECT_EQ_U64(restarted != 0 ? 0U : 1U, node.rx_announces_superseded);
+        EXPECT_EQ_U32(restarted != 0 ? 100U : 200U, node.update_generation[REMOTE_NODE_ID]);
+        EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+        // Once applied, the new port is the known one: its resend is neither answered nor re-applied.
+        tail = write_update_one_entity(node.rx_buffer, restarted != 0 ? 100 : 200, PUB_ENDPOINT_ID,
+                                       tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, port));
+        EXPECT_EQ_U32(restarted != 0 ? 2U : 1U, (uint32_t)test_mock_send_to_call_count);
+    }
+}
+
 // If tx_buffer already has something else pending, replying would risk redirecting that
 // unrelated content to this one peer - skip the reply this time (the periodic broadcast still
 // reaches them eventually) rather than risk misdirecting it, mirroring process_callrequest()'s
@@ -1743,6 +1785,7 @@ int main(void) {
     test_peer_table_full_drops_new_peer_silently();
     test_first_contact_triggers_unicast_reply_with_own_announce();
     test_repeat_contact_is_answered_only_when_broadcast();
+    test_restart_under_the_same_id_is_a_first_contact();
     test_reply_skipped_when_tx_buffer_has_pending_content();
     test_source_dropping_endpoint_forgets_its_peer();
     test_an_older_announce_arriving_after_a_newer_one_is_ignored();

@@ -214,8 +214,16 @@ def main():
                                      event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype,
                                                                                 incompatible_qos=on_iqos))
         spin_for(node, seconds)
-        print('RESULT: role=%s incompatible_type_events=%d incompatible_qos_events=%d'
-              % (role, counts['n'], counts['qos']), flush=True)
+        # The mismatch as the graph shows it, independently of any event: how many distinct types the topic carries.
+        # 2 means both endpoints were discovered with their own types, so an rmw that raised nothing saw the mismatch
+        # and has no event for it - which is what rmw_cyclonedds_cpp on jazzy does (type=0/0 qos=0/0 in CI run
+        # 40057372247, while itypeneg's control delivered 50 samples), and lyrical's raises INCOMPATIBLE_QOS for.
+        graph_types = set()
+        for topic, types in node.get_topic_names_and_types():
+            if topic == '/accept_itype':
+                graph_types.update(types)
+        print('RESULT: role=%s incompatible_type_events=%d incompatible_qos_events=%d graph_types=%d'
+              % (role, counts['n'], counts['qos'], len(graph_types)), flush=True)
     elif role == 'intropeer':
         # The endpoint the introspecting node will read. It must be in another PROCESS (here, another namespace), or
         # the reader goes through get_topic_endpoint_info_by_topic()'s local branch, where the QoS is the real profile
@@ -372,8 +380,17 @@ def main():
             # writer - so that equality is not something rmw guarantees and a test asserting it fails everywhere.
             # What a tool matching samples to writers actually needs is weaker and is checkable: the sample must
             # carry a gid at all, and it must not be all zeros, or every writer looks like every other.
+            #
+            # Whether rclpy hands the field over at all is a capability of the distro, not of the rmw: jazzy's
+            # Subscription.take_message() builds MessageInfo from four keys (source_timestamp, received_timestamp and
+            # the two sequence numbers) and has no publisher_gid, so both arms, the control included, could only ever
+            # fail here (CI run 40057372247). A MISSING KEY is that capability being absent and is reported as
+            # not_applicable; a key that is present and empty is still the rmw's failure.
+            not_applicable = []
             if got['info'] is None:
                 fails.append('no_sample_delivered')
+            elif 'publisher_gid' not in got['info']:
+                not_applicable.append('rclpy_message_info_has_no_publisher_gid')
             else:
                 pg = got['info'].get('publisher_gid')
                 raw = pg.get('data') if isinstance(pg, dict) else pg
@@ -419,8 +436,9 @@ def main():
                 fails.append('two_writers_share_a_graph_gid')
             node.destroy_publisher(p_one)
             node.destroy_publisher(p_two)
-            print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s'
-                  % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
+            print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s not_applicable=%s'
+                  % (len(infos), len(fails), ','.join(fails) if fails else 'none',
+                     ','.join(not_applicable) if not_applicable else 'none'), flush=True)
     elif role in ('besvc_server', 'besvc_client'):
         # A BEST_EFFORT service (D6): both ends BEST_EFFORT, as DDS needs to match them. The client makes ARG calls
         # one at a time, giving each BESVC_WAIT_S for its answer and counting it lost otherwise.

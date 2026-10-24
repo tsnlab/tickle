@@ -57,10 +57,19 @@
 #      case answers nothing about rmw_tickle, so "no answer" fails rather than reading as a pass
 #   4  everything that ran PASSed, but a case could not run here (NOT RUN: e.g. besvc on a kernel without sch_netem) -
 #      its own status, so a missing kernel module neither hides as a pass nor reads as an rmw_tickle defect
+#   5  nothing FAILed or VOIDed, but a case reported NOT APPLICABLE(<reason>) that ACCEPT_NOT_APPLICABLE does not list
 #   3  rmw_tickle resolves to another workspace (as without -c); 2 usage
+#
+# NOT APPLICABLE(<reason>) (2026-10-24, the first jazzy run): a case's capability probe found that the distro or the
+# control lacks what the case needs - rclpy's MessageInfo has no publisher_gid, or the control rmw raises no event for
+# a type mismatch its graph shows. It is never a PASS: it counts on its own (not_applicable= in CI_RESULT), and it is
+# allowed only as an exact <case>:<rmw>:<reason> entry in ACCEPT_NOT_APPLICABLE (space-separated, set per distro by
+# the workflow); any other one exits 5. An allowed one keeps exit 0, and a listed one that did not occur is printed.
+# A control that is NOT APPLICABLE does not VOID the rmw_tickle arm, which is still read on its own verdict.
 # The t_* tests and helpers are called indirectly, as "t_$t", and from command substitutions.
 # shellcheck disable=SC2329
 set -u
+ACCEPT_NOT_APPLICABLE=${ACCEPT_NOT_APPLICABLE:-}
 WS=""
 CI_MODE=0
 while getopts "cw:" o; do case "$o" in c) CI_MODE=1 ;; w) WS=$OPTARG ;; *) exit 2 ;; esac; done
@@ -245,7 +254,12 @@ t_bagstall() {
     lost=$((${published:-0} - ${recorded:-0}))
     # Ours only, and reported beside the loss rather than instead of it: the incomplete-delivery rule
     # turns on whether a drop is visible, and this is where ours becomes visible.
-    evicted=$(grep -hoE 'gap_evicted=[0-9]+' "$d/record.log" 2>/dev/null | tail -1 | cut -d= -f2)
+    # Summed over every Subscriber's shutdown line, not the last one: jazzy's recorder holds a second Subscriber
+    # (delivered=0) and prints its line after /accept_chatter's, so `tail -1` read gap_evicted=0 from the wrong
+    # Subscriber while the chatter's own line said 40 (CI run 40057372247; on lyrical there is one line). Empty when
+    # no line was printed at all, which stays "n/a" rather than becoming a 0.
+    evicted=$(grep -hoE 'Subscriber [0-9]+ delivery: .*gap_evicted=[0-9]+' "$d/record.log" 2>/dev/null |
+        grep -oE 'gap_evicted=[0-9]+' | awk -F= '{ s += $2; n++ } END { if (n) print s }')
     local numbers="published=${published:-0} recorded=${recorded:-0} lost=$lost gap_evicted=${evicted:-n/a}"
     # No loss means the stall did not stall - VOID, not a pass. Written this way round deliberately:
     # "nobody lost anything" is what a broken stall and a perfect reader both look like, and only one
@@ -410,6 +424,13 @@ t_itype() {
         echo PASS
     elif [ "${qp:-0}" -ge 1 ] && [ "${qs:-0}" -ge 1 ]; then
         echo "PASS(via incompatible QoS, not type: qos=${qp:-0}/${qs:-0})"
+    elif [ "$1" != rmw_tickle ] && [ $((${tp:-0} + ${ts:-0} + ${qp:-0} + ${qs:-0})) -eq 0 ] &&
+        [ "$(field "$d/itype_pub.log" graph_types)" = 2 ] && [ "$(field "$d/itype_sub.log" graph_types)" = 2 ]; then
+        # The control only: both sides' graphs show the topic with its two types, so the mismatch was seen and this
+        # rmw has no event for it at all (rmw_cyclonedds_cpp on jazzy, CI run 40057372247). The case then has no
+        # positive control here; rmw_tickle's verdict stands on itypeneg, the arm where a counter that always fires
+        # fails. For rmw_tickle the same reading is a FAIL - it is the rmw under test that must raise the event.
+        echo "NOT APPLICABLE(control_has_no_type_mismatch_event: type=0/0 qos=0/0 graph_types=2/2)"
     else
         echo "FAIL(type=${tp:-0}/${ts:-0} qos=${qp:-0}/${qs:-0})"
     fi
@@ -478,10 +499,14 @@ t_names() {
     run_in "$NS1" "$1" 1 9 "" python3 "$NODE" names 8 > "$d/node.log" 2>&1
     wait "$pp"
     grep -q 'RESULT: role=names' "$d/node.log" || { echo "ERROR(node did not finish)"; return; }
-    local n f
+    local n f na
     n=$(field "$d/node.log" discovered); f=$(field "$d/node.log" roundtrip_failures)
+    na=$(result "$d/node.log" | grep -oE 'not_applicable=[^ ]+' | cut -d= -f2-)
     if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no remote endpoint discovered)"; return; fi
-    if [ "${f:-1}" = 0 ]; then
+    if [ "${f:-1}" = 0 ] && [ -n "$na" ] && [ "$na" != none ]; then
+        # Every check that could run passed, and one could not: rclpy has no publisher_gid in MessageInfo (jazzy).
+        echo "NOT APPLICABLE($na: every other check passed, discovered=$n)"
+    elif [ "${f:-1}" = 0 ]; then
         echo "PASS(discovered=$n)"
     else
         echo "FAIL($(result "$d/node.log" | grep -oE 'detail=[^ ]+' | cut -d= -f2-))"
@@ -616,6 +641,7 @@ for t in $TESTS; do
     case "${VERDICT[$t:$ctl]}" in
         PASS | PASS\(* | "PASS "*) ;;
         "NOT RUN"*) ctl_fail=1; echo "$t: could not run here - NOT RUN" | tee -a "$OUTDIR/summary.txt" ;;
+        "NOT APPLICABLE"*) ctl_fail=1; echo "$t: control ($ctl) cannot show this here - NOT APPLICABLE" | tee -a "$OUTDIR/summary.txt" ;;
         *) ctl_fail=1; echo "$t: control ($ctl) failed - VOID" | tee -a "$OUTDIR/summary.txt" ;;
     esac
 done
@@ -626,7 +652,8 @@ for t in $TESTS; do printf '%-9s | %-45s | %s\n' "$t" "${VERDICT[$t:control]}" "
 
 # CI mode: every arm of every case is read, and each one that did not PASS is printed with its verdict - the reason is
 # the verdict's own detail, and the logs are under OUTDIR/<test>_<rmw>/.
-passed=0 failed=0 voided=0 notrun=0
+passed=0 failed=0 voided=0 notrun=0 na_allowed=0 na_unlisted=0
+declare -A NA_SEEN
 for t in $TESTS; do
     ctl=${CONTROL[$t]:-rmw_cyclonedds_cpp}
     for rmw in "$ctl" rmw_tickle; do
@@ -636,6 +663,15 @@ for t in $TESTS; do
             # version of this list missed the last and failed a passing run.
             PASS | PASS\(* | "PASS "*) passed=$((passed + 1)); continue ;;
             "NOT RUN"*) notrun=$((notrun + 1)); kind="NOT RUN" ;;
+            "NOT APPLICABLE("*)
+                # The reason token is the verdict's first word inside the parentheses, up to ':' or ')'.
+                reason=${v#NOT APPLICABLE(}; reason=${reason%%[:)]*}
+                if [[ " $ACCEPT_NOT_APPLICABLE " == *" $t:$rmw:$reason "* ]]; then
+                    na_allowed=$((na_allowed + 1)); NA_SEEN[$t:$rmw:$reason]=1
+                    kind="NOT APPLICABLE (allowed: $t:$rmw:$reason)"
+                else
+                    na_unlisted=$((na_unlisted + 1)); kind="NOT APPLICABLE (NOT in ACCEPT_NOT_APPLICABLE: $t:$rmw:$reason)"
+                fi ;;
             *) if [ "$rmw" = "$ctl" ]; then voided=$((voided + 1)); kind="VOID (control failed)"; else
                 failed=$((failed + 1)); kind=FAIL; fi ;;
         esac
@@ -643,8 +679,18 @@ for t in $TESTS; do
             tee -a "$OUTDIR/summary.txt"
     done
 done
+# An allowed entry that did not occur is printed, not failed: the capability may have arrived (a newer distro, a fixed
+# control), and the entry should then be removed - but a case that now PASSes is no reason to fail the run.
+for entry in $ACCEPT_NOT_APPLICABLE; do
+    t=${entry%%:*}
+    [[ " $TESTS " == *" $t "* ]] || continue
+    [ -n "${NA_SEEN[$entry]:-}" ] || echo "CI: NOTE  allowed NOT APPLICABLE '$entry' did not occur - remove it if the case now passes" |
+        tee -a "$OUTDIR/summary.txt"
+done
 ci_exit=0
-if [ $((failed + voided)) -gt 0 ]; then ci_exit=1; elif [ "$notrun" -gt 0 ]; then ci_exit=4; fi
+if [ $((failed + voided)) -gt 0 ]; then ci_exit=1; elif [ "$na_unlisted" -gt 0 ]; then ci_exit=5
+elif [ "$notrun" -gt 0 ]; then ci_exit=4; fi
 echo "CI_RESULT: exit=$ci_exit passed=$passed failed=$failed void=$voided not_run=$notrun" \
+    "not_applicable=$na_allowed not_applicable_unlisted=$na_unlisted" \
     "(arms: $(($(echo "$TESTS" | wc -w) * 2)))" | tee -a "$OUTDIR/summary.txt"
 exit "$ci_exit"

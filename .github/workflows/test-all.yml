@@ -396,6 +396,15 @@ jobs:
     env:
       ROS_DISTRO_DIR: /opt/ros/jazzy
       ACCEPT_WS: ${{ github.workspace }}/../accept_ws
+      # The NOT APPLICABLE verdicts jazzy is allowed, each <case>:<rmw>:<reason> exactly as the case prints it; any other
+      # NOT APPLICABLE exits 5 and fails the job (rmw_gap_acceptance.sh's header). Both found by the first jazzy run,
+      # 40057372247: jazzy's rclpy MessageInfo has no publisher_gid, so `names` cannot read a sample's writer gid on
+      # either arm; and jazzy's rmw_cyclonedds_cpp raises no event at all for a type mismatch its graph shows, so `itype`
+      # has no positive control here (rmw_tickle's arm is still read, and itypeneg is the arm that can fail it).
+      ACCEPT_NOT_APPLICABLE: >-
+        names:rmw_cyclonedds_cpp:rclpy_message_info_has_no_publisher_gid
+        names:rmw_tickle:rclpy_message_info_has_no_publisher_gid
+        itype:rmw_cyclonedds_cpp:control_has_no_type_mismatch_event
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -499,6 +508,7 @@ jobs:
             1) echo "::error::acceptance: a case failed on rmw_tickle or its control failed (VOID) - see the CI: lines" ;;
             3) echo "::error::acceptance: rmw_tickle resolved to another workspace than $ACCEPT_WS" ;;
             4) echo "::error::acceptance: every case that ran passed, but a case could NOT RUN on this runner" ;;
+            5) echo "::error::acceptance: a case was NOT APPLICABLE and ACCEPT_NOT_APPLICABLE does not allow it" ;;
             *) echo "::error::acceptance: the suite exited $rc" ;;
           esac
           exit "$rc"
