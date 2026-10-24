@@ -749,6 +749,48 @@ re-announces when `n*` at the measured `p` differs from `n*` at the announced on
   ends on the other side of 0.886% from its reader. FALSIFIED by any change rep in runs at a measured `p >= 0.886%`.
   The LOSS=0 control must be in runs on every tree. Rig A/B (lead): `~/rig_jobs/hybrid_announce_ab.sh`.
 
+#### Train losses and the stale rule (2026-10-25, a stated limit, not changed)
+
+**TL;DR.** With GSO on at 1%, a reader sometimes forgets its first sample's real events after 2-5 clean samples,
+announces "none seen", and the writer sends runs of 45 until the reader host's IP reassembly refuses every fragment;
+the writer's rule (e) then sends MTU units for 60 s. Each step is the design's stated behaviour. The first rests on
+independent frame losses, which a loss of a whole `UDP_SEGMENT` send breaks. Every fix changes what the estimator means,
+so none is made: options below, for the user.
+
+1. **The forget.** The stale rule's 1e-4 assumes the clean stretch after k events is one more gap at the same rate. The
+   first sample goes one datagram a call; later MTU samples go as trains of ~31 units, and a loss above the segmentation
+   (netem; a queue that drops one GSO packet) takes a train whole. That is the same p per frame with a thirtieth of the
+   chances. After k <= 8 first-sample events the ratio forgets at C >= 1,563 (k = 8) to 3,840 (k = 5) frames, which
+   trains (1% each, 50-124 of them) leave clean 29-60% of the time; a later train loss brings ~31 events (k > 8) and ends the exposure.
+2. **The runs die in reassembly, not in the drain.** At n = 45 and 1% a run is lost 36% of the time. Each lost run
+   leaves an incomplete queue (~97 KB truesize) for `ipfrag_time`, 30 s: 43 of them, about 7 samples' lost runs, fill
+   `ipfrag_high_thresh` (4 MiB). Above it the kernel refuses every fragment (`ReasmFails`) until they expire. The reader's
+   socket and drain lose nothing; the drain's overrun (MTU repairs, one 65,600 B buffer each) hands over to the
+   socket as designed. At n = 2 the IP ID wraps every ~6 s, which recycles stale queues: memory stays at 2-2.6 MB.
+3. **Rule (e) on the writer.** Every run refused with the tail through is rule (e): MTU for `path_clean_ns` (2 tau),
+   then one run. For up to tau the reader host does drop every fragment, and at 1% MTU is n* anyway. Only the warning's
+   cause is wrong: the reader's reassembly memory, filled by our own lost runs, not the path. Giving the writer the
+   reader's guard (runs through within tau: leave it to the collapse test) would keep the runs going into a host that
+   refuses them: forced n = 45 there repairs every sample whole, p99 43 ms.
+
+- **Evidence.** `hybrid_forget_netns.sh` (registered first): 4 of 16 auto reps CHAIN, each a stale forget of 7-8
+  events, then "none seen", 8-10 samples at 45, reassembly FULL with 676-1,116 `ReasmFails`, receiver drops 0; forced
+  n = 45 at 1% FULL 4 of 4; the control (n = 45, 0%) peaks at 99 KB with no failure. Archive: 12 of 37 GSO-on reps,
+  0 of 44 GSO off. Sim: `test_train_losses_outlast_the_stale_rule` (8 events forgotten, 4 samples at n_max; rule off: 0).
+- **Cost** (PC, 10 s reps): p99 16.3-19.2 ms in the chain against 10.6-13.4 without; delivery equal. The reader
+  host refuses every other IP fragment for up to 30 s. Rig: 1 rep of 93.
+- **Options** (none taken):
+  - (a) After a stale forget, announce no estimate (`loss_p` 0), not "none seen". The writer then re-measures one sample
+    one datagram a call, as for the first p, so "none seen" rests on frames again. Cost: one sample of MTU send calls
+    per forget; at 0% loss, n_max one sample later.
+  - (b) Forget only at the floor (9,210 clean frames, ~13 samples of 1 MB), dropping the ratio. With trains that
+    stretch comes ~5% of the time, so ~4% of reps instead of ~30%. A real early burst then waits 13 samples below
+    n_max, not 2-5.
+  - (c) Count exposure in send calls: the reader cannot see them; it would need a wire field. Excluded.
+  - (d) MTU units always one a call: the send calls GSO saves, not measured alone (GSO and GRO off together: 2.2x
+    the reader's CPU per MB, HMA).
+  - (e) Alone, or with any of them: the rule-(e) warning names the reader's reassembly memory as a possible cause.
+
 #### Saturation: where I4s lost its samples, and the receive drain
 
 With no receive thread, the socket overflows while a callback decodes a large sample. The **receive drain**
