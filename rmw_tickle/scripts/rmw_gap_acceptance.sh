@@ -43,16 +43,31 @@
 #   a missing type is a hard error. Rebuild the workspace without it and both
 #   cases go back to looking like two unrelated defects in recording and in retention.
 #
-# Usage: rmw_gap_acceptance.sh -w WS [TEST...]   (default: all). WS holds rmw/install (rmw_tickle) and ifaces/install
-# (the standard interfaces with TickLE typesupport, build_ros2_interfaces.sh). Output: one line per test and rmw, then a
-# table; exit 0 when every control passed (the rmw_tickle results are the report, not the exit status).
+# Usage: rmw_gap_acceptance.sh [-c] -w WS [TEST...]   (default: all). WS holds rmw/install (rmw_tickle) and
+# ifaces/install (the standard interfaces with TickLE typesupport; build_acceptance_ws.sh provisions both). Output: one
+# line per test and rmw, then a table.
+#
+# Exit status, by default: 0 when every control passed (the rmw_tickle results are the report, not the exit status).
+#
+# -c, CI mode (2026-10-24): the rmw_tickle results ARE the exit status. CI never ran this suite, and `durable` delivered
+# 0 of 4 samples for four days (from d25c12a2) with nobody looking; a mode whose exit ignores rmw_tickle could not have
+# caught that either. Every case must PASS on both arms, and anything else is named with its verdict:
+#   0  every case PASSed on the control and on rmw_tickle
+#   1  some rmw_tickle case did not PASS (FAIL, ERROR, VOID or no verdict at all), or a control did not PASS - a VOID
+#      case answers nothing about rmw_tickle, so "no answer" fails rather than reading as a pass
+#   4  everything that ran PASSed, but a case could not run here (NOT RUN: e.g. besvc on a kernel without sch_netem) -
+#      its own status, so a missing kernel module neither hides as a pass nor reads as an rmw_tickle defect
+#   3  rmw_tickle resolves to another workspace (as without -c); 2 usage
 # The t_* tests and helpers are called indirectly, as "t_$t", and from command substitutions.
 # shellcheck disable=SC2329
 set -u
 WS=""
-while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
+CI_MODE=0
+while getopts "cw:" o; do case "$o" in c) CI_MODE=1 ;; w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
-[ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
+[ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 [-c] -w WS [TEST...]" >&2; exit 2; }
+# run_in drops back to this user inside each namespace; a container or a bare `env -i` may not set USER.
+USER=${USER:-$(id -un)}
 TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names besvc}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
@@ -518,11 +533,14 @@ t_peers() {
 BESVC_CLEAN=50
 BESVC_LOSSY=200
 BESVC_LOSS=10
+# The qdisc both the probe and the lossy arm use. Only ever changed to check the NOT RUN path: a name the kernel does not
+# know (BESVC_QDISC=no_such_qdisc) must make besvc NOT RUN and -c exit 4, which is what a runner without sch_netem gets.
+BESVC_QDISC=${BESVC_QDISC:-netem}
 besvc_arm() { # besvc_arm RMW LOSS CALLS LOG: prints the client's answered count, or -1 if a process did not run
     local rmw=$1 loss=$2 calls=$3 d=$4
     if [ "$loss" != 0 ]; then
-        sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root netem loss "$loss%" || { echo -1; return; }
-        sudo -n ip netns exec "$NS2" tc qdisc add dev accv2 root netem loss "$loss%" || { echo -1; return; }
+        sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root "$BESVC_QDISC" loss "$loss%" || { echo -1; return; }
+        sudo -n ip netns exec "$NS2" tc qdisc add dev accv2 root "$BESVC_QDISC" loss "$loss%" || { echo -1; return; }
     fi
     local secs=$((25 + calls))
     run_in "$NS2" "$rmw" 2 "$secs" "" python3 "$NODE" besvc_server "$secs" > "$d/server_$loss.log" 2>&1 &
@@ -543,6 +561,14 @@ besvc_arm() { # besvc_arm RMW LOSS CALLS LOG: prints the client's answered count
 t_besvc() {
     local rmw=$1 d=$OUTDIR/besvc_$1
     mkdir -p "$d"
+    # The lossy arm needs tc netem. A kernel without sch_netem (a CI runner's, say) is "this case could not run here",
+    # which must not look like the ERROR of a client that made too few calls, nor like a pass: probe it first, alone.
+    local why
+    if ! why=$(sudo -n ip netns exec "$NS1" tc qdisc add dev accv1 root "$BESVC_QDISC" loss 0% 2>&1); then
+        echo "NOT RUN(tc $BESVC_QDISC unavailable: $(echo "$why" | head -1))"
+        return
+    fi
+    sudo -n ip netns exec "$NS1" tc qdisc del dev accv1 root
     local clean lossy
     clean=$(besvc_arm "$rmw" 0 "$BESVC_CLEAN" "$d")
     lossy=$(besvc_arm "$rmw" "$BESVC_LOSS" "$BESVC_LOSSY" "$d")
@@ -584,9 +610,38 @@ for t in $TESTS; do
     # PASS or PASS(detail): a test whose result is a measurement rather than a yes/no carries its
     # numbers in the verdict (bagstall), and throwing them away to satisfy an exact match would lose
     # the only thing that run produced. Every test that prints a bare PASS still matches.
-    case "${VERDICT[$t:$ctl]}" in PASS | PASS\(*) ;; *) ctl_fail=1; echo "$t: control ($ctl) failed - VOID" | tee -a "$OUTDIR/summary.txt" ;; esac
+    case "${VERDICT[$t:$ctl]}" in
+        PASS | PASS\(* | "PASS "*) ;;
+        "NOT RUN"*) ctl_fail=1; echo "$t: could not run here - NOT RUN" | tee -a "$OUTDIR/summary.txt" ;;
+        *) ctl_fail=1; echo "$t: control ($ctl) failed - VOID" | tee -a "$OUTDIR/summary.txt" ;;
+    esac
 done
 echo "=== results in $OUTDIR ===" | tee -a "$OUTDIR/summary.txt"
 printf '%-9s | %-45s | %s\n' test control rmw_tickle | tee -a "$OUTDIR/summary.txt"
 for t in $TESTS; do printf '%-9s | %-45s | %s\n' "$t" "${VERDICT[$t:control]}" "${VERDICT[$t:rmw_tickle]}"; done | tee -a "$OUTDIR/summary.txt"
-exit "$ctl_fail"
+[ "$CI_MODE" = 1 ] || exit "$ctl_fail"
+
+# CI mode: every arm of every case is read, and each one that did not PASS is printed with its verdict - the reason is
+# the verdict's own detail, and the logs are under OUTDIR/<test>_<rmw>/.
+passed=0 failed=0 voided=0 notrun=0
+for t in $TESTS; do
+    ctl=${CONTROL[$t]:-rmw_cyclonedds_cpp}
+    for rmw in "$ctl" rmw_tickle; do
+        v=${VERDICT[$t:$rmw]:-}
+        case "$v" in
+            # Every PASS shape the cases print: bare, PASS(detail), and samehost's "PASS (rx_shm=N)" - the first
+            # version of this list missed the last and failed a passing run.
+            PASS | PASS\(* | "PASS "*) passed=$((passed + 1)); continue ;;
+            "NOT RUN"*) notrun=$((notrun + 1)); kind="NOT RUN" ;;
+            *) if [ "$rmw" = "$ctl" ]; then voided=$((voided + 1)); kind="VOID (control failed)"; else
+                failed=$((failed + 1)); kind=FAIL; fi ;;
+        esac
+        echo "CI: $kind  $t $rmw: ${v:-<no verdict: the case printed nothing>}  (logs: $OUTDIR/${t}_$rmw/)" |
+            tee -a "$OUTDIR/summary.txt"
+    done
+done
+ci_exit=0
+if [ $((failed + voided)) -gt 0 ]; then ci_exit=1; elif [ "$notrun" -gt 0 ]; then ci_exit=4; fi
+echo "CI_RESULT: exit=$ci_exit passed=$passed failed=$failed void=$voided not_run=$notrun" \
+    "(arms: $(($(echo "$TESTS" | wc -w) * 2)))" | tee -a "$OUTDIR/summary.txt"
+exit "$ci_exit"

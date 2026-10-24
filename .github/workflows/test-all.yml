@@ -42,9 +42,9 @@ concurrency:
 permissions:
   contents: read
 
-# Six jobs run the tiers side by side, each on its own runner, and `test` gates on all of them (2026-10-17). Until then
-# one job ran every tier in sequence: 33 min on 2026-10-17, against 16-19 min on 2026-10-07, while the only steps that
-# can share a machine without changing their results are the static checks. Every tier, flag and timeout is as it was;
+# Six jobs run the tiers side by side, each on its own runner, and `test` gates on all of them (2026-10-17); a seventh,
+# rmw-acceptance, joined on 2026-10-24. Before 2026-10-17 one job ran every tier in sequence: 33 min on 2026-10-17,
+# against 16-19 min on 2026-10-07, while the only steps that can share a machine without changing their results are the static checks. Every tier, flag and timeout is as it was;
 # only where each runs changed. On separate runners no integration tier shares a CPU with a sanitizer build, which the
 # perf tier's sensitivity to a second copy of the suite (the concurrency note above) makes the safer arrangement anyway.
 #
@@ -375,9 +375,139 @@ jobs:
           path: ~/apt-debs
           key: ${{ steps.apt_collect.outputs.key }}
 
+  # rmw_tickle's acceptance suite (rmw_tickle/scripts/rmw_gap_acceptance.sh, 16 ordinary ROS 2 scenarios across two
+  # network namespaces, each run on rmw_cyclonedds_cpp as the control and then on rmw_tickle), added 2026-10-24 at the
+  # user's decision. CI had never run it, and `durable` - a late TRANSIENT_LOCAL subscriber - delivered 0 of 4 samples
+  # from d25c12a2 (2026-10-20) for four days before anyone ran the suite by hand.
+  #
+  # Its own job, which builds rmw_tickle and the interface workspace again rather than reusing Check all's build: that
+  # job runs 35-60 min, and a job reusing its output could only start after it. Here the ~6 min of building runs in
+  # parallel with everything else, so the job (~30 min) still ends before Check all does.
+  #
+  # -c is the suite's CI mode: every case must PASS on both arms. A FAIL or ERROR on rmw_tickle and a control that did
+  # not pass (VOID) both fail the step with the case named; a case that cannot run on this runner (besvc without
+  # sch_netem) exits 4 and fails it too, as NOT RUN, so a missing kernel module neither passes silently nor reads as an
+  # rmw_tickle defect. jazzy, like Check all: the suite was written against lyrical locally, so ROS_DISTRO_DIR says so.
+  rmw-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50 # setup-ros ~3 min on a good mirror, the two builds ~6 min, the suite 19 min on this PC
+    outputs:
+      acceptance: ${{ steps.acceptance.outcome }}
+    env:
+      ROS_DISTRO_DIR: /opt/ros/jazzy
+      ACCEPT_WS: ${{ github.workspace }}/../accept_ws
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Check all's apt cache, restored and never saved from here: its entries hold what setup-ros installs for jazzy,
+      # which is nearly all this job downloads, and a second writer under the same prefix would make the two jobs
+      # replace each other's entries. Check all's "Restore the apt package cache" says why it cannot change what is
+      # installed.
+      - name: Restore the apt package cache (Check all's)
+        id: apt_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-v1-${{ github.run_id }}
+          restore-keys: apt-debs-ubuntu-24.04-v1-
+
+      - name: Seed apt's archive directory from the cache
+        run: |
+          if [ -d "$HOME/apt-debs" ]; then
+            find "$HOME/apt-debs" -maxdepth 1 -name '*.deb' -exec sudo mv -t /var/cache/apt/archives/ {} +
+          fi
+          echo "seeded from cache entry '${{ steps.apt_cache.outputs.cache-matched-key }}'"
+
+      # The same pinned apt source as Check all's step of this name, for the same reason (setup-ros's unauthenticated
+      # api.github.com lookup runs out of quota on shared runner addresses).
+      - name: Install the ROS 2 apt source (pinned, so setup-ros does not look it up)
+        run: |
+          version=1.3.0
+          codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+          curl --fail --location --retry 3 --retry-delay 5 -o /tmp/ros2-apt-source.deb \
+            "https://github.com/ros-infrastructure/ros-apt-source/releases/download/$version/ros2-apt-source_$version.${codename}_all.deb"
+          sudo dpkg -i /tmp/ros2-apt-source.deb
+          rm -f /tmp/ros2-apt-source.deb
+          sudo apt-get update
+          apt-cache policy | grep -q 'packages.ros.org/ros2/ubuntu'
+
+      - name: Set up ROS 2
+        id: setup_ros
+        continue-on-error: true
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Wait before retrying ROS 2 setup
+        if: steps.setup_ros.outcome == 'failure'
+        run: sleep 60
+
+      - name: Set up ROS 2, retry
+        if: steps.setup_ros.outcome == 'failure'
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      # What the suite runs beyond rmw_tickle: the control rmw, rclpy and ros2cli, rosbag2 for bag and bagstall,
+      # sensor_msgs and std_srvs for durable, inprocess and besvc. Most come with setup-ros's desktop install; naming them
+      # makes a missing one an apt error here instead of a VOID case later. iproute2 is ip netns and tc.
+      #
+      # sch_netem is besvc's lossy arm. Azure's kernel ships it in linux-modules-extra on some images and not at all on
+      # others; loading it is attempted, and whether it worked is printed, but not enforced here - the suite probes tc
+      # netem itself and reports besvc NOT RUN (exit 4) if it is missing.
+      - name: Install the suite's runtime packages and load sch_netem
+        run: |
+          sudo apt-get install -y iproute2 \
+            ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-rclpy ros-jazzy-ros2cli ros-jazzy-ros2node ros-jazzy-ros2param \
+            ros-jazzy-ros2topic ros-jazzy-rosbag2 ros-jazzy-sensor-msgs ros-jazzy-std-srvs
+          uname -r
+          if ! sudo modprobe sch_netem; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe sch_netem || true
+          fi
+          if grep -qw '^sch_netem' /proc/modules || [ -d /sys/module/sch_netem ]; then
+            echo "sch_netem: loaded"
+          else
+            echo "::warning::sch_netem could not be loaded on kernel $(uname -r); besvc will report NOT RUN"
+          fi
+
+      - name: Build rmw_tickle and the interface workspace
+        run: rmw_tickle/scripts/build_acceptance_ws.sh -w "$ACCEPT_WS"
+
+      - name: rmw_tickle acceptance suite (CI mode)
+        id: acceptance
+        continue-on-error: true
+        run: |
+          OUTDIR="$RUNNER_TEMP/acceptance" rmw_tickle/scripts/rmw_gap_acceptance.sh -c -w "$ACCEPT_WS" && rc=0 || rc=$?
+          {
+            echo "## rmw_tickle acceptance suite"
+            echo '```'
+            cat "$RUNNER_TEMP/acceptance/summary.txt" 2>/dev/null || echo "no summary.txt - the suite did not start"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            1) echo "::error::acceptance: a case failed on rmw_tickle or its control failed (VOID) - see the CI: lines" ;;
+            3) echo "::error::acceptance: rmw_tickle resolved to another workspace than $ACCEPT_WS" ;;
+            4) echo "::error::acceptance: every case that ran passed, but a case could NOT RUN on this runner" ;;
+            *) echo "::error::acceptance: the suite exited $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: Upload the per-case logs
+        if: always() && steps.acceptance.outcome != 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: rmw-acceptance-logs
+          path: ${{ runner.temp }}/acceptance/
+          if-no-files-found: warn
+
   # The gate, under the job name the workflow has always had, so a required "test" check keeps meaning "every tier".
   test:
-    needs: [linux-unit, coverage, sanitize, linux-netns, linux-netns-shm-off, freertos]
+    needs: [linux-unit, coverage, sanitize, linux-netns, linux-netns-shm-off, freertos, rmw-acceptance]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -440,12 +570,14 @@ jobs:
             'Integration Linux=${{ needs.linux-netns.outputs.itest_linux }}' \
             'Integration Linux shm-off=${{ needs.linux-netns-shm-off.outputs.itest_linux_shm_off }}' \
             'Integration FreeRTOS=${{ needs.freertos.outputs.itest_freertos }}' \
+            'rmw acceptance=${{ needs.rmw-acceptance.outputs.acceptance }}' \
             'job linux-unit=${{ needs.linux-unit.result }}' \
             'job coverage=${{ needs.coverage.result }}' \
             'job sanitize=${{ needs.sanitize.result }}' \
             'job linux-netns=${{ needs.linux-netns.result }}' \
             'job linux-netns-shm-off=${{ needs.linux-netns-shm-off.result }}' \
-            'job freertos=${{ needs.freertos.result }}'; do
+            'job freertos=${{ needs.freertos.result }}' \
+            'job rmw-acceptance=${{ needs.rmw-acceptance.result }}'; do
             name="${s%%=*}"; outcome="${s#*=}"
             printf '%-26s %s\n' "$name" "${outcome:-<none>}"
             if [ "$outcome" != success ]; then fail=1; fi

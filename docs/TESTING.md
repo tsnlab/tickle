@@ -26,7 +26,7 @@ Run from the repository root. Figures: [RESULTS.md](RESULTS.md).
 | `make test-all` | `test headers-cpp check-doc-shas check-bench-shapes test-samehost test-linux test-freertos` | all of the above |
 | `make test-typesupport` / `make regen` | generator pytest / regenerate codecs (CI fails on a diff) | Python |
 | `make test-rmw` / `make test-rmw-behaviour` | rmw ctest suite in a netns / plus CI's interface checks; builds the checkout's own typesupport and rmw_tickle per checkout, and fails if the workspace's interfaces were built against other typesupport headers | ROS 2 workspace (`RMW_TEST_WS`, `~/rmw_accept_dev`, `~/rmw_accept_ws`) |
-| `rmw_tickle/scripts/rmw_gap_acceptance.sh -w ~/rmw_accept_ws` | acceptance; `rmw_cyclonedds_cpp` first as control | ROS 2 |
+| `rmw_tickle/scripts/rmw_gap_acceptance.sh [-c] -w ~/rmw_accept_ws` | acceptance; `rmw_cyclonedds_cpp` first as control. `-c` (CI's `rmw-acceptance` job in Test all) also fails on any rmw_tickle case: exit 1 FAIL or VOID, 4 NOT RUN (no `sch_netem`). `build_acceptance_ws.sh -w WS` provisions WS | ROS 2, `sudo ip`, `tc` |
 | `make createns` ... `make deletens` | manual netns runs (`platform/linux/netns.mk`) | `sudo ip` |
 
 FreeRTOS or `include/tickle/hal.h` change: also `make -C platform/freertos lint`. Upstream conformance: CI only.
