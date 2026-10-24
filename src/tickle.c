@@ -17908,11 +17908,24 @@ static void hybrid_reader_start(struct tt_Context* node) {
 // Whether the p a reader measures has moved far enough from what its announce carries to announce it again: by a factor
 // of 2 either way (its exponent), or to or from "no estimate". Cost(n) is flat at its minimum: n* goes as 1 / sqrt(p),
 // so a factor of 2 in p is a factor of 1.4 in n.
+// Or when a writer would choose another n from it (DESIGN.md section 8, "Announcing p", 2026-10-24). The exponent alone
+// held a stale p for the whole stream wherever a boundary of n* lies inside the measured p's factor-of-2 band: at 1%
+// loss n = 1 / n = 2 is 0.886%, inside [0.781%, 1.5625%), and the rig's Array1m cell sent runs of 2 in 41 of 93 reps
+// while its readers measured 0.94-1.05% (n* = 1) - the p announced was the first tail's, or a dip's, and nothing moved
+// it again. n* here is the writer's own (hybrid_reliable_n(): the same u and h) over tt_HYBRID_N_MAX: Cost(n) is
+// unimodal over 1..45 wherever n* > 1 (its step changes sign once below n = 2 (1 - p) / p), so the n a writer takes
+// under any smaller n_max changes only when this one does.
 static bool hybrid_loss_moved(uint16_t measured, uint16_t advertised) {
     if (measured == 0 || advertised == 0) {
         return measured != advertised;
     }
-    return (measured >> 8U) != (advertised >> 8U);
+    if ((measured >> 8U) != (advertised >> 8U)) {
+        return true;
+    }
+    double unit = (double)HYBRID_UNIT;
+    double header = (double)HYBRID_UNIT_HEADER;
+    return hybrid_n_star(hybrid_loss_decode(measured), unit, header, (uint32_t)tt_HYBRID_N_MAX) !=
+           hybrid_n_star(hybrid_loss_decode(advertised), unit, header, (uint32_t)tt_HYBRID_N_MAX);
 }
 
 // Once per announce interval (node_update()): R and tau from the interval's traffic, one decision of the control law,

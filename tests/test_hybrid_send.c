@@ -1690,11 +1690,48 @@ static void test_the_loss_code_rounds_up(void) {
     EXPECT_EQ_U32(0, hybrid_loss_code(0.0));
     EXPECT_TRUE(hybrid_loss_decode(0) == 1.0);
     EXPECT_EQ_U32((1U << 8U) | 0U, hybrid_loss_code(0.25)); // exactly a power of two: no rounding up past it
-    // Re-announced on a factor of 2 (an exponent), or to and from none.
-    EXPECT_TRUE(!hybrid_loss_moved(hybrid_loss_code(0.001), hybrid_loss_code(0.0015)));
+    // Re-announced on a factor of 2 (an exponent), or to and from none - or on another n* (the test below).
+    EXPECT_TRUE(!hybrid_loss_moved(hybrid_loss_code(0.001), hybrid_loss_code(0.00105))); // n* 4 both
+    EXPECT_TRUE(!hybrid_loss_moved(hybrid_loss_code(0.01), hybrid_loss_code(0.0125)));   // n* 1 both
     EXPECT_TRUE(hybrid_loss_moved(hybrid_loss_code(0.001), hybrid_loss_code(0.0021)));
     EXPECT_TRUE(hybrid_loss_moved(hybrid_loss_code(0.001), 0));
     EXPECT_TRUE(hybrid_loss_moved(0, hybrid_loss_code(0.001)));
+}
+
+// The reader re-announces p when a writer's n* moves, not only on a factor of 2 (DESIGN.md section 8, "Announcing p",
+// 2026-10-24). At 1% the n = 1 / n = 2 boundary (0.886%) is inside 1%'s exponent band: the rig's Array1m cell held a
+// first tail's 0.830% (n = 2) for the whole stream while its reader measured ~1% (n = 1). The control is the same pair
+// one band over: 0.830% against 1.6% moved before as it does now.
+static void test_p_is_announced_when_n_star_moves(void) {
+    uint16_t stale = hybrid_loss_code(0.0083);
+    uint16_t now = hybrid_loss_code(0.0097);
+    EXPECT_EQ_U32(stale >> 8U, now >> 8U); // one exponent: the factor-of-2 rule alone keeps the stale p
+    EXPECT_EQ_U32(2, hybrid_n_star(hybrid_loss_decode(stale), (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, 45));
+    EXPECT_EQ_U32(1, hybrid_n_star(hybrid_loss_decode(now), (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, 45));
+    EXPECT_TRUE(hybrid_loss_moved(now, stale));
+    EXPECT_TRUE(hybrid_loss_moved(stale, now));
+    EXPECT_TRUE(hybrid_loss_moved(hybrid_loss_code(0.016), stale)); // the control: another exponent
+    // Through the announce: a reader that announced 0.830% and now measures 0.97% announces it.
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    test_mock_receiver_drops = 0;
+    hybrid->advertised_loss = stale;
+    loss_estimate_observe(&hybrid->rx_loss, 100000, 969); // (969 + 1) / 100,000 = 0.97%
+    hybrid_announce(node, test_mock_now);
+    EXPECT_EQ_U32(hybrid_loss_code(0.0097), hybrid->advertised_loss);
+    // And one whose n* has not moved keeps what it announced: 0.97% measured, 1.2% announced, n* 1 both.
+    hybrid->advertised_loss = hybrid_loss_code(0.012);
+    hybrid_announce(node, test_mock_now);
+    EXPECT_EQ_U32(hybrid_loss_code(0.012), hybrid->advertised_loss);
+    // What the reader's compare rests on: over any smaller n_max a writer's n* is min(n* over 45, n_max).
+    for (double p = 1e-6; p < 0.5; p *= 1.07) {
+        uint32_t wide = hybrid_n_star(p, (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, 45);
+        for (uint32_t n_max = 1; n_max <= 45; n_max++) {
+            uint32_t narrow = hybrid_n_star(p, (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, n_max);
+            EXPECT_EQ_U32(wide < n_max ? wide : n_max, narrow);
+        }
+    }
 }
 
 // "None seen" (hybrid_rx_loss_code(, hybrid_opts())) takes tt_HYBRID_NONE_SEEN_FRAMES clean frames, not one frame
@@ -3661,6 +3698,7 @@ int main(void) {
     test_receiver_drops_are_not_path_loss();
     test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();
+    test_p_is_announced_when_n_star_moves();
     test_none_seen_takes_its_frames();
     test_the_path_rule_needs_frame_loss_to_be_no_excuse();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
