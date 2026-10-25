@@ -25,6 +25,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/hal_linux.h>
 #include <tickle/tickle.h>
 
 #include "Bench.h"
@@ -256,11 +257,14 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.6f %s "
-           "history=none segment_slots=%d keep=%s keep_depth=%d kept=%lu lend_ok=%lu lend_refused=%lu %s %s%s\n",
+           "history=none segment_slots=%d keep=%s keep_depth=%d kept=%lu lend_ok=%lu lend_refused=%lu rx_batch=%d "
+           "rx_batch_calls=%llu rx_batch_datagrams=%llu rx_batch_full=%llu %s %s%s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct,
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
            tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0, keep_name(), g_keep == KEEP_NONE ? 0 : g_keep_depth,
-           (unsigned long)g_kept, (unsigned long)g_lend_ok, (unsigned long)g_lend_refused,
+           (unsigned long)g_kept, (unsigned long)g_lend_ok, (unsigned long)g_lend_refused, (int)tt_RX_BATCH,
+           (unsigned long long)node.hal.rx_batch_calls, (unsigned long long)node.hal.rx_batch_datagrams,
+           (unsigned long long)node.hal.rx_batch_full,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields),
