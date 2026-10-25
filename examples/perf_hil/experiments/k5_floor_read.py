@@ -71,6 +71,14 @@ def main():
     void = []
     # ---- P1: HIGH / COLLAPSE / STORM, pooled over ge5b2 and ge5b4
     p1 = {t: reps(out, f"{tag}_p1", t) for t in TREES}
+    extra = os.environ.get("K5_P1_EXTRA", "").split()  # the P1 extension (k5_floor_ab.sh header), pooled
+    for x in extra:
+        for t in TREES:
+            for key, rs in reps(out, f"{x}_p1", t).items():
+                p1[t].setdefault(key, []).extend(rs)
+        planned["p1"] += int(sys.argv[3])
+    if extra:
+        print(f"P1 POOLED with {extra} (the extension's second look; the 40-rep reading is the registered one)")
     counts = {t: {"HIGH": 0, "COLLAPSE": 0, "STORM": 0, "n": 0} for t in TREES}
     print("P1 per arm (resends median; HIGH > 1.5 x M median, COLLAPSE timer > 5 x M median, STORM > 10 x):")
     for arm in ("ge5b2", "ge5b4"):

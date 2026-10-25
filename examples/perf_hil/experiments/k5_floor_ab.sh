@@ -36,6 +36,13 @@
 #   LAND the floor with K only if CONTROL PASS, MECHANISM SHOWN, OUTCOME FIXED, R4 PASS and KEEPS, NO WORSE.
 #   VOID: a tree with fewer than 0.8 x the planned reps on an arm.
 #
+# EXTENSION (registered 2026-10-26 04:30, after P1 of run k5ab and before the extension's run): P1 read K HIGH 3/40 and
+#   COLLAPSE 4/40 against KF 0/40 and 0/40 - the power the header expected at its low end (one-sided p 0.12 / 0.06).
+#   P1X = P1 again, 20 more reps a tree on both arms, the same four trees at once (EXTEND=1: P1 only, tag <TAG>x).
+#   k5_floor_read.py with K5_P1_EXTRA=<TAG>x re-reads MECHANISM and OUTCOME on the pooled 80 reps a tree by the same
+#   rules (references from M's pooled reps). The 40-rep reading stays the registered one and is reported beside it;
+#   the pooled one is a second look (optional stopping: read its p as nominal).
+#
 # Usage: M=dir A=dir K=dir KF=dir [REPS1=20] [REPS2=6] [REPS3=5] [OUT=~/k5_results] TAG=name k5_floor_ab.sh
 #   Output: $OUT/<TAG>_p{1,2,3}_* (wifi_repair_ab.sh) and $OUT/<TAG>.verdict.txt, which ends "=== k5_floor_ab ended".
 set -uo pipefail
@@ -54,6 +61,7 @@ TREES="M=$M A=$A K=$K KF=$KF"
 export PROFILE=wifi NODE_ENV=TT_UDP_OFFLOAD=0 LARGE_RSTATS=1 BASE_OUT="$OUT"
 TREES=$TREES TAG=${TAG}_p1 REPS=${REPS1:-20} CELLS=rel_large ARMS="ge5b2 ge5b4" "$HERE/wifi_repair_ab.sh"
 echo "p1 done $(date -Is)" >>"$VERDICT"
+[ "${EXTEND:-0}" = 1 ] && exit 0 # the P1 extension (header): P1 only
 TREES=$TREES TAG=${TAG}_p2 REPS=${REPS2:-6} CELLS="rel_small rel_large" ARMS="ctl ge10b4" "$HERE/wifi_repair_ab.sh"
 echo "p2 done $(date -Is)" >>"$VERDICT"
 TREES=$TREES TAG=${TAG}_p3 REPS=${REPS3:-5} CELLS=rel_large ARMS="bc tv" "$HERE/wifi_repair_ab.sh"
