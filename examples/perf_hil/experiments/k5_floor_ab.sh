@@ -43,6 +43,18 @@
 #   rules (references from M's pooled reps). The 40-rep reading stays the registered one and is reported beside it;
 #   the pooled one is a second look (optional stopping: read its p as nominal).
 #
+# THE DISCARD VARIANT (registered 2026-10-26 04:53, before its run; tag k5d, KF= the k5-discard tree, the other three as
+#   before). Seen in k5ab, not registered there: the clamp gave back K's tail - median per-rep p99 at ge5b2 M 254, K 181,
+#   KF 247 ms (ge5b4 256 / 182 / 256, bc 99 / 77 / 102). Traced (trace2_KFT, k5_sample_lat.py, k5_floor_traj.py): its
+#   slow samples are the rep's first ~20; the seed probe ends at ~0.04 s, inside the first sample's drain, when the
+#   least transit is still 20-36 ms (~5 ms by the next probe), and the seed raised to it held the interval long for
+#   ~2 s. The variant leaves a sub-floor recovery untimed instead (path_sample_too_short()): the seed is the first
+#   recovery no faster than any repair, here the next probe (5.7-6.8 ms at ~0.3 s).
+#   Every rule above applies to it unchanged, plus TAIL (k5_floor_read.py): on rel_large ge5b2, ge5b4 (P1) and bc, tv
+#   (P3), KF's median per-rep p99 <= K's + (10% of K's + |A - M|) -> KEEPS, else LOSES; LAND also needs TAIL KEEPS on
+#   every arm. FALSIFIED if KF COLLAPSE >= K COLLAPSE with K >= 3 (as before), or TAIL LOSES at ge5b2 or ge5b4 (the
+#   start-up was not the cause).
+#
 # Usage: M=dir A=dir K=dir KF=dir [REPS1=20] [REPS2=6] [REPS3=5] [OUT=~/k5_results] TAG=name k5_floor_ab.sh
 #   Output: $OUT/<TAG>_p{1,2,3}_* (wifi_repair_ab.sh) and $OUT/<TAG>.verdict.txt, which ends "=== k5_floor_ab ended".
 set -uo pipefail
