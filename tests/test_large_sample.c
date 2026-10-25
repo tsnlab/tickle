@@ -484,6 +484,12 @@ static bool sim_drop_tail_heartbeats;
 static bool sim_heartbeat_owed;
 static uint32_t sim_tails_dropped[64];
 static uint32_t sim_tail_count;
+// Drops the first sim_unit_drops[i].copies copies of the writer's continuation fragment sim_unit_drops[i].index -
+// its original, then its repairs - of whichever large sample it is in.
+static struct {
+    uint16_t index;
+    uint8_t copies;
+} sim_unit_drops[4];
 static uint32_t sim_oversize;
 // A writer busy sending a large sample reads nothing until the send ends, as one blocked in a long sendmmsg() loop
 // does: the reader's datagrams to it wait here meanwhile.
@@ -542,6 +548,22 @@ static bool sim_tail_drop(const uint8_t* bytes) {
         sim_heartbeat_owed = sim_drop_tail_heartbeats;
     }
     return true;
+}
+
+static bool sim_unit_drop(const uint8_t* bytes) {
+    const uint8_t* body = NULL;
+    if (datagram_type(bytes, &body) != tt_SUBMESSAGE_TYPE_FRAG_CONT_L) {
+        return false;
+    }
+    struct tt_FragContLHeader cont;
+    memcpy(&cont, body, sizeof(cont));
+    for (size_t i = 0; i < sizeof(sim_unit_drops) / sizeof(sim_unit_drops[0]); i++) {
+        if (sim_unit_drops[i].copies != 0 && sim_unit_drops[i].index == cont.frag_index) {
+            sim_unit_drops[i].copies--;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void sim_capture(const void* buf, size_t len) {
@@ -621,7 +643,7 @@ static void sim_deliver_now(struct sim_datagram* d) {
         sim_dropped[d->from]++;
         return;
     }
-    if (sim_lost() || (d->from == SENDER_ID && sim_tail_drop(d->bytes))) {
+    if (sim_lost() || (d->from == SENDER_ID && (sim_tail_drop(d->bytes) || sim_unit_drop(d->bytes)))) {
         sim_dropped[d->from]++;
         return;
     }
@@ -714,6 +736,7 @@ static void sim_start(uint32_t loss_per_mille) {
     sim_reverse = false;
     sim_drop_tails = false;
     sim_tail_count = 0;
+    memset(sim_unit_drops, 0, sizeof(sim_unit_drops));
     sim_drop_tail_heartbeats = false;
     sim_heartbeat_owed = false;
     sim_oversize = 0;
@@ -1521,6 +1544,54 @@ static void test_a_quiet_paths_round_trip_is_still_timed(void) {
     // recoveries still in it - and 7.39 ms over the 8 ms one; this change 1.80 and 6.37 (2026-10-16).
     EXPECT_TRUE(short_path >= 1500 * tt_MICROSECOND && short_path < 3 * tt_MILLISECOND);
     EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 12 * tt_MILLISECOND);
+}
+
+// One 1 MB sample, sent whole at once over a 2 ms path, losing units 100 and 200, and the first repair of 100 too:
+// the request for the watermark (100) is answered by 200's repair alone, and 100 comes with the retry. Answers the
+// reader's recovery estimate after it, and fills `copies` with the duplicates the reader got.
+static uint32_t srtt_after_a_repair_overtook_the_watermark(uint64_t* copies) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return 0;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // nothing timed yet: the sample's is the first recovery
+    sim_reverse_delay = 2 * tt_MILLISECOND;
+    test_mock_nonblocking_room = -1; // the sample goes out whole at once: no original arrives while a repair is awaited
+    sample_len = ONE_MB;
+    sim_unit_drops[0].index = 100;
+    sim_unit_drops[0].copies = 2;
+    sim_unit_drops[1].index = 200;
+    sim_unit_drops[1].copies = 1;
+    uint64_t duplicates = receiver.large.duplicate;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2, tt_SECOND));
+    sim_settle(2, 2 * tt_SECOND);
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_EQ_U32(0, sim_unit_drops[0].copies); // the treatment applied: both copies of 100 lost
+    EXPECT_EQ_U32(0, sim_unit_drops[1].copies);
+    *copies = receiver.large.duplicate - duplicates;
+    return proxy->recovery_srtt_ns;
+}
+
+static void test_a_repair_arriving_first_is_not_a_writer_still_sending(void) {
+    // Only an original arriving while a repair is awaited says the writer was still sending (tt_WriterProxy.
+    // probe_busy); another unit's repair says the writer answered. Here the watermark's own repair is lost and the
+    // other unit's arrives first: the writer is quiet, and the recovery - one retry, within the plain ones - is timed
+    // into the path's estimate. test_a_quiet_paths_round_trip_is_still_timed() meets this case in 2 or 3 of its 27
+    // recoveries, too few to move its estimate out of its bounds (2026-10-26); here it is the one recovery. Mutant
+    // (mutants_large_sample.py, "a repair marks the probe busy"): the recovery is not timed and the estimate stays 0.
+    uint64_t copies = 0;
+    uint32_t srtt = srtt_after_a_repair_overtook_the_watermark(&copies);
+    printf("test_large_sample: a repair ahead of the watermark's lost one - recovery srtt %.2f ms over a 2 ms path, "
+           "%llu duplicates\n",
+           (double)srtt / 1e6, (unsigned long long)copies);
+    EXPECT_TRUE(srtt >= 2 * tt_MILLISECOND); // a request, a lost repair, a retry and its repair: at least the path
 }
 
 // A writer that reads requests while it sends - repairs queued behind the rest of its sample - on a path of `delay`:
@@ -2859,6 +2930,7 @@ int main(void) {
     test_a_busy_writers_send_is_not_timed_as_the_path();
     test_wifi_repair_timing_keeps_the_default_rule_for_a_large_writer();
     test_a_quiet_paths_round_trip_is_still_timed();
+    test_a_repair_arriving_first_is_not_a_writer_still_sending();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();
     test_a_slow_readers_repairs_are_measured();

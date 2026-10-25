@@ -295,7 +295,7 @@ MUTANTS = [
         "            proxy->probe_busy = true;\n        }\n    }\n",
         "        proxy->original_arrival_ns = now;\n    }\n    if (proxy->probe_ns != 0 && now > proxy->probe_ns) {\n"
         "        proxy->probe_busy = true;\n    }\n",
-        "test_a_quiet_paths_round_trip_is_still_timed",
+        "test_a_repair_arriving_first_is_not_a_writer_still_sending",
     ),
     (
         "(srtt) a retry while the writer sends goes as any other",
