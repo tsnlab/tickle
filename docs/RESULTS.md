@@ -561,7 +561,9 @@ instructions per sample B vs A (P vs A) p1 -0.01% (-0.01%), p3 +0.00% (-0.01%), 
 6.9 ms round trip, because a writer of large samples kept the default timing rule, which times recoveries spanning a
 lost repair's wait. Karn's rule for that writer too (K, branch `r4-karn-large`) cuts the ge10b4 p50 from 100.8-104.1 ms
 to 74.2-74.7 ms. That is the limit (74.3-74.6), not clearly under it: one run FAIL by 0.4 ms, one PASS by 0.5 ms.
-Nothing else got WORSE. R7 is unchanged and FAIL on every tree.
+Nothing else got WORSE. R7 is unchanged and FAIL on every tree. Held, not landed: at 10 reps K stormed on the `tv`
+arm (main did too: `TVS`, fixed since); re-judged on the fix, K reaches the limit again (74.2 ms) with no storm, but
+its ge5b2 reps at ~2x the resends repeat (below).
 
 Reproduced on main b434f649 (WIFI, `TT_UDP_OFFLOAD=0`, ctl and ge10b4, 3 reps, 450 samples a cell, load at most 0.3):
 p50 138.4 ms against 74.2, reverse bytes 0.26%. Trace (`LARGE_TRACE`: `r4_trace.patch` on core, `r4_trace_read.py`;
@@ -611,6 +613,17 @@ at load 1.5, one at 13.4): 21-42k
 timer ACKNACKs and 35-76k resends (Karn's ambiguity; leaving out recoveries an older request had named did not stop
 it). In the other reps the wait moved to the writer's resend-order hold, whose timeout and RACK time are also measured
 behind the drain. The next lever is the same queue in the writer's repair estimate. No wire change is involved.
+
+**K at 10 reps** (rel_large only, the six arms; M = main, A = M again, K = M + the change; rules registered in
+`~/r4_results/*.prereg.txt` before each run):
+
+| run | base | ge10b4 p50 M / A / K ms | writer resends: reps over 2 x M's median | storms (> 10 x) | verdict |
+|---|---|---|---|---|---|
+| r4_storm | `b434f649` | 112.1 / 96.5 / 73.1 | A 3, K 3 | A 1 (tv, 525,319), K 1 (tv, 1,829,941) | FAIL as registered; the storm was main's (`TVS`) |
+| k_rejudge | `1a7b5376` (the fix) | 108.9 / 97.7 / 74.2 | A 1 (bc), K 2 (ge5b2: 12,325, 12,750 against 5,925) | none | storms PASS, every arm NOT WORSE; R4 VOID as registered (no rel_small ctl, so no base_rtt), at the limit (~74.3) read with r4_ab's base_rtt |
+
+K's ge5b2 reps at ~2x the resends recur: 1 of 3, 1 of 10 and 2 of 10, against 0 of 23 for M and A on that arm. Not
+landed: R4 is reached only at the limit, and the ge5b2 cost has no mechanism yet.
 
 ### The reliable HEARTBEAT fix's follow-ups, PC netns (`LRF`)
 
