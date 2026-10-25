@@ -74,6 +74,10 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   ACKNACK left out. Fixed: PC A/B, rig core gate PASS 0/88, Array1m/4m p99 equal; not the slow reader's bursts, which stay open. Also left: the
   reader's own retry estimate collapsing (timer ACKNACKs up to 25,558 a rep against ~80, `R4K`'s K2 note), which the
   writer's order contains.
+  **2026-10-26** (RESULTS `R4K`, `K5`): K's ~2x-resend reps are such a collapse. A seed from a probe whose repair was
+  already on its way (~0.2 ms) locks Karn's rule for the rep. Two cheap fixes (branches `k5-floor`, `k5-discard`) stop
+  it but give back K's ge5b2 tail; the clean fix is a wire change (a request serial echoed in the repair), for the
+  wireless stage. K stays held.
 
 ### Other open items
 
