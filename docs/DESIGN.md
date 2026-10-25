@@ -442,7 +442,7 @@ context goes again only when that reader has shown the resend lost:
 | condition | how the writer knows it, from one ACKNACK |
 |---|---|
 | **it received something sent after that resend** (RACK's order rule) | each resend, and each large sample's first send, takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed; the sample of the unit just below it) and units it leaves out between its lowest request and its highest request or known unit - every bitmap word but the last lies below the highest unit it knows of (a pending resend's own serial; the sample of the highest other one). On a path that keeps order, the resend would have arrived first |
-| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the first ACKNACK that shows it arrived, units resent once (Karn). Before the first sample: how long the reader took to ask for the unit after its sample began to go |
+| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the ACKNACK whose watermark passed it, units resent once and never left out (Karn; RESULTS `TVS`). Before the first sample: how long the reader took to ask for the unit after its sample began to go |
 
 Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
 is answered at once, as before; with nothing pending in the context nothing is read.
@@ -470,8 +470,13 @@ releases at ge1b1 not falling.
   interval (section 6). Each estimate errs one way: a sample's first send bounds when its units went from below, so
   "sent after" is never claimed for a copy that went earlier. What a skipping ACKNACK leaves out may still be on its way (a reader
   leaves out repairs it reckons in flight); read as received, it ends a hold early - one resend, as before the rule.
+  **It is never timed into the timeout's srtt** (2026-10-25, RESULTS `TVS`): such an ACKNACK can have gone before the
+  resend could reach the reader, and a run of those microsecond samples took srtt from ~40 ms to under 128 us on the
+  PC's tv arm; the timeout then released every held unit at every request and the resends filled netem's queue
+  (525,319 resent in a 30 s rep). The left-out unit's slot stays, marked untimed, until the watermark passes it; its
+  round trip still goes to RACK's, whose rule releases a unit's first resend only.
 - **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
-  reader context, serial, time, seed, resends - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
+  reader context, serial, time, seed, resends, left-out and untimed marks - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
   resend at its next request, as before. 8 B in each large record and each ack entry (256 B a Publisher). **FreeRTOS
   RV32: nothing** - large samples compile out there (section 8, "scope"). Send-call marks, to show a resend lost by a
   later part of the same sample, were built and taken out: every `test_large_sample` case read the same without them.

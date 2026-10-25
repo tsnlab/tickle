@@ -706,6 +706,97 @@ a mode CPU is equal on all four (IP ~5.4 / 4.4 ms/MB, MTU ~4.6 / 3.45). Median p
 ms, base 13.87 / 10.29, tail 10.75 / 10.09, aa 10.85 / 10.00 - the tail's cost against main is 0.4-0.8 ms (5-8%) at
 1%, its gain the 0.1% storm the PC shows and the rig does not. Landed on the user's call.
 
+### The tv repair storm, PC netns (`TVS`, 2026-10-25, not landed)
+
+**TL;DR.** Main's Wi-Fi `tv` arm (1 MiB RELIABLE at 5 Hz) stormed in 2 of 80 untraced reps (525,319 and 845,268 units
+resent against a median ~10,000; the K candidate in 3 of 40, up to 11,623,361). The cause was in core. The resend order's repair timeout (2 x srtt) took Karn samples
+from units an ACKNACK left out. A reader also leaves out repairs it reckons still on their way, so such an ACKNACK can
+arrive microseconds after the resend. A run of those samples took srtt from ~40 ms to under 128 us; the timeout then
+released every held unit at every request, and the resends overflowed netem's 10,000-packet queue. The fix (branch
+`storm-fix`, core `8d0d2eed`): a left-out unit is still taken as arrived but never timed into that srtt; RACK still takes
+it. Pre-registered A/B, 30 reps a tree: collapsed-timeout reps main 25 of 60, fix 0 of 30 (p < 0.0001); storms main 1,
+K 2, fix 0, fix + K 0; no Wi-Fi arm WORSE; ETHERNET's 1% tail NO COST against the A/A's spread (+0.7 ms, not ruled
+out).
+
+**The loop** (main, `wifi_repair_ab.sh` PROFILE=wifi `TT_UDP_OFFLOAD=0` LARGE_RSTATS=1; writer RSTATS, reader RSTATS,
+the writer egress's tc counters):
+
+| rep | resent | of them released by the timeout | timeout when released | units named / ACKNACKs | writer egress tc drops | reader socket drops | delivered |
+|---|---:|---:|---|---:|---:|---:|---:|
+| calm (r4_storm A tv-6) | 8,489 | 90 | 8-16 ms | 11,970 / 1,917 | 6,471 | 0 | 150 |
+| storm (r4_storm A tv-5) | 525,319 | 430,633 | 430,291 under 256 us | 545,448 / 2,326 | 407,389 | 0 | 145 |
+| storm (ab1 M tv-8) | 845,268 | 737,588 | 734,397 under 512 us | 874,886 / 2,439 | 721,586 | 0 | 148 |
+| storm (r4_storm K tv-10) | 1,829,941 | 1,620,036 | 1,617,999 under 256 us | 1,875,799 / 2,350 | 1,680,378 | 0 | 143 |
+
+- **The same units, again and again**: M tv-8 opened 36,250 missing units and resent 845,268 (23 a unit); each ACKNACK
+  named ~360. The reader's socket dropped nothing. netem's queue did: the calm rep's ~6,400 drops are the loss model,
+  the storm's 400,000-1,700,000 are overflow.
+- **Why the timeout fell** (`storm_trace.patch`, `storm_trace_scan.py`; 105 traced main reps and 60 of K): Karn
+  samples from the watermark were never under 1 ms; samples from units left out were, in 152 of 165 reps (up to 244 a
+  rep), and the timeout stood under 1 ms at some point in 50. 48 of those recovered without a storm, once watermark
+  samples brought srtt back (2,073-7,034 timeout releases first in three of them); two stormed. The fix traced (30
+  reps): 2,087-2,414 watermark samples a rep, least srtt 7.5 ms, least timeout 15 ms.
+- **What sustains it**: each overflowed repair is named again, released by the collapsed timeout and resent into the
+  full queue; each new resend is a first resend whose next skipping ACKNACK gives another microsecond sample.
+- **One storm traced end to end** (`trace2` T2 tv-22, main, 8,811,630 resent): the rep's first sample gave 55
+  left-out samples (median 111 us) and no watermark sample, so srtt began at 148 us - a first sample sets it outright
+  - and the timeout at 297 us. A second later the writer resent ~540,000 units a second into a link that carries
+  ~17,000; netem dropped 8,467,138. For the rest of the writer's trace (capped at 8.7 s) no Karn sample was taken -
+  every unit had gone more than once and the watermark could not move - so srtt stayed at 148 us: nothing in the loop
+  can correct it. The writer's CPU went from 0.38 s to 16.2 s a rep, working through ACKNACKs naming up to ~4,000 units
+  each; the reader, receiving nothing but duplicates (~16,700 a second), sent no ACKNACK for 9 s of it.
+- **What ends it**: not the timeout. The stuck samples leave the writer's KEEP_LAST history (938,195 requests answered
+  as evicted; the reader skipped 24 times; 81 of 150 delivered), the reader stops naming them, and a clean `tv` phase
+  drains the queue. Until then the rep is lost: p99 3.9 s (2.0-5.6 s in the other storms).
+- **Not the cause**: the reader's socket (0 drops), the HEARTBEAT chase (the reader's answers to it, 600 a rep, are the
+  same in calm and storm reps), netem's tv schedule (the fix's tree ran the same schedules with no overflow: tc drops at
+  most 6,922). The reader's own retry estimate collapses too in some reps (timer ACKNACKs 1,300-25,558 against ~80,
+  the K2 note in `R4K`); there the writer holds the requests (up to 789,943 held) and resends little - a separate loop,
+  contained, not this one.
+
+**The fix** (DESIGN.md section 4, "Large-sample resend order"): a unit an ACKNACK leaves out counts as arrived for the
+order (its next request is answered at once, as before) and its round trip goes to RACK, whose rule releases a unit's
+first resend only. It is never folded into the timeout's srtt, and its slot stays marked untimed until the watermark
+passes it, so a later copy arriving as the earlier one is not timed either. No wire change; `tt_LargeRepair` stays
+24 B. Sim (`test_large_sample`): a 20 ms unicast path at 5% loss, the timeout's least srtt 0.000 ms on the parent
+(2,893 resent), never timed below the path here (975 resent); queued path 16,274 / 9,551 / 10,621 resent at seeds
+7 / 13 / 23 (parent 13,276 / 13,757 / 9,489; guard 21,720); slow reader 40,537 (38,893); quiet path's recovery srtt
+after the path became 8 ms 10.09 ms (parent 6.53; the check's band is 6-12 ms). 19 resend-order mutants die (3 new).
+`wire_identity_resend_order.sh`: identical to the parent in all three scenarios.
+
+**A/B** (`storm_tv_ab.sh`, reading registered in it and `storm_tv_read.py` before the first netns run; M = main and
+the harness `849fdccf`, A = M in a second checkout, F = `8d0d2eed`, K = M + 11908dea, FK = F + 11908dea; all five at
+once):
+
+| tv, 30 reps a tree | M | A | F | K | FK |
+|---|---:|---:|---:|---:|---:|
+| COLLAPSE reps (a timeout release under 1 ms) | 12 | 13 | **0** | 11 | **0** |
+| STORM reps (> 10 x main's median rep) | 1 (845,268) | 0 | 0 | 2 (554,816; 11,623,361) | 0 |
+| resends a rep, median / max | 9,966 / 845,268 | 10,141 / 29,840 | 8,971 / 11,671 | 9,233 / 11,623,361 | 8,721 / 17,909 |
+| timeout releases a rep, median | 253 | 436 | 91 | 229 | 124 |
+| reader duplicates a rep, median | 1,492 | 1,190 | 729 | 1,216 | 884 |
+| writer egress tc drops, max | 721,586 | 8,600 | 6,922 | 11,212,355 | 6,889 |
+| delivered | 99.96% | 100% | 100% | 98.18% | 100% |
+| median rep p50 / p99 ms | 70.1 / 603.0 | 71.8 / 628.2 | 66.5 / 629.1 | 68.9 / 541.1 | 68.0 / 538.9 |
+
+Verdicts as registered: CONTROL PASS (M 12/30 against A 13/30, p 1.0); MECHANISM **SHOWN** (25/60 against 0/30,
+one-sided p 4.5e-6); OUTCOME UNDECIDED (reps over 2 x the median, not reader-driven: 2/60 against 0/30, p 0.44 - the
+storm itself is too rare for 30 reps, as the header said); NOT WORSE on tv. K still storms on main's timeout (11/30
+collapsed, two storms, one of 11.6 M resends and 76 of 150 delivered); on the fix, none. Arms (10 reps, the same
+trees but K; four reps a tree started above load 8, other sessions' VMs, the same reps for all three): NOT WORSE at
+ge5b2, ge5b4, ge10b4 and bc; median rep p50 F / M / A: ge5b2 74.9 / 76.8 / 74.7 ms, ge5b4 53.3 / 54.1 / 54.0, ge10b4
+98.9 / 106.1 / 127.9, bc 48.0 / 48.1 / 48.2; resends within 1% of the higher main tree or below; delivered 100% (A
+99.80% at ge10b4).
+
+ETHERNET tail (`large_repair_followups_netns.sh` PHASE=tail: 1 Gbit/s netem, 1 MiB RELIABLE KEEP_LAST 10 at 30 Hz,
+trees in alternation, O = main's second checkout as the A/A). Most of the timeout's samples had come from left-out
+units, so the fix could cost LRT's tail. Run 1 (5 reps): ge1b1 COST as registered (median rep p99 P 11.9, F 12.8 ms,
+ctl band 0.16), but the A/A read 13.1: main's own code fails that rule by 1.2 ms. Run 2 (10 reps, the rule amended
+before it: band = max(ctl band, |O - P|), `storm_tail_read.py`): ge1b1 P 12.1 / F 12.8 / O 13.9 ms, **NO COST**
+(+0.7 against a 1.8 ms band); ge0.1b1 10.2 / 10.0 / 9.8, NO COST. No storm, 100% delivered, resends per lost unit
+1.01 at ge1b1 on all three. F sat 0.7-0.9 ms above P in both runs and below O in both: a cost of that size at 1%
+is not ruled out at 10 reps.
+
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
 **TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
@@ -844,6 +935,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LRT | RSTATS `lro` (`tt_RELIABLE_STATS`), `test_large_sample` (the base's tickle.c against the same test), `mutants_large_sample.py`, `wire_identity_resend_order.sh`, `large_repair_followups_netns.sh` PHASE=tail, `wifi_repair_ab.sh` | ab/large-resend-order-tail (F `7c8389fd`, WIFI `9f6f5375`; P `53ed4e1f`, O `896d4a29`; ed46fcc6, 1157d024, d1c900fe before their rebase) | 2026-10-24 | `large_repair/lrt_diag1/`, `ab_tail_ed46/`, `ab_tail_ed46_reread/`, `wifi_repair/lrt_1157.ab.txt`, `lrt_1157_{P,F}/` |
 | LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
 | HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
+| TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |

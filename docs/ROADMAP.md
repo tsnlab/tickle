@@ -69,6 +69,11 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   0/88, Array1m 1% p99 +0.4-0.8 ms against main within each hybrid mode, CPU equal. Left: the slow reader's repair
   bursts (36,999 resent for 10 samples) - flow control; and the hybrid transport's mode at 1% loss (IP-fragment runs in
   4-9 of 12 reps on every build, carrying the CPU), not yet explained.
+  **2026-10-25** (RESULTS `TVS`, branch `storm-fix`, not landed): the order's repair timeout still stormed on the
+  Wi-Fi `tv` arm (about 1 rep in 30-60, up to 845,268 resent): its srtt took microsecond samples from units an
+  ACKNACK left out. Fixed there, A/B'd on the PC; not the slow reader's bursts, which stay open. Also left: the
+  reader's own retry estimate collapsing (timer ACKNACKs up to 25,558 a rep against ~80, `R4K`'s K2 note), which the
+  writer's order contains.
 
 ### Other open items
 
