@@ -623,7 +623,79 @@ behind the drain. The next lever is the same queue in the writer's repair estima
 | k_rejudge | `1a7b5376` (the fix) | 108.9 / 97.7 / 74.2 | A 1 (bc), K 2 (ge5b2: 12,325, 12,750 against 5,925) | none | storms PASS, every arm NOT WORSE; R4 VOID as registered (no rel_small ctl, so no base_rtt), at the limit (~74.3) read with r4_ab's base_rtt |
 
 K's ge5b2 reps at ~2x the resends recur: 1 of 3, 1 of 10 and 2 of 10, against 0 of 23 for M and A on that arm. Not
-landed: R4 is reached only at the limit, and the ge5b2 cost has no mechanism yet.
+landed: R4 is reached only at the limit, and the ge5b2 cost has no mechanism yet (found since: below).
+
+**K's 2x reps: a seed faster than any repair** (`K5`, 2026-10-26, PC netns, not landed). **TL;DR.** A reader's probe
+starts at the first request naming its watermark, but a 1 MiB sample's missing unit has nearly always been named
+before, while it lay above the watermark, so its repair may already be on its way. Such a probe ends sooner than any
+round trip. Under K these short probes are all Karn's rule keeps. When the seed is one of them (~0.2 ms), the interval
+locks below every first-try recovery and nothing is timed again for the rep. Two cheap fixes were tried, on K, by the
+least repair transit (no wire change, 4 B a writer proxy). Both stop the 2x reps. Neither keeps K's ge5b2 tail
+(median per-rep p99 K 177-193 ms, main 254, fixes 247-248), so nothing lands: K's tail gain rests on the same short
+samples that sometimes lock it.
+
+| ge5b2 + ge5b4 rel_large, median a rep | main (M, A), 172 reps | K normal, 77 | K 2x, 9 |
+|---|---:|---:|---:|
+| writer resends | 5,986 | 6,080 | 12,053 |
+| reader timer ACKNACKs | 148 | 179 | 7,162 |
+| units named / ACKNACKs received | 6,490 / 3,655 | 6,680 / 2,909 | 120,877 / 10,130 |
+| resends released: shown lost / timeout / RACK | 443 / 40 / 30 | 476 / 41 / 36 | 1,304 / 1,441 / 4,016 |
+| requests held (first resend not shown lost) | 126 | 144 | 11,331 |
+| reader duplicates | 302 | 371 | 6,246 |
+| missing units opened (the loss) | 5,400 | 5,449 | 5,242 |
+| tc drops, writer / reader egress | 5,788 / 174 | 5,841 / 175 | 5,900 / 556 |
+| one-way p50, ms | 64.4 | 55.5 | 50.3 |
+
+- **Not the loss, the link or a storm**: the same units go missing and netem drops the same (its loss model, no
+  overflow). The extra ~6,000 resends are duplicates. The reader asks every ~0.6 ms, the writer's order holds most of
+  those requests (11,331 held), and RACK's time rule and the timeout release the rest while the first repair is still
+  queued behind the drain. A 2x rep is faster (p50 50 against 55 ms) and costs the duplicates.
+- **The reader's interval** (`r4_trace.patch` + `k5_add_r_event.py`, `k5_trace_read.py`; 35 traced K reps, 20
+  of main): normal reps run at 10-20 ms. The one traced 2x rep (`trace3_KT` ge5b2-3, 12,269 resent) was seeded at
+  0.04 s by a probe of 210 us whose unit had been named 37.6 ms before. srtt 210 us gave an interval of 631 us for all
+  30 s. 0 of the rep's 155 later probes were first-try, so Karn's rule timed nothing after the seed.
+- **Nearly every timed probe was ambiguous** (`k5_ambig.py`, 55 traced reps): 4,135 of the 4,139 recoveries timed
+  for the path were of a unit named before its probe began; 112 ended under 3 ms. The least repair transit (replayed
+  from the oldest of the last 32 requests, `k5_transit_min.py`) is 4.1-4.7 ms in 53 reps. In two main reps the replay
+  read 0.01 and 1.98 ms (an original the replay took for a repair, or a request already out of the ring). Seeds under
+  1 ms: K 10 of 35 reps, M 8 of 20.
+  Main's default rule also times retried (long) recoveries, which pull srtt back up (one M rep seeded at 35 us, timer
+  ACKNACKs 1,019, recovered). Karn's rule keeps only the short ones, so a seed of ~0.2 ms is a lock.
+- **Not netem's seed**: it differs per rep, and the 2x reps' loss counts are the median's.
+
+**The fixes** (`k5_floor_ab.sh`, rules committed before each run; M = main `06d23f21`, A = M again, K = M + K,
+F = the fix; all four at once; 40 reps a tree on ge5b2 + ge5b4, 6 on ctl + ge10b4 with the rel_small ctl, 5 on bc and
+tv):
+
+- **Clamp** (`experiment/k5-floor`, `path_recovery_sample()`): a sub-floor recovery is folded as the floor.
+- **Discard** (`experiment/k5-discard`, `path_sample_too_short()`): it is not timed at all, like a retried one.
+
+| | K | clamp | discard |
+|---|---|---|---|
+| 2x reps (resends > 1.5 x M's median), F against K | - | 0/40 vs 3/40, p 0.12; 0/80 vs 5/80 with the registered extension, p 0.03 | 0/40 vs 2/40, p 0.25 |
+| COLLAPSE reps (timer ACKNACKs > 5 x M's) | - | 0/40 vs 4/40; 0/80 vs 7/80, p 0.007 | 3/40 vs 2/40: its slow start (below), no lock |
+| M, A | 0 HIGH in 120 reps each; COLLAPSE M 1, A 3 of 120 (ge5b4, up to 3,364) | | |
+| ge10b4 p50 (R4 limit) | 72.5 / 74.1 ms | 72.97 (74.31) PASS | 78.15 (74.54) FAIL |
+| ge5b2 p50 / per-rep p99, M 74 / 254 | 65.8 / 177-193 | 68.4 / 247 | 65.6 / 248 |
+| bc per-rep p99 (M, A) | 77 / 89 | 102 (99, 98) | 84 (138, 85) |
+| verdict as registered | | CONTROL PASS, MECHANISM and OUTCOME UNDECIDED at 40 (SHOWN and FIXED at 80, a second look), R4 PASS, NO WORSE; TAIL LOSES at ge5b2 and bc (rule written after this run) | MECHANISM, OUTCOME UNDECIDED; R4 FAIL; TAIL LOSES at ge5b2: FALSIFIED as registered |
+
+- **Why the clamp costs the tail** (`k5_sample_lat.py`, `k5_floor_traj.py`, 10 traced reps): its slow samples are a
+  rep's first ~20. The seed probe ends at ~0.04 s, inside the first sample's drain, when the least transit is still
+  20-36 ms (about 5 ms by the next probe). The seed is raised to that, and the interval stays long for ~2 s.
+- **Why the discard does not get it back** (10 traced reps): seeds are 5-10 ms at 0-2.5 s and the slow samples are
+  spread through the rep, as on main. Its unseeded start asks every 1 ms (timer ACKNACKs median 298 a rep against
+  K's 185), and two ge10b4 reps were slow (89.5, 103.7 ms). The ~250 ms samples are the per-rep p99's second mode
+  (M 17 of 20 reps there, K 8-9, the fixes 11-14). What in K's short samples avoids them is not found.
+- **Cost of K's 2x reps as they are**: in 7 of 120 K reps this night (13 of 166 with `R4K`'s), ~6,000 more resends
+  (~9 MB a 30 s rep), ~6,000 duplicates, 3x the ACKNACKs; those reps are faster (p50 50 ms). No storm, no loss.
+- **A real fix needs the repair to say which request it answers** (a request serial echoed in the resend): then a
+  probe is timed from that request, whatever its watermark. A wire change: parked with the other wire changes for the
+  wireless stage.
+- Controls: rel_small is built without `tt_LARGE_SAMPLES`, so the change is compiled out there. Its ge10b4 delivered
+  rule fired for A once and for the discard once (98.60% against 98.89%); read as noise.
+
+Data: `~/k5_results/` (`trace1-4_*`, `k5ab*`, `k5abx*`, `k5d*`, `*.verdict.txt`, `existing_counters.txt`).
 
 ### The reliable HEARTBEAT fix's follow-ups, PC netns (`LRF`)
 
