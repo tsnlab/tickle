@@ -108,6 +108,9 @@ def one_run(d):
             r["first_resend_after_pub"] = rs[0] - sent
             r["rerepair"] = rs[-1] - rs[0]
             r["transit"] = rec[crit] - rs[-1]
+            if len(rs) >= 2:
+                # the second resend's wait past the later of the drain's end and the first resend (K2's P5 figure)
+                r["after_drain"] = rs[1] - max(last_fresh, rs[0])
             wait = hold = 0
             r["reask_by"] = []
             for j in range(1, len(rs)):
@@ -155,7 +158,9 @@ def main(dirs):
         nacks += na
         nres += nr
         nhold += nh
-        print(f"{d}: {len(rows)} samples traced")
+        ad = [x["after_drain"] for x in rows if "after_drain" in x]
+        print(f"{d}: {len(rows)} samples traced; second resend past max(drain end, first resend) p50 "
+              f"{q(ad, .5) / 1e6:.1f} ms (n {len(ad)})")
     ms = 1e6
     print(f"samples {len(allrows)}; ACKNACKs at the writer {nacks}, resends {nres}, held requests {nhold}; reader "
           f"ACKNACK reasons {dict(reasons)}")

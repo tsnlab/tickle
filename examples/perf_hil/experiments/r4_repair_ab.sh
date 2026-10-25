@@ -45,11 +45,37 @@
 #      did not apply.
 #   R7 (copies after delivery under tv) is printed, not judged: it is FEC's (RESULTS `WR`).
 #
+# FIRST RUN (r4_ab1, 2026-10-25 18:27, K = 11908dea): P1 FAIL - K's ge10b4 p50 74.69 ms against 74.28 (per-rep 74.7
+# 73.3 79.4; M 100.8 100.9 88.4, A 79.8 113.3 137.4); P2 NOT WORSE (be_small's delivery rule fired for A vs M as for
+# K vs M: noise); P3 K's fall 25.9% against an A/A spread of 12.4%, counts; P5 treatment applied (retry interval p50
+# 15.1 ms against 37.4) and not falsified (a 26.1 ms fall against the 24.5 required).
+#
+# ADDED 2026-10-25 AFTER r4_ab1, BEFORE K2's PROTOTYPE - K2 = K + the reader's in-flight window ends with the send.
+#   Traced on K (trace_k1, a sample near the p50): the critical unit asked for at 36.9 ms, resent at 41.3, lost; the
+#   drain ended at 40.6 and the reader's answers to the writer's end-of-sample HEARTBEAT named nothing - the request
+#   still counted as on its way - until its timer asked again at 71.8, 31 ms after the drain. The window is the repair
+#   transit estimate (repair_in_flight_ns(): srtt + 4 x rttvar of request-to-repair times), and a repair asked for
+#   during the send waits behind the rest of it in netem (17.8 ms p50, 32.9 p90, against 3.2 with nothing ahead), so
+#   the estimate carries the drain: past it, the reader waits out a window sized for a queue that is gone. Over the
+#   critical units with a second resend, that resend came 20.8 / 33.1 ms (p50, per rep) after the later of the drain's
+#   end and the first resend.
+#   K2 (WIFI's repair_timing only, a writer of large samples only - proxy->original_arrival_ns set): a remembered
+#   request stops counting as on its way once the writer's send has passed it by the path's retry interval - it is in
+#   flight while now - sent < the transit window AND NOT now - max(sent, last original arrival) >= the path's interval
+#   (reliable_retry_interval(), Karn-timed under K). While the writer sends without a pause the window is the transit
+#   one as before (no starvation of re-asks at saturation). ETHERNET and small samples unchanged.
+#   Trees: M, A, J = K (11908dea, the reference), K = K2. P1-P4 as above for K2. J is read against M the same way and
+#   printed (J is not the gate). P3: K2's fall against J counts only when above twice the A/A spread.
+#   P5 for K2 (traced, ge10b4 rel_large, 2 reps): the treatment applied when the second resend's wait past the later
+#   of the drain's end and the first resend (the figure above) is at most half of K's (p50 per rep 20.8 / 33.1 ms).
+#   FALSIFIED - the in-flight window is not what delays the re-ask - if it applied and K2's R4 p50 is not below J's by
+#   more than twice the A/A spread. VOID if it did not apply.
+#
 # Usage: M=/tree A=/tree K=/tree [REPS=3] [TAG=r4_ab] [BASE_OUT=/home/semih/r4_results] r4_repair_ab.sh
 #   Ends with "=== r4_repair_ab ended" in $BASE_OUT/$TAG.r4.txt, whatever happened.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-M=${M:?M=main tree} A=${A:?A=A/A tree} K=${K:?K=change tree}
+M=${M:?M=main tree} A=${A:?A=A/A tree} K=${K:?K=change tree} J=${J:-}
 TAG=${TAG:-r4_ab}
 BASE_OUT=${BASE_OUT:-$HOME/r4_results}
 OUTF="$BASE_OUT/$TAG.r4.txt"
@@ -61,7 +87,7 @@ on_exit() {
 }
 trap on_exit EXIT
 echo "=== r4_repair_ab $(date -Is) M=$M A=$A K=$K" >"$OUTF"
-TREES="M=$M A=$A K=$K" TAG=$TAG BASE_OUT=$BASE_OUT PROFILE=wifi REPS=${REPS:-3} \
+TREES="M=$M A=$A K=$K${J:+ J=$J}" TAG=$TAG BASE_OUT=$BASE_OUT PROFILE=wifi REPS=${REPS:-3} \
     ARMS=${ARMS:-"ctl ge5b2 ge5b4 ge10b4 bc tv"} CELLS="be_small rel_small rel_large" \
     NODE_ENV=TT_UDP_OFFLOAD=0 LARGE_RSTATS=1 "$HERE/wifi_repair_ab.sh" >>"$OUTF" 2>&1
 python3 - "$BASE_OUT" "$TAG" <<'EOF' | tee -a "$OUTF"
@@ -106,10 +132,11 @@ ab = "\n".join(read(os.path.join(base, f"{tag}.ab.txt")))
 verdicts = {}
 for m in re.finditer(r"^VERDICT (\w+) vs M (\w+)/(\w+): (.*)$", ab, re.M):
     verdicts[(m.group(1), m.group(2), m.group(3))] = m.group(4)
-R = {lab: rules(lab) for lab in "MAK"}
-L = {lab: large(lab) for lab in "MAK"}
+LABS = "MAKJ" if os.path.isdir(os.path.join(base, f"{tag}_J")) else "MAK"
+R = {lab: rules(lab) for lab in LABS}
+L = {lab: large(lab) for lab in LABS}
 print("--- r4_repair_ab reading (pre-registered in r4_repair_ab.sh)")
-for lab in "MAK":
+for lab in LABS:
     for arm, r in sorted(L[lab].items()):
         med = statistics.median(r["p50"]) if r["p50"] else float("nan")
         r["med"] = med
@@ -154,7 +181,15 @@ spread = abs(am - mm) / mm if mm == mm and am == am else float("nan")
 fall = (mm - km) / mm if mm == mm and km == km else float("nan")
 print(f"P3 ge10b4 R4 p50: M {mm:.1f} A {am:.1f} K {km:.1f} ms; A/A spread {100 * spread:.1f}%, K's fall "
       f"{100 * fall:.1f}% ({'counts' if fall > 2 * spread else 'within twice the A/A spread: does not count'})")
-for lab in "MAK":
+if "J" in LABS:
+    jm = L["J"].get("ge10b4", {}).get("med", float("nan"))
+    jfall = (jm - km) / jm if jm == jm and km == km else float("nan")
+    jv, jline = verdict_of("J", "R4", "ge10b4")
+    print(f"P3 K against J (the reference): J {jm:.1f} K {km:.1f} ms, K's fall {100 * jfall:.1f}% "
+          f"({'counts' if jfall > 2 * spread else 'within twice the A/A spread: does not count'}); J's R4 {jv}")
+    jw = [f"{c}/{a}: {t}" for (lab, c, a), t in sorted(verdicts.items()) if lab == "J" and not t.startswith("NOT WORSE")]
+    print("P2 J vs M (printed): " + ("NOT WORSE" if not jw else "WORSE: " + "; ".join(jw)))
+for lab in LABS:
     for v, line in R[lab].get("R7", []):
         print(f"R7 {lab} (reported, not judged): {line}")
 ok = p1 and not worse and fall > 2 * spread
