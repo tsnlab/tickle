@@ -273,8 +273,8 @@ MUTANTS = [
     # The busy writer and the recovery estimate (2026-10-16): tt_WriterProxy.probe_busy and repair_arrival_ns.
     (
         "(srtt) a busy writer's recovery timed as the path",
-        "        if (!proxy->probe_busy) {",
-        "        if (true) {",
+        "        if (path && !proxy->probe_busy) {",
+        "        if (path) {",
         "test_a_busy_writers_send_is_not_timed_as_the_path",
     ),
     (
