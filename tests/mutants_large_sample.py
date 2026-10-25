@@ -374,7 +374,7 @@ MUTANTS = [
     ),
     (
         "resend order: a pending unit left out of a request not read",
-        "            if (large_repair_is(slot, pub, unit, target->context_id)) {\n                large_order_arrived(node, ack, slot, now, order);\n            } else if (!bounded) {",
+        "            if (large_repair_is(slot, pub, unit, target->context_id)) {\n                large_order_left_out(ack, slot, now, order);\n            } else if (!bounded) {",
         "            if (large_repair_is(slot, pub, unit, target->context_id)) {\n            } else if (!bounded) {",
         "test_the_resend_order_rules",
     ),
@@ -392,8 +392,29 @@ MUTANTS = [
     ),
     (
         "resend order: a unit resent twice timed (no Karn)",
-        "    if (slot->resends == 1 && ack != NULL) {",
-        "    if (ack != NULL) {",
+        "    if (slot->resends == 1 && slot->untimed == 0 && ack != NULL) {\n        uint64_t sample",
+        "    if (slot->untimed == 0 && ack != NULL) {\n        uint64_t sample",
+        "test_the_resend_order_rules",
+    ),
+    # The tv storm (RESULTS `TVS`): a unit an ACKNACK left out is never timed into the repair timeout's srtt.
+    (
+        "resend order: a unit left out timed into the repair timeout",
+        "        large_order_rack_sample(ack, slot, (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);\n",
+        "        large_order_rack_sample(ack, slot, (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);\n"
+        "        rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns,\n"
+        "                          (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);\n",
+        "test_the_resend_order_rules, test_the_repair_timeout_never_stands_on_less_than_its_path",
+    ),
+    (
+        "resend order: a unit left out timed when the watermark passes it",
+        "    if (slot->resends == 1 && slot->untimed == 0 && ack != NULL) {\n        uint64_t sample",
+        "    if (slot->resends == 1 && ack != NULL) {\n        uint64_t sample",
+        "test_the_resend_order_rules",
+    ),
+    (
+        "resend order: a unit left out held at its next request",
+        "        slot->left_out != 0) {\n        return true; // never resent to it",
+        "        false) {\n        return true; // never resent to it",
         "test_the_resend_order_rules",
     ),
     (
@@ -417,8 +438,8 @@ MUTANTS = [
     ),
     (
         "resend order tail: RACK.rtt follows the last repair shown, not the last sent",
-        "        if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {",
-        "        if (true) {",
+        "    if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {",
+        "    if (true) {",
         "test_the_resend_order_rules",
     ),
     (
@@ -429,8 +450,8 @@ MUTANTS = [
     ),
     (
         "resend order tail: min_RTT never lowered",
-        "        if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {",
-        "        if (ack->repair_min_rtt_ns == 0) {",
+        "    if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {",
+        "    if (ack->repair_min_rtt_ns == 0) {",
         "test_a_tail_waits_rack_rtt_and_its_reordering_window",
     ),
 ]

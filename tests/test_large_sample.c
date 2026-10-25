@@ -1814,13 +1814,14 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 30, &reader, &order));
     // The one left out is taken as arrived but not timed into the repair timeout (the reader may have left it out as
     // a repair on its way - RESULTS `TVS`): srtt has no sample, RACK's round trip has it, and its slot stays, its next
-    // request answered at once. Resent so, it goes as a first resend and stays untimed.
+    // request answered at once. Resent so, it goes as a first resend, and stays untimed (below). Written against the
+    // base's fields only, as the rest of this test.
     const struct tt_PeerAck* ack = find_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
     EXPECT_TRUE(ack != NULL && ack->repair_srtt_ns == 0 && ack->repair_rack_rtt_ns != 0);
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 20), &pub, S + 20, RECEIVER_ID));
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 20, &reader, &order));
     large_note_resent(&sender, &pub, record, S + 20, &reader);
-    EXPECT_TRUE(large_repair_slot(&sender, S + 20)->resends == 1 && large_repair_slot(&sender, S + 20)->untimed != 0);
+    EXPECT_TRUE(large_repair_slot(&sender, S + 20)->resends == 1);
 
     // A unit left out but outside the requested range shows nothing: a narrow request names one new gap only, and what
     // lies below it may still be missing. S + 40 resent after S + 30, then S + 30 asked for alone.
@@ -1887,19 +1888,18 @@ static void test_the_resend_order_rules(void) {
         large_order_begin(&sender, &pub, &reader, sub.endpoint.entity_id, S, S, bitmap, 3, &order);
     }
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 90, &reader, &order));
-    EXPECT_TRUE(large_repair_slot(&sender, S + 95)->left_out != 0); // shown, taken as arrived: answered at once
-    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 95, &reader, &order));
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 95, &reader, &order)); // shown, taken as arrived: answered at once
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 140), &pub, S + 140, RECEIVER_ID)); // still pending
 
     // RACK's time rule (the tail, DESIGN.md section 4): a unit still named RACK.rtt + reo_wnd after its one resend
     // goes, with nothing sent after it and before the repair timeout. RACK.rtt follows the most recently resent repair
-    // shown arrived, not the last to be shown: S + 100 resent, S + 101 8 ms later, both shown 1 ms after that - 9 ms
-    // and 1 ms round trips, passed by the watermark bottom up (S + 100 first), so RACK.rtt is S + 101's 1 ms while srtt
-    // takes both. Written against the base's fields only, so the base's tickle.c builds against it and fails (S + 120
-    // held).
-    large_note_resent(&sender, &pub, record, S + 100, &reader);
-    test_mock_now += 8 * tt_MILLISECOND;
+    // shown arrived, not the last to be shown: S + 101 resent, S + 100 8 ms later, both shown 1 ms after that - 9 ms
+    // and 1 ms round trips, passed by the watermark bottom up (S + 100 first, S + 101 last), so RACK.rtt is S + 100's
+    // 1 ms while srtt takes both. Written against the base's fields only, so the base's tickle.c builds against it and
+    // fails (S + 120 held).
     large_note_resent(&sender, &pub, record, S + 101, &reader);
+    test_mock_now += 8 * tt_MILLISECOND;
+    large_note_resent(&sender, &pub, record, S + 100, &reader);
     test_mock_now += 1 * tt_MILLISECOND;
     order_read(&reader, S + 99, S + 102, (uint32_t[]) {S + 110}, 1, &order);
     // S + 120 resent once, nothing after it: held at half RACK.rtt, due at one and a half - before the timeout.
@@ -1918,6 +1918,19 @@ static void test_the_resend_order_rules(void) {
     test_mock_now += 1500 * tt_MICROSECOND;
     order_read(&reader, S, S, (uint32_t[]) {S + 120}, 1, &order);
     EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 120, &reader, &order));
+
+    // A unit left out stays untimed (RESULTS `TVS`): S + 200 resent, left out, asked for and resent again, then passed
+    // by the watermark 50 ms later - no sample, srtt as it was. Timed, it is the copy that may have arrived as the
+    // earlier one (the base frees the slot when it is left out and times the second resend: srtt moves).
+    large_note_resent(&sender, &pub, record, S + 200, &reader);
+    order_read(&reader, S, S, (uint32_t[]) {S + 199, S + 201}, 2, &order);
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 200, &reader, &order));
+    large_note_resent(&sender, &pub, record, S + 200, &reader);
+    uint32_t srtt_before = writable->repair_srtt_ns;
+    test_mock_now += 50 * tt_MILLISECOND;
+    order_read(&reader, S + 199, S + 201, (uint32_t[]) {S + 201}, 1, &order);
+    EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 200), &pub, S + 200, RECEIVER_ID)); // done with
+    EXPECT_EQ_U32(srtt_before, writable->repair_srtt_ns);
 
     // A Publisher going away takes its pending repairs: none left for its entity.
     large_repairs_forget(&sender, &pub);
