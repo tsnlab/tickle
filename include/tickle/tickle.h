@@ -461,6 +461,11 @@ struct tt_LargeRepair {
     uint32_t hold;
     uint8_t context_id; // the reader's context it went to
     uint8_t resends;    // to that reader, saturating: only a unit resent once is timed (Karn)
+    // An ACKNACK left it out after it went: taken as arrived, so its next request is answered at once (left_out) and it
+    // is never timed (untimed) - what the reader left out may be a copy still on its way, or have arrived as an earlier
+    // copy (RESULTS `TVS`). untimed lasts as long as the slot.
+    uint8_t left_out;
+    uint8_t untimed;
 };
 
 #if tt_LARGE_SHM

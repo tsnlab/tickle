@@ -11750,28 +11750,53 @@ static void large_order_show(struct large_order* order, uint32_t serial) {
     }
 }
 
-// A unit whose resend is pending arrived: its resend is a send the reader has shown received, and its slot is done
-// with. If it went once (Karn), the time from its resend to here - to the first of the reader's ACKNACKs to show it -
-// is a sample of the repair timeout's srtt.
+// RACK's round trip (RFC 8985 6.2) from a unit resent once and shown arrived `sample` ns after its resend: RACK.rtt
+// follows the most recently sent repair shown arrived, not the latest to be shown, and min_RTT the least.
+static void large_order_rack_sample(struct tt_PeerAck* ack, const struct tt_LargeRepair* slot, uint64_t sample) {
+    uint32_t rtt = sample < UINT32_MAX ? (uint32_t)sample : UINT32_MAX;
+    rtt = rtt != 0 ? rtt : 1U; // 0 stands for "none"
+    if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {
+        ack->repair_rack_serial = slot->serial;
+        ack->repair_rack_rtt_ns = rtt;
+    }
+    if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {
+        ack->repair_min_rtt_ns = rtt;
+    }
+}
+
+// A unit whose resend is pending arrived - the watermark passed it: its resend is a send the reader has shown
+// received, and its slot is done with. If it went once (Karn) and no ACKNACK left it out before (untimed), the time
+// from its resend to here is a sample of the repair timeout's srtt, and of RACK's round trip.
 static void large_order_arrived(struct tt_Context* node, struct tt_PeerAck* ack, struct tt_LargeRepair* slot,
                                 uint32_t now, struct large_order* order) {
     large_order_show(order, slot->serial);
-    if (slot->resends == 1 && ack != NULL) {
+    if (slot->resends == 1 && slot->untimed == 0 && ack != NULL) {
         uint64_t sample = (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT;
         rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns, sample);
-        uint32_t rtt = sample < UINT32_MAX ? (uint32_t)sample : UINT32_MAX;
-        rtt = rtt != 0 ? rtt : 1U; // 0 stands for "none"
-        // RACK.rtt follows the most recently sent repair shown arrived (RFC 8985 6.2), not the latest to be shown
-        if (ack->repair_rack_serial == 0 || large_serial_after(slot->serial, ack->repair_rack_serial)) {
-            ack->repair_rack_serial = slot->serial;
-            ack->repair_rack_rtt_ns = rtt;
-        }
-        if (ack->repair_min_rtt_ns == 0 || rtt < ack->repair_min_rtt_ns) {
-            ack->repair_min_rtt_ns = rtt;
-        }
+        large_order_rack_sample(ack, slot, sample);
     }
     RSTAT_LRO_DONE(slot->seq_no);
     large_repair_free(node, slot);
+}
+
+// A unit whose resend is pending that an ACKNACK left out, between its lowest and highest request: taken as arrived, as
+// far as the order goes - its resend is shown received, and the reader's next request for it is answered at once -
+// and its slot kept, untimed, until the watermark passes it. The reader leaves out a repair it reckons still on its way
+// (repairs_in_flight()), so the ACKNACK may have gone before this resend could reach it, or the unit arrived as an
+// earlier copy: the sample may read the few microseconds between the resend and that ACKNACK. Timed into the repair
+// timeout's srtt, such samples took it on the PC (PROFILE=wifi, tv; RESULTS `TVS`) from ~40 ms to under 128 us; the
+// timeout then released every held unit at every request, and the resends filled the path's queue - 525,319 and
+// 1,829,941 resent in a 30 s rep. So the sample goes to RACK's round trip alone, whose rule releases a unit's first
+// resend only: what a too-short RACK.rtt costs is one copy a unit, never a storm.
+static void large_order_left_out(struct tt_PeerAck* ack, struct tt_LargeRepair* slot, uint32_t now,
+                                 struct large_order* order) {
+    large_order_show(order, slot->serial);
+    if (slot->resends == 1 && slot->untimed == 0 && ack != NULL) {
+        large_order_rack_sample(ack, slot, (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT);
+    }
+    slot->left_out = 1;
+    slot->untimed = 1;
+    RSTAT_LRO_DONE(slot->seq_no);
 }
 
 // The two times an ACKNACK from this reader is read against: the repair timeout and RACK's time rule.
@@ -11834,7 +11859,7 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
             uint32_t unit = seq_no + bit;
             struct tt_LargeRepair* slot = large_repair_slot(node, unit);
             if (large_repair_is(slot, pub, unit, target->context_id)) {
-                large_order_arrived(node, ack, slot, now, order);
+                large_order_left_out(ack, slot, now, order);
             } else if (!bounded) {
                 const struct tt_LargeRecord* record = large_find(pub, unit);
                 if (record != NULL) {
@@ -11855,8 +11880,9 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
 static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t seq_no,
                              const struct tt_Peer* target, const struct large_order* order) {
     const struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
-    if (order == NULL || !order->active || !large_repair_is(slot, pub, seq_no, target->context_id)) {
-        return true;
+    if (order == NULL || !order->active || !large_repair_is(slot, pub, seq_no, target->context_id) ||
+        slot->left_out != 0) {
+        return true; // never resent to it, or an ACKNACK has since left it out (large_order_left_out())
     }
     if (order->shown && large_serial_after(order->shown_serial, slot->serial)) {
         RSTAT_LRO_RELEASED(seq_no, false, false, 0, 0);
@@ -11885,8 +11911,15 @@ static void large_note_resent(struct tt_Context* node, const struct tt_Publisher
                               const struct tt_LargeRecord* record, uint32_t seq_no, const struct tt_Peer* target) {
     struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
     uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
-    if (large_repair_is(slot, pub, seq_no, target->context_id)) {
+    if (large_repair_is(slot, pub, seq_no, target->context_id) && slot->left_out == 0) {
         slot->resends = (uint8_t)(slot->resends < UINT8_MAX ? slot->resends + 1U : UINT8_MAX);
+    } else if (large_repair_is(slot, pub, seq_no, target->context_id)) {
+        // Asked for again after an ACKNACK left it out: it goes as a first resend would - the rules apply to it afresh,
+        // RACK's included - but stays untimed.
+        slot->left_out = 0;
+        slot->resends = 1;
+        uint32_t sent_at = 0;
+        slot->hold = large_unit_sent_after(record, &sent_at) != 0 ? now - sent_at : 0;
     } else {
         if (slot->context_id == tt_CONTEXT_ID_INVALID) {
             node->large.repairs_live++;
@@ -11895,6 +11928,8 @@ static void large_note_resent(struct tt_Context* node, const struct tt_Publisher
         slot->entity_id = pub->endpoint.entity_id;
         slot->context_id = target->context_id;
         slot->resends = 1;
+        slot->left_out = 0;
+        slot->untimed = 0;
         uint32_t sent_at = 0;
         slot->hold = large_unit_sent_after(record, &sent_at) != 0 ? now - sent_at : 0;
     }

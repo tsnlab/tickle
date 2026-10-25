@@ -1812,10 +1812,15 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 10, &reader, &order));
     // ... but not the unit resent after the one that arrived: nothing sent after it has been shown.
     EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 30, &reader, &order));
-    // The one that arrived is done with, and timed: its slot is free and the reader's srtt has its first sample.
+    // The one left out is taken as arrived but not timed into the repair timeout (the reader may have left it out as
+    // a repair on its way - RESULTS `TVS`): srtt has no sample, RACK's round trip has it, and its slot stays, its next
+    // request answered at once. Resent so, it goes as a first resend and stays untimed.
     const struct tt_PeerAck* ack = find_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
-    EXPECT_TRUE(ack != NULL && ack->repair_srtt_ns != 0);
-    EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 20), &pub, S + 20, RECEIVER_ID));
+    EXPECT_TRUE(ack != NULL && ack->repair_srtt_ns == 0 && ack->repair_rack_rtt_ns != 0);
+    EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 20), &pub, S + 20, RECEIVER_ID));
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 20, &reader, &order));
+    large_note_resent(&sender, &pub, record, S + 20, &reader);
+    EXPECT_TRUE(large_repair_slot(&sender, S + 20)->resends == 1 && large_repair_slot(&sender, S + 20)->untimed != 0);
 
     // A unit left out but outside the requested range shows nothing: a narrow request names one new gap only, and what
     // lies below it may still be missing. S + 40 resent after S + 30, then S + 30 asked for alone.
@@ -1824,10 +1829,14 @@ static void test_the_resend_order_rules(void) {
     EXPECT_TRUE(!large_resend_due(&sender, &pub, S + 30, &reader, &order));
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 40), &pub, S + 40, RECEIVER_ID)); // still pending
 
-    // The watermark passing a resent unit shows it: S + 30 and S + 40 below the new watermark S + 41.
+    // The watermark passing a resent unit shows it: S + 30 and S + 40 below the new watermark S + 41 - and times
+    // them, S + 20 (untimed) not.
+    test_mock_now += 4 * tt_MILLISECOND;
     order_read(&reader, S, S + 41, (uint32_t[]) {S + 41}, 1, &order);
     EXPECT_TRUE(order.shown && large_serial_after(order.shown_serial, large_repair_slot(&sender, S + 30)->serial));
     EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 40), &pub, S + 40, RECEIVER_ID));
+    EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 20), &pub, S + 20, RECEIVER_ID));
+    EXPECT_TRUE(ack->repair_srtt_ns != 0);
 
     // A unit of a sample that began to go after a resend, received, shows the resend lost; a unit of the sample the
     // resend is of does not - its copy went before it (large_unit_sent_after()). S + 50 and S + 60 resent, then asked
@@ -1878,19 +1887,21 @@ static void test_the_resend_order_rules(void) {
         large_order_begin(&sender, &pub, &reader, sub.endpoint.entity_id, S, S, bitmap, 3, &order);
     }
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 90, &reader, &order));
-    EXPECT_TRUE(!large_repair_is(large_repair_slot(&sender, S + 95), &pub, S + 95, RECEIVER_ID));  // shown, done with
+    EXPECT_TRUE(large_repair_slot(&sender, S + 95)->left_out != 0); // shown, taken as arrived: answered at once
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 95, &reader, &order));
     EXPECT_TRUE(large_repair_is(large_repair_slot(&sender, S + 140), &pub, S + 140, RECEIVER_ID)); // still pending
 
     // RACK's time rule (the tail, DESIGN.md section 4): a unit still named RACK.rtt + reo_wnd after its one resend
     // goes, with nothing sent after it and before the repair timeout. RACK.rtt follows the most recently resent repair
     // shown arrived, not the last to be shown: S + 100 resent, S + 101 8 ms later, both shown 1 ms after that - 9 ms
-    // and 1 ms round trips, read top down (S + 101 first), so RACK.rtt is S + 101's 1 ms while srtt takes both.
-    // Written against the base's fields only, so the base's tickle.c builds against it and fails (S + 120 held).
+    // and 1 ms round trips, passed by the watermark bottom up (S + 100 first), so RACK.rtt is S + 101's 1 ms while srtt
+    // takes both. Written against the base's fields only, so the base's tickle.c builds against it and fails (S + 120
+    // held).
     large_note_resent(&sender, &pub, record, S + 100, &reader);
     test_mock_now += 8 * tt_MILLISECOND;
     large_note_resent(&sender, &pub, record, S + 101, &reader);
     test_mock_now += 1 * tt_MILLISECOND;
-    order_read(&reader, S, S, (uint32_t[]) {S + 99, S + 110}, 2, &order);
+    order_read(&reader, S + 99, S + 102, (uint32_t[]) {S + 110}, 1, &order);
     // S + 120 resent once, nothing after it: held at half RACK.rtt, due at one and a half - before the timeout.
     large_note_resent(&sender, &pub, record, S + 120, &reader);
     test_mock_now += 500 * tt_MICROSECOND;
@@ -1928,10 +1939,10 @@ static void test_a_tail_waits_rack_rtt_and_its_reordering_window(void) {
     struct large_order order;
     large_note_resent(&sender, &pub, record, S + 10, &reader);
     test_mock_now += 4 * tt_MILLISECOND;
-    order_read(&reader, S, S, (uint32_t[]) {S + 9, S + 11}, 2, &order); // S + 10 left out between them: arrived
+    order_read(&reader, S + 9, S + 11, (uint32_t[]) {S + 11}, 1, &order); // the watermark passed S + 10: arrived
     large_note_resent(&sender, &pub, record, S + 12, &reader);
     test_mock_now += 1 * tt_MILLISECOND;
-    order_read(&reader, S, S, (uint32_t[]) {S + 11, S + 13}, 2, &order); // S + 12 arrived
+    order_read(&reader, S + 11, S + 13, (uint32_t[]) {S + 13}, 1, &order); // S + 12 arrived
     large_note_resent(&sender, &pub, record, S + 20, &reader);
     test_mock_now += 1100 * tt_MICROSECOND;
     order_read(&reader, S, S, (uint32_t[]) {S + 20}, 1, &order);
@@ -1940,6 +1951,75 @@ static void test_a_tail_waits_rack_rtt_and_its_reordering_window(void) {
     order_read(&reader, S, S, (uint32_t[]) {S + 20}, 1, &order);
     EXPECT_TRUE(((uint64_t)order.timeout << LARGE_REPAIR_SHIFT) > 7 * tt_MILLISECOND);
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 20, &reader, &order));
+}
+#endif
+
+#ifdef tt_LARGE_REPAIR_SLOTS
+static uint32_t least_srtt; // the least repair-timeout srtt the writer held to the reader during least_timed_srtt()
+
+static void note_least_srtt(void) {
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
+    if (ack != NULL && ack->repair_srtt_ns != 0 && (least_srtt == 0 || ack->repair_srtt_ns < least_srtt)) {
+        least_srtt = ack->repair_srtt_ns;
+    }
+}
+
+// `samples` 1 MiB samples at 5 Hz, `loss_per_mille` lost, over a path that holds the writer's unicast datagrams `delay`
+// and the reader's not at all. Answers the least srtt the writer's repair timeout to this reader stood on at any step
+// (0: never timed), and through *rack the least RACK.rtt (min_RTT).
+static uint32_t least_timed_srtt(int samples, uint64_t delay, uint32_t loss_per_mille, uint32_t* rack) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_unicast_delay = delay;
+    sim_loss_per_mille = loss_per_mille;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    least_srtt = 0;
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        note_least_srtt();
+        uint64_t next = t0 + ((uint64_t)(i + 1) * tt_SECOND / 5U);
+        while (test_mock_now < next && sim_step()) {
+            note_least_srtt();
+        }
+        if (test_mock_now < next) {
+            test_mock_now = next;
+        }
+    }
+    uint64_t since = test_mock_now;
+    while (delivered_count < samples + 1 && test_mock_now - since < 2 * tt_SECOND && sim_step()) {
+        note_least_srtt();
+    }
+    EXPECT_EQ_INT(samples + 1, delivered_count);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
+    *rack = ack != NULL ? ack->repair_min_rtt_ns : 0;
+    return least_srtt;
+}
+
+static void test_the_repair_timeout_never_stands_on_less_than_its_path(void) {
+    // The tv storm (RESULTS `TVS`, 2026-10-25): the repair timeout is 2 x srtt over this reader's repairs, each timed
+    // from its resend to the first ACKNACK to show it arrived. An ACKNACK the reader sent before a resend could reach
+    // it leaves the unit out when the reader reckons an earlier repair of it on its way (repairs_in_flight()); read as
+    // "arrived", it timed the round trip as the microseconds between the resend and that ACKNACK. On the PC
+    // (PROFILE=wifi, tv) such samples took the srtt from ~40 ms to under 128 us, the timeout released every held unit
+    // at every request, and the resends filled netem's queue (525,319 and 1,829,941 resent in a 30 s rep). No repair is
+    // shown arrived sooner than its path takes, so the criterion (registered before the fix, storm_tv_ab.sh): the
+    // timeout's srtt, once it has a sample, never below the 20 ms unicast delay at any step. Control: no loss, nothing
+    // resent, nothing timed. The parent: 0.000 ms, 2,893 resent. RACK's round trip still takes such samples (its rule
+    // releases a unit's first resend only): printed, not held to the path. Here the fix times nothing - every unit
+    // resent once is left out by some ACKNACK first - so its timeout stays each unit's seed (large_note_resent()).
+    uint32_t rack = 0;
+    EXPECT_EQ_U32(0U, least_timed_srtt(5, 20 * tt_MILLISECOND, 0, &rack));
+    uint32_t before = pub.retransmitted;
+    uint32_t least = least_timed_srtt(10, 20 * tt_MILLISECOND, 50, &rack);
+    printf("test_large_sample: 10 x 1 MiB at 5%% over a 20 ms unicast path - the repair timeout's least srtt %.3f ms, "
+           "min_RTT %.3f ms, %u resent, %llu requests held\n",
+           (double)least / 1e6, (double)rack / 1e6, pub.retransmitted - before, HELD_REQUESTS(sender));
+    EXPECT_TRUE(pub.retransmitted - before > 0); // the treatment: repairs went
+    EXPECT_TRUE(least == 0 || least >= 20 * tt_MILLISECOND);
 }
 #endif
 
@@ -2774,6 +2854,7 @@ int main(void) {
 #ifdef tt_LARGE_REPAIR_SLOTS
     test_the_resend_order_rules();
     test_a_tail_waits_rack_rtt_and_its_reordering_window();
+    test_the_repair_timeout_never_stands_on_less_than_its_path();
 #endif
     teardown_pair();
 
