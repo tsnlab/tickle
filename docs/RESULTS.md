@@ -706,7 +706,7 @@ a mode CPU is equal on all four (IP ~5.4 / 4.4 ms/MB, MTU ~4.6 / 3.45). Median p
 ms, base 13.87 / 10.29, tail 10.75 / 10.09, aa 10.85 / 10.00 - the tail's cost against main is 0.4-0.8 ms (5-8%) at
 1%, its gain the 0.1% storm the PC shows and the rig does not. Landed on the user's call.
 
-### The tv repair storm, PC netns (`TVS`, 2026-10-25, not landed)
+### The tv repair storm, PC netns and rig (`TVS`, landed 2026-10-26)
 
 **TL;DR.** Main's Wi-Fi `tv` arm (1 MiB RELIABLE at 5 Hz) stormed in 2 of 80 untraced reps (525,319 and 845,268 units
 resent against a median ~10,000; the K candidate in 3 of 40, up to 11,623,361). The cause was in core. The resend order's repair timeout (2 x srtt) took Karn samples
@@ -717,6 +717,12 @@ released every held unit at every request, and the resends overflowed netem's 10
 it. Pre-registered A/B, 30 reps a tree: collapsed-timeout reps main 25 of 60, fix 0 of 30 (p < 0.0001); storms main 1,
 K 2, fix 0, fix + K 0; no Wi-Fi arm WORSE; ETHERNET's 1% tail NO COST against the A/A's spread (+0.7 ms, not ruled
 out).
+
+**Rig** (2026-10-26, A = main `b434f649`, B = `5b7c09e7` on `ab/storm-fix`; reading registered in
+`~/rig_jobs/storm_fix_queue.sh` before the run): core gate v2 PASS, 0/88 WORSE (one reported row, c17 server user
+instructions +0.18%, t 1.0). Array1m 30 Hz KEEP_LAST 10, 5 reps an arm (pre = A, head = B, aa = B again): delivered
+100% in every arm; median p99 head - pre 0.00 / +0.02 / 0.00 ms at 0 / 0.1 / 1% (|aa - head| 0.04 / 0.04 / 0.09);
+Array4m 15 Hz 0%: 100%, p99 36.62 against 36.64 ms (aa 36.55). The PC's +0.7 ms at 1% does not show on the rig.
 
 **The loop** (main, `wifi_repair_ab.sh` PROFILE=wifi `TT_UDP_OFFLOAD=0` LARGE_RSTATS=1; writer RSTATS, reader RSTATS,
 the writer egress's tc counters):
@@ -936,6 +942,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
 | HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
+| TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
 | SE | `s6_transport_cells.sh` | `e17b4e6f` | 2026-10-04 | `p4_shm_headtohead_e17b4e6f.txt` |

@@ -203,6 +203,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A large writer's repair timeout no longer times units an ACKNACK left out** (2026-10-26; [DESIGN.md](DESIGN.md)
+  section 4, "Large-sample resend order"; RESULTS `TVS`). A reader leaves out repairs it reckons still on their way, so
+  such an ACKNACK can arrive microseconds after the resend; timed into the timeout's srtt, those samples took it from
+  ~40 ms to under 128 us, the timeout released every held unit at every request, and on the PC's Wi-Fi `tv` arm a 1 MiB
+  rep resent up to 845,268 units (main) into a full netem queue. Such a unit still counts as arrived and feeds RACK; it
+  is never timed. No wire change (`8d0d2eed`). PC: collapsed-timeout reps 25 of 60 on main, 0 of 30 fixed. Rig: core
+  gate v2 PASS 0/88; Array1m 0/0.1/1% and Array4m delivery and p99 equal.
 - **A reader re-announces its loss p when a writer's n would change** (2026-10-24; [DESIGN.md](DESIGN.md) section 8,
   "Announcing p"). p went out again only on a factor of 2, and at 1% loss the n = 1 / n = 2 boundary (0.886%) lies
   inside 1%'s band: the rig's Array1m 1% cell sent IP-fragment runs of 2 in 41 of 93 reps, on every build, while its
