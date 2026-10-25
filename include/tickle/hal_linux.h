@@ -40,6 +40,15 @@
 #endif
 #endif
 
+// recvmmsg() rows handed to core where they lie (hal_linux.c rx_take_pending()): a batch's datagrams 2..N are not
+// copied into the receive buffer when core asks for that (struct tt_Context.rx_rows_in_place). Each row starts
+// 8-aligned, as every receive buffer does (tickle.h, tt_Context.rx_buffer), so the datagram size must keep them so.
+#if tt_RX_BATCH > 1 && tt_MAX_BUFFER_LENGTH % 8 == 0
+#define TT_HAL_RX_IN_PLACE 1
+#else
+#define TT_HAL_RX_IN_PLACE 0
+#endif
+
 // UDP receive offload (hal_linux.c "UDP offload"): UDP_GRO on both sockets, so the kernel may hand several same-flow
 // datagrams over in one read, which the HAL then gives core one at a time where they lie. Derived, not a setting:
 //   - the receive buffer must hold the largest merged read, ~64 KB, or the kernel truncates it - so only a build whose
@@ -396,7 +405,7 @@ struct tt_hal {
     int32_t rx_len[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
     uint32_t rx_ip[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
     uint16_t rx_port[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
-    uint8_t rx_batch[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1][tt_MAX_BUFFER_LENGTH];
+    __attribute__((aligned(8))) uint8_t rx_batch[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1][tt_MAX_BUFFER_LENGTH];
     // recvmmsg()'s headers, set up once (rx_fill(), hal_linux.c) rather than per call: a call touches only
     // the entries the kernel filled. rx_headers_for is the node they were set up in, so a node that has
     // been moved since re-points them instead of writing through stale pointers.

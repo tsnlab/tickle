@@ -221,6 +221,10 @@ rx_idle_check: rx_idle_check.c libtickle.a
 rx_lone_check: rx_lone_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
+# A recvmmsg() batch's datagrams 2..N handed to core where they lie, whole, and only when asked (rx_rows_check.c).
+rx_rows_check: rx_rows_check.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
 # A receive socket's drops, as the kernel counts them, and the drain that keeps them at 0 (rx_drain_check.c). Built
 # from the sources with rmw's datagram and large samples on, as rmw_tickle is, since the drain exists only there.
 rx_drain_check: rx_drain_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
@@ -307,7 +311,8 @@ garbage_ctx_check_large_msan: $(GARBAGE_CTX_SRC) $(wildcard $(INCLUDE)/tickle/*.
 	$(MSAN_CC) $(CPPFLAGS) $(GARBAGE_CTX_MSAN) $(GARBAGE_CTX_DEFS) $(GARBAGE_CTX_RMW) -o $@ $(GARBAGE_CTX_SRC) -lm \
 	    -lpthread
 
-test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
+test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_rows_check \
+    rx_drain_check \
     bell_wake_check wr_check wr_check_large
 	./test_samehost.sh
 
@@ -690,6 +695,6 @@ clean:
 	# other mode's stale cache behind.
 	rm -rf obj/*/
 	rm -f discovery_reply_check garbage_ctx_check garbage_ctx_check_large garbage_ctx_check_msan \
-	    garbage_ctx_check_large_msan libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check wr_check wr_check_large udp_offload_check \
+	    garbage_ctx_check_large_msan libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check sched_wake_check rx_hint_check rx_idle_check rx_lone_check rx_rows_check rx_drain_check bell_wake_check wr_check wr_check_large udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

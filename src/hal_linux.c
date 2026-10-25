@@ -3200,15 +3200,27 @@ static bool drain_active(const struct tt_Context* node) {
 #endif
 #endif
 
-// Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
-static int32_t rx_take_pending(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+// Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting. Inlined into both
+// receive calls, as it was before rows were handed out in place.
+__attribute__((always_inline)) static inline int32_t rx_take_pending(struct tt_Context* node, void* buf, size_t len,
+                                                                     uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     if (hal->rx_next >= hal->rx_count) {
         return -1;
     }
     uint16_t slot = hal->rx_next++;
     size_t copy = (size_t)hal->rx_len[slot] < len ? (size_t)hal->rx_len[slot] : len;
+#if TT_HAL_RX_IN_PLACE
+    // Where it lies, when core asked for that and passed its own buffer (a lending pool moves it elsewhere): the row is
+    // not read into again before every datagram of this batch has been handed out (rx_fill() comes after).
+    if (node->rx_rows_in_place && buf == node->rx_buffer) {
+        node->rx_in_place = hal->rx_batch[slot];
+    } else {
+        memcpy(buf, hal->rx_batch[slot], copy);
+    }
+#else
     memcpy(buf, hal->rx_batch[slot], copy);
+#endif
     *ip = hal->rx_ip[slot];
     *port = hal->rx_port[slot];
     node->rx_via_data_port = hal->rx_from_data;
@@ -4415,6 +4427,9 @@ static inline void rx_timer_slack_once(void) {
 #endif
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+#if TT_HAL_RX_IN_PLACE
+    node->rx_in_place = NULL; // in buf unless a batch's row is handed out where it lies (rx_take_pending())
+#endif
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
     // the batch and before anything still in them; it keeps draining while it holds any (rx_take_drained()).
@@ -4643,6 +4658,9 @@ static void rx_idle_count_return(struct tt_Context* node) {
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+#if TT_HAL_RX_IN_PLACE
+    node->rx_in_place = NULL;
+#endif
 #if TT_HAL_UDP_GRO
     node->rx_offset = 0;
     if (!drain_active(node)) {

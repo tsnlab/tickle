@@ -8058,7 +8058,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->rx_self_sent_data_unicast = 0;
     node->rx_via_data_port = false;
     node->rx_offset = 0;
-    node->udp_offload = 0; // tt_bind() sets what the HAL turned on
+    node->rx_in_place = NULL;
+    node->rx_rows_in_place = true; // no lending pool yet (tt_Context_set_rx_pool())
+    node->udp_offload = 0;         // tt_bind() sets what the HAL turned on
     node->udp_gro_reads = 0;
     node->udp_gro_merged = 0;
     node->udp_gro_copied = 0;
@@ -26401,10 +26403,27 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     const uint32_t offset = 0U;
 #endif
 #if tt_SAMPLE_LENDING
-    return process_datagram_at(node, RX_LANDING(node) + offset, len, ip, port, transport, seq_span, tt_LEND_BUFFER,
-                               node->lend.landing);
+    uint8_t* at = RX_LANDING(node) + offset;
+    uint8_t kind = tt_LEND_BUFFER;
 #else
-    return process_datagram_in(node, node->rx_buffer + offset, len, ip, port, transport, seq_span);
+    uint8_t* at = node->rx_buffer + offset;
+#endif
+#if defined(TT_HAL_RX_IN_PLACE) && TT_HAL_RX_IN_PLACE
+    // A recvmmsg() row the HAL handed out where it lies (struct tt_Context.rx_in_place): processed there, and never
+    // lent - only asked for while no lending pool is attached, where a retain has no buffer to move to anyway. Only a
+    // socket datagram: the field keeps the last receive's answer while the segment drain runs. One call below, not a
+    // second: a second call site took process_datagram_locked() out of line (+9 user instructions a sample at p1).
+    if (transport == tt_TRANSPORT_UDP && node->rx_in_place != NULL) {
+        at = node->rx_in_place;
+#if tt_SAMPLE_LENDING
+        kind = tt_LEND_FREE;
+#endif
+    }
+#endif
+#if tt_SAMPLE_LENDING
+    return process_datagram_at(node, at, len, ip, port, transport, seq_span, kind, node->lend.landing);
+#else
+    return process_datagram_in(node, at, len, ip, port, transport, seq_span);
 #endif
 }
 
@@ -27273,6 +27292,7 @@ tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint
     }
     node->lend.pool = (uint8_t*)storage;
     node->lend.pool_count = storage == NULL ? 0 : count;
+    node->rx_rows_in_place = node->lend.pool_count == 0; // a sample lent from a recvmmsg row would outlive it
     state_unlock(node);
     return tt_RET_OK;
 }

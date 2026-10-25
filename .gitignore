@@ -84,6 +84,7 @@
 /platform/linux/rx_hint_check
 /platform/linux/rx_idle_check
 /platform/linux/rx_lone_check
+/platform/linux/rx_rows_check
 /platform/linux/udp_offload_check
 /platform/linux/udp_offload_check_flap
 /platform/linux/discovery_reply_check

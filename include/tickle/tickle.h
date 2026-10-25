@@ -2065,6 +2065,12 @@ struct tt_Context {
     // (Linux UDP_GRO, hal_linux.c "UDP offload"); then a multiple of 4, and of 8 unless counted in udp_gro_off8. Read
     // by core only in a build with that HAL (hal_linux.h TT_HAL_UDP_GRO).
     uint32_t rx_offset;
+    // Set by the HAL on each socket receive: where the datagram lies when it handed it out outside the buffer core
+    // passed - a recvmmsg() batch's row (hal_linux.h TT_HAL_RX_IN_PLACE) - and NULL when it is in that buffer. Valid
+    // until the next receive, as the buffer's contents are. Rows are handed out so only while rx_rows_in_place: core
+    // clears it while a lending pool is attached, because a sample lent from a row would outlive the row's next read.
+    uint8_t* rx_in_place;
+    bool rx_rows_in_place;
     // UDP offload (hal_linux.c "UDP offload"), set and counted by the HAL, on the traffic line. udp_offload: bit 0
     // receive offload (UDP_GRO) in use, bit 1 send offload (UDP_SEGMENT). gro_reads: reads that returned several
     // datagrams at once; gro_merged: the datagrams those carried; gro_copied: of those, the ones not handed out in

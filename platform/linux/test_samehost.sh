@@ -150,6 +150,8 @@ fi
 "$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
 # The read after a lone wake-up's datagram is skipped and loses nothing (rx_lone_check.c): exit 0 only.
 "$HERE/rx_lone_check" || { echo "same-host test: FAIL - rx_lone_check" >&2; exit 1; }
+# A recvmmsg() batch's rows handed to core in place, whole, and only when asked (rx_rows_check.c): exit 0 only.
+"$HERE/rx_rows_check" || { echo "same-host test: FAIL - rx_rows_check" >&2; exit 1; }
 # The wait ring (wr_check.c): its owner, its moves, every member it polls, and no datagram lost or reordered while two
 # threads share the poll role - in the default build and in rmw's. Exit 2 is a kernel that refuses the ring (Linux
 # < 6.1, io_uring refused): said, not failed, as the context then runs without it.
