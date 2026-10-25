@@ -3756,6 +3756,11 @@ struct tt_WriterProxy {
     // and not the whole recovery (which counts lost repairs and a bounded reader's declines too). 0/0 = no sample.
     uint32_t transit_srtt_ns;
     uint32_t transit_rttvar_ns;
+#if tt_LARGE_SAMPLES
+    // The least repair transit timed so far (0 = none): no request's repair has come back sooner, so it is the floor
+    // of a recovery timed for the path from a large writer on a repair_timing link (path_recovery_sample(), tickle.c).
+    uint32_t transit_min_ns;
+#endif
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,

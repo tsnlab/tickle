@@ -16021,6 +16021,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->request_next = 0;
             proxy->transit_srtt_ns = 0;
             proxy->transit_rttvar_ns = 0;
+#if tt_LARGE_SAMPLES
+            proxy->transit_min_ns = 0;
+#endif
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -16124,6 +16127,13 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
         return; // named by no request still remembered - nothing to time it from
     }
     rtt_estimate_fold(&proxy->transit_srtt_ns, &proxy->transit_rttvar_ns, now - oldest);
+#if tt_LARGE_SAMPLES
+    uint64_t took = now - oldest;
+    uint32_t sample = took == 0 ? 1U : (took < UINT32_MAX ? (uint32_t)took : UINT32_MAX);
+    if (proxy->transit_min_ns == 0 || sample < proxy->transit_min_ns) {
+        proxy->transit_min_ns = sample;
+    }
+#endif
 }
 
 // A copy of seq_no arrived and this reader declined it (tt_Subscriber.accept_callback: a bounded KEEP_ALL queue with
@@ -16443,6 +16453,27 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // repair_timing_times() instead; the sending estimate as above.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
+// The recovery `took` as the path's estimate takes it: on a repair_timing link, from a writer of large samples, never
+// below the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns). A probe starts at the first
+// request naming the watermark, but a large sample's missing unit has nearly always been named before, while it lay
+// above the watermark, and its repair may already be on its way: such a probe ends sooner than any round trip. Traced
+// (RESULTS `R4K`, ge5b2, 1 MiB at 5 Hz): every recovery Karn's rule timed was one of these, 1-14% of them under 3 ms
+// against a least transit of 4.1-4.7 ms; the default rule's retried samples outweighed them, Karn's rule kept only
+// them, and in about 1 rep in 5 they held the interval down - timer ACKNACKs 6,000-12,000 a rep against ~200 and
+// twice the resends. Raised to the floor, such a sample says only "no slower than the path", and the estimate cannot
+// fall below what a repair has ever taken. Elsewhere `took` as it is.
+static uint64_t path_recovery_sample(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint64_t took) {
+#if tt_LARGE_SAMPLES
+    if (node->repair_timing && proxy->large_arrival_ns != 0 && took < proxy->transit_min_ns) {
+        return proxy->transit_min_ns;
+    }
+#else
+    (void)node;
+    (void)proxy;
+#endif
+    return took;
+}
+
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
@@ -16452,7 +16483,7 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (path && !proxy->probe_busy) {
-            note_recovery_sample(proxy, took);
+            note_recovery_sample(proxy, path_recovery_sample(node, proxy, took));
         }
 #if tt_LARGE_SAMPLES
         if (plain) {
