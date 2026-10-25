@@ -47,6 +47,14 @@
 #     on the arms median rep resends) <= max(M, A) + |M - A| + 5% (resends 10%) of max(M, A).
 #   K / FK: COLLAPSE and STORM reps printed; FK with any is "still storms".
 #
+# AMENDED 2026-10-25 21:30, after the tv and arms phases (ab1) and before any run of this: the timeout's srtt took most
+#   of its samples from left-out units, so the fix could cost the tail on ETHERNET, where LRT measured RACK and the
+#   timeout (ge1b1 median rep p99 O 11.3 / P 19.6 / F 14.1 ms). Checked by large_repair_followups_netns.sh PHASE=tail
+#   with TREES="O=A P=M F=F" (O is here main's second checkout, an A/A of P, not the order's parent), read by that
+#   harness's own registered tail rule: FALSIFIED (the fix does not land as is) on a STORM rep or fewer samples
+#   delivered than P at ge0.1b1 or ge1b1; COST at either arm when F's median rep p99 is above P's by more than N (the
+#   ctl band); also read: O against P on the same rule, the A/A's spread.
+#
 # Usage: TREES="M=dir A=dir F=dir [K=dir FK=dir]" TAG=name PHASE=tv|arms [REPS=n] storm_tv_ab.sh
 #   Output: $BASE_OUT/<TAG>_<label>/, <TAG>.ab.txt (wifi_repair_ab.sh's own reading), <TAG>.storm.txt (this one's),
 #   which ends with "=== storm_tv_ab ended".
