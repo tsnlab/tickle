@@ -1,0 +1,244 @@
+diff --git a/src/tickle.c b/src/tickle.c
+index 730c5bb8..6af41517 100644
+--- a/src/tickle.c
++++ b/src/tickle.c
+@@ -25,6 +25,60 @@
+ #include "encoding.h"
+ #include "log.h"
+ 
++#ifdef R4_TRACE
++// R4 investigation trace (experiment only, never production): timestamped events dumped at exit to $R4_TRACE_FILE.
++#include <stdlib.h>
++#include <time.h>
++struct r4_ev {
++    uint64_t t;
++    uint32_t a;
++    uint32_t b;
++    char k;
++};
++#define R4_EV_MAX (1U << 22)
++static struct r4_ev* r4_evs;
++static uint32_t r4_n;
++static char r4_reason = '?';
++static uint64_t r4_now(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
++}
++static void r4t(char k, uint32_t a, uint32_t b) {
++    if (r4_evs == NULL) {
++        r4_evs = (struct r4_ev*)calloc(R4_EV_MAX, sizeof(struct r4_ev));
++        if (r4_evs == NULL) {
++            return;
++        }
++    }
++    if (r4_n < R4_EV_MAX) {
++        r4_evs[r4_n++] = (struct r4_ev) {r4_now(), a, b, k};
++    }
++}
++__attribute__((destructor)) static void r4_dump(void) {
++    const char* path = getenv("R4_TRACE_FILE");
++    if (path == NULL || r4_evs == NULL) {
++        return;
++    }
++    FILE* f = fopen(path, "w");
++    if (f == NULL) {
++        return;
++    }
++    for (uint32_t i = 0; i < r4_n; i++) {
++        fprintf(f, "%c %llu %u %u\n", r4_evs[i].k, (unsigned long long)r4_evs[i].t, r4_evs[i].a, r4_evs[i].b);
++    }
++    fclose(f);
++}
++#define R4T(k, a, b) r4t((k), (uint32_t)(a), (uint32_t)(b))
++#define R4REASON(c) (r4_reason = (c))
++static int r4_src;
++#define R4SRC(v) (r4_src = (v))
++#else
++#define R4T(k, a, b) ((void)0)
++#define R4REASON(c) ((void)0)
++#define R4SRC(v) ((void)0)
++#endif
++
+ #define UNUSED(x) (void)(x)
+ 
+ // Large samples' runs read in place (large_direct_aim()), on a HAL that can (hal_linux.h TT_HAL_RX_DIRECT).
+@@ -11759,6 +11813,7 @@ static void large_order_arrived(struct tt_Context* node, struct tt_PeerAck* ack,
+     if (slot->resends == 1 && ack != NULL) {
+         uint64_t sample = (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT;
+         rtt_estimate_fold(&ack->repair_srtt_ns, &ack->repair_rttvar_ns, sample);
++        R4T('K', (uint32_t)(sample >> 10), ((ack->repair_srtt_ns >> 10) << 2) | (uint32_t)r4_src);
+         uint32_t rtt = sample < UINT32_MAX ? (uint32_t)sample : UINT32_MAX;
+         rtt = rtt != 0 ? rtt : 1U; // 0 stands for "none"
+         // RACK.rtt follows the most recently sent repair shown arrived (RFC 8985 6.2), not the latest to be shown
+@@ -11811,6 +11866,7 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
+     for (uint32_t unit = seq_no - passed; unit != seq_no; unit++) {
+         struct tt_LargeRepair* slot = large_repair_slot(node, unit);
+         if (large_repair_is(slot, pub, unit, target->context_id)) {
++            R4SRC(0);
+             large_order_arrived(node, ack, slot, now, order);
+         }
+     }
+@@ -11834,6 +11890,7 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
+             uint32_t unit = seq_no + bit;
+             struct tt_LargeRepair* slot = large_repair_slot(node, unit);
+             if (large_repair_is(slot, pub, unit, target->context_id)) {
++                R4SRC(1);
+                 large_order_arrived(node, ack, slot, now, order);
+             } else if (!bounded) {
+                 const struct tt_LargeRecord* record = large_find(pub, unit);
+@@ -11847,6 +11904,7 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
+     if (ack != NULL) {
+         large_order_times(ack, order);
+     }
++    R4T('O', order->timeout, order->rack);
+ }
+ 
+ // Whether the unit seq_no a reader just asked for is due a resend: never resent to it, its last resend shown lost
+@@ -11871,9 +11929,11 @@ static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher*
+         RSTAT_LRO_RELEASED(seq_no, true, node->large.repair_serial == slot->serial,
+                            (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT,
+                            (uint64_t)(order->timeout != 0 ? order->timeout : slot->hold) << LARGE_REPAIR_SHIFT);
++        R4T('R', seq_no, slot->resends);
+         return true; // nothing shown for a repair timeout: lost where nothing later shows it, as a tail is
+     }
+     RSTAT_LRO_HELD(seq_no);
++    R4T('H', seq_no, 0);
+     node->large.resend_held++;
+     return false;
+ }
+@@ -12652,6 +12712,7 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
+     struct tt_LargeCursor* cursor = &pub->large_cursor;
+     // Each fragment's own seq_no, as frag_write_header() gives a small sample's: each datagram's span is 1.
+     node->tx_seq_span = 1;
++    R4T('C', record->seq_no + cursor->next_index, record->count);
+     while (cursor->next_dest < cursor->dest_count) {
+ #if tt_LARGE_SHM
+         // A same-host peer that takes descriptors gets one record for the whole sample (step B), never a full socket:
+@@ -12681,11 +12742,13 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
+         done = large_send_mtu(node, pub, record, progress, failed);
+ #endif
+         if (!done) {
++            R4T('E', record->seq_no + cursor->next_index, 0);
+             return false;
+         }
+         if (*failed) {
+             return true;
+         }
++        R4T('E', record->seq_no + record->count, 1);
+         cursor->next_dest++;
+         cursor->next_index = 0;
+     }
+@@ -13038,6 +13101,7 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
+     const struct tt_LargeCursor* cursor = &pub->large_cursor;
+     if (!record->sent && !(cursor->active && cursor->seq_no == record->seq_no &&
+                            (cursor->next_dest > 0 || index < cursor->next_index))) {
++        R4T('Q', seq_no, 0); // left to the send in progress (not yet sent)
+         return LARGE_RESEND_SENT;
+     }
+ #if tt_LARGE_SHM
+@@ -13073,10 +13137,12 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
+     node->tx_seq_span = 1;
+     if (!send_datagram(node, &dgram, target, 1)) {
+         TT_LOG_WARNING("Cannot retransmit large sample seq_no %u now", seq_no);
++        R4T('F', seq_no, 0);
+         RSTAT_INC(retransmit_tx_fail);
+         return LARGE_RESEND_SENT;
+     }
+     large_note_resent(node, pub, record, seq_no, target);
++    R4T('S', seq_no, large_repair_slot(node, seq_no)->resends);
+     RSTAT_INC(retransmitted);
+     pub->retransmitted++;
+     return LARGE_RESEND_SENT;
+@@ -16225,10 +16291,22 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
+     }
+ #endif
+     bool unicast = old_tx_tail == sizeof(struct tt_Header);
++#ifdef R4_TRACE
++    uint32_t r4_bits = 0;
++    for (uint16_t word = 0; word < wire_words; word++) {
++        r4_bits += (uint32_t)__builtin_popcountll(acknack_header->bitmap[word]);
++    }
++    uint32_t r4_base = proxy->ack_seq_no;
++#endif
+     if (!end_encode(node, submessage_header, true, unicast ? &target : NULL, unicast ? 1 : 0)) {
+         rollback(node, old_tx_tail);
+         return;
+     }
++#ifdef R4_TRACE
++    R4T('A', r4_base + (uint32_t)(first_named < 0 ? 0 : first_named), r4_bits);
++    R4T('a', r4_base, (uint32_t)r4_reason | ((uint32_t)(last_named < 0 ? 0 : last_named) << 8));
++    r4_reason = '?';
++#endif
+     // Only a request that names the watermark itself can time its recovery: a narrow request for a
+     // newly opened gap further ahead (low_bit > 0) does not ask for ack_seq_no at all.
+     if (names_watermark) {
+@@ -16607,6 +16685,8 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
+     }
+ 
+     RSTAT_INC(acknack_timer);
++    R4REASON('T');
++    R4T('I', reliable_retry_interval(node, proxy) / 1000U, proxy->retry);
+ #if tt_LARGE_SAMPLES
+     proxy->retry_sent_ns = checked_ns;
+     if (sending) {
+@@ -16735,6 +16815,7 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
+         // periodic re-send (which already re-reads the current bitmap state fresh each tick, so
+         // nothing about a widened gap goes unreported, just delayed by at most one interval).
+         RSTAT_INC(acknack_immediate);
++        R4REASON('M');
+         send_acknack(node, proxy);
+         proxy->retry = 0;
+         if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+@@ -17119,6 +17200,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
+             extend_gap_to_watermark(proxy, &new_gap);
+         }
+         RSTAT_INC(acknack_new_gap);
++        R4REASON('G');
+         send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
+     }
+     return is_new;
+@@ -21753,6 +21835,15 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
+ #ifdef tt_RELIABLE_STATS
+     g_rstats.acknack_received++;
+     g_rstats.bits_requested += rstat_popcount_bitmap(bitmap, words);
++#endif
++#ifdef R4_TRACE
++    {
++        uint32_t r4_bits = 0;
++        for (uint16_t w = 0; w < words; w++) {
++            r4_bits += (uint32_t)__builtin_popcountll(bitmap[w]);
++        }
++        R4T('N', seq_no, r4_bits);
++    }
+ #endif
+     bool any_gone = false;
+ #if tt_LARGE_SHM
+@@ -23418,6 +23509,7 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
+         if (seq_delta(fragment->seq_no, proxy->ack_seq_no) < 0 ||
+             (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset))) {
+             node->large.duplicate++; // already here, or already past
++            R4T('D', fragment->seq_no, 1);
+             return;
+         }
+     }
+@@ -23450,8 +23542,11 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
+         return;
+     }
+     if (recorded) {
++        R4T('U', fragment->seq_no, 1);
+         note_large_arrival(node, proxy, rx_now(node)); // the poll's reading: no clock read per unit
+         drain_reorder(node, sub, proxy);
++    } else {
++        R4T('X', fragment->seq_no, 1);
+     }
+ }
+ 
+@@ -23492,6 +23587,7 @@ static bool large_accept_run(struct tt_Context* node, struct tt_Subscriber* sub,
+     bool recorded =
+         update_reliable_ack(node, sub, first->seq_no, source, first->entity_id, first->sender_ip, first->sender_port);
+     node->rx_seq_span = span;
++    R4T(recorded ? 'U' : 'X', first->seq_no, run_count);
+     if (recorded) {
+         note_large_arrival(node, proxy, rx_now(node));
+         drain_reorder(node, sub, proxy);
