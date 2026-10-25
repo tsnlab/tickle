@@ -3757,8 +3757,8 @@ struct tt_WriterProxy {
     uint32_t transit_srtt_ns;
     uint32_t transit_rttvar_ns;
 #if tt_LARGE_SAMPLES
-    // The least repair transit timed so far (0 = none): no request's repair has come back sooner, so it is the floor
-    // of a recovery timed for the path from a large writer on a repair_timing link (path_recovery_sample(), tickle.c).
+    // The least repair transit timed so far (0 = none): no request's repair has come back sooner, so a large writer's
+    // recovery shorter than it is not timed for the path on a repair_timing link (path_sample_too_short(), tickle.c).
     uint32_t transit_min_ns;
 #endif
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once

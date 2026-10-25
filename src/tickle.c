@@ -16453,25 +16453,26 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // repair_timing_times() instead; the sending estimate as above.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
-// The recovery `took` as the path's estimate takes it: on a repair_timing link, from a writer of large samples, never
-// below the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns). A probe starts at the first
-// request naming the watermark, but a large sample's missing unit has nearly always been named before, while it lay
-// above the watermark, and its repair may already be on its way: such a probe ends sooner than any round trip. Traced
-// (RESULTS `R4K`, ge5b2, 1 MiB at 5 Hz): every recovery Karn's rule timed was one of these, 1-14% of them under 3 ms
-// against a least transit of 4.1-4.7 ms; the default rule's retried samples outweighed them, Karn's rule kept only
-// them, and in about 1 rep in 5 they held the interval down - timer ACKNACKs 6,000-12,000 a rep against ~200 and
-// twice the resends. Raised to the floor, such a sample says only "no slower than the path", and the estimate cannot
-// fall below what a repair has ever taken. Elsewhere `took` as it is.
-static uint64_t path_recovery_sample(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint64_t took) {
+// Whether a recovery `took` is too short to be timed for the path: on a repair_timing link, from a writer of large
+// samples, one shorter than the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns) - faster
+// than any repair has ever come back, so it cannot be the answer to its own request (Karn's ambiguity). A probe starts
+// at the first request naming the watermark, but a large sample's missing unit has nearly always been named before,
+// while it lay above the watermark, and its repair may already be on its way. Traced (RESULTS `R4K`, ge5b2, 1 MiB at
+// 5 Hz): every recovery Karn's rule timed for such a writer was one of these, some 0.04-3 ms against a least transit
+// of 4.1-4.7 ms; the default rule's retried samples outweighed them, Karn's rule kept only them, and a seed of 210 us
+// held the interval at 631 us for a whole rep - no first-try recovery after it, 5,646 timer ACKNACKs against ~200,
+// twice the resends. Left out, not raised to the floor: early in a rep the floor is still a drain-length transit
+// (20-36 ms at the first sample's seed, ~5 ms a few tenths of a second later), and a seed raised to it held the
+// interval long for the first ~20 samples (their p99 ~250 ms). Elsewhere every recovery is timed as before.
+static bool path_sample_too_short(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint64_t took) {
 #if tt_LARGE_SAMPLES
-    if (node->repair_timing && proxy->large_arrival_ns != 0 && took < proxy->transit_min_ns) {
-        return proxy->transit_min_ns;
-    }
+    return node->repair_timing && proxy->large_arrival_ns != 0 && took < proxy->transit_min_ns;
 #else
     (void)node;
     (void)proxy;
+    (void)took;
+    return false;
 #endif
-    return took;
 }
 
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
@@ -16482,8 +16483,8 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(node, proxy) : plain;
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
-        if (path && !proxy->probe_busy) {
-            note_recovery_sample(proxy, path_recovery_sample(node, proxy, took));
+        if (path && !proxy->probe_busy && !path_sample_too_short(node, proxy, took)) {
+            note_recovery_sample(proxy, took);
         }
 #if tt_LARGE_SAMPLES
         if (plain) {

@@ -2849,19 +2849,19 @@ static void test_wifi_repair_timing_gives_a_large_writer_karns_rule(void) {
     EXPECT_TRUE(!repair_timing_times(&ctx, &proxy)); // past the back-off, not
 }
 
-// A large writer's recovery timed for the path on a repair_timing link never counts as faster than the least repair
-// transit this reader has timed (path_recovery_sample(), RESULTS `R4K` "the 2x reps"): a probe on a unit named before
-// it became the watermark can end microseconds after its request, and under Karn's rule such samples alone had held a
-// 1 MiB reader's interval down. note_repair_arrival() keeps the least transit; the controls are a small writer, a link
-// without repair_timing and a reader with no transit yet, all of which time `took` as it is.
-static void test_a_large_writers_path_sample_is_floored_at_the_least_transit(void) {
+// A large writer's recovery shorter than the least repair transit this reader has timed is not timed for the path on a
+// repair_timing link (path_sample_too_short(), RESULTS `R4K` "the 2x reps"): a probe on a unit named before it became
+// the watermark can end microseconds after its request, and under Karn's rule such samples alone had held a 1 MiB
+// reader's interval down. note_repair_arrival() keeps the least transit; the controls are a small writer, a link
+// without repair_timing and a reader with no transit yet, whose recoveries are all timed.
+static void test_a_large_writers_recovery_faster_than_any_transit_is_not_timed(void) {
     static struct tt_Context ctx;
     static struct tt_WriterProxy proxy;
     memset(&ctx, 0, sizeof(ctx));
     memset(&proxy, 0, sizeof(proxy));
     ctx.repair_timing = true;
     proxy.large_arrival_ns = 1;
-    EXPECT_EQ_U64(300000U, path_recovery_sample(&ctx, &proxy, 300000U)); // no transit timed yet: as it is
+    EXPECT_TRUE(!path_sample_too_short(&ctx, &proxy, 300000U)); // no transit timed yet: timed
     // Two requests naming seq_no 100 (the older at 10 ms), its repair at 15 ms: a 5 ms transit, from the older.
     proxy.ack_seq_no = 100;
     proxy.requests[0] = (struct tt_RepairRequest) {.sent_ns = 10000000U, .first_seq_no = 100, .last_seq_no = 140};
@@ -2877,13 +2877,14 @@ static void test_a_large_writers_path_sample_is_floored_at_the_least_transit(voi
     proxy.ack_seq_no = 150; // the watermark: missing, with no bitmap to read
     note_repair_arrival(&proxy, 150, 34500000U);
     EXPECT_EQ_U64(4500000U, proxy.transit_min_ns);
-    EXPECT_EQ_U64(4500000U, path_recovery_sample(&ctx, &proxy, 300000U));  // a probe 0.3 ms after its request: floored
-    EXPECT_EQ_U64(7000000U, path_recovery_sample(&ctx, &proxy, 7000000U)); // above the floor: as it is
+    EXPECT_TRUE(path_sample_too_short(&ctx, &proxy, 300000U));   // a probe 0.3 ms after its request: not timed
+    EXPECT_TRUE(!path_sample_too_short(&ctx, &proxy, 4500000U)); // at the floor: timed
+    EXPECT_TRUE(!path_sample_too_short(&ctx, &proxy, 7000000U)); // above it: timed
     proxy.large_arrival_ns = 0;
-    EXPECT_EQ_U64(300000U, path_recovery_sample(&ctx, &proxy, 300000U)); // a small writer: as it is
+    EXPECT_TRUE(!path_sample_too_short(&ctx, &proxy, 300000U)); // a small writer: timed
     proxy.large_arrival_ns = 1;
     ctx.repair_timing = false;
-    EXPECT_EQ_U64(300000U, path_recovery_sample(&ctx, &proxy, 300000U)); // no repair_timing (ETHERNET): as it is
+    EXPECT_TRUE(!path_sample_too_short(&ctx, &proxy, 300000U)); // no repair_timing (ETHERNET): timed
 }
 
 int main(void) {
@@ -2901,7 +2902,7 @@ int main(void) {
     test_a_busy_writer_is_not_warned_about();
     test_a_busy_writers_send_is_not_timed_as_the_path();
     test_wifi_repair_timing_gives_a_large_writer_karns_rule();
-    test_a_large_writers_path_sample_is_floored_at_the_least_transit();
+    test_a_large_writers_recovery_faster_than_any_transit_is_not_timed();
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();
