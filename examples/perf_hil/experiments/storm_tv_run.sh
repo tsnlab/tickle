@@ -9,7 +9,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TAG=${TAG:?TAG}
 BASE_OUT=${BASE_OUT:-$HOME/storm_results}
 T0=$(date +%s)
-trap 'echo "=== storm_tv_run ended rc=$? $(date -Is) after $(($(date +%s) - T0)) s ==="' EXIT
+on_exit() {
+    local rc=$?
+    echo "=== storm_tv_run ended rc=$rc $(date -Is) after $(($(date +%s) - T0)) s ==="
+}
+trap on_exit EXIT
 echo "=== storm_tv_run $(date -Is) tag=$TAG load $(cut -d' ' -f1-3 /proc/loadavg) ==="
 BASE_OUT=$BASE_OUT TAG="${TAG}_tv" TREES=${TV_TREES:?TV_TREES} PHASE=tv REPS=${TV_REPS:-30} "$HERE/storm_tv_ab.sh"
 echo "tv phase done $(date -Is) load $(cut -d' ' -f1-3 /proc/loadavg)"

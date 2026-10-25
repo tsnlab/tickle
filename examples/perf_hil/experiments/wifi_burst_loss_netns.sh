@@ -355,9 +355,9 @@ run_one() { # run_one ARM CELL REP
     local idle_pid=$!
     TV_PID=""
     if [ "$cell" = rel_large ]; then
-        # shellcheck disable=SC2086 # LARGE_SUB_ARGS / LARGE_PUB_ARGS are words on purpose
         local node_env=${NODE_ENV:-}
         [ "${LARGE_TRACE:-0}" = 1 ] && NODE_ENV="$node_env R4_TRACE_FILE=$RUN_DIR/sub.trace"
+        # shellcheck disable=SC2086 # LARGE_SUB_ARGS / LARGE_PUB_ARGS are words on purpose
         inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" "${LARGE_PROFILE[@]}" ${LARGE_SUB_ARGS:-} >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
