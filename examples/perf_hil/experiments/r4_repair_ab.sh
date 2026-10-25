@@ -49,6 +49,9 @@
 # 73.3 79.4; M 100.8 100.9 88.4, A 79.8 113.3 137.4); P2 NOT WORSE (be_small's delivery rule fired for A vs M as for
 # K vs M: noise); P3 K's fall 25.9% against an A/A spread of 12.4%, counts; P5 treatment applied (retry interval p50
 # 15.1 ms against 37.4) and not falsified (a 26.1 ms fall against the 24.5 required).
+# SECOND RUN (r4_ab2, 19:21, ARMS="ctl ge10b4", same trees): P1 PASS - 74.15 ms against 74.62 (per-rep 71.9 74.2 78.3;
+# M 104.1, A 99.3); P2 NOT WORSE; P3 fall 28.8% against an A/A spread of 4.6%. K sits at the limit (RESULTS `R4K`).
+# K2 (ADDED below) was withdrawn before its A/B: see the AMENDED note on branch r4-k2 and RESULTS `R4K`.
 #
 # ADDED 2026-10-25 AFTER r4_ab1, BEFORE K2's PROTOTYPE - K2 = K + the reader's in-flight window ends with the send.
 #   Traced on K (trace_k1, a sample near the p50): the critical unit asked for at 36.9 ms, resent at 41.3, lost; the

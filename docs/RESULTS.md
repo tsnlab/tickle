@@ -555,6 +555,63 @@ Cost (`initoptions_insn_pc.sh`, A = the parent, P = A placement-shifted, B = the
 instructions per sample B vs A (P vs A) p1 -0.01% (-0.01%), p3 +0.00% (-0.01%), t1 -0.00% (-0.00%), t3 +0.01%
 (+0.00%), 1% loss l1 +0.00% (+0.01%), l3 +0.02% (+0.02%); every row EQUAL, server rows within their spread.
 
+### R4 at ge10b4: where a 1 MiB sample's repair time goes, PC netns (`R4K`, 2026-10-25, not landed)
+
+**TL;DR.** R4's excess is the reader's retry timer, not netem's queue or the link. Main's interval was 37 ms on a
+6.9 ms round trip, because a writer of large samples kept the default timing rule, which times recoveries spanning a
+lost repair's wait. Karn's rule for that writer too (K, branch `r4-karn-large`) cuts the ge10b4 p50 from 100.8-104.1 ms
+to 74.2-74.7 ms. That is the limit (74.3-74.6), not clearly under it: one run FAIL by 0.4 ms, one PASS by 0.5 ms.
+Nothing else got WORSE. R7 is unchanged and FAIL on every tree.
+
+Reproduced on main b434f649 (WIFI, `TT_UDP_OFFLOAD=0`, ctl and ge10b4, 3 reps, 450 samples a cell, load at most 0.3):
+p50 138.4 ms against 74.2, reverse bytes 0.26%. Trace (`LARGE_TRACE`: `r4_trace.patch` on core, `r4_trace_read.py`;
+300 samples at ge10b4) splits each sample's time along its last-arriving unit. For the samples near the p50 (108 ms):
+
+| term | ms | what |
+|---|---|---|
+| drain | 42.2 | the sample's 723 frames through netem's slots; the control has it too (ctl p50 46.6) |
+| to first resend | 9.9 | detection, the request's transit, the writer's answer |
+| re-ask wait | 49.2 | from a resend that was lost to the next request for that unit; the reader's timer (187 of 326) or its answer to the writer's HEARTBEAT chase (134) |
+| writer hold | 3.9 | the resend order holding a request whose resend is not shown lost |
+| last transit | 3.1 | the last resend to its arrival |
+
+The writer hands the whole sample to the socket in 1.4-1.8 ms, so all the queueing is netem's. A repair queued behind
+fresh units took 17.8 ms (p50; p90 32.9) against 3.2 ms with nothing ahead. On the critical path that queue is only the
+first-resend term. Its real cost is indirect: it enters the estimates the timers run on. The reader's retry interval
+was 37.4 ms at the p50 (p90 78.4) because the default rule, past the seed, timed recoveries that spanned a retry. It
+was kept for large writers on 2026-10-23 (`WR`), before the writer's resend order (a664dae9) existed. That order now
+makes a frequent request cost an ACKNACK, not a resend.
+
+K against main, pre-registered (`r4_repair_ab.sh`, committed before the prototype). Trees M = main plus the harness,
+A = M in a second checkout (the A/A control), K = M plus the change. All ran at once. Arms ctl ge5b2 ge5b4
+ge10b4 bc tv, three cells, 3 reps. The small cells build without `tt_LARGE_SAMPLES`, so the change is compiled out
+there: a second control.
+
+| | M | A | K |
+|---|---|---|---|
+| ge10b4 p50, run 1 (per rep) | 100.8 (100.8 100.9 88.4) | 113.3 (79.8 113.3 137.4) | 74.7 (74.7 73.3 79.4), limit 74.3: FAIL |
+| ge10b4 p50, run 2 (ctl+ge10b4 only) | 104.1 (95.2 125.2 104.1) | 99.3 (120.3 83.2 99.3) | 74.2 (71.9 74.2 78.3), limit 74.6: PASS |
+| ge10b4 writer resends a rep | 11,989-12,861 | 12,131-12,866 | 10,864-12,670 |
+| ge5b4 / tv / bc p50 (run 1) | 53.7 / 57.6 / 48.3 | 55.7 / 69.1 / 48.0 | 55.0 / 56.7 / 48.7 |
+| R1 R2 R3 R5 R6 (run 1) | R2 FAIL at ge5b2 (44.0 > 43.2) | R2 FAIL at ge5b2 | all PASS |
+| R7 tv copies after delivery | 227 of 8,479 | 265 of 8,495 | 275 of 8,538 |
+
+P2 (no WORSE) passed on both runs. be_small's 0.1-point delivery rule fired for A against M as often as for K against
+M, so it is read as noise. K's fall against M was 25.9% and 28.8%, against an A/A spread of 12.4% and 4.6%. P5, the
+treatment: on a traced K run the interval was 15.1 ms at the p50 against 37.4. The falsifier did not fire: the p50 fell
+26.1 and 29.9 ms, and at least 24.5 ms was required. Two runs needed watching. One K ge5b2 rep resent 13,847 units
+against ~5,900 (2.3x, under the 10x storm rule). One run-2 K ge10b4 rep matched at sample 17, so it scored 133 samples.
+That is discovery under loss, with none missing after the match.
+
+What is left at K's p50 (75 ms, trace): a lost repair is asked for again 20.8-33.1 ms after the drain ends. The repair
+transit estimate, which decides how long a request counts as "on its way", also carries the drain's queue. K2 (branch
+`r4-k2`, pre-registered before its prototype) stopped a request counting once the send had passed it by the path's interval. It
+was withdrawn before its A/B. On 5 traced reps, 2 collapsed the reader's estimate to an interval of 12-25 us (one
+at load 1.5, one at 13.4): 21-42k
+timer ACKNACKs and 35-76k resends (Karn's ambiguity; leaving out recoveries an older request had named did not stop
+it). In the other reps the wait moved to the writer's resend-order hold, whose timeout and RACK time are also measured
+behind the drain. The next lever is the same queue in the writer's repair estimate. No wire change is involved.
+
 ### The reliable HEARTBEAT fix's follow-ups, PC netns (`LRF`)
 
 The three items the fix left open (CHANGELOG), measured on its successor before anything changed:
