@@ -235,6 +235,9 @@ static int32_t bench_decode(struct tt_Data* data, const uint8_t* payload, uint32
     if (delivered < MAX_SAMPLES) {
         latencies_ns[delivered] = arrived - sent;
     }
+#ifdef R4_TRACE
+    printf("LAT index=%u sent_ns=%llu arrived_ns=%llu\n", index, (unsigned long long)sent, (unsigned long long)arrived);
+#endif
     delivered++;
     return 0;
 }

@@ -200,6 +200,9 @@ if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -I
 fi
 LARGE_STATS=()
 [ "${LARGE_RSTATS:-0}" = 1 ] && LARGE_STATS=(-Dtt_RELIABLE_STATS)
+# LARGE_TRACE=1 (the R4 investigation, 2026-10-25; a tree carrying src/tickle.c's R4_TRACE hooks): the large bench
+# records core's repair events and each sample's times (r4_trace_read.py reads them); default off, nothing changes.
+[ "${LARGE_TRACE:-0}" = 1 ] && LARGE_STATS+=(-DR4_TRACE)
 # shellcheck disable=SC2068 # an empty array expands to nothing
 if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 \
     ${LARGE_STATS[@]} -I"$REPO/include" -I"$REPO/src" -o "$WORK/large" "$HERE/large_sample_bench.c" "${CORE[@]}" -lpthread -lm \
@@ -353,13 +356,17 @@ run_one() { # run_one ARM CELL REP
     TV_PID=""
     if [ "$cell" = rel_large ]; then
         # shellcheck disable=SC2086 # LARGE_SUB_ARGS / LARGE_PUB_ARGS are words on purpose
+        local node_env=${NODE_ENV:-}
+        [ "${LARGE_TRACE:-0}" = 1 ] && NODE_ENV="$node_env R4_TRACE_FILE=$RUN_DIR/sub.trace"
         inns 1 "$WORK/large" sub -s "$LARGE_BYTES" -d $((DUR + 8)) -R -b "$BCAST" "${LARGE_PROFILE[@]}" ${LARGE_SUB_ARGS:-} >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
         [ "$arm" = tv ] && { tv_cycle & TV_PID=$!; }
+        [ "${LARGE_TRACE:-0}" = 1 ] && NODE_ENV="$node_env R4_TRACE_FILE=$RUN_DIR/pub.trace"
         # shellcheck disable=SC2086
         inns 0 "$WORK/large" pub -s "$LARGE_BYTES" -r "$LARGE_HZ" -d "$DUR" -R -b "$BCAST" "${LARGE_PROFILE[@]}" ${LARGE_PUB_ARGS:-} >"$RUN_DIR/ping.log" 2>&1
         wait "$echo_pid"
+        NODE_ENV=$node_env
     else
         inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/owd_us.txt" \
             "${common[@]}" >"$RUN_DIR/echo.log" 2>&1 &
