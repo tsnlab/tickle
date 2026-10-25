@@ -33,7 +33,7 @@ def reps(out, tag, tree):
     for name in sorted(os.listdir(base)):
         arm, cell, rep = name.rsplit("-", 2)
         d = os.path.join(base, name)
-        r = {"rep": int(rep), "retx": None, "timer": None, "p50": None}
+        r = {"rep": int(rep), "retx": None, "timer": None, "p50": None, "p99": None}
         for ln in lines(os.path.join(d, "ping.log")):
             if ln.startswith("RESULT") and r["retx"] is None:
                 r["retx"] = int(kv(ln).get("retransmitted", -1))
@@ -43,6 +43,8 @@ def reps(out, tag, tree):
             if ln.startswith("RESULT: role=sub"):
                 v = kv(ln).get("latency_median_us")
                 r["p50"] = float(v) / 1000 if v not in (None, "nan") else None
+                v = kv(ln).get("latency_p99_us")
+                r["p99"] = float(v) / 1000 if v not in (None, "nan") else None
         if r["retx"] is not None:
             res.setdefault((arm, cell), []).append(r)
     return res
@@ -183,12 +185,34 @@ def main():
                     if st:
                         worse.append(f"p3 {key}: KF STORM {st}")
     verdicts.setdefault("NO WORSE", "WORSE: " + "; ".join(worse) if worse else "NOT WORSE")
+    # ---- TAIL (registered 2026-10-26 04:53 for the discard run k5d, before it; post hoc for k5ab's clamp)
+    tail_loses = []
+    for ph, arms in (("p1", ("ge5b2", "ge5b4")), ("p3", ("bc", "tv"))):
+        pr = {t: reps(out, f"{tag}_{ph}", t) for t in TREES}
+        if ph == "p1":
+            for x in extra:
+                for t in TREES:
+                    for key, rs in reps(out, f"{x}_p1", t).items():
+                        pr[t].setdefault(key, []).extend(rs)
+        for arm in arms:
+            key = (arm, "rel_large")
+            m99 = {}
+            for t in TREES:
+                v = [r["p99"] for r in pr[t].get(key, []) if r["p99"] is not None]
+                m99[t] = statistics.median(v) if v else float("nan")
+            band = 0.10 * m99["K"] + abs(m99["A"] - m99["M"])
+            ok = m99["KF"] <= m99["K"] + band
+            print(f"TAIL {arm}: median per-rep p99 M {m99['M']:.1f} A {m99['A']:.1f} K {m99['K']:.1f} KF {m99['KF']:.1f}"
+                  f" ms; KF <= K + {band:.1f} -> {'KEEPS' if ok else 'LOSES'}")
+            if not ok:
+                tail_loses.append(arm)
+    verdicts["TAIL"] = "KEEPS K's" if not tail_loses else "LOSES K's at " + " ".join(tail_loses)
     for v in void:
         print("VOID: " + v)
     print("VERDICTS: " + "; ".join(f"{k} {v}" for k, v in verdicts.items()))
     land = (not void and verdicts["CONTROL"] == "PASS" and verdicts["MECHANISM"] == "SHOWN" and
             verdicts["OUTCOME"] == "FIXED" and verdicts["R4"] == "PASS" and verdicts["R4 KEEPS"] == "KEEPS" and
-            verdicts["NO WORSE"] == "NOT WORSE")
+            verdicts["NO WORSE"] == "NOT WORSE" and verdicts["TAIL"] == "KEEPS K's")
     print("READING: " + ("LAND the floor with K (after a rig core gate)" if land else "do not land as registered"))
 
 
