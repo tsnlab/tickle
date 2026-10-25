@@ -16475,21 +16475,18 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
 //   22-23 ms (bursts in time, CLOCK_PPS=1000), and a second unlucky round runs into KEEP_LAST's eviction.
 // - Karn's rule after the seed kept the p99 within 10% of the 1 ms reader's (24.1 / 24.5 against 22.5 / 22.4 ms at
 //   ge5b2 / ge5b4) with a quarter of its resends; copies after delivery under `tv` 6.8% against 18.5%.
-// - Not for a writer of large samples: a gap in one waits behind the rest of the sample's send, the timer asks again
-//   meanwhile, and nearly every recovery has a retry. Under Karn's rule its estimate stayed at the seed: the WB 1 MiB
-//   arms then asked by timer 360-12,480 times a rep against ETHERNET's 19-126, and one ge5b2 rep resent 208,479 units
-//   where the others resent 6,000-9,000. Past the seed such a proxy keeps the default rule.
+// - A writer of large samples too (2026-10-25, RESULTS `R4K`). Until then such a proxy kept the default rule past the
+//   seed: under Karn's rule its estimate had stayed at the seed, the reader asked often, and the writer resent what it
+//   was asked for (one WB 1 MiB rep 208,479 units against 6,000-9,000). The writer's resend order (large_resend_due())
+//   now holds a request for a unit whose resend is not yet shown lost, so a request costs an ACKNACK, not a resend; and
+//   the default rule timed a recovery that spanned a lost repair's retry wait, which lengthened the very wait: traced
+//   at 10% loss, bursts of 4, the interval was 37 ms at the p50 (78 at the p90) on a 6.9 ms round trip, and the wait
+//   before asking again for a lost repair was 49 of a 108 ms sample's p50.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    (void)node;
     if (proxy->recovery_srtt_ns == 0) {
         return true; // the seed
     }
-#if tt_LARGE_SAMPLES
-    if (proxy->large_arrival_ns != 0) {
-        return proxy->retry <= node->opts.reliable.retry;
-    }
-#else
-    (void)node;
-#endif
     return proxy->retry == 0;
 }
 
