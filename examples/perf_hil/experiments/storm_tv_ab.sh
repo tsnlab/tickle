@@ -55,6 +55,13 @@
 #   delivered than P at ge0.1b1 or ge1b1; COST at either arm when F's median rep p99 is above P's by more than N (the
 #   ctl band); also read: O against P on the same rule, the A/A's spread.
 #
+# AMENDED 2026-10-25 22:20, after that check (tail1) and before its rerun (tail2): tail1 read ge1b1 COST as registered
+#   (median rep p99 P 11.9, F 12.8 ms, N 0.16) - and the A/A O, main's own code, read 13.1 ms: by the same rule main
+#   costs itself 1.2 ms, so N (the ctl band) is no band at ge1b1 with 4-5 reps. tail2 reruns it, 10 reps a tree, read by
+#   storm_tail_read.py: BAND = max(N, |O - P|) on the same arm of the same run; FALSIFIED on a STORM rep of F or fewer
+#   delivered than P; COST when F - P > BAND, GAIN when F - P < -BAND, else NO COST. tail1 stays as read (COST, with
+#   the A/A failing the rule); tail2 is the verdict.
+#
 # Usage: TREES="M=dir A=dir F=dir [K=dir FK=dir]" TAG=name PHASE=tv|arms [REPS=n] storm_tv_ab.sh
 #   Output: $BASE_OUT/<TAG>_<label>/, <TAG>.ab.txt (wifi_repair_ab.sh's own reading), <TAG>.storm.txt (this one's),
 #   which ends with "=== storm_tv_ab ended".
