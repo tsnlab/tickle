@@ -82,8 +82,10 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 - Measurement debt: none left (2026-10-20: c6, the 12-rep cross-host cells, 4-fragment DATA_FRAG, M3, row 47 and
   rows 43-44 with the reshaped scenario 6 harness; RESULTS `D`, `D2`, `LS`, `X2`).
 - Throughput: the poll loop's clock reused in scheduled publishes, done 2026-10-23 (rig: client -1.4% to -4.1%
-  user instructions a sample, CHANGELOG); in-place recvmmsg rows. (The poll-loop I/O interleave branch listed here
-  until 2026-10-25 was merged on 2026-09-21, `b7d822ab`, and its entry count made a time on 2026-10-23, `9974e40f`.)
+  user instructions a sample, CHANGELOG). In-place recvmmsg rows measured on 2026-10-25 and not taken: -8.4% server
+  user cycles when backlogged, nothing paced (RESULTS `RXIP`; `experiment/rx-rows-in-place`). (The poll-loop I/O
+  interleave branch listed here until 2026-10-25 was merged on 2026-09-21, `b7d822ab`, and its entry count made a time
+  on 2026-10-23, `9974e40f`.)
 
 ## Later (not to be started yet; the user, 2026-10-11)
 

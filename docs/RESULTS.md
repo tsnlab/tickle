@@ -770,6 +770,35 @@ change the estimator (DESIGN.md section 8, "Train losses and the stale rule", op
 - Archive (`hybrid_mode_netns.sh` runs of HMA): 12 of 37 GSO-on reps had a stale forget, each with the warning and
   runs of 45; none of 44 GSO-off reps did. The sim reproduces the forget (`test_train_losses_outlast_the_stale_rule`).
 
+### A recvmmsg batch's rows in place, PC netns (`RXIP`)
+
+**TL;DR.** One payload copy is left on the small-sample socket path: datagrams 2..N of a `recvmmsg()` batch are copied
+from the HAL's rows into the receive buffer (`rx_take_pending()`); the first, a wait's read and UDP_GRO segments already
+land in place, and rmw_tickle reads one datagram a call (`tt_RX_BATCH` 1). A prototype that hands core the row cut
+server user cycles 8.4% at BE p2 max rate and nothing at a paced rate, where the kernel dominates. The reading
+registered first says **not worth a rig A/B**; nothing landed. The prototype is kept on `experiment/rx-rows-in-place`.
+
+- **Run** (`rx_rows_inplace_pc.sh`, core `1a2ef53d`; UDP path, segment compiled out; perf stat on the server, per
+  received sample). Arms A (main), A2 (a second build of A, the control), B (prototype); 6 interleaved runs an arm a
+  cell, ~2.5-3.4 M samples a run at max rate, ~546 k paced. A 1.3 KB row copy costs 147 instructions, ~32 cycles hot.
+
+| cell | rows share | ins:u a sample A -> B | drop predicted / measured | cyc:u B-A | A2-A | floor | verdict |
+|---|---:|---|---:|---:|---:|---:|---|
+| BE p1 max (76 B) | 0.83 | 949 -> 937 | 7 / 11 | +0.4% | +0.1% | 2.6% | SAME (B recv 96% of A) |
+| BE p2 max (1292 B) | 0.82 | 1056 -> 937 | 120 / 119 | **-8.4%** | -1.1% | 4.5% | SAVES |
+| BE p2 paced (90 k/s, 1.56 a batch) | 0.21 | 1392 -> 1371 | 31 / 21 | -2.1% | -0.5% | 2.6% | SAME |
+| RELIABLE p2 max | 0.78 | 1613 -> 1497 | 114 / 115 | -3.5% | -0.3% | 0.5% | SAVES |
+
+- Kernel ~2,500 cycles a sample against ~400 user at max rate; task-clock a sample does not move in any cell. The rule
+  needed both p2 BE cells SAVES; the paced one is SAME, so the copy is real (not falsified) and too small to matter.
+- Rig projection, estimated, not measured: the rig's P2 server fills 4.05 datagrams a batch (61% through a row), and a
+  1.3 KB copy on a Pi is ~50-70 ns, about 1-2% of row 21's 3.5 us a sample.
+- A first prototype that stopped inlining `process_datagram_locked()` cost ~15 instructions a sample and made p1 4.8%
+  worse; the measured one keeps it inlined.
+- Copies that remain elsewhere (for the record): out-of-order arrival into a reorder slot; DATA_FRAG into the
+  scratch or pool (two copies when RELIABLE and out of order); MTU units of a large sample into the assembly; the
+  io_uring drain's hand-out; rmw's take moving a decoded message.
+
 ### Shared-memory module on but unused, cross-host (rig, `S1R`)
 
 Stage 1 / S1's CPU-time half (the PC could not resolve CPU time). One commit three ways, gate v2 A P B B P A, 6 runs an
