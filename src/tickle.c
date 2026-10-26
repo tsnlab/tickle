@@ -16032,6 +16032,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->request_next = 0;
             proxy->transit_srtt_ns = 0;
             proxy->transit_rttvar_ns = 0;
+            proxy->transit_min_ns = 0;
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -16134,7 +16135,13 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
     if (oldest == 0 || now < oldest) {
         return; // named by no request still remembered - nothing to time it from
     }
-    rtt_estimate_fold(&proxy->transit_srtt_ns, &proxy->transit_rttvar_ns, now - oldest);
+    uint64_t took = now - oldest;
+    rtt_estimate_fold(&proxy->transit_srtt_ns, &proxy->transit_rttvar_ns, took);
+    uint32_t sample = took < UINT32_MAX ? (uint32_t)took : UINT32_MAX;
+    sample = sample != 0 ? sample : 1U; // 0 means "none", as rtt_estimate_fold() clamps it
+    if (proxy->transit_min_ns == 0 || sample < proxy->transit_min_ns) {
+        proxy->transit_min_ns = sample;
+    }
 }
 
 // A copy of seq_no arrived and this reader declined it (tt_Subscriber.accept_callback: a bounded KEEP_ALL queue with
@@ -16454,6 +16461,25 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // repair_timing_times() instead; the sending estimate as above.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
+// The recovery `took` as the path's estimate takes it: never faster than the least repair transit this reader has timed
+// from this writer (tt_WriterProxy.transit_min_ns). A probe starts at the first request naming the watermark, but the
+// unit may have been named before, while it lay above the watermark, and the repair answering that older request can
+// arrive microseconds after the probe began. Seeded by such a sample (3-90 us traced, RESULTS `RLC`), the interval
+// fell to tens of us, an honest probe then ran past the retry limit and was never timed, and the estimate locked for
+// seconds or the whole rep. The transit is timed from the OLDEST remembered request naming the unit
+// (note_repair_arrival()), so a repair cannot make it short by answering an older request; the least of them is a
+// floor no recovery has beaten. Raised to it, an ambiguous sample says only "no slower than the path".
+//
+// The seed is covered too, with no case of its own: note_repair_arrival() runs on the same arrival before the probe
+// ends, and the probe's own request named the unit (send_acknack() records every request naming the watermark in
+// requests[]), so the floor includes this unit's own transit. It is 0 here only if tt_RELIABLE_REQUEST_HISTORY later
+// requests, none naming the unit, pushed every one that did out of the ring; that sample passes as it is. An
+// unambiguous recovery - its unit first named by the probe's request - is that same arrival's transit, at or above the
+// least: it passes as it is. On every link and either timing rule.
+static uint64_t path_recovery_sample(const struct tt_WriterProxy* proxy, uint64_t took) {
+    return took < proxy->transit_min_ns ? proxy->transit_min_ns : took;
+}
+
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
@@ -16463,7 +16489,7 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (path && !proxy->probe_busy) {
-            note_recovery_sample(proxy, took);
+            note_recovery_sample(proxy, path_recovery_sample(proxy, took));
         }
 #if tt_LARGE_SAMPLES
         if (plain) {

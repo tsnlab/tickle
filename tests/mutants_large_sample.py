@@ -322,6 +322,28 @@ MUTANTS = [
         "test_retry_interval_estimate_converges_and_is_bounded",
         "test_reliable_pubsub",
     ),
+    # The least-transit floor (RESULTS `RLF`): one mutant per part.
+    (
+        "(floor) a path recovery folded as it is, below the least repair transit",
+        "            note_recovery_sample(proxy, path_recovery_sample(proxy, took));",
+        "            note_recovery_sample(proxy, took);",
+        "test_no_recovery_is_folded_faster_than_the_least_repair_transit",
+        "test_reliable_pubsub",
+    ),
+    (
+        "(floor) the floor is the latest transit, not the least",
+        "    if (proxy->transit_min_ns == 0 || sample < proxy->transit_min_ns) {\n        proxy->transit_min_ns = sample;",
+        "    if (true) {\n        proxy->transit_min_ns = sample;",
+        "test_no_recovery_is_folded_faster_than_the_least_repair_transit",
+        "test_reliable_pubsub",
+    ),
+    (
+        "(floor) the floor is the greatest transit, not the least",
+        "    if (proxy->transit_min_ns == 0 || sample < proxy->transit_min_ns) {\n        proxy->transit_min_ns = sample;",
+        "    if (proxy->transit_min_ns == 0 || sample > proxy->transit_min_ns) {\n        proxy->transit_min_ns = sample;",
+        "test_no_recovery_is_folded_faster_than_the_least_repair_transit",
+        "test_reliable_pubsub",
+    ),
     (
         "a HEARTBEAT rides the broadcast content batched ahead of it",
         "    if (node->tx_tail != sizeof(struct tt_Header)) {\n        flush_batched(node);\n    }\n    return node->tx_tail",

@@ -3756,6 +3756,10 @@ struct tt_WriterProxy {
     // and not the whole recovery (which counts lost repairs and a bounded reader's declines too). 0/0 = no sample.
     uint32_t transit_srtt_ns;
     uint32_t transit_rttvar_ns;
+    // The least of those transits (0 = none yet), kept with them by note_repair_arrival(): no repair this reader asked
+    // for has come back sooner, so no recovery is folded into recovery_srtt_ns as faster than it (2026-10-26, RESULTS
+    // `RLF`; path_recovery_sample(), tickle.c). Fills the padding before `sub`: the struct does not grow.
+    uint32_t transit_min_ns;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,
