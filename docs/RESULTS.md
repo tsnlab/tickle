@@ -1044,6 +1044,88 @@ rules: no. The lead decides the trade.
 
 Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`).
 
+### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26, not fixed)
+
+**TL;DR.** Main still storms on ETHERNET's amp cell (1 MiB RELIABLE at 30 Hz, 1 Gbit/s): 30 of 2,400 traced reps,
+and the rate follows the PC's load (0 of 495 reps started at load under 2, 8 of 1,251 at 2-4, 22 of 654 at 4 or
+more). It is not TVS's left-out samples. Two things in the writer's resend order combine. srtt is folded once per
+unit, so one ACKNACK that passes ~250 once-resent units sets it from ~5 ms to ~1.5 ms within a microsecond. The
+timeout is a fixed 2 x srtt. When the reader's receive drain overruns, a whole sample (722 units) is asked for at
+once. The loaded link takes ~9.5 ms to carry that resend batch, longer than the timeout. Every ACKNACK then releases
+every unit it names again, every unit has gone twice (so Karn takes no sample and the timeout cannot grow), and the
+resends build up to a second of netem queue, or overflow its 100,000 packets. A per-unit back-off stops it: with the
+timeout pinned at ~1.5 ms and a whole sample dropped every 3 s, 10 of 20 reps stormed without it and 0 of 20 with
+it (p 0.0002). No wire change is needed.
+
+- **The rep that raised it** (`RLF`'s A tree, main `a5b52eee`, rep `e5_A-6`, untraced), against two calm neighbours:
+
+| rep | resent | released by the timeout (its value) | ACKNACKs / units named | answered as evicted | writer egress tc drops | reader drain overruns (grows) | reader timer ACKNACKs | published / delivered | p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| e5_A-5 | 2,786 | 0 | 4,249 / 2,791 | 0 | 683 | 0 (0) | 2 | 900 / 900 | 10.6 ms |
+| **e5_A-6** | **4,572,542** | **4,551,938 (all 1-2 ms)** | 18,046 / 22,663,833 | 18,040,881 | **1,903,943** | 17 (2) | 13,009 | **476 / 47** | 1.74 s |
+| e5_A-7 | 4,522 | 219 (2-4 ms) | 4,678 / 23,763 | 0 | 652 | 3 (1) | 473 | 900 / 900 | 10.1 ms |
+
+  The writer's CPU went to 34.7 s in a 30 s rep and it published 476 of 900. The reader's drain overran twice in the
+  rep's first 3 s and the writer marked the path as dropping fragments (MTU units only).
+- **Census** (`eth_storm_census.sh`, committed `2b482592` before the run): main + `eth_storm_trace.patch` (the R4
+  trace hooks plus the writer's Karn samples, timeout / RACK / shown releases and path marks), 8 instances at once,
+  30 rounds of 10 reps, 17:03-20:30. Round 1's trace control PASS (80 reps: trace S and T counts equal RSTATS). Calm
+  srtt: least 345 us, q01 768 us, median 5.6 ms. STORM 30 of 2,400 (1.25%, 95% upper 1.69%). They come in rounds when
+  another session loaded the PC (round 15 at load 7.5: 6 storms; round 27 at 6.9: 10), several instances at the same
+  moment. All 30 are reps whose reader's drain overran twice (30 of 223 such reps; none in the other 2,177). Resent
+  100,888-5,736,302; delivered 97-880 of 900.
+- **Two traced storms read by hand** (`ews1_r10_i4` rep 3, 377,957 resent; `ews1_r10_i1` rep 8, 241,555; load 2-3.5).
+  In rep 3 at 5.81 s one ACKNACK passed ~250 once-resent units, each a Karn sample of ~2.1 ms: srtt went from 5.3 to
+  ~1.5 ms in 1 us. At 5.84 s the reader asked for all 722 units of a sample its drain had lost. RACK released the
+  first resends again 5-9 ms later, then the timeout (3.3 ms) did, at every ACKNACK, ~5 ms apart: the units' resend
+  counts climbed 2, 3, 4 ... and no Karn sample was taken from 6.0 to 7.5 s. The reader received only duplicates,
+  ~82,000 a second, which is the link. Both storms ended on their own after 1.5-2.5 s: once-resent units that had
+  sat ~0.9 s in the queue were finally passed, srtt jumped to 0.86-0.96 s, and the releases stopped (tc drops ~1,000,
+  no overflow; delivered 804 and 854 of 900, p99 1.04 and 0.43 s). `e5_A-6` never got such a sample (its timeout
+  stayed at 1-2 ms for 4.55 M releases), overflowed the queue and lost the rep, as TVS's storms did. Under heavy load
+  srtt need not fall: in `ews1_r15_i8` rep 4 (load 23, 2,740,885 resent) it stood at 3.4 ms, the frozen timeout at
+  6.6 ms, and no Karn sample came for 9 s.
+- **Not the cause**: srtt collapsing under a real round trip (both storms' srtt was 1.3-1.7 ms at the loss, within
+  calm reps' range; TVS's was under 128 us); the reader's socket (0 drops in all three; its drain overran, which is
+  the trigger, and a second overrun happened in 223 of the census's 2,400 reps, 30 of them storms); the reader's own
+  timer ACKNACKs (300-600 in calm collapse reps; the 10,000+ here come after the onset).
+- **Registered reading, as it came out**: VERDICT MIXED; H NOT SUPPORTED in all 30. P2 (at most 5 Karn samples in the 2
+  s after onset) held in 20 of 30. P3 (the repairs' one-way time >= 10 x the timeout) failed in every readable rep: the
+  ratio was 0.3-4.3, median 2.0, above 1 in 20 of 26. The releases are early by about 2x, not 10x, and that is enough:
+  each ACKNACK repeats them. The onset rule (the first 100 ms with 200 timeout releases) also fires at start-up bursts
+  in some reps, seconds before the storm. S1: srtt at onset CALM in 28, LOW in 2, COLLAPSED in none. The mechanism
+  above is read from the traces by hand.
+- **Provocation** (`eth_storm_provoke.sh`, `4f9dcccd`): the timeout pinned at ~1.5 ms stormed in 1 of 50 reps with
+  natural triggers, so a short timeout alone is not enough; the trace of that one storm began at a whole-sample loss,
+  with the 722-unit batch paced to 9.5 ms by the link and five stale ACKNACKs read after it.
+- **Forced trigger** (`eth_storm_force.sh`, `231f10bd`, all four trees at once, 20 reps each, every 90th sample's first
+  send dropped from the 60th on, so 10 whole-sample losses a rep): FM = main 0 of 20, FB = main + back-off 0 of 20
+  (resends median 9,946 against 10,387), FP = pinned 1.5 ms 10 of 20 (LOOP REACHABLE), FPB = pinned + back-off 0 of 20
+  (BACK-OFF BREAKS IT, one-sided p 0.0002; resends 22,648, no storm). The back-off: a unit already resent waits base
+  << min(resends - 1, 6) before the timeout releases it.
+- **Rate on main**: untraced, 1 in 505 reps on disk before today's census (RLF's run, load 1.75 at that rep); traced,
+  30 in 2,400 (0 of 495 under load 2). The trigger is the reader's drain overrunning, which load makes common; the
+  loop is in the writer. On the rig the reader does not share a CPU with 8 other benches, so its rate there is
+  unmeasured.
+
+**Proposal** (no production code here; no wire change):
+
+1. Back off per unit: a unit resent k times waits timeout << min(k - 1, 6) before the timeout releases it again (RFC
+   6298 5.5). This alone broke the forced loop. On main under the forced losses (FB against FM, not a registered
+   cost test): resends +4%, median rep p50 9.59 against 9.58 ms, p99 12.14 against 12.17 ms, delivered 900 in all.
+2. Fold one Karn sample per ACKNACK, not one per unit it passes (the most recent resend it shows), so one moment's
+   repair time cannot rewrite srtt.
+3. Take the timeout as srtt + max(G, 4 x rttvar), as the other retry timers do, not a bare 2 x srtt.
+4. Later: judge an ACKNACK by when it arrived, not when a busy writer read it, or poll the socket between chunks of a
+   resend batch. RACK released a whole batch on stale ACKNACKs here.
+
+A wire change, an ACKNACK echoing the newest send serial its reader received, would give a sample for units sent
+more than once and end the Karn freeze outright. It is not needed for this fix and stays parked with the other wire
+changes.
+
+Data: `~/ews_results/` (`ews1_r*_i*/`, `ews1.read.txt`, `ews1.driver.log`, `provoke/`, `provoke2/`, `force1/`,
+`STATUS.txt`).
+
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
 **TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
@@ -1183,6 +1265,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | LRTR | `rmw_keepall_rig.sh` (Array1m 1%, 12 reps; aa = the tail's own library), `rig_queue_core_ab.sh` | `36700555` (main), `53ed4e1f` (base; d1c900fe before its rebase), `d6231dd4` (tail; f002166c before its rebase) | 2026-10-24 | `hmr_1m_20261024-192010.txt`, `lrt_1m_20261024-111914.txt`, `lrt_4m_20261024-111914.txt`, `lro_1m_20261024-043242.txt`, `coreAB_f002166c_20261024-094912` |
 | HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
+| EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
