@@ -16001,8 +16001,12 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->received_bitmap = tracking + ((size_t)i * subscriber_tracking_words(sub));
             proxy_clear_received(proxy);
             proxy->retry = 0;
+            proxy->retry_frontier = 0;
+            proxy->backoff = 0;
+            proxy->stuck_warned_ns = 0;
             proxy->acknack_scheduled = false;
             proxy->collided = false;
+            proxy->collided_seq_no = 0;
             proxy->heartbeat_last_seq_no = 0;
             // A reused slot must not inherit a departed writer's recovery estimate: a new writer
             // may be on a different path entirely.
@@ -16014,6 +16018,13 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 #if tt_LARGE_SAMPLES
             proxy->sending_srtt_ns = 0;
             proxy->sending_rttvar_ns = 0;
+            // Nor its timestamps. A clock that only moves on makes a departed writer's look long past; the tests'
+            // mock clock starts again at each run, and a proxy table reused across them read the last run's retry as
+            // still to come, so a test's result depended on the tests before it (2026-10-26).
+            proxy->retry_sent_ns = 0;
+            proxy->large_arrival_ns = 0;
+            proxy->repair_arrival_ns = 0;
+            proxy->original_arrival_ns = 0;
 #endif
             for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
                 proxy->requests[slot].sent_ns = 0;
