@@ -449,7 +449,7 @@ context goes again only when that reader has shown the resend lost:
 | condition | how the writer knows it, from one ACKNACK |
 |---|---|
 | **it received something sent after that resend** (RACK's order rule) | each resend, and each large sample's first send, takes the context's next `repair_serial`. Shown received: units below the watermark (the resends it passed; the sample of the unit just below it) and units it leaves out between its lowest request and its highest request or known unit - every bitmap word but the last lies below the highest unit it knows of (a pending resend's own serial; the sample of the highest other one). On a path that keeps order, the resend would have arrived first |
-| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the ACKNACK whose watermark passed it, units resent once and never left out (Karn; RESULTS `TVS`). Before the first sample: how long the reader took to ask for the unit after its sample began to go. **Counted from the resend or from the reader's last progress, whichever is later** (RESULTS `EWS`): progress is an ACKNACK showing a later large send received than any before it |
+| **or a repair timeout passed with nothing shown** (the tail) | RACK-TLP's probe timeout, 2 x srtt (RFC 8985 7.2), srtt over this reader's own repairs: resend to the ACKNACK whose watermark passed it, units resent once and never left out (Karn; RESULTS `TVS`). Before the first sample: how long the reader took to ask for the unit after its sample began to go. **Counted from the resend or from the reader's last progress, whichever is later** (RESULTS `EWS`): progress is an ACKNACK showing a later large send received than any before it. **Doubled for each resend of the unit in a row with no progress between, at most x64** (RESULTS `EWF`); progress since the resend clears it |
 
 Otherwise the request goes unanswered (`resend_held`) and the reader asks again. A unit never resent to that reader
 is answered at once, as before; with nothing pending in the context nothing is read.
@@ -495,9 +495,18 @@ releases at ge1b1 not falling.
   steady-state timeout of every rep, which the storm did not need. 8 B more in each ack entry (progress serial, time).
   **Measured** (RESULTS `EWF`): the forced, pinned loop 0 of 20 against main's 10 of 20; no registered cell WORSE.
   **Not covered:** a stall in which the reader shows no progress at all - one rep where every bench on the PC
-  stormed at once - still loops through the plain timeout (8.5 M resent).
+  stormed at once - still loops through the plain timeout (8.5 M resent). Hence the next item.
+- **The timeout backs off while the reader shows nothing** (2026-10-27, RESULTS `EWF`). A reader that stops reading
+  while a whole sample's resend is pending shows no progress, and its ACKNACKs keep naming the sample: each timeout
+  released every unit again into a socket nobody read. RFC 6298 5.5's back-off, per unit and only in a stall: x2 for
+  each resend of the unit after an ACKNACK showing no progress since its last, at most x64; any progress since a
+  resend clears it, so a reader that drops part of each burst at its socket - its repairs keep arriving - is repaired
+  at the plain timeout, as before (the per-unit back-off kept through progress, EWS's candidate F, slowed it from 2 s
+  to 8 s). Sim (`test_a_stalled_reader_does_not_storm`): 80 ms stalls on a 1.5 ms timeout sent each unit 30 times,
+  now 6. 3 bits in each slot (`stalls`); the slot stays 24 B. Judging an ACKNACK by when it arrived (EWS item 4) was
+  not taken: the HALs give no receive time, and a stalled reader's ACKNACKs arrive on time anyway.
 - **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
-  reader context, serial, time, seed, resends, left-out and untimed marks - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
+  reader context, serial, time, seed, resends, left-out and untimed marks, stall count - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
   resend at its next request, as before. 8 B in each large record and each ack entry (256 B a Publisher). **FreeRTOS
   RV32: nothing** - large samples compile out there (section 8, "scope"). Send-call marks, to show a resend lost by a
   later part of the same sample, were built and taken out: every `test_large_sample` case read the same without them.
