@@ -313,7 +313,7 @@ MUTANTS = [
         "(srtt) a retry while the writer sends names repairs in flight",
         "            skip_count = repairs_in_flight(node, proxy, highest, checked_ns, skips);",
         "            skip_count = 0;",
-        "test_a_sending_writer_is_not_asked_for_repairs_on_their_way",
+        "test_two_readers_are_not_resent_repairs_on_their_way",
     ),
     (
         "(srtt) the reliable retry's ceiling a multiple of srtt alone",

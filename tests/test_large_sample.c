@@ -42,6 +42,10 @@
 #define RECEIVER_ID 2
 #define SENDER_IP 0x0a000001
 #define RECEIVER_IP 0x0a000002
+// A second reader on a node of its own (PAIR_SECOND_READER): the writer's repair slots are one per seq_no, whichever
+// reader they went to.
+#define READER_B_ID 3
+#define READER_B_IP 0x0a000003
 #define PORT 8282
 #define TOPIC_NAME "large_topic"
 #define ENDPOINT_NAME "large_endpoint"
@@ -78,6 +82,7 @@ struct test_allocator {
 
 static struct test_allocator sender_alloc;
 static struct test_allocator receiver_alloc;
+static struct test_allocator reader_b_alloc;
 
 static uint32_t stored_size(const uint8_t* buffer) {
     uint32_t size = 0;
@@ -272,9 +277,16 @@ static struct tt_Data* checking_decode_inplace(const uint8_t* payload, uint32_t 
 #define ARRAY1M_STRUCT (1048576U + 16U)
 static uint32_t pair_struct_size = 8;
 
+static struct tt_Subscriber sub_b;
+static int delivered_b; // samples the second reader (PAIR_SECOND_READER) got; delivered_count is the first one's
+
 static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)time;
     (void)data;
+    if (s == &sub_b) {
+        delivered_b++;
+        return;
+    }
     in_order = in_order && (delivered_count == 0 || (uint16_t)(seq_no - (uint16_t)last_seq) < 0x8000U);
     last_seq = seq_no;
     if (delivered_count < 64) {
@@ -291,6 +303,8 @@ static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, str
 
 static struct tt_Context sender;
 static struct tt_Context receiver;
+static struct tt_Context reader_b;
+static bool second_reader; // init_pair_with() made reader_b
 static struct tt_TypeSupport sender_topic;
 static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
@@ -309,6 +323,7 @@ static struct tt_ReliableCache cache;
 // (tt_Subscriber_storage_size()).
 static uint64_t sub_storage[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) +
                             (MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t))];
+static uint64_t sub_b_storage[(size_t)tt_MAX_PEER_COUNT * WIDE_WORDS];
 // What the RELIABLE writer's creation carves; the pair's cache (above) replaces it.
 static uint64_t created_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
 
@@ -337,6 +352,11 @@ static void teardown_pair(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&receiver));
     expect_books_balance("sender", &sender_alloc);
     expect_books_balance("receiver", &receiver_alloc);
+    if (second_reader) {
+        second_reader = false;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&reader_b));
+        expect_books_balance("second reader", &reader_b_alloc);
+    }
 }
 
 // A Publisher and a Subscriber of one topic, each in its own context with its own large buffers. RELIABLE modes give
@@ -349,6 +369,9 @@ static void teardown_pair(void) {
 // The reader is the writer's one known peer, so the writer unicasts to it (tt_UNICAST_PEER_THRESHOLD) - without it
 // two more peers keep the broadcast most cases were written against.
 #define PAIR_UNICAST 8U
+// A second RELIABLE reader, reader_b, on a node of its own (READER_B_ID): the writer's broadcast reaches both, each
+// datagram lost to both or to neither (sim_deliver_now()), its unicast reaches the one it names.
+#define PAIR_SECOND_READER 16U
 
 // `options`: the writer's (NULL: none).
 static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
@@ -358,6 +381,7 @@ static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
     sample_len = len;
     sample_seed = 1;
     delivered_count = 0;
+    delivered_b = 0;
     delivered_torn = 0;
     delivered_len = 0;
     last_seq = 0;
@@ -368,6 +392,7 @@ static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
     memset(len_of_seed, 0, sizeof(len_of_seed));
     allocator_reset(&sender_alloc);
     allocator_reset(&receiver_alloc);
+    allocator_reset(&reader_b_alloc);
 
     init_bare_node(&sender, SENDER_ID);
     memset(&sender_topic, 0, sizeof(sender_topic));
@@ -426,6 +451,19 @@ static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
                                             sub_storage_size != 0 ? sub_storage : NULL, sub_storage_size));
     EXPECT_TRUE((flags & PAIR_REORDER) == 0 || sub.reorder_slot_bytes == MIXED_REORDER_SLOT_BYTES);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, test_acquire, test_release, &receiver_alloc));
+    second_reader = reliable && (flags & PAIR_SECOND_READER) != 0;
+    if (second_reader) {
+        init_bare_node(&reader_b, READER_B_ID);
+        struct tt_QosProfile b_qos = TEST_QOS_RELIABLE_READER;
+        b_qos.reliability.tracking_words = WIDE_WORDS;
+        size_t b_size = tt_Subscriber_storage_size(&receiver_topic, &b_qos);
+        EXPECT_TRUE(b_size <= sizeof(sub_b_storage));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&reader_b), &sub_b, &receiver_topic,
+                                                           ENDPOINT_NAME, &b_qos,
+                                                           &(struct tt_SubscriberOptions) {.callback = on_data},
+                                                           b_size != 0 ? sub_b_storage : NULL, b_size));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&reader_b, test_acquire, test_release, &reader_b_alloc));
+    }
 
     if (mode != BEST_EFFORT) {
         memset(cache_index, 0, sizeof(cache_index));
@@ -440,6 +478,14 @@ static void init_pair_with(uint32_t len, enum pair_mode mode, unsigned flags,
         EXPECT_TRUE(ack != NULL);
         if (ack != NULL) {
             ack->tracking_words = WIDE_WORDS;
+        }
+        if (second_reader) {
+            ack = claim_peer_ack(&pub, READER_B_ID, sub_b.endpoint.entity_id);
+            EXPECT_TRUE(ack != NULL);
+            if (ack != NULL) {
+                ack->tracking_words = WIDE_WORDS;
+            }
+            (void)upsert_peer(pub.peers, READER_B_ID, READER_B_IP, PORT);
         }
     }
     // A Publisher with no matched reader sends nothing (2026-10-15): the reader is matched as its announce would match
@@ -473,8 +519,8 @@ static uint32_t sim_tail;
 static uint8_t sim_acting;
 static uint32_t sim_loss_per_mille;
 static uint32_t sim_rng;
-static uint64_t sim_sent[3];
-static uint64_t sim_dropped[3];
+static uint64_t sim_sent[4];       // by node id
+static uint64_t sim_dropped[4];    // by the sending node's id
 static uint32_t sim_room_per_step; // 0: unlimited; else the send buffer's room, in datagrams, refilled each step
 static bool sim_reverse;           // deliver the sender's datagrams newest first, a burst at a time
 // Drops the last fragment of each large sample once (the tail test).
@@ -516,6 +562,8 @@ static uint64_t sim_reader_service_ns;
 static uint32_t sim_reader_capacity;
 static uint64_t sim_reader_free_ns;
 static uint64_t sim_socket_drops;
+// With a second reader: the writer's broadcast is lost to the first reader alone, never to reader_b.
+static bool sim_loss_first_reader_only;
 
 // The fragment header of a captured datagram, whichever form it went in: its type, and for FRAG_CONT_L its index,
 // count and seq_no.
@@ -615,13 +663,13 @@ static void sim_deliver(struct sim_datagram* d) {
         sim_late_tail++;
         return;
     }
-    if ((sim_reverse_delay != 0 && d->from == RECEIVER_ID) ||
+    if ((sim_reverse_delay != 0 && d->from != SENDER_ID) ||
         (sim_unicast_delay != 0 && d->from == SENDER_ID && d->to_ip != 0)) {
         EXPECT_TRUE(sim_late_tail - sim_late_head < SIM_HELD);
         if (sim_late_tail - sim_late_head < SIM_HELD) {
             sim_late[sim_late_tail % SIM_HELD] = *d;
             sim_late_due[sim_late_tail % SIM_HELD] =
-                test_mock_now + (d->from == RECEIVER_ID ? sim_reverse_delay : sim_unicast_delay);
+                test_mock_now + (d->from != SENDER_ID ? sim_reverse_delay : sim_unicast_delay);
             sim_late_tail++;
         }
         return;
@@ -631,7 +679,7 @@ static void sim_deliver(struct sim_datagram* d) {
 
 static void sim_deliver_now(struct sim_datagram* d) {
     const uint8_t* body = NULL;
-    if (sim_busy_writer && d->from == RECEIVER_ID && sim_writer_sending()) {
+    if (sim_busy_writer && d->from != SENDER_ID && sim_writer_sending()) {
         EXPECT_TRUE(sim_held_count < SIM_HELD);
         if (sim_held_count < SIM_HELD) {
             sim_held[sim_held_count++] = *d;
@@ -643,13 +691,33 @@ static void sim_deliver_now(struct sim_datagram* d) {
         sim_dropped[d->from]++;
         return;
     }
+    bool b_spared = second_reader && sim_loss_first_reader_only && d->from == SENDER_ID && d->to_ip == 0;
+    if (b_spared) {
+        uint8_t copy[SIM_DATAGRAM_MAX];
+        memcpy(copy, d->bytes, d->len);
+        sim_acting = READER_B_ID;
+        process_packet(&reader_b, copy, 0, d->len, SENDER_IP, PORT, tt_TRANSPORT_UDP);
+    }
     if (sim_lost() || (d->from == SENDER_ID && (sim_tail_drop(d->bytes) || sim_unit_drop(d->bytes)))) {
         sim_dropped[d->from]++;
         return;
     }
-    struct tt_Context* to = d->from == SENDER_ID ? &receiver : &sender;
-    sim_acting = to->id;
-    process_packet(to, d->bytes, 0, d->len, d->from == SENDER_ID ? SENDER_IP : RECEIVER_IP, PORT, tt_TRANSPORT_UDP);
+    if (d->from != SENDER_ID) {
+        sim_acting = SENDER_ID;
+        process_packet(&sender, d->bytes, 0, d->len, d->from == READER_B_ID ? READER_B_IP : RECEIVER_IP, PORT,
+                       tt_TRANSPORT_UDP);
+        return;
+    }
+    if (second_reader && ((d->to_ip == 0 && !b_spared) || d->to_ip == READER_B_IP)) {
+        uint8_t copy[SIM_DATAGRAM_MAX];
+        memcpy(copy, d->bytes, d->len); // reader_b gets its own copy of a broadcast, as from the wire
+        sim_acting = READER_B_ID;
+        process_packet(&reader_b, copy, 0, d->len, SENDER_IP, PORT, tt_TRANSPORT_UDP);
+    }
+    if (!second_reader || d->to_ip == 0 || d->to_ip == RECEIVER_IP) {
+        sim_acting = RECEIVER_ID;
+        process_packet(&receiver, d->bytes, 0, d->len, SENDER_IP, PORT, tt_TRANSPORT_UDP);
+    }
 }
 
 // Everything in flight, and whatever it provokes, until the link is empty.
@@ -688,6 +756,9 @@ static uint64_t sim_next_due(void) {
         b = UINT64_MAX;
     }
     uint64_t next = a < b ? a : b;
+    if (second_reader && sched_next_time(&reader_b, &b) && b < next) {
+        next = b;
+    }
     if (sim_late_head != sim_late_tail && sim_late_due[sim_late_head % SIM_HELD] < next) {
         next = sim_late_due[sim_late_head % SIM_HELD];
     }
@@ -720,6 +791,9 @@ static bool sim_step(void) {
     }
     sim_run_due(&sender);
     sim_run_due(&receiver);
+    if (second_reader) {
+        sim_run_due(&reader_b);
+    }
     return true;
 }
 
@@ -754,6 +828,7 @@ static void sim_start(uint32_t loss_per_mille) {
     sim_reader_capacity = 0;
     sim_reader_free_ns = 0;
     sim_socket_drops = 0;
+    sim_loss_first_reader_only = false;
     sim_late_head = sim_late_tail = 0;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -764,6 +839,9 @@ static tt_ret_t sim_publish(uint8_t seed, uint64_t budget) {
     sample_seed = seed;
     sim_run_due(&sender);
     sim_run_due(&receiver);
+    if (second_reader) {
+        sim_run_due(&reader_b);
+    }
     sim_acting = SENDER_ID;
     if (sim_room_per_step != 0) {
         test_mock_nonblocking_room = (int32_t)sim_room_per_step;
@@ -785,7 +863,7 @@ static tt_ret_t sim_publish(uint8_t seed, uint64_t budget) {
 // Runs the protocol until `want` samples have been delivered or `budget` of simulated time has passed.
 static void sim_settle(int want, uint64_t budget) {
     uint64_t since = test_mock_now;
-    while (delivered_count < want && test_mock_now - since < budget) {
+    while ((delivered_count < want || (second_reader && delivered_b < want)) && test_mock_now - since < budget) {
         if (!sim_step()) {
             break;
         }
@@ -1617,6 +1695,73 @@ static uint64_t answering_writer_duplicates(int samples, uint64_t delay) {
     }
     EXPECT_EQ_INT(samples + 1, delivered_count);
     return receiver.large.duplicate;
+}
+
+// answering_writer_duplicates() with a second reader on a node of its own, each original lost to both or to neither:
+// every unit one reader asks for, the other asks for too, and the writer's one repair slot for it holds the resend to
+// whichever asked last. Answers the copies both readers got twice; *resent the writer's resends.
+static uint64_t two_readers_duplicates(int samples, uint64_t delay, bool shared, uint32_t seed, uint32_t* resent) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_SECOND_READER, NULL);
+    sim_start(0);
+    sim_rng = seed;
+    sim_loss_first_reader_only = !shared;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxies[2] = {find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id),
+                                         find_writer_proxy(&sub_b, SENDER_ID, pub.endpoint.entity_id)};
+    for (int i = 0; i < 2; i++) {
+        EXPECT_TRUE(proxies[i] != NULL);
+        if (proxies[i] == NULL) {
+            return 0;
+        }
+        proxies[i]->keep_all = tt_WRITER_KEEP_ALL_NO;
+    }
+    sim_reverse_delay = delay;
+    sample_len = FOUR_MB;
+    sim_loss_per_mille = 50;
+    sim_room_per_step = 8;
+    uint32_t before = pub.retransmitted;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        sim_settle(i + 2, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(samples + 1, delivered_count);
+    EXPECT_EQ_INT(samples + 1, delivered_b);
+    *resent = pub.retransmitted - before;
+    return receiver.large.duplicate + reader_b.large.duplicate;
+}
+
+static void test_two_readers_are_not_resent_repairs_on_their_way(void) {
+    // Since the resend order (DESIGN.md section 4) the writer holds a unit whose resend is on its way, so with one
+    // reader a retry naming it costs nothing (test_a_sending_writer_is_not_asked_for_repairs_on_their_way(): 3
+    // duplicates with the reader's skip, 2 without). The hold lives in one repair slot a seq_no, which names one
+    // reader: two readers on two nodes that lost the same unit take it from each other, and each one's next request for
+    // it finds the slot the other's and is answered at once. So here the reader's own skip - a retry while the writer
+    // sends names only what was asked for longer ago than the repair transit time (repairs_in_flight()) - is what keeps
+    // the copies out. Read 2026-10-26, seeds 7 13 23: 35 duplicates with the skip (2 9 24), 523 without it (139 183
+    // 201). Control: the same readers with every original lost to the first alone, which shares no slot - the second
+    // reader's own requests are the treatment, so the shared runs resend about twice the control's (1,297 against
+    // 628 at seed 7). Mutant (mutants_large_sample.py, "(srtt) a retry while the writer sends names repairs in
+    // flight"): 0.5% of the samples' datagrams is the bound.
+    enum { SAMPLES = 4 };
+    static const uint32_t seeds[] = {7, 13, 23};
+    uint64_t total = 0;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); i++) {
+        uint32_t control = 0;
+        (void)two_readers_duplicates(SAMPLES, 2 * tt_MILLISECOND, false, seeds[i], &control);
+        uint32_t resent = 0;
+        uint64_t duplicates = two_readers_duplicates(SAMPLES, 2 * tt_MILLISECOND, true, seeds[i], &resent);
+        printf("test_large_sample: answering writer, two readers, seed %u, %d x 4 MB at 5%% over a 2 ms path - lost to "
+               "the first only: resent %u; lost to both: resent %u, duplicates at the readers %llu (%llu + %llu), "
+               "requests held %llu\n",
+               (unsigned)seeds[i], SAMPLES, control, resent, (unsigned long long)duplicates,
+               (unsigned long long)receiver.large.duplicate, (unsigned long long)reader_b.large.duplicate,
+               HELD_REQUESTS(sender));
+        EXPECT_TRUE((uint64_t)resent * 2 >= (uint64_t)control * 3); // the treatment: both readers asked for repairs
+        total += duplicates;
+    }
+    EXPECT_TRUE(total * 200 <=
+                (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB) * 3); // 174: 35 with the skip, 523 without
 }
 
 static void test_a_sending_writer_is_not_asked_for_repairs_on_their_way(void) {
@@ -2932,6 +3077,7 @@ int main(void) {
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_repair_arriving_first_is_not_a_writer_still_sending();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
+    test_two_readers_are_not_resent_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();
     test_a_slow_readers_repairs_are_measured();
     test_a_queued_path_does_not_storm();
@@ -2945,6 +3091,7 @@ int main(void) {
 
     allocator_reset(&sender_alloc);
     allocator_reset(&receiver_alloc);
+    allocator_reset(&reader_b_alloc);
     free(sim_queue);
     if (test_result() != 0) {
         return 1;
