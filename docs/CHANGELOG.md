@@ -152,6 +152,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **After a stale forget a reader announces no estimate, not "none seen"** (the user, 2026-10-26, options (a) + (e);
+  [DESIGN.md](DESIGN.md) section 8, "Train losses and the stale rule"; [RESULTS.md](RESULTS.md) `HFN`, `HSF`). A forget
+  empties the reader's p (`loss_p` 0, announced at that tail), so the writer sends the next sample one MTU unit a send
+  call, as for the first p, and "none seen" rests on frames again rather than on UDP_SEGMENT trains: at 1% with GSO on,
+  the runs of 45 that filled the reader host's IP reassembly no longer follow a forget. Forgets happen at a sample's
+  tail only. Cost: one sample of MTU send calls per forget; at 0% with a few early events, `n_max` one sample later.
+  The writer's rule-(e) warning names the reader host's IP reassembly memory as a possible cause. No wire change.
 - **The wait ring moves to the executor at its second wait, not its 64th** (`TT_RX_RING_MOVE_WAITS` 64 -> 2, Linux HAL;
   [RESULTS.md](RESULTS.md) `KH2`). rmw's poll thread waits first and owns the ring; the executor that takes the poll role
   needed 64 waits in a row, so the first ~20 measured round trips of every rmw_tickle run were received by epoll +

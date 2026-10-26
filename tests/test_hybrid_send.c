@@ -2266,10 +2266,11 @@ static uint32_t early_events_stream(bool stale_off, uint64_t* forgets) {
 // The rule itself: k events, at most tt_HYBRID_STALE_EVENTS, are forgotten once the clean frames C since the last,
 // against the frames F up to it, have (1 + C / F)^k at least 1 / tt_HYBRID_STALE_FALSE_FORGET (1e4), not one frame
 // before - or, whatever F, once C reaches the floor tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN, 9,210 frames, not
-// one frame before; more events never are, however long the stretch; none, nothing to forget. Forgetting keeps the
-// clean stretch as the estimate's frames. The rule before 2026-10-15 (C >= 9.21 F / (k + 1)) forgot one event at F = 50
-// after 231 clean frames, which a steady path gives 18% of the time; the ratio alone takes 499,950, the floor 9,210 -
-// which a steady path at p >= 1e-3 gives at most 1e-4 of the time.
+// one frame before; more events never are, however long the stretch; none, nothing to forget. Forgetting empties the
+// estimate (2026-10-26; until then it kept the clean stretch as its frames: "none seen" at once). The rule before
+// 2026-10-15 (C >= 9.21 F / (k + 1)) forgot one event at F = 50 after 231 clean frames, which a steady path gives 18%
+// of the time; the ratio alone takes 499,950, the floor 9,210 - which a steady path at p >= 1e-3 gives at most 1e-4 of
+// the time.
 #define STALE_THREE_NEEDED 4109U // F = 200, k = 3: C >= 200 (10^(4/3) - 1) = 4,108.9, below the floor
 #define STALE_ONE_AT 50U
 #define STALE_FLOOR 9210U  // 9.21 / 1e-3; F = 50, k = 1: the ratio wants C >= 50 (10^4 - 1) = 499,950
@@ -2283,7 +2284,7 @@ static void test_the_stale_rule_is_the_designs(void) {
     loss_estimate_observe(&estimate, 1, 0);
     EXPECT_TRUE(loss_estimate_forget_stale(&estimate, hybrid_opts()));
     EXPECT_EQ_U32(0, estimate.events);
-    EXPECT_EQ_U32(STALE_THREE_NEEDED, estimate.frames);
+    EXPECT_EQ_U32(0, estimate.frames); // no estimate: the next frames are measured as the first p's were
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate, hybrid_opts())); // no events: nothing to forget
     // One event at 50 frames: the old rule's stretch is not enough, nor one frame short of the floor; the floor is.
     estimate = estimate_of(0, 0);
@@ -2294,7 +2295,7 @@ static void test_the_stale_rule_is_the_designs(void) {
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate, hybrid_opts()));
     loss_estimate_observe(&estimate, 1, 0);
     EXPECT_TRUE(loss_estimate_forget_stale(&estimate, hybrid_opts()));
-    EXPECT_EQ_U32(STALE_FLOOR, estimate.frames);
+    EXPECT_EQ_U32(0, estimate.frames);
     // tt_HYBRID_STALE_EVENTS events and one more, over a long clean stretch.
     for (uint32_t events = tt_HYBRID_STALE_EVENTS; events <= tt_HYBRID_STALE_EVENTS + 1U; events++) {
         estimate = estimate_of(0, 0);
@@ -2329,7 +2330,7 @@ static void test_a_doubtful_gap_is_not_clean(void) {
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate, hybrid_opts())); // one frame short
     loss_estimate_observe(&estimate, 1, 0);
     EXPECT_TRUE(loss_estimate_forget_stale(&estimate, hybrid_opts()));
-    EXPECT_EQ_U32(DOUBT_THREE_NEEDED, estimate.frames);
+    EXPECT_EQ_U32(0, estimate.frames);
     EXPECT_EQ_U32(0, estimate.frames_at_doubt);
     // Halved with the window: ten frames seen since the doubt, before and after.
     estimate = estimate_of(0, 0);
@@ -2345,7 +2346,7 @@ static void test_a_doubtful_gap_is_not_clean(void) {
     loss_estimate_observe(&estimate, 10000, 0);
     loss_estimate_doubt(&estimate);                                     // a doubt at 20,000
     loss_estimate_observe(&estimate, STALE_FLOOR, 0);                   // the floor's stretch after it
-    EXPECT_TRUE(loss_estimate_forget_stale(&estimate, hybrid_opts()));  // forgotten, the estimate now the 9,210 frames
+    EXPECT_TRUE(loss_estimate_forget_stale(&estimate, hybrid_opts()));  // forgotten: no estimate
     loss_estimate_observe(&estimate, 1, 2);                             // two events
     loss_estimate_observe(&estimate, 10, 0);                            // and ten clean frames
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate, hybrid_opts())); // are not forgotten
@@ -3576,21 +3577,24 @@ static void test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from
     test_mock_send_hook = sim_capture;
 }
 
-// --- train losses outlast the stale rule (2026-10-25, PC netns GSO on, 1%: 12 of 37 reps) ----------------------------
+// --- train losses outlast the stale rule (2026-10-25, PC netns GSO on, 1%: 12 of 37 reps; changed 2026-10-26) --------
 //
 // The stale rule (loss_estimate_forget_stale()) reads the clean frames after the k-th event as k + 1 independent gaps
 // at one rate: (1 + C / F)^k >= 1e4 is a false forget one time in 10,000 on a steady path. Its first sample sent one
 // datagram a call (above), the writer goes back to UDP_SEGMENT trains, and a loss that takes a whole train (netem
 // above the segmentation; a queue that drops one GSO packet) comes ~30 frames at a time: the same p in frames, a
 // thirtieth as many chances. After a first sample with 8 events (F = 723, k = 8: forgotten at C >= 1,563, 2.2 samples)
-// two clean samples of trains are likely (0.99^~45 trains = 64%), the reader forgets its 8 real events, announces
-// "none seen" and the writer sends runs of n_max on a 1% path. This pins the rule's stated limit (DESIGN.md section 8,
-// "Train losses and the stale rule"); the control is the same link with the rule off. The link: the writer's MTU
-// datagrams lost by the send call that carried them, every FORGET_TRAIN_EVERY-th - the first sample's 723 calls lose
-// 8, the trains after it one in ~7 samples - and a fragmented datagram frame by frame at 1%.
+// two clean samples of trains are likely (0.99^~45 trains = 64%), and the reader forgets its 8 real events. Until
+// 2026-10-26 it then announced "none seen" at once, resting on those trains, and the writer sent runs of n_max on a 1%
+// path (4 samples of 8 here). Now a forget empties the estimate and the reader announces no estimate (loss_p 0, the
+// user's option (a); DESIGN.md section 8, "Train losses and the stale rule"): the writer's next sample goes one
+// datagram a send call, as the first did, its losses come back, and no sample goes at n_max. The control is the same
+// link with the rule off. The link: the writer's MTU datagrams lost by the send call that carried them, every
+// FORGET_TRAIN_EVERY-th - a sample sent one a call loses 8 of its 723, the trains one sample in ~7 - and a fragmented
+// datagram frame by frame at 1%.
 #define FORGET_TRAIN_EVERY 90U
 #define FORGET_FRAME_LOSS_PPM 10000U
-#define FORGET_SAMPLES 8U
+#define FORGET_SAMPLES 12U
 static uint32_t forget_frame_rng;
 
 static bool forget_train_drop(const struct sim_datagram* d) {
@@ -3615,8 +3619,16 @@ static bool forget_train_drop(const struct sim_datagram* d) {
     return train_lost_now;
 }
 
-// Returns the samples sent at n_max; *first_events the reader's events after the first sample.
-static uint32_t forget_train_stream(bool stale_off, uint32_t* first_events, uint64_t* forgets) {
+struct forget_result {
+    uint32_t first_events;         // the reader's events after the first sample: the treatment
+    uint64_t forgets;              // the reader's stale forgets
+    uint32_t remeasured;           // samples after the first published while the writer held no p for the reader
+    uint32_t remeasured_in_trains; // of them, ones with more than one MTU unit in a send call
+    uint32_t heard_none_seen;      // samples published while the writer held "none seen"
+    uint32_t at_n_max;             // samples sent at n_max
+};
+
+static struct forget_result forget_train_stream(bool stale_off) {
     hybrid_test_stale_off = stale_off;
     init_one(ONE_MB, FULL_CEILING, true);
     sim_start(0);
@@ -3630,39 +3642,48 @@ static uint32_t forget_train_stream(bool stale_off, uint32_t* first_events, uint
     sim_announce();
     uint64_t t = test_mock_now;
     tick_readers(t);
-    uint32_t at_n_max = 0;
+    struct forget_result result = {0, 0, 0, 0, 0, 0};
     for (uint32_t s = 1; s <= FORGET_SAMPLES; s++) {
         memset(&sent, 0, sizeof(sent));
+        train_max_firsts = 0;
+        train_call_now = UINT32_MAX;
         test_mock_now = t + (tt_SECOND / 2U) + ((uint64_t)s * 34U * tt_MILLISECOND); // no reader tick in between
+        uint16_t heard = sender.hybrid.peer_loss_p[reader_id(0)];
         EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        if (s > 1 && heard == 0) {
+            result.remeasured++;
+            result.remeasured_in_trains += train_max_firsts > 1U ? 1U : 0U;
+        }
+        result.heard_none_seen += heard == HYBRID_LOSS_NONE_SEEN ? 1U : 0U;
         sim_settle((int)s, tt_SECOND);
-        *first_events = s == 1 ? readers[0].ctx.hybrid.rx_loss.events : *first_events;
-        at_n_max += sent.max_n == tt_HYBRID_N_MAX ? 1U : 0U;
+        result.first_events = s == 1 ? readers[0].ctx.hybrid.rx_loss.events : result.first_events;
+        result.at_n_max += sent.max_n == tt_HYBRID_N_MAX ? 1U : 0U;
     }
-    *forgets = readers[0].ctx.hybrid.stale_forgets;
+    result.forgets = readers[0].ctx.hybrid.stale_forgets;
     expect_intact_or_given_up(0, (int)FORGET_SAMPLES);
     sim_drop_hook = NULL;
     test_mock_send_hook = sim_capture;
     hybrid_test_stale_off = false;
-    return at_n_max;
+    return result;
 }
 
 static void test_train_losses_outlast_the_stale_rule(void) {
-    uint32_t first_events = 0;
-    uint64_t forgets = 0;
-    uint32_t at_n_max = forget_train_stream(false, &first_events, &forgets);
-    EXPECT_EQ_U32(8, first_events); // the treatment: 8 independent events in the first sample's 723 calls
-    EXPECT_EQ_U64(1, forgets);      // forgotten after two or three clean samples of trains
-    EXPECT_EQ_U64(8, readers[0].ctx.hybrid.stale_events);
-    EXPECT_TRUE(at_n_max > 0); // and runs of n_max on a ~1% path
-    uint32_t control_first = 0;
-    uint64_t control_forgets = 0;
-    uint32_t control = forget_train_stream(true, &control_first, &control_forgets);
-    EXPECT_EQ_U32(8, control_first);
-    EXPECT_EQ_U64(0, control_forgets);
-    EXPECT_EQ_U32(0, control); // the rule off: the writer stays at n* of p ~ 1.2%, MTU units
-    printf("test_hybrid_send: train losses: %u samples at n_max after a stale forget, %u with the rule off\n", at_n_max,
-           control);
+    struct forget_result rule = forget_train_stream(false);
+    EXPECT_EQ_U32(8, rule.first_events); // the treatment: 8 independent events in the first sample's 723 calls
+    EXPECT_TRUE(rule.forgets >= 1);      // forgotten after two or three clean samples of trains
+    EXPECT_TRUE(readers[0].ctx.hybrid.stale_events >= 8);
+    EXPECT_EQ_U64(rule.forgets, rule.remeasured); // each forget: no estimate, and the next sample re-measures it
+    EXPECT_EQ_U32(0, rule.remeasured_in_trains);  // one MTU unit a send call, as the first sample
+    EXPECT_EQ_U32(0, rule.heard_none_seen);       // "none seen" never rests on the trains
+    EXPECT_EQ_U32(0, rule.at_n_max);              // and no run of n_max on a ~1% path
+    struct forget_result control = forget_train_stream(true);
+    EXPECT_EQ_U32(8, control.first_events);
+    EXPECT_EQ_U64(0, control.forgets);
+    EXPECT_EQ_U32(0, control.remeasured);
+    EXPECT_EQ_U32(0, control.at_n_max); // the rule off: the writer stays at n* of p ~ 1.2%, MTU units
+    printf("test_hybrid_send: train losses: %lu stale forgets, %u samples re-measured one a call, %u at n_max (rule "
+           "off: %u at n_max)\n",
+           (unsigned long)rule.forgets, rule.remeasured, rule.at_n_max, control.at_n_max);
 }
 
 // --- a socket that overflows during the reader's first sample (2026-10-16, rig first-n2 r11) -----------------------
