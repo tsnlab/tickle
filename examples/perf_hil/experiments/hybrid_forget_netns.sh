@@ -17,6 +17,9 @@
 # n_max = 45 from the first sample, whatever p - the deterministic arm).
 #
 #   ARMS="auto:1:16 ip:1:4 ip:0:3" DUR=10 OUT=dir BIN=prebuilt bench (default: build this tree)
+#   GAP=31: seconds between reps, for the reader namespace's incomplete queues to expire (ipfrag_time 30 s). A driver
+#     that runs one lossy rep last in each invocation (the namespaces, and their queues, go with it) may set GAP=0
+#     (hybrid_stale_forget_ab.sh, 2026-10-26).
 #
 # PRE-REGISTERED (written before the first run; the python at the end applies it - it, not this comment, decides):
 #   VOID (a rep says nothing): no RESULT line from either node; the PC's 1-minute load above nproc/2 at its start; no
@@ -51,6 +54,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 ARMS=${ARMS:-"auto:1:16 ip:1:4 ip:0:3"}
 DUR=${DUR:-10}
+GAP=${GAP:-31}
 OUT=${OUT:-$HOME/tmp_build/hyb_forget/run_$(date +%Y%m%d_%H%M%S)}
 REREAD=${REREAD:-}
 export TMPDIR=${TMPDIR:-$HOME/tmp_build}
@@ -145,7 +149,7 @@ for arm in $ARMS; do
         done
         echo "REP ${mode}${loss} r$rep load=$load dir=$dir" >>"$RESULTS"
         echo "  $(date +%T) ${mode}${loss} r$rep done (load $load)"
-        sleep 31 # the reader namespace's incomplete queues expire (ipfrag_time 30 s) before the next rep
+        sleep "$GAP" # the reader namespace's incomplete queues expire (ipfrag_time 30 s) before the next rep
     done
 done
 
