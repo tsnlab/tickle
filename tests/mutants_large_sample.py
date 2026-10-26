@@ -372,14 +372,14 @@ MUTANTS = [
     ),
     (
         "resend order: no repair timeout",
-        "    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
+        "    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
         "    if (false) {",
         "test_the_resend_order_rules",
     ),
     (
         "resend order: no seed before the first timing",
-        "    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
-        "    if (now - slot->resent_at >= order->timeout) {",
+        "    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
+        "    if (now - since >= order->timeout) {",
         "test_a_queued_path_does_not_storm",
     ),
     (
