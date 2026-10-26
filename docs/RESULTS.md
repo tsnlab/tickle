@@ -945,6 +945,62 @@ before it: band = max(ctl band, |O - P|), `storm_tail_read.py`): ge1b1 P 12.1 / 
 1.01 at ge1b1 on all three. F sat 0.7-0.9 ms above P in both runs and below O in both: a cost of that size at 1%
 is not ruled out at 10 reps.
 
+### The reader's retry estimate still collapses on main, PC netns (`RLC`, 2026-10-26, not fixed)
+
+**TL;DR.** Yes, in every Wi-Fi 1 MiB cell, at about 1 rep in 60, and on ETHERNET's 30 Hz cell at about 1 in 12. The
+cause is the reader's own seed, not the writer storm. A probe on the watermark is timed from the first request
+naming the watermark. The unit was named 10-20 ms before that, while it lay above the watermark, so the repair
+answering that older request can arrive microseconds later. A seed of 3-90 us sets the interval to tens of us. An
+honest probe (>= 4 ms) then runs past the default rule's 3 retries and is never timed, so nothing corrects the
+estimate. It locks for 2-9 s, or for the whole rep when the seed is 3 us. No loss, no storm. The writer's resend
+order holds the extra requests. The cost is 2-3x resends and duplicates.
+
+Census (`reader_collapse_census.sh`, reading registered in `reader_collapse_read.py` before the run; main `81daa880`,
+core = `8d0d2eed`; WIFI rel_large, 1 MiB RELIABLE at 5 Hz, offload off; T1-T4 = main + `r4_trace.patch` +
+`k5_add_r_event.py`, U = main untraced, all at once; E1 = traced main, ETHERNET's amp cell, 30 Hz, 1 Gbit/s; COLLAPSE =
+timer ACKNACKs > 5 x the arm's median rep and >= 500):
+
+| cell | reps (this run) | COLLAPSE | timer ACKNACKs median / max | earlier main-core reps on disk | pooled |
+|---|---:|---:|---:|---:|---:|
+| tv | 150 | 2 | 76 / 31,661 | 0 / 80 | 2 / 230 |
+| ge5b2 | 150 | 5 | 167 / 18,395 | 1 / 140 | 6 / 290 |
+| ge5b4 | 150 | 2 | 114 / 34,075 | 4 / 140 | 6 / 290 |
+| bc | 150 | 1 | 58 / 4,967 | 0 / 30 | 1 / 180 |
+| ETHERNET ge0.1b1 (amp) | 60 | 5 | 6 / 1,063 | 1 / 15 | 6 / 75 |
+
+- **Trace control** PASS: traced 7/480 against untraced 3/120 (p 0.43). Every COLLAPSE rep started at load <= 2.6 on 16 cores.
+- **Not the storm fix's leftover**: before `8d0d2eed`, tv collapsed 8 of 185. In the 4 traced pre-fix collapses the
+  reader's interval fell first, and 2 of them had no writer timeout under 1 ms (`reader_collapse_prefix.py`). The
+  earlier 0 of 80 on main was chance.
+- **Mechanism H SHOWN as registered** (7 of 7 traced Wi-Fi COLLAPSE reps hold P1-P3). >= 50% of timer ACKNACKs fired
+  at an interval under 1 ms. srtt fell under 1 ms through an ambiguous sample, and in every rep that sample was the
+  seed itself (3, 3, 26, 36, 42, 65, 90 us). Inside the lock no timed sample reached 4 ms.
+  - Example `rlc1_T1` ge5b4-8 (`reader_collapse_seed.py`): unit 447 was first named at 26.5 ms. The watermark reached
+    it at 41.310 ms and the repair arrived 3 us later. The interval was 23 us, then 10 us. 34,075 timer ACKNACKs, of
+    which 32,646 backed off, and not one more probe was timed in 30 s.
+- **What decides it is the seed's size.** Seeds under 100 us: 7 of 16 reps collapsed. Seeds of 100 us or more: 0 of
+  464. 111 normal reps also went under 1 ms srtt, for a median 0.4 s: a sample a little longer than srtt, within
+  3 retries, ratchets it back up (e.g. 42 us -> 1.6 ms in 9.2 s).
+- **ETHERNET**: same shape (seeds 2-24 us, ambiguous), held 7-30 s. It is descriptive only; P3's 200 us PATH was not
+  measured for that path.
+- **Cost of a COLLAPSE rep**: 100% delivered. p50 50-57 ms against ~55-70. Resends up to 21,875 (median ~6,000-8,600).
+  Writer requests held up to 618,883. Duplicates up to 13,047 against a median ~50-800. Reader CPU 1.7x.
+
+**Fix candidates** (none written):
+1. **The least-transit floor ported to main** (`experiment/k5-floor`, measured only on K). Take no path
+   sample faster than the least repair transit the reader has timed. On main this needs two changes: apply it on every
+   link, since ETHERNET collapses the same way, and apply it to the seed. On K it stopped the lock (COLLAPSE 0/80
+   against 7/80). Its ge5b2 tail (247 ms) was main's, not worse. No wire change; 4 B a writer proxy. A/B: this census
+   as the harness, ~300 reps a tree (0 of 300 against 10 of 600 is p ~0.02).
+2. **Backstop**: a probe that goes past the retry limit while lasting longer than the interval's ceiling (64 x srtt)
+   shows the estimate is impossible. Drop srtt and re-seed. Reader-only; no wire change. It ends a whole-rep lock but
+   does not stop the seed.
+3. **The real fix**: the repair echoes the serial of the request it answers, so a probe is timed from that request.
+   This is a wire change, parked with the others for the wireless stage (`K5`).
+
+Data: `~/rlc_results/` (`rlc1_*`, `rlc1.read.txt`, `rlc1.census.log`, `old_traces_mech.txt`,
+`prefix_writer_vs_reader*.txt`).
+
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
 **TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
