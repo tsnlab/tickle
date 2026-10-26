@@ -1493,9 +1493,10 @@ static void test_a_busy_writer_is_not_warned_about(void) {
     // and answers when the send ends. Counted, the busy writer's 4 MB send ran the reader's retry count to 18, past
     // tt_RELIABLE_RETRY, and a reader then warns that the writer "neither repairs it nor says it is gone" - about a
     // writer doing neither only because it is busy. Delivery cannot show this: since 2026-10-15 no gap is given up on a
-    // retry count (mutants_large_sample.py, "a retry while a large sample still arrives counts against the writer",
-    // 2026-10-16). The control: a writer that has really gone silent with a gap open is warned about, on the same
-    // clock.
+    // retry count. The control: a writer that has really gone silent with a gap open is warned about, on the same
+    // clock. Since 9d716d60 the uncounting is not what keeps this at 0: a retry to a sending writer that has answered
+    // nothing within the interval is not sent, so the busy writer's retries never reach the count (4 counted in the
+    // whole send, traced 2026-10-26). The uncounting's guard is test_a_repairing_writer_is_not_warned_about.
     int busy = stuck_warnings_in(busy_writer_scenario);
     int silent = stuck_warnings_in(silent_writer_scenario);
     printf("test_large_sample: \"still waiting\" warnings - busy writer %d, silent writer %d\n", busy, silent);
@@ -1834,11 +1835,14 @@ static void test_a_heartbeat_takes_the_path_of_its_data(void) {
 // `service_ns` a datagram, `capacity` waiting, `loss_per_mille` on the path after the queue: with no loss it is the
 // slow reader above; with loss and a deep queue it is a rate-limited path (12 us a datagram ~ 1 Gbit/s at the MTU).
 // `seed` seeds the path's loss.
+// The clock starts at `queue_start_ns` (0 unless a caller sets it).
+static uint64_t queue_start_ns;
 static void resent_through_a_queue(int samples, uint64_t service_ns, uint32_t capacity, uint32_t loss_per_mille,
                                    uint32_t seed, uint64_t* resent, uint64_t* drops, uint64_t* duplicates) {
     EXPECT_TRUE(capacity <= SIM_HELD);
     init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
     sim_start(0);
+    test_mock_now = queue_start_ns;
     sim_rng = seed;
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
     sim_settle(1, tt_SECOND);
@@ -1892,6 +1896,39 @@ static void test_a_slow_readers_repairs_are_measured(void) {
            drops != 0 ? (double)resent / (double)drops : 0.0, (unsigned long long)duplicates, delivered_count);
     EXPECT_TRUE(drops > 0); // the treatment applied
     EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+}
+
+// The slow reader of test_a_slow_readers_repairs_are_measured, its clock past the warning's first rate limit. Answers
+// the units the writer resent.
+static uint64_t repairing_writer_resent;
+static void repairing_writer_scenario(void) {
+    enum { SAMPLES = 10 };
+    uint64_t drops = 0;
+    uint64_t duplicates = 0;
+    queue_start_ns = 10 * tt_SECOND; // tt_WriterProxy.stuck_warned_ns starts at 0: a warning may go at once
+    resent_through_a_queue(SAMPLES, 20 * tt_MICROSECOND, 400, 0, 7, &repairing_writer_resent, &drops, &duplicates);
+    queue_start_ns = 0;
+    EXPECT_TRUE(drops > 0);
+    EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+}
+
+static void test_a_repairing_writer_is_not_warned_about(void) {
+    // A writer whose repairs of a large sample keep arriving is answering, though the gap stays open: the slow reader's
+    // socket drops most of each repair burst again, and the gap takes many retry intervals to close. A retry within
+    // the interval of a large-sample arrival - original or repair - is not counted against the writer; counted, the
+    // reader's retries ran to 11 here, past tt_RELIABLE_RETRY, and it warned that the writer "neither repairs it nor
+    // says it is gone" while it was doing the first (mutants_large_sample.py, "a retry while a large sample still
+    // arrives counts against the writer", 2026-10-26). test_a_busy_writer_is_not_warned_about cannot show this since
+    // 9d716d60: a writer busy in its send answers nothing, and a retry to one that has answered nothing within the
+    // interval is not sent at all, so none of its retries reaches the count. Controls: the writer did resend, and a
+    // writer really gone silent is warned about on the same clock.
+    int repairing = stuck_warnings_in(repairing_writer_scenario);
+    int silent = stuck_warnings_in(silent_writer_scenario);
+    printf("test_large_sample: \"still waiting\" warnings - repairing writer %d (%llu resent), silent writer %d\n",
+           repairing, (unsigned long long)repairing_writer_resent, silent);
+    EXPECT_TRUE(repairing_writer_resent > 0);
+    EXPECT_EQ_INT(0, repairing);
+    EXPECT_TRUE(silent >= 1);
 }
 
 static void test_a_queued_path_does_not_storm(void) {
@@ -3080,6 +3117,7 @@ int main(void) {
     test_two_readers_are_not_resent_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();
     test_a_slow_readers_repairs_are_measured();
+    test_a_repairing_writer_is_not_warned_about();
     test_a_queued_path_does_not_storm();
     test_a_repair_on_its_way_is_not_resent();
 #ifdef tt_LARGE_REPAIR_SLOTS

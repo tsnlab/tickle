@@ -89,7 +89,7 @@ MUTANTS = [
         "a retry while a large sample still arrives counts against the writer",
         "        proxy->retry--;",
         "        (void)0;",
-        "test_a_busy_writer_is_not_warned_about",
+        "test_a_repairing_writer_is_not_warned_about",
     ),
     (
         "a fixed-size type above a sample refused as a topic",
