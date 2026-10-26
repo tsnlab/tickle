@@ -33,6 +33,20 @@
 #   at 0% with early events, n_max one sample later (no event comes on this 0% link, so no change is expected there).
 #   Also printed, not part of the verdict: per arm the reps with a stale forget, "none seen" heard by the writer
 #   (code=0xff00 on pub.err), and the writer's n histogram.
+#
+# SECONDARY READING, REGISTERED 2026-10-27 ~05:10 AFTER RUN 1 (ab_run1) AND BEFORE RUN 2 - written on what run 1 showed,
+#   so it is not a pre-registration for run 1; the primary verdict above stays the registered one for both runs.
+#   Run 1 (peek at 15 rounds, then final): CHAIN M 4, A 3, F 0; CPU per MB at 1% WORSE (sub +28%, pub +50%). Per rep the
+#   CPU follows the writer's mode: reps whose estimate crosses 0.886% (HMA's residual) send runs of 2, ~2x the CPU of
+#   MTU units, and that share is bimodal per rep (0 to 240 of 300 samples). A CHAIN rep ends in the writer's rule (e),
+#   MTU units for 60 s - the rest of the rep - so it cannot wander into runs of 2. F differs from M only after a stale
+#   forget (no forget: the same code path), so on reps without CHAIN the two should not differ. The reading:
+#   S1 (mode): per rep the share of samples at n = 2 (hybrid_n_hist's second field / its sum) at 1%; F against M's and
+#     A's reps without CHAIN pooled, two-sided Mann-Whitney (normal approximation); SAME when p >= 0.05.
+#   S2 (cost without the chain): the cost rule above at 1% over reps without CHAIN in every arm (bound from |A - M| of
+#     those reps, the same floors).
+#   EXPLAINED (the primary's 1% CPU WORSE is the CHAIN reps' MTU pinning, not a cost of (a)) when S1 is SAME and S2 has
+#     no WORSE row; NOT EXPLAINED otherwise (then (a) costs CPU at 1% beyond the chain: the primary FAIL stands as a cost).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -186,4 +200,54 @@ elif worse:
 else:
     verdict = 'PASS: CHAIN F %d < M %d, no row WORSE' % (sum(cf), sum(cm))
 print('VERDICT ' + verdict)
+# --- SECONDARY READING (registered after run 1, see the header) ---
+from math import erf, sqrt
+def n2_share(x):
+    try:
+        h = [int(v) for v in str(x['n_hist']).split('/')]
+        return h[1] / sum(h) if sum(h) else float('nan')
+    except (ValueError, IndexError):
+        return float('nan')
+def mann_whitney(a, b):
+    allv = sorted([(v, 0) for v in a] + [(v, 1) for v in b])
+    ranks, i = {}, 0
+    rank_a = 0.0
+    while i < len(allv):
+        j = i
+        while j + 1 < len(allv) and allv[j + 1][0] == allv[i][0]:
+            j += 1
+        r = (i + j) / 2 + 1
+        rank_a += r * sum(1 for k in range(i, j + 1) if allv[k][1] == 0)
+        i = j + 1
+    n1, n2 = len(a), len(b)
+    u = rank_a - n1 * (n1 + 1) / 2
+    mu, sd = n1 * n2 / 2, sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
+    z = (u - mu) / sd if sd else 0.0
+    return 2 * (1 - 0.5 * (1 + erf(abs(z) / sqrt(2))))
+nc = {arm: [x for x in data.get((arm, 'auto1'), []) if not x['chain']] for arm in ('M', 'A', 'F')}
+fs = [n2_share(x) for x in nc['F']]
+ms = [n2_share(x) for x in nc['M'] + nc['A']]
+p_mw = mann_whitney(fs, ms) if fs and ms else float('nan')
+s1 = p_mw >= 0.05
+print('SECONDARY S1: n = 2 share at 1%%, reps without CHAIN: F median %.3f (%d reps), M+A median %.3f (%d reps), '
+      'Mann-Whitney p = %.3f -> %s' % (statistics.median(fs) if fs else float('nan'), len(fs),
+                                       statistics.median(ms) if ms else float('nan'), len(ms), p_mw,
+                                       'SAME' if s1 else 'DIFFERENT'))
+s2_worse = []
+med2 = {arm: {m: (statistics.median([x[m] for x in nc[arm]]) if nc[arm] else float('nan')) for m, _, _ in METRICS}
+        for arm in ('M', 'A', 'F')}
+for m, sign, floor in METRICS:
+    base = med2['M'][m]
+    if not base == base or base == 0:
+        continue
+    noise = abs(med2['A'][m] - base) / base
+    delta = (med2['F'][m] - base) / base
+    bound = max(noise, floor)
+    bad = sign * delta > bound
+    print('  S2 auto1 %-9s F-M %+7.2f%%  |A-M| %6.2f%%  bound %5.2f%%  %s  (reps M %d A %d F %d)' % (
+        m, 100 * delta, 100 * noise, 100 * bound, 'WORSE' if bad else 'ok', len(nc['M']), len(nc['A']), len(nc['F'])))
+    if bad:
+        s2_worse.append('%s %+.2f%%' % (m, 100 * delta))
+print('SECONDARY ' + ('EXPLAINED: S1 SAME, S2 no WORSE row' if s1 and not s2_worse else
+                      'NOT EXPLAINED: S1 %s, S2 WORSE %s' % ('SAME' if s1 else 'DIFFERENT', ', '.join(s2_worse) or '-')))
 PY
