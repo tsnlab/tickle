@@ -1908,6 +1908,84 @@ static uint64_t recover_after(struct tt_Context* node, struct tt_Subscriber* sub
     return test_mock_now - asked;
 }
 
+// The watermark is `base`, and base and base + 1 are missing. Both are asked for at once; base's original arrives late,
+// 10 ms on, untimed; the watermark is now base + 1 and the timer asks for it 1 ms later, which starts its probe; and
+// its repair - answering the first request, 11 ms before - arrives 3 us after that. Returns how long the probe took.
+static uint64_t recover_ambiguously(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
+                                    uint32_t base) {
+    struct tt_WriterProxy* proxy = remote_writer_proxy(sub);
+    test_mock_now += tt_MILLISECOND;
+    uint32_t tail = write_data(node, base + 2, 100ULL * (base + 2), base + 2); // base, base + 1 named at once
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    test_mock_now += 10 * tt_MILLISECOND;
+    tail = write_data(node, base, 100ULL * base, base); // the original, late: ends base's probe, untimed
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(base + 1, proxy->ack_seq_no);
+    test_mock_now += tt_MILLISECOND;
+    tt_Context_unschedule(node, acknack_retry, proxy);
+    acknack_retry(node, tt_get_ns(), proxy); // names the watermark: its probe starts now
+    EXPECT_EQ_U32(base + 1, proxy->probe_seq_no);
+    uint64_t asked = test_mock_now;
+    test_mock_now += 3 * tt_MICROSECOND;
+    tail = write_data(node, base + 1, 100ULL * (base + 1), base + 1);
+    node->rx_targeted = true;
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node->rx_targeted = false;
+    EXPECT_EQ_U64(0, proxy->probe_ns);
+    tt_Context_unschedule(node, acknack_retry, proxy);
+    return test_mock_now - asked;
+}
+
+// No recovery is folded into the path's estimate as faster than the least repair transit this reader has timed
+// (path_recovery_sample(), RESULTS `RLF`), and that covers the seed: in the census every collapse was seeded by a probe
+// on a unit named before it became the watermark, whose repair arrived 3-90 us after the probe began (RESULTS `RLC`).
+// Each arm on a fresh proxy, the default rule (arm 0) and a repair_timing link's (arm 1):
+//   1. the seed is such a probe: 3 us, folded as its unit's own transit from the first request, 11.003 ms;
+//   2. the control: a recovery its first request answered (1 ms) is folded as it is - the floor never lifts an honest
+//      sample - and, being the least transit now, lowers the floor to 1 ms;
+//   3. (default rule) another ambiguous probe (3 us) after the seed is folded at the least transit (1 ms), not at its
+//      own unit's 11 ms. repair_timing times no retried recovery after the seed, and this one had a retry.
+static void test_no_recovery_is_folded_faster_than_the_least_repair_transit(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        test_mock_reset();
+        struct tt_Context node;
+        struct tt_TypeSupport topic;
+        struct tt_Subscriber sub;
+        init_node_and_topic(&node, &topic);
+        init_subscriber_registered_on_node(&sub, &node, &topic);
+        node.repair_timing = arm == 1;
+        struct tt_Header header;
+        init_header(&header);
+        uint32_t tail = write_data(&node, 1, 100, 1);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+        EXPECT_TRUE(proxy != NULL);
+        proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+
+        uint32_t srtt = 0;
+        uint32_t rttvar = 0;
+        EXPECT_EQ_U64(3 * tt_MICROSECOND, recover_ambiguously(&node, &sub, &header, 2));
+        EXPECT_EQ_U32(11003000U, proxy->transit_min_ns);
+        rtt_estimate_fold(&srtt, &rttvar, 11003000U); // the seed, at its unit's transit
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
+
+        uint64_t took = recover_after(&node, &sub, &header, 5, 0, false);
+        EXPECT_EQ_U64(tt_MILLISECOND, took);
+        EXPECT_EQ_U32(1000000U, proxy->transit_min_ns);
+        rtt_estimate_fold(&srtt, &rttvar, took); // as it is
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
+
+        if (arm == 0) {
+            EXPECT_EQ_U64(3 * tt_MICROSECOND, recover_ambiguously(&node, &sub, &header, 7));
+            rtt_estimate_fold(&srtt, &rttvar, 1000000U); // at the least transit
+            EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+            EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
+        }
+    }
+}
+
 // A WIFI link's readers time their recoveries by repair_timing_times() (tt_LinkOptions.repair_timing, 2026-10-23): the
 // first recovery whatever the back-off, after it only one its first request answered. Without it, the rule as before
 // (test_a_backed_off_recovery_is_not_timed). Each arm on a fresh proxy, gaps in order:
@@ -5255,6 +5333,7 @@ int main(void) {
     test_recovery_probe_times_from_the_first_request();
     test_a_backed_off_recovery_is_not_timed();
     test_wifi_repair_timing_times_the_first_recovery_and_then_karns();
+    test_no_recovery_is_folded_faster_than_the_least_repair_transit();
     test_recovery_probe_ignores_a_late_original();
     test_recovery_probe_only_times_the_watermark();
     test_recovery_estimate_resets_when_a_slot_is_reused();
