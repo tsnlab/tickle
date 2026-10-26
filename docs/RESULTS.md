@@ -1052,7 +1052,7 @@ rules: no. The user chose to land it anyway (2026-10-26), after a rig check, whi
 Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`); rig
 `~/rig_results_safe/` (`queue_core_ab_rlf.log`, `rlf_1m_20261027-000449*`, `rlf_4m_20261027-000449*`).
 
-### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26, not fixed)
+### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26, not fixed; candidate in `EWF`)
 
 **TL;DR.** Main still storms on ETHERNET's amp cell (1 MiB RELIABLE at 30 Hz, 1 Gbit/s): 30 of 2,400 traced reps,
 and the rate follows the PC's load (0 of 495 reps started at load under 2, 8 of 1,251 at 2-4, 22 of 654 at 4 or
@@ -1133,6 +1133,70 @@ changes.
 
 Data: `~/ews_results/` (`ews1_r*_i*/`, `ews1.read.txt`, `ews1.driver.log`, `provoke/`, `provoke2/`, `force1/`,
 `STATUS.txt`).
+
+### The writer storm's fix: the repair timeout waits while the reader progresses, PC netns (`EWF`, 2026-10-27, not landed)
+
+**TL;DR.** On branch `ab/eth-storm-backoff` (core `3bd2acec`, measured as its pre-rebase build on `fc5fb79b`) the repair timeout runs from the resend or from the
+reader's last progress, whichever is later. Progress means an ACKNACK showing a later large send received than any
+before it. It breaks the forced loop: with the timeout pinned at ~1.5 ms and a whole sample dropped every 3 s, main
+stormed in 10 of 20 reps and this change in 0 of 20 (p 0.0002). No registered cell is WORSE, and LAND reads yes by
+the rules. It is not a complete fix. In one rep (03:33) all eight benches stormed at once, at load 3.9, and both G
+instances stormed through the timeout (8.5 M and 2.8 M resent). When the reader shows no progress, the timeout is
+main's again. EWS's per-unit back-off (F) also breaks the forced loop. In that rep it bounded the timeout releases
+(F's storms there came from RACK and shown-lost releases), but it fails two registered rows. The lead decides.
+
+- **The change** (DESIGN.md section 4, "The timeout waits while the reader progresses"). `tt_PeerAck` gains
+  `repair_progress_serial` / `_at` (8 B a reader entry). `tt_LargeRepair` stays 24 B. No wire change.
+- **Why not (1) alone** (the back-off, x2 a resend, at most x64): in `test_large_sample` it cut the whole-sample sim
+  storm from 167,013 to 58,065 resent. But the slow reader's repairs then took 8 s, not 2 s (5 of 11 samples
+  delivered in the 2 s window), and the repairing writer drew a "still waiting" warning. The warning test's own mutant
+  then also gives 1, so the test could no longer tell. G: 18,429 resent, every existing test unchanged. G plus a
+  back-off (caps 2, 3, 6, sim only) still drew the warning, and cap 6 slowed the slow reader again.
+- **Why not (2) or (3)**: srtt at onset was CALM in 28 of 30 census storms. A timeout of 1.5-3.3 ms against a
+  9.5 ms batch is enough, so one Karn sample per ACKNACK would not remove the trigger. srtt + 4 x rttvar freezes
+  with srtt when Karn takes no sample. Both change every rep's steady-state timeout, and ETHERNET's tail is
+  sensitive to that (`LRT`).
+- **Tests**: `test_a_whole_sample_lost_does_not_storm` (sim: queued path, every third sample lost whole; parent
+  167,013 resent, 23 x the need; G 18,429, 2.5 x; guard 5 x). `test_the_repair_timeout_waits_while_the_reader_progresses`
+  (a batch read in order every 5 ms: held at 10 of 10 ACKNACKs, the parent at 1; released one timeout after the stall).
+  Two new mutants die. Two older ones were re-anchored (`dca27ff1`), and all 24 resend-order mutants die. Gates 15 of
+  16 PASS before the harness was staged; lint-shell then failed on the harness's draft and passes on the committed
+  one. `make test-linux` PASS.
+- **A/B** (`eth_storm_fix_ab.sh` + `eth_storm_fix_read.py`, committed `0a0cc451` before the run; M = main `fc5fb79b`,
+  A = main again, F = main + the back-off, G = `3bd2acec`, all at once, 21:29-03:54; 1,040 ETHERNET reps a tree,
+  135 a Wi-Fi arm, 20 forced and 20 pinned):
+
+| | M | A | F | G |
+|---|---:|---:|---:|---:|
+| pinned + forced: STORM reps / 20 | 10 | 9 | **0** | **0** |
+| pinned + forced: resends, median | 379,666 | 18,654 | 21,321 | 10,964 |
+| forced: STORM reps / 20 | 0 | 1 (2.7 M) | 0 | 0 |
+| forced: duplicates, median | 59 | 333 | **713** (WORSE) | 259 |
+| ETHERNET amp: STORM reps / 1,040 | 4 | 5 | 3 | 4 |
+| ... of them timeout-driven (descriptive) | 4 | 4 | 0 | 2 |
+| ETHERNET amp: p50 / p99 ms (median rep) | 9.56 / 11.34 | 9.56 / 11.33 | 9.56 / 11.33 | 9.56 / 11.31 |
+| Wi-Fi tv: p50 / p99 ms | 66.7 / 601.9 | 71.2 / 603.6 | 67.6 / 603.5 | 69.1 / 599.8 |
+| R4 ge10b4 rel_large one-way p50 ms | 114.2 | 111.2 | 91.1 | 96.7 |
+
+- **Verdicts as registered**: C1 and C2 (A/A) PASS. LOOP REACHABLE (main 10 of 20). F and G both BREAK IT (p
+  0.0002). NATURAL UNDECIDED for both (G 4 of 1,040 against main's 9 of 2,080, p 0.55). The quiet PC gave too few
+  storms to tell: 0 of ~135 reps a tree at load under 2. NO WORSE: G every row. F has 2 WORSE rows: forced
+  duplicates, 713 against 59 (band 274), and R4 ctl pub CPU, +17 ms (band 13). R4 NOT WORSE. **LAND G: yes; LAND F:
+  no; PREFER G.**
+- **What the rules do not see** (`eth_storm_fix_classes.py`, written after the first peek, descriptive): main's
+  natural storms are released by the timeout (4 of 4; 72,000-2.8 M timeout releases). F's 3 are not: few timeout
+  releases (2,908-17,696), mostly RACK and shown-lost. G's 4: two at load 17-22 like F's, and two in the 03:33 rep,
+  where every tree stormed at once (M 2.8 M and 265,421 resent, A 3.0 M and 202,042, F 526,517 and 198,852, G 8.5 M
+  and 2.8 M). G's timeout released 8.47 M units there. That is the frozen loop again on a path that showed no
+  progress; G holds the timeout only while the reader shows progress. So G removes the batch-drain trigger (the
+  forced arm) but not a stall that every bench meets at once. The back-off bounds that case, at the costs above.
+  No storm rep started in 22:32-22:50, when the rig A/B's preflight builds ran on this PC.
+- **Next** (not done): bound the timeout during a stall without slowing a socket-dropping reader. Two options: a
+  back-off that applies only while no progress is shown, or EWS's item 4 (judge an ACKNACK by when it arrived). Then
+  run this harness again, with the natural cell under load as the question.
+
+Data: `~/ewf_results/` (`ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `ewf1.driver.log`, `STATUS.txt`, gate and
+mutant logs); trees `~/ewf_trees/` (each with its `PROVENANCE.txt`).
 
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
@@ -1274,6 +1338,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | HMAR | `rmw_keepall_rig.sh` via `~/rig_jobs/hybrid_announce_ab.sh` (Array1m 1%, 12 reps; aa = head's own library) | `7694bc87` (pre), `3f0cf05e` (fix), `042da3bf` (head) | 2026-10-25 | `haa_1m_20261025-002405.txt` |
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
+| EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |

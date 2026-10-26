@@ -493,6 +493,9 @@ releases at ge1b1 not falling.
   resend, at most x64). It broke the forced loop as well, but in the sim it slowed a socket-dropping reader's repairs
   from 2 s to 8 s and drew a "still waiting" warning; one Karn sample per ACKNACK and srtt + 4 x rttvar change the
   steady-state timeout of every rep, which the storm did not need. 8 B more in each ack entry (progress serial, time).
+  **Measured** (RESULTS `EWF`): the forced, pinned loop 0 of 20 against main's 10 of 20; no registered cell WORSE.
+  **Not covered:** a stall in which the reader shows no progress at all - one rep where every bench on the PC
+  stormed at once - still loops through the plain timeout (8.5 M resent).
 - **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
   reader context, serial, time, seed, resends, left-out and untimed marks - 192 KiB, indexed by seq_no; a slot another unit took makes that unit
   resend at its next request, as before. 8 B in each large record and each ack entry (256 B a Publisher). **FreeRTOS
