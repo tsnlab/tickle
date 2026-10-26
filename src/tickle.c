@@ -6095,6 +6095,7 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].match_heartbeats_left = 0;
 #if tt_LARGE_SAMPLES
             pub->peer_acks[i].repair_srtt_ns = 0; // its large repairs not yet timed (the resend order)
+            pub->peer_acks[i].repair_progress_serial = 0;
             pub->peer_acks[i].repair_rttvar_ns = 0;
             pub->peer_acks[i].repair_rack_serial = 0;
             pub->peer_acks[i].repair_rack_rtt_ns = 0;
@@ -11717,6 +11718,8 @@ struct large_order {
     uint32_t shown_serial; // the latest large send this reader has shown received
     uint32_t timeout;      // the repair timeout to this reader (tt_get_ns() >> 10); 0: not measured yet
     uint32_t rack;         // RACK.rtt + reo_wnd to this reader, the same units; 0: not measured yet
+    bool progressed;       // progress_at is set
+    uint32_t progress_at;  // when an ACKNACK of this reader's last showed a later send received (the same units)
 };
 
 // The bit positions (from the ACKNACK's seq_no) of its lowest and highest request; false when it names nothing.
@@ -11799,6 +11802,20 @@ static void large_order_left_out(struct tt_PeerAck* ack, struct tt_LargeRepair* 
     RSTAT_LRO_DONE(slot->seq_no);
 }
 
+// The reader's progress, for the repair timeout (large_resend_due()): when an ACKNACK of its last showed a later large
+// send received than any before it.
+static void large_order_progress(struct tt_PeerAck* ack, uint32_t now, struct large_order* order) {
+    if (order->shown &&
+        (ack->repair_progress_serial == 0 || large_serial_after(order->shown_serial, ack->repair_progress_serial))) {
+        ack->repair_progress_serial = order->shown_serial;
+        ack->repair_progress_at = now;
+    }
+    if (ack->repair_progress_serial != 0) {
+        order->progressed = true;
+        order->progress_at = ack->repair_progress_at;
+    }
+}
+
 // The two times an ACKNACK from this reader is read against: the repair timeout and RACK's time rule.
 static void large_order_times(const struct tt_PeerAck* ack, struct large_order* order) {
     if (ack->repair_srtt_ns != 0) {
@@ -11870,13 +11887,14 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
         }
     }
     if (ack != NULL) {
+        large_order_progress(ack, now, order);
         large_order_times(ack, order);
     }
 }
 
 // Whether the unit seq_no a reader just asked for is due a resend: never resent to it, its last resend shown lost
-// (the reader received something sent after it), or a repair timeout past it. Otherwise the request is left unanswered
-// and counted (resend_held); the reader asks again.
+// (the reader received something sent after it), or a repair timeout past it and past the reader's last progress.
+// Otherwise the request is left unanswered and counted (resend_held); the reader asks again.
 static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t seq_no,
                              const struct tt_Peer* target, const struct large_order* order) {
     const struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
@@ -11893,7 +11911,18 @@ static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher*
         RSTAT_LRO_RACK(seq_no);
         return true; // still named past the round trip the path takes now: lost, though nothing later shows it
     }
-    if (now - slot->resent_at >= (order->timeout != 0 ? order->timeout : slot->hold)) {
+    // The timeout runs from the resend, or from the reader's last progress if that came later: while each ACKNACK still
+    // shows sends received that went before this resend, it is queued behind them, not lost (on a path that keeps
+    // order). A fixed 2 x srtt from the resend alone released a whole sample's resend batch again at every ACKNACK
+    // while the loaded link was still carrying it (~9.5 ms against a 1.5-3.3 ms timeout); every unit then went twice,
+    // Karn took no sample, the timeout never grew, and the copies filled netem's queue (RESULTS `EWS`, ETHERNET's amp
+    // cell: 30 of 2,400 reps on the PC, up to 5,736,302 resent in one). A path that stalls - the rest of a burst
+    // dropped at a full socket - shows no progress, and the timeout runs from its last as before.
+    uint32_t since = slot->resent_at;
+    if (order->progressed && (int32_t)(order->progress_at - since) > 0) {
+        since = order->progress_at;
+    }
+    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {
         RSTAT_LRO_RELEASED(seq_no, true, node->large.repair_serial == slot->serial,
                            (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT,
                            (uint64_t)(order->timeout != 0 ? order->timeout : slot->hold) << LARGE_REPAIR_SHIFT);

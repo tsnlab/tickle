@@ -564,6 +564,12 @@ static uint64_t sim_reader_free_ns;
 static uint64_t sim_socket_drops;
 // With a second reader: the writer's broadcast is lost to the first reader alone, never to reader_b.
 static bool sim_loss_first_reader_only;
+// The first send of every sim_whole_loss_every-th sample sim_publish() publishes (by its seed; 0: none) goes nowhere,
+// its HEARTBEAT through: the reader asks for the whole sample at once, as after its receive drain overran (RESULTS
+// `EWS`). sim_whole_lost counts the samples so lost.
+static uint32_t sim_whole_loss_every;
+static uint32_t sim_whole_lost;
+static bool sim_whole_losing;
 
 // The fragment header of a captured datagram, whichever form it went in: its type, and for FRAG_CONT_L its index,
 // count and seq_no.
@@ -617,6 +623,14 @@ static bool sim_unit_drop(const uint8_t* bytes) {
 static void sim_capture(const void* buf, size_t len) {
     if (len > SIM_DATAGRAM_MAX) {
         sim_oversize++;
+        return;
+    }
+    const uint8_t* body = NULL;
+    uint8_t type = sim_whole_losing && sim_acting == SENDER_ID ? datagram_type((const uint8_t*)buf, &body) : 0;
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L || type == tt_SUBMESSAGE_TYPE_FRAG_CONT_L ||
+        type == tt_SUBMESSAGE_TYPE_FRAG_RUN_L) {
+        sim_sent[sim_acting]++;
+        sim_dropped[sim_acting]++;
         return;
     }
     EXPECT_TRUE(sim_tail - sim_head < SIM_QUEUE);
@@ -829,6 +843,9 @@ static void sim_start(uint32_t loss_per_mille) {
     sim_reader_free_ns = 0;
     sim_socket_drops = 0;
     sim_loss_first_reader_only = false;
+    sim_whole_loss_every = 0;
+    sim_whole_lost = 0;
+    sim_whole_losing = false;
     sim_late_head = sim_late_tail = 0;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -846,7 +863,10 @@ static tt_ret_t sim_publish(uint8_t seed, uint64_t budget) {
     if (sim_room_per_step != 0) {
         test_mock_nonblocking_room = (int32_t)sim_room_per_step;
     }
+    sim_whole_losing = sim_whole_loss_every != 0 && seed % sim_whole_loss_every == 0;
+    sim_whole_lost += sim_whole_losing ? 1U : 0U;
     tt_ret_t result = tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len);
+    sim_whole_losing = false;
     uint64_t since = test_mock_now;
     while (result == tt_RET_WOULD_BLOCK && test_mock_now - since < budget) {
         sim_drain();
@@ -1931,6 +1951,40 @@ static void test_a_repairing_writer_is_not_warned_about(void) {
     EXPECT_TRUE(silent >= 1);
 }
 
+// `samples` 1 MiB samples at 30 Hz through the queued path of resent_through_a_queue() (`service_ns` a datagram,
+// `capacity` waiting), each sample's tail lost once (so the repairs the timeout is timed on are a few units behind an
+// empty queue), and every `every`-th sample's first send lost whole. Answers the units resent; *lost the whole-sample
+// losses, *delivered the samples delivered within `settle` after the last.
+static uint64_t resent_after_whole_losses(int samples, uint32_t every, uint64_t service_ns, uint32_t capacity,
+                                          uint32_t loss_per_mille, uint64_t settle, uint32_t* lost, int* delivered) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_reader_service_ns = service_ns;
+    sim_reader_capacity = capacity;
+    sim_loss_per_mille = loss_per_mille;
+    sim_drop_tails = true;
+    sim_whole_loss_every = every;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    uint32_t before = pub.retransmitted;
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        uint64_t next = t0 + ((uint64_t)(i + 1) * tt_SECOND / 30U);
+        while (test_mock_now < next && sim_step()) {
+        }
+        if (test_mock_now < next) {
+            test_mock_now = next;
+        }
+    }
+    sim_settle(samples + 1, settle);
+    *lost = sim_whole_lost;
+    *delivered = delivered_count;
+    return pub.retransmitted - before;
+}
+
 static void test_a_queued_path_does_not_storm(void) {
     // A rate-limited path (12 us a datagram, 4,000 queued) at 1% loss after it: item (a)'s storm (RESULTS `LRF`; the
     // WB-harness netns path at 1% stormed one rep in three). The sim's clock jumps to its next timer after the first
@@ -1982,6 +2036,39 @@ static uint32_t resent_for_lost_tails(int samples, uint64_t delay) {
     EXPECT_EQ_INT(samples + 1, delivered_count);
     EXPECT_EQ_U32((uint32_t)samples, sim_tail_count); // the treatment: one tail lost a sample
     return pub.retransmitted - before;
+}
+
+static void test_a_whole_sample_lost_does_not_storm(void) {
+    // The ETHERNET amp writer storm (RESULTS `EWS`): when a reader's receive drain overran, it asked for a whole
+    // sample (722 units) at once, and the loaded link took ~9.5 ms to carry the resend batch - longer than the repair
+    // timeout, a fixed 2 x srtt from each resend. Every ACKNACK read meanwhile released every unit it named again; once
+    // all had gone twice Karn took no sample, the timeout could not grow, and the copies became the queue. Here: the
+    // queued path of test_a_queued_path_does_not_storm (12 us a datagram, 4,000 waiting), each sample's tail lost once,
+    // and every third sample's first send lost whole (10 of 30). The criterion (set after the runs below, between
+    // them, so it is a guard, not a measurement): STORM when the writer resends more than 5 x the units those losses
+    // need (10 whole samples and 30 tails). The parent: 167,013 resent (131,414 dropped at the queue, 23 x the need);
+    // with the timeout held while the reader shows progress through what went before a resend: 18,429 (2.5 x, 1,290
+    // dropped); a per-unit back-off of the timeout instead (x2 a resend, at most x64; not taken - it slowed the slow
+    // reader's repairs above from 2 s to 8 s): 58,065 (8 x) (2026-10-26). Control: the same path with no whole sample
+    // lost, 7,271 resent on the parent, 5,096 here. Mutants (mutants_large_sample.py, "progress"): the timeout run
+    // from the resend alone.
+    enum { SAMPLES = 30, EVERY = 3 };
+    uint32_t lost = 0;
+    int delivered = 0;
+    uint64_t control =
+        resent_after_whole_losses(SAMPLES, 0, 12 * tt_MICROSECOND, 4000, 0, 2 * tt_SECOND, &lost, &delivered);
+    EXPECT_EQ_U32(0, lost);
+    EXPECT_EQ_INT(SAMPLES + 1, delivered);
+    uint64_t resent =
+        resent_after_whole_losses(SAMPLES, EVERY, 12 * tt_MICROSECOND, 4000, 0, 2 * tt_SECOND, &lost, &delivered);
+    uint64_t need = ((uint64_t)lost * tt_sample_datagrams(ONE_MB)) + SAMPLES;
+    printf("test_large_sample: %d x 1 MiB at 30 Hz through a queue of 4000, %u lost whole - %llu resent (%.1f x the "
+           "%llu units lost; %llu with none lost whole), %llu dropped at the queue, %d delivered\n",
+           SAMPLES, lost, (unsigned long long)resent, (double)resent / (double)need, (unsigned long long)need,
+           (unsigned long long)control, (unsigned long long)sim_socket_drops, delivered);
+    EXPECT_EQ_U32((uint32_t)(SAMPLES / EVERY), lost); // the treatment applied
+    EXPECT_EQ_INT(SAMPLES + 1, delivered);
+    EXPECT_TRUE(resent <= 5U * need);
 }
 
 static void test_a_repair_on_its_way_is_not_resent(void) {
@@ -2217,6 +2304,52 @@ static void test_a_tail_waits_rack_rtt_and_its_reordering_window(void) {
     order_read(&reader, S, S, (uint32_t[]) {S + 20}, 1, &order);
     EXPECT_TRUE(((uint64_t)order.timeout << LARGE_REPAIR_SHIFT) > 7 * tt_MILLISECOND);
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 20, &reader, &order));
+}
+#endif
+
+#ifdef tt_LARGE_REPAIR_SLOTS
+static void test_the_repair_timeout_waits_while_the_reader_progresses(void) {
+    // A resend batch the path is still carrying (RESULTS `EWS`): 100 units resent twice (so RACK's rule, which answers
+    // a first resend only, stays out of it), the reader's srtt 4 ms - the timeout ~8 ms. Every 5 ms an ACKNACK passes
+    // the next 5 units of the batch and names its upper half: the reader is receiving the batch in order, and the units
+    // it names are behind what it received. For 50 ms the top unit is held - the base, timing from the resend alone,
+    // released it from the second ACKNACK on (and then at every one). Then the path stalls - the same watermark one
+    // timeout later - and it goes: what a stall shows is loss. Mutants (mutants_large_sample.py, "progress"): the
+    // timeout run from the resend alone; progress taken at every ACKNACK, not only at a later send shown.
+    struct tt_Peer reader;
+    struct tt_LargeRecord* record = order_fixture(&reader);
+    if (record == NULL) {
+        return;
+    }
+    const uint32_t S = record->seq_no;
+    struct large_order order;
+    large_note_resent(&sender, &pub, record, S + 10, &reader);
+    test_mock_now += 4 * tt_MILLISECOND;
+    order_read(&reader, S + 9, S + 11, (uint32_t[]) {S + 11}, 1, &order); // S + 10 arrived: srtt 4 ms
+    for (int copy = 0; copy < 2; copy++) {
+        for (uint32_t unit = S + 100; unit < S + 200; unit++) {
+            large_note_resent(&sender, &pub, record, unit, &reader);
+        }
+    }
+    uint32_t named[50];
+    for (int i = 0; i < 50; i++) {
+        named[i] = S + 150U + (uint32_t)i;
+    }
+    int held = 0;
+    for (uint32_t step = 0; step < 10; step++) {
+        test_mock_now += 5 * tt_MILLISECOND;
+        order_read(&reader, S + 100 + (5 * step), S + 105 + (5 * step), named, 50, &order);
+        held += large_resend_due(&sender, &pub, S + 199, &reader, &order) ? 0 : 1;
+    }
+    uint64_t timeout_ns = (uint64_t)order.timeout << LARGE_REPAIR_SHIFT;
+    printf("test_large_sample: a resend batch read in order every 5 ms for 50 ms, repair timeout %.2f ms - its top "
+           "unit held at %d of 10 ACKNACKs\n",
+           (double)timeout_ns / (double)tt_MILLISECOND, held);
+    EXPECT_TRUE(timeout_ns > 7 * tt_MILLISECOND && timeout_ns < 10 * tt_MILLISECOND);
+    EXPECT_EQ_INT(10, held);
+    test_mock_now += timeout_ns + tt_MILLISECOND;
+    order_read(&reader, S + 150, S + 150, named, 50, &order); // stalled: nothing more shown
+    EXPECT_TRUE(large_resend_due(&sender, &pub, S + 199, &reader, &order));
 }
 #endif
 
@@ -3119,10 +3252,12 @@ int main(void) {
     test_a_slow_readers_repairs_are_measured();
     test_a_repairing_writer_is_not_warned_about();
     test_a_queued_path_does_not_storm();
+    test_a_whole_sample_lost_does_not_storm();
     test_a_repair_on_its_way_is_not_resent();
 #ifdef tt_LARGE_REPAIR_SLOTS
     test_the_resend_order_rules();
     test_a_tail_waits_rack_rtt_and_its_reordering_window();
+    test_the_repair_timeout_waits_while_the_reader_progresses();
     test_the_repair_timeout_never_stands_on_less_than_its_path();
 #endif
     teardown_pair();

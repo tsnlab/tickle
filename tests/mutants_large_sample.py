@@ -476,6 +476,20 @@ MUTANTS = [
         "    if (ack->repair_min_rtt_ns == 0) {",
         "test_a_tail_waits_rack_rtt_and_its_reordering_window",
     ),
+    # The ETHERNET amp writer storm (RESULTS `EWS`): the repair timeout runs from the reader's last progress.
+    (
+        "resend order progress: the repair timeout runs from the resend alone",
+        "    if (order->progressed && (int32_t)(order->progress_at - since) > 0) {",
+        "    if (false) {",
+        "test_the_repair_timeout_waits_while_the_reader_progresses, test_a_whole_sample_lost_does_not_storm",
+    ),
+    (
+        "resend order progress: taken at every ACKNACK that shows anything, not only a later send",
+        "    if (order->shown &&\n"
+        "        (ack->repair_progress_serial == 0 || large_serial_after(order->shown_serial, ack->repair_progress_serial))) {",
+        "    if (order->shown) {",
+        "test_the_repair_timeout_waits_while_the_reader_progresses",
+    ),
 ]
 
 # Survivors with no unit test that sees them (2026-10-16, srtt_busy_writer_pc_ab.sh): the cadence of the retries while

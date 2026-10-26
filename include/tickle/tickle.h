@@ -2974,6 +2974,11 @@ struct tt_PeerAck {
     uint32_t repair_rack_serial;
     uint32_t repair_rack_rtt_ns;
     uint32_t repair_min_rtt_ns;
+    // The latest large send this reader has shown received (the context's order of large sends; 0: none yet), and
+    // when an ACKNACK first showed it (tt_get_ns() >> 10): the reader's progress through what went before a pending
+    // resend, which holds the repair timeout (large_resend_due()).
+    uint32_t repair_progress_serial;
+    uint32_t repair_progress_at;
 #endif
 };
 
