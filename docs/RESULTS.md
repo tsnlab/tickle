@@ -999,7 +999,50 @@ timer ACKNACKs > 5 x the arm's median rep and >= 500):
    This is a wire change, parked with the others for the wireless stage (`K5`).
 
 Data: `~/rlc_results/` (`rlc1_*`, `rlc1.read.txt`, `rlc1.census.log`, `old_traces_mech.txt`,
-`prefix_writer_vs_reader*.txt`).
+`prefix_writer_vs_reader*.txt`). Candidate 1 is measured in `RLF` below.
+
+### The least-transit floor stops the collapse and costs some latency, PC netns (`RLF`, 2026-10-26, not landed)
+
+**TL;DR.** The floor stops the collapse: 0 of 840 reps against main's 22 of 840 (p 2e-7). It also cuts resends 1-15%
+and duplicates 9-46%. The cost is latency, and one registered row fails: tv's median rep p50 is 74.3 ms against main's
+68.5 (band 3.4). The Wi-Fi tails are higher too, within their bands: ge5b4's median rep p99 is 274 against 256 ms,
+bc's 99 against 92. Main sits below any repair transit because of the short samples, so it asks sooner. LAND by the
+rules: no. The lead decides the trade.
+
+- **The change** (`ab/reader-floor`, `8c434ca5`): `path_recovery_sample()` folds a path recovery as no faster than
+  `tt_WriterProxy.transit_min_ns`. That field is the least repair transit the proxy has timed, from the oldest
+  remembered ACKNACK naming a missing unit to a targeted copy's arrival (`note_repair_arrival()`). The seed needs no
+  case of its own. On the same arrival the transit is timed before the probe ends, and the probe's request named the
+  unit, so the floor includes that unit's own transit. An unambiguous recovery equals its arrival's transit and
+  passes as it is. The rule applies on every link, under both timing rules. It adds 4 B in existing padding and no
+  wire change. Limit: the floor is 0, or its unit's transit short, only when 32 later requests that did not name
+  the unit pushed out every one that did.
+- **Test**: `test_no_recovery_is_folded_faster_than_the_least_repair_transit` (main folds the 3 us seed as 3 us; the
+  fix folds 11.003 ms). Three mutants in `mutants_large_sample.py`, all die.
+- **A/B** (`reader_floor_ab.sh` + `reader_floor_read.py`, committed `7bfaee8e` before the run): M = main `a5b52eee`,
+  A = main again, F = the fix, all at once. WIFI 1 MiB at 5 Hz, offload off, 160 reps a tree an arm; ETHERNET amp
+  ge0.1b1, 30 Hz, 200 reps; R4's ctl / ge10b4, 8 reps. The run stopped by the clock at 16:30. Load 0.2-2.1.
+
+| cell | COLLAPSE M / A / F | median rep p50 ms M / A / F | median rep p99 ms M / A / F | resends M / F | duplicates M / F |
+|---|---|---|---|---:|---:|
+| ge5b4 | 2 / 2 / 0 | 53.2 / 53.4 / 53.8 | 255.8 / 254.6 / 273.6 | 6,203 / 6,119 | 450 / 410 |
+| ge5b2 | 2 / 0 / 0 | 74.3 / 74.7 / 76.1 | 254.3 / 254.7 / 257.4 | 5,923 / 5,871 | 180 / 164 |
+| tv | 1 / 1 / 0 | 68.5 / 70.4 / **74.3** | 602.0 / 602.4 / 603.7 | 8,628 / 8,380 | 683 / 524 |
+| bc | 4 / 5 / 0 | 48.3 / 48.2 / 48.2 | 92.1 / 89.2 / 99.2 | 1,481 / 1,265 | 62 / 49 |
+| ETHERNET ge0.1b1 | 13 / 8 / 0 | 9.53 / 9.53 / 9.53 | 10.57 / 10.69 / 10.63 | 3,463 / 2,933 | 260 / 142 |
+
+- **Rules**: CONTROL A 16/840 against M 22/840 (p 0.41), PASS. COLLAPSE FIXED (F 0/840, one-sided p 2.1e-7; against
+  M + A, 1.8e-7). NO WORSE: 1 row WORSE (tv p50 +5.9 against a band of 3.4). The other 54 rows are NOT WORSE: CPU
+  within ±1%, delivered 100% on F (ge5b4 99.95%, as M and A). R4 NOT WORSE: p50 M 105.0, A 108.4, F 102.9 ms, and all three
+  fail the harness's own 74 ms line, as main did in `K5`. ge10b4 rel_small p99 82.0 against 82.8 ms.
+- **The latency cost goes in one direction** (rep quantiles, `rlf1.latency_quantiles.txt`). Mean rep p99: ge5b4 304
+  against 271 / 270 ms (q90 402 against 338), bc 111 against 98 / 96, tv 648 against 616 / 631. Mean rep p50: tv 70.9
+  against 66.8 / 67.5, ge5b2 77.4 against 74.6 / 75.2. A traced side run (`diag/d1`, 6 reps each of ge5b4 and tv, not
+  registered) shows why. F's time-weighted srtt q10 is 13-20 ms at tv against main's 5-10 ms, and 6-10 against 2-8 ms
+  at ge5b4. Main's short ambiguous samples keep its estimate under the least repair transit. Its retries then come
+  sooner, which buys latency for duplicates. The floor gives that up.
+
+Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`).
 
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
