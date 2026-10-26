@@ -372,14 +372,14 @@ MUTANTS = [
     ),
     (
         "resend order: no repair timeout",
-        "    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
+        "    if (now - since >= wait) {",
         "    if (false) {",
         "test_the_resend_order_rules",
     ),
     (
         "resend order: no seed before the first timing",
-        "    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {",
-        "    if (now - since >= order->timeout) {",
+        "    uint32_t wait = order->timeout != 0 ? order->timeout : slot->hold;",
+        "    uint32_t wait = order->timeout;",
         "test_a_queued_path_does_not_storm",
     ),
     (
@@ -489,6 +489,37 @@ MUTANTS = [
         "        (ack->repair_progress_serial == 0 || large_serial_after(order->shown_serial, ack->repair_progress_serial))) {",
         "    if (order->shown) {",
         "test_the_repair_timeout_waits_while_the_reader_progresses",
+    ),
+    # The stall the progress-held timeout left open (RESULTS `EWF`): the timeout backs off while no progress is shown.
+    (
+        "resend order stall: no back-off",
+        "        } else if (slot->stalls < LARGE_STALL_MAX) {\n            slot->stalls++;",
+        "        } else if (slot->stalls < LARGE_STALL_MAX) {\n            slot->stalls = 0;",
+        "test_the_repair_timeout_backs_off_while_the_reader_shows_nothing, test_a_stalled_reader_does_not_storm",
+    ),
+    (
+        "resend order stall: the back-off capped at x2",
+        "#define LARGE_STALL_MAX 6U ",
+        "#define LARGE_STALL_MAX 1U ",
+        "test_the_repair_timeout_backs_off_while_the_reader_shows_nothing, test_a_stalled_reader_does_not_storm",
+    ),
+    (
+        "resend order stall: the back-off not cleared by progress",
+        "        if (order == NULL || large_progressed_since(order, slot)) {",
+        "        if (order == NULL) {",
+        "test_the_repair_timeout_backs_off_while_the_reader_shows_nothing",
+    ),
+    (
+        "resend order stall: the back-off applied after progress too",
+        "    } else if (slot->stalls != 0) {\n        wait = ",
+        "    }\n    if (slot->stalls != 0) {\n        wait = ",
+        "test_the_repair_timeout_backs_off_while_the_reader_shows_nothing",
+    ),
+    (
+        "resend order stall: a resend no ACKNACK asked for counted as a stall",
+        "        if (order == NULL || large_progressed_since(order, slot)) {",
+        "        if (order != NULL && large_progressed_since(order, slot)) {",
+        "test_the_resend_order_rules",
     ),
 ]
 

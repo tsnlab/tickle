@@ -2071,6 +2071,159 @@ static void test_a_whole_sample_lost_does_not_storm(void) {
     EXPECT_TRUE(resent <= 5U * need);
 }
 
+#ifdef tt_LARGE_REPAIR_SLOTS
+// The reader stops reading for `ns`: what waits in its socket waits that much longer, and what arrives meanwhile queues
+// behind it, dropped once the socket is full. Its timers run on, so it still asks for what it misses.
+static void sim_reader_stall(uint64_t ns) {
+    for (uint32_t i = sim_late_head; i != sim_late_tail; i++) {
+        sim_late_due[i % SIM_HELD] += ns;
+    }
+    sim_reader_free_ns = (sim_reader_free_ns > test_mock_now ? sim_reader_free_ns : test_mock_now) + ns;
+}
+
+// One run of resent_through_stalls(): the sample lost whole that the next stall waits on, and what the stalls showed.
+struct stall_run {
+    uint64_t stall;      // how long the reader stops reading
+    uint32_t srtt;       // the writer's repair srtt to the reader, set as the stall begins (0: as measured)
+    bool armed;          // a sample was lost whole, and the reader has not yet stalled on its resend
+    uint32_t lost_first; // its first seq_no
+    bool stalled;        // the reader is stalled until `end`
+    uint64_t end;
+    uint32_t stalls;  // stalls applied
+    uint32_t copies;  // the most copies of one unit of a sample lost whole sent at the end of a stall
+    double mean;      // ... and the mean over that sample's units still pending then, in the stall that sent most
+    uint32_t pending; // ... how many those were
+};
+
+// A stall's end: how often each unit of the sample lost whole still pending went to the reader meanwhile, which could
+// not read any of them.
+static void stall_count_copies(struct stall_run* run) {
+    const uint32_t units = tt_sample_datagrams(ONE_MB);
+    run->stalled = false;
+    uint32_t pending = 0;
+    uint32_t sum = 0;
+    uint32_t most = 0;
+    for (uint32_t unit = run->lost_first; unit != run->lost_first + units; unit++) {
+        const struct tt_LargeRepair* slot = large_repair_slot(&sender, unit);
+        if (large_repair_is(slot, &pub, unit, RECEIVER_ID)) {
+            pending++;
+            sum += slot->resends;
+            most = slot->resends > most ? slot->resends : most;
+        }
+    }
+    double mean = pending != 0 ? (double)sum / (double)pending : 0.0;
+    if (mean > run->mean) {
+        run->mean = mean;
+        run->pending = pending;
+    }
+    run->copies = most > run->copies ? most : run->copies;
+}
+
+// The resend of half of the sample lost whole pending: the reader stalls (stall_count_copies() at its end).
+static void stall_watch(struct stall_run* run) {
+    const uint32_t units = tt_sample_datagrams(ONE_MB);
+    if (run->stalled && test_mock_now >= run->end) {
+        stall_count_copies(run);
+    }
+    if (!run->armed) {
+        return;
+    }
+    uint32_t pending = 0;
+    for (uint32_t unit = run->lost_first; unit != run->lost_first + units; unit++) {
+        pending += large_repair_is(large_repair_slot(&sender, unit), &pub, unit, RECEIVER_ID) ? 1U : 0U;
+    }
+    if (pending >= units / 2U) {
+        run->armed = false;
+        if (run->stall != 0) {
+            sim_reader_stall(run->stall);
+            run->stalled = true;
+            run->end = test_mock_now + run->stall;
+            run->stalls++;
+        }
+        struct tt_PeerAck* ack = find_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id);
+        if (ack != NULL && run->srtt != 0) {
+            ack->repair_srtt_ns = run->srtt;
+            ack->repair_rttvar_ns = 0;
+        }
+    }
+}
+
+// The queued path of resent_after_whole_losses() (12 us a datagram, 4,000 waiting, each tail lost once, every
+// `every`-th sample's first send lost whole), and the reader stalled for run->stall once the resend of half of each
+// sample lost whole is pending. Answers the units resent; *delivered the samples delivered within 2 s after the last.
+static uint64_t resent_through_stalls(int samples, uint32_t every, struct stall_run* run, int* delivered) {
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_reader_service_ns = 12 * tt_MICROSECOND;
+    sim_reader_capacity = 4000;
+    sim_drop_tails = true;
+    sim_whole_loss_every = every;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    const uint32_t units = tt_sample_datagrams(ONE_MB);
+    uint32_t before = pub.retransmitted;
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < samples; i++) {
+        bool losing = every != 0 && (uint32_t)(i + 2) % every == 0; // sim_publish()'s rule, by the seed
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        if (losing) {
+            run->armed = true;
+            run->lost_first = pub.seq_no - units + 1U;
+        }
+        uint64_t next = t0 + ((uint64_t)(i + 1) * tt_SECOND / 30U);
+        while (test_mock_now < next && sim_step()) {
+            stall_watch(run);
+        }
+        if (test_mock_now < next) {
+            test_mock_now = next;
+        }
+    }
+    uint64_t since = test_mock_now;
+    while (delivered_count < samples + 1 && test_mock_now - since < 2 * tt_SECOND && sim_step()) {
+        stall_watch(run);
+    }
+    *delivered = delivered_count;
+    return pub.retransmitted - before;
+}
+
+static void test_a_stalled_reader_does_not_storm(void) {
+    // The stall the progress-held timeout leaves open (RESULTS `EWF`: one rep where every bench on the PC stormed at
+    // once, 8.5 M resent, 8.47 M of them released by the plain timeout). A reader that stops reading while the resend
+    // of a whole sample is pending shows no progress, so the timeout runs from each resend; its ACKNACKs go on naming
+    // the sample, and each timeout releases every unit again into a socket nobody reads. Here: the queued path of
+    // test_a_whole_sample_lost_does_not_storm (12 us a datagram, 4,000 waiting), each tail lost once, every tenth
+    // sample's first send lost whole (3 of 30), and the reader stopped for 80 ms once half of each such sample's resend
+    // is pending. The writer's srtt is set to 750 us as the stall begins - the calm srtt the census storms began on
+    // (EWS: 1.5-3.3 ms timeouts), which Karn then froze; the sim's own tail repairs, timed through the queue, give it
+    // 15-27 ms, and a stall of a few timeouts sends 2-3 copies whatever the rule.
+    // The criterion (set between the parent's run and this change's, 2026-10-27; a guard, not a measurement): STORM
+    // when, at a stall's end, the lost sample's units still pending went to the stalled reader more than 8 times each
+    // on average. An 80 ms stall at a 1.5 ms timeout: doubling at each resend sends 6, a fixed timeout up to ~53. The
+    // parent (45129b71): 30 copies a unit, 99,996 resent in all (90,508 dropped at the socket); this change: 6, 36,473
+    // (24,331). Control: the same run with no stall - the parent 65,451 resent, this change 20,770. Mutants
+    // (mutants_large_sample.py, "stall"): no back-off.
+    enum { SAMPLES = 30, EVERY = 10 };
+    int delivered = 0;
+    struct stall_run control = {.stall = 0, .srtt = 750 * tt_MICROSECOND};
+    uint64_t unstalled = resent_through_stalls(SAMPLES, EVERY, &control, &delivered);
+    EXPECT_EQ_INT(SAMPLES + 1, delivered);
+    struct stall_run run = {.stall = 80 * tt_MILLISECOND, .srtt = 750 * tt_MICROSECOND};
+    uint64_t resent = resent_through_stalls(SAMPLES, EVERY, &run, &delivered);
+    printf("test_large_sample: %d x 1 MiB at 30 Hz through a queue of 4000, %u lost whole, the reader stalled 80 ms %u "
+           "times on their resends - %.1f copies of each pending unit at a stall's end (%u units, at most %u), %llu "
+           "resent (%llu with no stall), %llu dropped at the queue, %d delivered\n",
+           SAMPLES, sim_whole_lost, run.stalls, run.mean, run.pending, run.copies, (unsigned long long)resent,
+           (unsigned long long)unstalled, (unsigned long long)sim_socket_drops, delivered);
+    EXPECT_EQ_U32((uint32_t)(SAMPLES / EVERY), sim_whole_lost); // the treatment applied
+    EXPECT_TRUE(run.stalls >= 2);
+    EXPECT_TRUE(run.pending >= tt_sample_datagrams(ONE_MB) / 2U);
+    EXPECT_EQ_INT(SAMPLES + 1, delivered);
+    EXPECT_TRUE(run.mean <= 8.0);
+}
+#endif
+
 static void test_a_repair_on_its_way_is_not_resent(void) {
     // A tail lost on a 40 ms path: its repair takes 40 ms to arrive, and a reader that has timed nothing asks again and
     // again meanwhile. Resent at each request, it went ~10 times. Resent only once shown lost - something sent
@@ -2350,6 +2503,77 @@ static void test_the_repair_timeout_waits_while_the_reader_progresses(void) {
     test_mock_now += timeout_ns + tt_MILLISECOND;
     order_read(&reader, S + 150, S + 150, named, 50, &order); // stalled: nothing more shown
     EXPECT_TRUE(large_resend_due(&sender, &pub, S + 199, &reader, &order));
+}
+#endif
+
+#ifdef tt_LARGE_REPAIR_SLOTS
+// Asks for `unit` in an ACKNACK of `count` units from `named` (watermark `base`, the one before `prev`), and resends it
+// in that ACKNACK's answer when it is due, as large_resend() does. True when it went.
+static bool order_ask_and_resend(const struct tt_Peer* reader, const struct tt_LargeRecord* record, uint32_t prev,
+                                 uint32_t base, const uint32_t* named, int count, uint32_t unit,
+                                 struct large_order* order) {
+    order_read(reader, prev, base, named, count, order);
+    if (!large_resend_due(&sender, &pub, unit, reader, order)) {
+        return false;
+    }
+    sender.large.acknack_order = order;
+    large_note_resent(&sender, &pub, record, unit, reader);
+    sender.large.acknack_order = NULL;
+    return true;
+}
+
+static void test_the_repair_timeout_backs_off_while_the_reader_shows_nothing(void) {
+    // A stalled reader (RESULTS `EWF`; test_a_stalled_reader_does_not_storm on the queued path): 50 units resent twice,
+    // the reader's srtt 4 ms - the timeout ~8 ms - and an ACKNACK every millisecond for 200 ms naming them all, with
+    // nothing received. The parent, timing from each resend alone, released the top unit at every timeout: 22 copies
+    // (2026-10-27). Doubling the timeout at each resend in a row with no progress between (at most x64): released at
+    // ~8, 24, 56 and 120 ms - 4 copies, and the timeout still runs (a stall is not waited out for ever). Then the
+    // reader shows progress - an ACKNACK passes five of the units - and the back-off goes: the top unit, resent before
+    // it, is held for one plain timeout from the progress and released after it, and the resend that follows waits one
+    // plain timeout again. A back-off kept through progress is EWS's candidate F, which slowed a reader dropping at its
+    // socket from 2 s to 8 s. Mutants (mutants_large_sample.py, "stall"): no back-off; the back-off not cleared by
+    // progress; the back-off applied after progress too.
+    struct tt_Peer reader;
+    struct tt_LargeRecord* record = order_fixture(&reader);
+    if (record == NULL) {
+        return;
+    }
+    const uint32_t S = record->seq_no;
+    struct large_order order;
+    large_note_resent(&sender, &pub, record, S + 10, &reader);
+    test_mock_now += 4 * tt_MILLISECOND;
+    order_read(&reader, S + 9, S + 11, (uint32_t[]) {S + 11}, 1, &order); // S + 10 arrived: srtt 4 ms
+    uint32_t named[50];
+    for (int i = 0; i < 50; i++) {
+        named[i] = S + 100U + (uint32_t)i;
+        large_note_resent(&sender, &pub, record, named[i], &reader);
+        large_note_resent(&sender, &pub, record, named[i], &reader); // twice: RACK's rule stays out of it
+    }
+    const uint32_t top = S + 149;
+    int copies = 0;
+    for (int ms = 0; ms < 200; ms++) {
+        test_mock_now += tt_MILLISECOND;
+        copies += order_ask_and_resend(&reader, record, S + 11, S + 11, named, 50, top, &order) ? 1 : 0;
+    }
+    uint64_t timeout_ns = (uint64_t)order.timeout << LARGE_REPAIR_SHIFT;
+    printf("test_large_sample: a reader showing nothing for 200 ms, an ACKNACK every 1 ms, repair timeout %.2f ms - "
+           "its top unit resent %d times\n",
+           (double)timeout_ns / (double)tt_MILLISECOND, copies);
+    EXPECT_TRUE(timeout_ns > 7 * tt_MILLISECOND && timeout_ns < 10 * tt_MILLISECOND);
+    EXPECT_TRUE(copies >= 3 && copies <= 5);
+    // Progress: the watermark passes S + 100 .. S + 104, resent before the top unit's last resend.
+    test_mock_now += tt_MILLISECOND;
+    EXPECT_TRUE(!order_ask_and_resend(&reader, record, S + 100, S + 105, named + 5, 45, top, &order));
+    EXPECT_TRUE(order.progressed);
+    test_mock_now += timeout_ns / 2U;
+    EXPECT_TRUE(!order_ask_and_resend(&reader, record, S + 105, S + 105, named + 5, 45, top, &order));
+    test_mock_now += (timeout_ns / 2U) + tt_MILLISECOND; // one plain timeout past the progress, not 16 of them
+    EXPECT_TRUE(order_ask_and_resend(&reader, record, S + 105, S + 105, named + 5, 45, top, &order));
+    // ... and that resend, with progress since the last, waits one plain timeout again.
+    test_mock_now += timeout_ns / 2U;
+    EXPECT_TRUE(!order_ask_and_resend(&reader, record, S + 105, S + 105, named + 5, 45, top, &order));
+    test_mock_now += (timeout_ns / 2U) + tt_MILLISECOND;
+    EXPECT_TRUE(order_ask_and_resend(&reader, record, S + 105, S + 105, named + 5, 45, top, &order));
 }
 #endif
 
@@ -3253,11 +3477,15 @@ int main(void) {
     test_a_repairing_writer_is_not_warned_about();
     test_a_queued_path_does_not_storm();
     test_a_whole_sample_lost_does_not_storm();
+#ifdef tt_LARGE_REPAIR_SLOTS
+    test_a_stalled_reader_does_not_storm();
+#endif
     test_a_repair_on_its_way_is_not_resent();
 #ifdef tt_LARGE_REPAIR_SLOTS
     test_the_resend_order_rules();
     test_a_tail_waits_rack_rtt_and_its_reordering_window();
     test_the_repair_timeout_waits_while_the_reader_progresses();
+    test_the_repair_timeout_backs_off_while_the_reader_shows_nothing();
     test_the_repair_timeout_never_stands_on_less_than_its_path();
 #endif
     teardown_pair();

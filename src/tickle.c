@@ -11690,6 +11690,7 @@ static struct tt_LargeRecord* large_find(struct tt_Publisher* pub, uint32_t seq_
 // how long it took to ask for the unit after the unit went.
 
 #define LARGE_REPAIR_SHIFT 10U // tt_LargeRepair.resent_at and hold, tt_LargeRecord.first_sent_at: ns >> 10 (~us)
+#define LARGE_STALL_MAX 6U     // tt_LargeRepair.stalls: the repair timeout backs off at most x64 (2^6) in a stall
 
 // The next number in the context's order of large sends: every resend and every large sample's first send. Never 0,
 // which stands for "none".
@@ -11902,9 +11903,15 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
     }
 }
 
+// Whether the reader has shown progress (large_order_progress()) since slot's last resend.
+static bool large_progressed_since(const struct large_order* order, const struct tt_LargeRepair* slot) {
+    return order->progressed && (int32_t)(order->progress_at - slot->resent_at) > 0;
+}
+
 // Whether the unit seq_no a reader just asked for is due a resend: never resent to it, its last resend shown lost
-// (the reader received something sent after it), or a repair timeout past it and past the reader's last progress.
-// Otherwise the request is left unanswered and counted (resend_held); the reader asks again.
+// (the reader received something sent after it), or a repair timeout past it and past the reader's last progress -
+// doubled for each resend in a row with no progress between (tt_LargeRepair.stalls). Otherwise the request is left
+// unanswered and counted (resend_held); the reader asks again.
 static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t seq_no,
                              const struct tt_Peer* target, const struct large_order* order) {
     const struct tt_LargeRepair* slot = large_repair_slot(node, seq_no);
@@ -11928,14 +11935,24 @@ static bool large_resend_due(struct tt_Context* node, const struct tt_Publisher*
     // Karn took no sample, the timeout never grew, and the copies filled netem's queue (RESULTS `EWS`, ETHERNET's amp
     // cell: 30 of 2,400 reps on the PC, up to 5,736,302 resent in one). A path that stalls - the rest of a burst
     // dropped at a full socket - shows no progress, and the timeout runs from its last as before.
+    // While it shows none, the timeout backs off (RFC 6298 5.5, per unit): x2 for each resend in a row with no
+    // progress between, at most x64. A reader that stopped reading while the resend of a whole sample was pending -
+    // its ACKNACKs still naming the sample, its socket full - had every unit released again at every timeout, and the
+    // copies queued behind the stall (RESULTS `EWF`: 8.5 M resent in the rep where every bench on the PC stormed at
+    // once; test_a_stalled_reader_does_not_storm). A back-off kept through progress slowed a reader that drops at its
+    // socket - its repairs keep arriving, a part of each burst - from 2 s to 8 s (EWS's candidate F): any progress
+    // since a resend clears it.
     uint32_t since = slot->resent_at;
+    uint32_t wait = order->timeout != 0 ? order->timeout : slot->hold;
     if (order->progressed && (int32_t)(order->progress_at - since) > 0) {
         since = order->progress_at;
+    } else if (slot->stalls != 0) {
+        wait = wait <= (UINT32_MAX >> slot->stalls) ? wait << slot->stalls : UINT32_MAX;
     }
-    if (now - since >= (order->timeout != 0 ? order->timeout : slot->hold)) {
+    if (now - since >= wait) {
         RSTAT_LRO_RELEASED(seq_no, true, node->large.repair_serial == slot->serial,
                            (uint64_t)(now - slot->resent_at) << LARGE_REPAIR_SHIFT,
-                           (uint64_t)(order->timeout != 0 ? order->timeout : slot->hold) << LARGE_REPAIR_SHIFT);
+                           (uint64_t)wait << LARGE_REPAIR_SHIFT);
         return true; // nothing shown for a repair timeout: lost where nothing later shows it, as a tail is
     }
     RSTAT_LRO_HELD(seq_no);
@@ -11952,11 +11969,20 @@ static void large_note_resent(struct tt_Context* node, const struct tt_Publisher
     uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
     if (large_repair_is(slot, pub, seq_no, target->context_id) && slot->left_out == 0) {
         slot->resends = (uint8_t)(slot->resends < UINT8_MAX ? slot->resends + 1U : UINT8_MAX);
+        // One more resend after an ACKNACK that shows no progress since the last: the timeout backs off once more
+        // (large_resend_due()). A resend no ACKNACK asked for shows nothing either way.
+        const struct large_order* order = node->large.acknack_order;
+        if (order == NULL || large_progressed_since(order, slot)) {
+            slot->stalls = 0;
+        } else if (slot->stalls < LARGE_STALL_MAX) {
+            slot->stalls++;
+        }
     } else if (large_repair_is(slot, pub, seq_no, target->context_id)) {
         // Asked for again after an ACKNACK left it out: it goes as a first resend would - the rules apply to it afresh,
         // RACK's included - but stays untimed.
         slot->left_out = 0;
         slot->resends = 1;
+        slot->stalls = 0;
         uint32_t sent_at = 0;
         slot->hold = large_unit_sent_after(record, &sent_at) != 0 ? now - sent_at : 0;
     } else {
@@ -11969,6 +11995,7 @@ static void large_note_resent(struct tt_Context* node, const struct tt_Publisher
         slot->resends = 1;
         slot->left_out = 0;
         slot->untimed = 0;
+        slot->stalls = 0;
         uint32_t sent_at = 0;
         slot->hold = large_unit_sent_after(record, &sent_at) != 0 ? now - sent_at : 0;
     }

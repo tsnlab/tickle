@@ -464,8 +464,11 @@ struct tt_LargeRepair {
     // An ACKNACK left it out after it went: taken as arrived, so its next request is answered at once (left_out) and it
     // is never timed (untimed) - what the reader left out may be a copy still on its way, or have arrived as an earlier
     // copy (RESULTS `TVS`). untimed lasts as long as the slot.
-    uint8_t left_out;
-    uint8_t untimed;
+    uint8_t left_out : 1;
+    uint8_t untimed : 1;
+    // Its resends in a row with no progress shown by the reader between them (at most LARGE_STALL_MAX): the repair
+    // timeout doubles with each while the reader still shows none (large_resend_due()).
+    uint8_t stalls : 3;
 };
 
 #if tt_LARGE_SHM
