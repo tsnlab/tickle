@@ -4679,8 +4679,11 @@ static bool hybrid_test_stale_off = false;
 // 0: two in its first two samples, by the n they gave - read as p ~ 2e-3 over those 1,446 frames and then fall only as
 // 1 / frames, so n reached n_max ~13 s and 393 samples later. Once the clean frames C since the k-th event are long
 // enough against the frames F up to it, the events were a burst that has ended, not the path's rate, and the estimate
-// starts again from the clean stretch: no events, its frames - "none seen" when they are 500 or more. Only while the
-// events are few (at most tt_HYBRID_STALE_EVENTS): a path that loses frames all along soon has more.
+// starts again: no events and no frames, so the reader announces no estimate (loss_p 0), not "none seen", and the
+// writer measures it anew one datagram a send call, as for the first p (2026-10-26, the user's option (a); DESIGN.md
+// section 8, "Train losses and the stale rule"). Until then the clean stretch itself became the estimate - "none seen"
+// at once - and it may have come as UDP_SEGMENT trains, a thirtieth of the chances to lose: runs of n_max on a 1% path.
+// Only while the events are few (at most tt_HYBRID_STALE_EVENTS): a path that loses frames all along soon has more.
 //
 // How long is long enough (2026-10-15). On a path losing frames at a steady rate p, the frames up to the k-th event are
 // a sum of k gaps, Gamma(k, p), and the stretch after it one more, independent: P(C >= c F) = E[exp(-p c F)] =
@@ -4690,7 +4693,7 @@ static bool hybrid_test_stale_off = false;
 // the event as (k + 1) / F, is c = 9.21 / (k + 1): (1 + 9.21 / (k + 1))^-k, 18% at k = 1, 6% at k = 2 - a 0.1% path
 // forgot in 22 seeds of 100 (test_steady_loss_is_never_forgotten). The price is the clean stretch a real burst needs:
 // 99 F after two events, 2.2 F after eight; 9,999 F after one, so one event at F >= 105 is dropped first by the
-// window's halving (2^20 frames). At most tt_HYBRID_STALE_EVENTS divisions, at each tail and announce.
+// window's halving (2^20 frames). At most tt_HYBRID_STALE_EVENTS divisions, at each tail.
 //
 // And a floor (2026-10-15): the events are forgotten too once C reaches tt_HYBRID_STALE_EXPOSURE /
 // tt_HYBRID_STALE_P_MIN, 9.21 / 1e-3 = 9,210 frames (~13 samples of 1 MB), whatever F. The ratio alone made a real
@@ -4725,10 +4728,7 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate, const s
             return false;
         }
     }
-    estimate->events = 0;
-    estimate->frames = clean;
-    estimate->frames_at_event = 0;
-    estimate->frames_at_doubt = 0;
+    loss_estimate_restart(estimate); // no estimate: the next sample's frames are measured as the first p's were
     return true;
 }
 
@@ -5023,15 +5023,19 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
 static void hybrid_announce(struct tt_Context* node, uint64_t now);
 
 // The reader's p forgets a few events its clean frames have outlived (loss_estimate_forget_stale()), counted on the
-// hybrid line (stale_forgets=, stale_events=). At each tail and each announce: a stretch long enough shows at a tail,
-// so "none seen" goes at once (below), not at the next interval.
-static void hybrid_rx_forget_stale(struct tt_Context* node) {
+// hybrid line (stale_forgets=, stale_events=). At a tail only (2026-10-26): a forget restarts the estimate, and the
+// writer re-measures from the next sample on, so the frames the new estimate rests on start between two samples - at
+// an announce interval inside a sample they would start with the rest of that sample's trains. Returns whether it
+// forgot.
+static bool hybrid_rx_forget_stale(struct tt_Context* node) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t events = hybrid->rx_loss.events;
-    if (loss_estimate_forget_stale(&hybrid->rx_loss, &node->opts.hybrid_transport)) {
-        hybrid->stale_forgets++;
-        hybrid->stale_events += events;
+    if (!loss_estimate_forget_stale(&hybrid->rx_loss, &node->opts.hybrid_transport)) {
+        return false;
     }
+    hybrid->stale_forgets++;
+    hybrid->stale_events += events;
+    return true;
 }
 
 // At a sample's tail: a reader whose frames have just come to "none seen" (enough of them, no loss event) announces it
@@ -5043,8 +5047,13 @@ static void hybrid_rx_forget_stale(struct tt_Context* node) {
 // loss announces at the interval, as before - but its first estimate, whatever it reads, goes at the first tail too
 // (2026-10-15): until a writer hears one it sends this reader its MTU units one a send call (hybrid_peer_unmeasured()),
 // and on a lossy path that was up to a whole interval of samples (the rig's 1 MB cell at 5%: ~30).
+// After a stale forget the reader has no estimate again and says so at once (loss_p 0): the writer's next sample goes
+// one datagram a send call (hybrid_peer_unmeasured()), and the next first estimate goes at its tail, as below.
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
-    hybrid_rx_forget_stale(node);
+    if (hybrid_rx_forget_stale(node)) {
+        hybrid_announce(node, tt_get_ns());
+        return;
+    }
     uint16_t measured =
         hybrid_rx_loss_code(&node->hybrid.rx_loss, &node->opts.hybrid_transport); // hybrid_announce() holds a first p
     if ((node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN && measured == HYBRID_LOSS_NONE_SEEN) ||
@@ -5391,7 +5400,8 @@ static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id, u
     if (watch->watch_runs >= 2U || watch->all_lost_streak >= 2U || watch->watch_probe) {
         if (watch->path_failed_ns == 0) {
             TT_LOG_WARNING("Hybrid transport: every run to node %u lost whole while its MTU units arrived - its path "
-                           "drops IP fragments; MTU units only, re-probed in %u s",
+                           "drops IP fragments, or its host's IP reassembly memory is full (lost runs' incomplete "
+                           "queues, ipfrag_high_thresh); MTU units only, re-probed in %u s",
                            context_id, (unsigned)(path_clean_ns / tt_SECOND));
         }
         uint64_t now = tt_get_ns();
@@ -18069,7 +18079,6 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
 static void hybrid_announce(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node, node->ip_reassembly_max, false));
-    hybrid_rx_forget_stale(node);
     uint16_t loss = hybrid_rx_announce_code(hybrid, &node->opts.hybrid_transport);
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {

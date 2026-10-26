@@ -1254,8 +1254,8 @@ first p announced inside the band (the first tail's, or a GSO-burst dip's) held 
 
 **TL;DR.** The GSO-on reps above that sent a few samples at n = 45 forgot their first sample's events (stale rule)
 and announced "none seen". Their runs then filled the reader host's IP reassembly memory, and the writer's rule (e)
-went to MTU for 60 s. The drain was not where runs died. Nothing changed: each step is stated behaviour, and the fixes
-change the estimator (DESIGN.md section 8, "Train losses and the stale rule", options a-e).
+went to MTU for 60 s. The drain was not where runs died. Nothing changed then; on 2026-10-26 the user took options (a)
++ (e) (DESIGN.md section 8, "Train losses and the stale rule"; the A/B is `HSF` below).
 
 - **Run** (`hybrid_forget_netns.sh`, mech1, core `0f33a562`, 1 MiB 30 Hz RELIABLE, 10 s reps, writer-egress netem;
   the reader namespace's `ipfrag_high_thresh` 4 MiB, `ipfrag_time` 30 s; every rep at load < 1). Reading registered
