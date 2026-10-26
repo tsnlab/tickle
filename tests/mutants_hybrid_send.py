@@ -63,14 +63,14 @@ MUTANTS = [
     (
         "large runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {\n        if (next >= run_until) {",
-        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next <= last; k++) {\n        if (next >= run_until) {",
+        "    for (; k < LARGE_BATCH && call_units < max_units && next < last; k++) {\n        if (next >= run_until) {",
+        "    for (; k < LARGE_BATCH && call_units < max_units && next <= last; k++) {\n        if (next >= run_until) {",
         SEND,
     ),
     (
         "large runs: a send call packs runs up to LARGE_BATCH datagrams, not units (the encode ahead of the wire)",
         "src/tickle.c",
-        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {",
+        "    for (; k < LARGE_BATCH && call_units < max_units && next < last; k++) {",
         "    for (; k < LARGE_BATCH && next < last; k++) {",
         SEND,
     ),
@@ -134,12 +134,11 @@ MUTANTS = [
         "match point: the end-of-sample HEARTBEAT carries none",
         "src/tickle.c",
         # large_send_end_heartbeat() only: send_idle_heartbeat() has the same two lines, reached by no early return
-        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n    uint8_t count = count_peers(pub->peers);\n"
-        "    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);\n"
-        "    uint32_t owed = 0;\n    if (match_point_owed(pub, &owed)) {",
-        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n    uint8_t count = count_peers(pub->peers);\n"
-        "    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);\n"
-        "    uint32_t owed = 0;\n    if (false && match_point_owed(pub, &owed)) {",
+        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n"
+        "    uint8_t count = heartbeat_unicast_count(node, pub);\n    uint32_t owed = 0;\n    if (match_point_owed(pub, &owed)) {",
+        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n"
+        "    uint8_t count = heartbeat_unicast_count(node, pub);\n    uint32_t owed = 0;\n"
+        "    if (false && match_point_owed(pub, &owed)) {",
         SEND,
     ),
     (
@@ -184,11 +183,11 @@ MUTANTS = [
         "src/tickle.c",
         # large_send_end_heartbeat() only, by the line after: send_idle_heartbeat() has the same encode
         "        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n"
-        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,\n"
-        "                           unicast ? count : 0, 0);\n}",
+        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, count != 0 ? pub->peers : NULL,\n"
+        "                           count, 0);\n}",
         "        encode_heartbeat_range(node, pub, first, owed, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n"
-        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,\n"
-        "                           unicast ? count : 0, 0);\n}",
+        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, count != 0 ? pub->peers : NULL,\n"
+        "                           count, 0);\n}",
         SEND,
     ),
     (
@@ -586,8 +585,8 @@ MUTANTS = [
     (
         "loss code: every change re-announced",
         "src/tickle.c",
-        "    return (measured >> 8U) != (advertised >> 8U);",
-        "    return measured != advertised;",
+        "    if ((measured >> 8U) != (advertised >> 8U)) {\n        return true;\n    }",
+        "    if (measured != advertised) {\n        return true;\n    }",
         SEND,
     ),
     (
@@ -950,10 +949,25 @@ MUTANTS = [
         SEND,
     ),
     (
-        "p: stale events forgotten only at the interval, not at a tail",
+        "p: stale events never forgotten (not at a tail, the only place since 2026-10-26)",
         "src/tickle.c",
-        "static void hybrid_rx_first_estimate(struct tt_Context* node) {\n    hybrid_rx_forget_stale(node);",
-        "static void hybrid_rx_first_estimate(struct tt_Context* node) {",
+        "    if (hybrid_rx_forget_stale(node)) {\n        hybrid_announce(node, tt_get_ns());\n        return;\n    }\n",
+        "",
+        SEND,
+    ),
+    (
+        "p: a stale forget keeps the clean stretch as the estimate (\"none seen\" at once, on trains)",
+        "src/tickle.c",
+        "    loss_estimate_restart(estimate); // no estimate: the next sample's frames are measured as the first p's were",
+        "    estimate->events = 0;\n    estimate->frames = clean;\n    estimate->frames_at_event = 0;\n"
+        "    estimate->frames_at_doubt = 0;",
+        SEND,
+    ),
+    (
+        "p: no estimate after a stale forget not announced at once",
+        "src/tickle.c",
+        "    if (hybrid_rx_forget_stale(node)) {\n        hybrid_announce(node, tt_get_ns());\n        return;\n    }\n",
+        "    if (hybrid_rx_forget_stale(node)) {\n        return;\n    }\n",
         SEND,
     ),
     (
@@ -1191,8 +1205,9 @@ MUTANTS = [
     (
         "p: a forget leaves the doubt",
         "src/tickle.c",
-        "    estimate->frames_at_event = 0;\n    estimate->frames_at_doubt = 0;\n    return true;",
-        "    estimate->frames_at_event = 0;\n    return true;",
+        "    loss_estimate_restart(estimate); // no estimate: the next sample's frames are measured as the first p's were",
+        "    uint32_t doubt = estimate->frames_at_doubt;\n    loss_estimate_restart(estimate);\n"
+        "    estimate->frames_at_doubt = doubt;",
         SEND,
     ),
     (
