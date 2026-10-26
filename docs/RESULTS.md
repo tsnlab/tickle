@@ -1190,6 +1190,35 @@ went to MTU for 60 s. The drain was not where runs died. Nothing changed then; o
 - Archive (`hybrid_mode_netns.sh` runs of HMA): 12 of 37 GSO-on reps had a stale forget, each with the warning and
   runs of 45; none of 44 GSO-off reps did. The sim reproduces the forget (`test_train_losses_outlast_the_stale_rule`).
 
+### After a stale forget, no estimate: the chain gone, CPU at 1% up (PC netns, `HSF`)
+
+**TL;DR.** The user's options (a) + (e) (DESIGN.md section 8, "Train losses and the stale rule") remove the chain: 0 of
+79 reps against 14 of 79 on main (and 20 of 79 on the A/A arm). The pre-registered verdict is **FAIL** on cost: CPU per
+MB at 1% WORSE (sub +7.6% / +8.9%, pub +15.7% / +18.1%). Most of it is main's chain itself: a CHAIN rep ends in the
+writer's rule (e), MTU units for 60 s, so it cannot wander into runs of 2 (the boundary noise of `HMA`, ~2x the CPU).
+p99, p50 and delivery not WORSE; the 0% cell unchanged.
+
+- **Run** (`hybrid_stale_forget_ab.sh`, registered first, `7afd6e0e`): M = main `fc5fb79b`, A = M's bench again (A/A),
+  F = the fix (`5e7f0124`), interleaved rounds, each a 0% and a 1% rep of `hybrid_forget_netns.sh` (1 MiB RELIABLE
+  KEEP_LAST 10, 30 Hz, GSO on, 10 s, writer-egress netem) in fresh namespaces. Run 1 45 rounds, run 3 36 (run 2
+  stopped after one round: `origin/main` had moved on to the RLF commits, so M was not F's parent). Results:
+  `/home/semih/hsf_results/ab_run1`, `ab_run3`.
+
+| run, 1% cell | CHAIN M / A / F | p99 ms M / F | sub CPU ms/MB M / A / F | pub CPU ms/MB M / A / F | verdict |
+|---|---|---|---|---|---|
+| run 1 (43 usable an arm) | 9 / 13 / 0 (Fisher p 0.001) | 11.48 / 11.69 | 1.574 / 1.575 / 1.694 (WORSE) | 1.251 / 1.231 / 1.447 (WORSE) | FAIL |
+| run 3 (36 an arm) | 5 / 7 / 0 (p 0.027) | 11.19 / 11.46 | 1.573 / 1.567 / 1.712 (WORSE) | 1.242 / 1.218 / 1.466 (WORSE) | FAIL |
+
+- **0% cell**: no forget on any arm (no event), every row within 0.4% of M.
+- **Why the CPU** (per rep, run 1): the 22 CHAIN reps of M and A send 290-293 samples as MTU units and 7-10 at 45, pub
+  1.06-1.30 ms/MB. F's 11 reps with a forget take the mode any rep takes: 0-70% of samples at n = 2, pub 1.08-4.75.
+  F's reps with a forget and no n = 2 cost 1.08-1.12, as M's MTU-only reps (1.03-1.10): the re-measured sample itself
+  costs little.
+- **Secondary reading** (registered after run 1, before run 3, `4cf6e652`): reps without CHAIN only. Run 3:
+  **EXPLAINED** - n = 2 share F 0.19 against M+A 0.10 (Mann-Whitney p 0.34, SAME), CPU F-M sub +0.3%, pub +6.0%
+  within the A/A's 10%. Run 1, re-read post hoc: n = 2 share SAME (p 0.72), pub +8.6% against an A/A of 4.0%: not
+  explained there. So a residual pub cost of 0-9% at 1% is not ruled out.
+
 ### A recvmmsg batch's rows in place, PC netns (`RXIP`)
 
 **TL;DR.** One payload copy is left on the small-sample socket path: datagrams 2..N of a `recvmmsg()` batch are copied

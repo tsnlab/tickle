@@ -796,7 +796,10 @@ memory as a possible cause. No wire change.
   0 of 44 GSO off. Cost then: p99 16.3-19.2 ms in the chain against 10.6-13.4 without; delivery equal.
 - **Tests**: `test_train_losses_outlast_the_stale_rule` (8 events forgotten; before: 4 samples at `n_max`; now each
   forget re-measures one sample one a call, "none seen" never heard, 0 at `n_max`; rule off: 0), mutants in
-  `tests/mutants_hybrid_send.py`. PC A/B: RESULTS.md `HSF`.
+  `tests/mutants_hybrid_send.py`.
+- **PC A/B** (RESULTS.md `HSF`): CHAIN 0 of 79 reps against 14 of 79 on main; registered verdict FAIL on CPU per MB at
+  1% (sub +8-9%, pub +16-18%), mostly because main's CHAIN reps sit in MTU units under rule (e) for the rest of the rep
+  and so never send the boundary noise's runs of 2; p99, p50, delivery and the 0% cell not WORSE.
 
 #### Saturation: where I4s lost its samples, and the receive drain
 
