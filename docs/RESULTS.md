@@ -945,7 +945,7 @@ before it: band = max(ctl band, |O - P|), `storm_tail_read.py`): ge1b1 P 12.1 / 
 1.01 at ge1b1 on all three. F sat 0.7-0.9 ms above P in both runs and below O in both: a cost of that size at 1%
 is not ruled out at 10 reps.
 
-### The reader's retry estimate still collapses on main, PC netns (`RLC`, 2026-10-26, not fixed)
+### The reader's retry estimate still collapses on main, PC netns (`RLC`, 2026-10-26; fixed by `RLF`, 2026-10-27)
 
 **TL;DR.** Yes, in every Wi-Fi 1 MiB cell, at about 1 rep in 60, and on ETHERNET's 30 Hz cell at about 1 in 12. The
 cause is the reader's own seed, not the writer storm. A probe on the watermark is timed from the first request
@@ -1001,13 +1001,13 @@ timer ACKNACKs > 5 x the arm's median rep and >= 500):
 Data: `~/rlc_results/` (`rlc1_*`, `rlc1.read.txt`, `rlc1.census.log`, `old_traces_mech.txt`,
 `prefix_writer_vs_reader*.txt`). Candidate 1 is measured in `RLF` below.
 
-### The least-transit floor stops the collapse and costs some latency, PC netns (`RLF`, 2026-10-26, not landed)
+### The least-transit floor stops the collapse and costs some latency, PC netns (`RLF`, 2026-10-26, landed 2026-10-27)
 
 **TL;DR.** The floor stops the collapse: 0 of 840 reps against main's 22 of 840 (p 2e-7). It also cuts resends 1-15%
 and duplicates 9-46%. The cost is latency, and one registered row fails: tv's median rep p50 is 74.3 ms against main's
 68.5 (band 3.4). The Wi-Fi tails are higher too, within their bands: ge5b4's median rep p99 is 274 against 256 ms,
 bc's 99 against 92. Main sits below any repair transit because of the short samples, so it asks sooner. LAND by the
-rules: no. The lead decides the trade.
+rules: no. The user chose to land it anyway (2026-10-26), after a rig check, which passed.
 
 - **The change** (branch `ab/reader-floor`): `path_recovery_sample()` folds a path recovery as no faster than
   `tt_WriterProxy.transit_min_ns`. That field is the least repair transit the proxy has timed, from the oldest
@@ -1042,7 +1042,15 @@ rules: no. The lead decides the trade.
   at ge5b4. Main's short ambiguous samples keep its estimate under the least repair transit. Its retries then come
   sooner, which buys latency for duplicates. The floor gives that up.
 
-Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`).
+- **Rig** (2026-10-27, pre = main `fc5fb79b`, head = `ab/reader-floor-v2` `dc4fa180`, aa = head again). The landing
+  rule, set before the run: core gate v2 PASS; in every Array cell head delivers no less than pre by more than |aa - head|,
+  and its median p99 is not above pre's by more than max(|aa - head|, 1 ms). Core gate v2
+  (`coreAB_dc4fa180_20261026-223203`): PASS, 0/88 WORSE. `rmw_keepall_rig.sh`, 5 reps of 60 s, delivered 100% on every
+  arm and cell. Median p99 aa / head / pre: Array1m 0% 9.39 / 9.38 / 9.38 ms, 0.1% 9.46 / 9.45 / 9.44, 1% 9.94 / 10.06 /
+  10.04; Array4m 0% 36.62 / 36.64 / 36.63. LAND.
+
+Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`); rig
+`~/rig_results_safe/` (`queue_core_ab_rlf.log`, `rlf_1m_20261027-000449*`, `rlf_4m_20261027-000449*`).
 
 ### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26, not fixed)
 

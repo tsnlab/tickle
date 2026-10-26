@@ -251,6 +251,13 @@ its gaps wait behind the rest of the send, nearly every recovery has a retry, an
 at the seed (one 1 MiB rep resent 208,479 units against 6,000-9,000). Read on the recovery path only (`end_watermark_probe()`); the
 retry, publish and send paths are unchanged, and ETHERNET's recoveries are timed as before. Measured in RESULTS `WR`.
 
+**The least-transit floor** (2026-10-27, every link, both timing rules). `path_recovery_sample()` folds no recovery as
+faster than `tt_WriterProxy.transit_min_ns`, the least repair transit the proxy has timed (from the oldest remembered
+ACKNACK naming a missing unit to a targeted copy's arrival). A probe whose repair was already on its way gave samples
+of ~0.1-0.2 ms; folded as they were they collapsed the reader's retry estimate for the rep (22 of 840 PC reps on main,
+0 with the floor). The cost is latency, which the user accepted: main's short samples made it ask sooner (`tv` median
+rep p50 74.3 against 68.5 ms). 4 B in existing padding, no wire change. RESULTS `RLC`, `RLF`.
+
 **Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
 link averages at most `pacing_rate` bits per second on the wire (IP, UDP and Ethernet framing counted, a datagram's
 frames by the link MTU), through a token bucket of `pacing_burst` bytes. T1S paces at 75% of `link_rate` (7.5 Mbit/s):
@@ -748,7 +755,9 @@ re-announces when `n*` at the measured `p` differs from `n*` at the announced on
   `hybrid_n_star()` with the writer's `u`, `h` and `tt_HYBRID_N_MAX`. `Cost(n)` is unimodal over `1..45` wherever
   `n* > 1` (`n < 2(1 - p) / p`), so a writer's `n` under any smaller `n_max` changes only when this one does.
 - **Cost.** At most one announce per interval, only while `n*` moves; at 0% loss nothing changes ("none seen" is `n_max`
-  both ways). Near the boundary `n` may follow the estimate across it: equal wire cost by definition.
+  both ways). Near the boundary `n` may follow the estimate across it: equal wire cost by definition. Reps that cross
+  it cost ~0.2 ms of median p99; the user chose to leave this as it is (2026-10-26), with no hysteresis and no change
+  to how a burst's losses are counted.
 - **Pre-registered** (`hybrid_mode_netns.sh`, written before the change's first run): SHOWN when the parent has >= 3
   IP-run reps (runs carry more first-transmission units than MTU units) of 16 and the change none, and no rep's writer
   ends on the other side of 0.886% from its reader. FALSIFIED by any change rep in runs at a measured `p >= 0.886%`.

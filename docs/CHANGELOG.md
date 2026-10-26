@@ -203,6 +203,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A reader folds no recovery into its retry estimate as faster than the least repair transit** (2026-10-27;
+  [DESIGN.md](DESIGN.md) section 2, "The least-transit floor"; RESULTS `RLC`, `RLF`). A probe whose repair was
+  already on its way gave ~0.1-0.2 ms samples and collapsed the estimate for the rep (Wi-Fi 10 of 600 reps, ETHERNET
+  amp 5 of 60). PC: collapses 0 of 840 against 22 of 840 on main (p 2e-7), fewer resends and duplicates, Wi-Fi latency
+  higher (`tv` median rep p50 74.3 against 68.5 ms), landed on the user's decision. Rig: core gate v2 PASS 0/88;
+  Array1m 0/0.1/1% and Array4m delivery 100%, p99 equal. 4 B in padding, no wire change.
 - **A large writer's repair timeout no longer times units an ACKNACK left out** (2026-10-26; [DESIGN.md](DESIGN.md)
   section 4, "Large-sample resend order"; RESULTS `TVS`). A reader leaves out repairs it reckons still on their way, so
   such an ACKNACK can arrive microseconds after the resend; timed into the timeout's srtt, those samples took it from

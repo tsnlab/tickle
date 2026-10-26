@@ -77,7 +77,9 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   **2026-10-26** (RESULTS `R4K`, `K5`): K's ~2x-resend reps are such a collapse. A seed from a probe whose repair was
   already on its way (~0.2 ms) locks Karn's rule for the rep. Two cheap fixes (branches `experiment/k5-floor`, `experiment/k5-discard`) stop
   it but give back K's ge5b2 tail; the clean fix is a wire change (a request serial echoed in the repair), for the
-  wireless stage. K stays held.
+  wireless stage. K stays held for that wire change (the user, 2026-10-26).
+  **2026-10-27** (RESULTS `RLC`, `RLF`): the least-transit floor stops the reader's collapse on every link (0 of 840
+  PC reps against 22 of 840). It costs Wi-Fi latency, which the user accepted; it landed after the rig check passed.
 
 ### Other open items
 
