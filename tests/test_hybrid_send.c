@@ -1712,6 +1712,40 @@ static void test_the_reader_replaces_the_writer_seen_longest_ago(void) {
     EXPECT_TRUE(kept);
 }
 
+// A writer whose layout is not known (layout_n 0: every writer's, after the reader's cap moved) while only its tails
+// arrive: each whole body lost is counted as runs of the largest the cap allows, rule (e)'s own guess (here one run of
+// 20), so the run window sees them and the collapse test decides on them. A run of the writer's got through a moment
+// ago, so rule (e) - a path that drops fragments - rightly does not fire: the collapse test is what must. Until
+// 2026-10-27 such bodies were one event each in p only, and the window stayed empty while the kernel's reassembly
+// memory refused every run (the PC A/B's BEST_EFFORT stream, 0 of 300).
+static void test_a_writer_of_unknown_layout_has_its_lost_bodies_counted(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid->mtu_loss = estimate_of(10, 1000); // 1% frame loss: a run of 20 lost by it a fifth of the time
+    hybrid_rx_note(node, SENDER_ID, 7, 1000, 0, THRASH_COUNT, THRASH_COUNT - 1U, true); // a run got through
+    hybrid_rx_note(node, SENDER_ID, 7, 1000, THRASH_COUNT - 1U, THRASH_COUNT, 1, false);
+    hybrid->rx_writers[0].layout_n = 0; // as hybrid_announce() leaves every writer when the cap moves
+    for (uint32_t s = 1; s <= 40U; s++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 1000U + (s * THRASH_COUNT), THRASH_COUNT - 1U, THRASH_COUNT, 1, false);
+    }
+    EXPECT_EQ_U32(41, hybrid->window.sent);
+    EXPECT_EQ_U32(40, hybrid->window.lost);
+    EXPECT_EQ_U64(0, hybrid->path_failures); // a run got through within tau: not the path
+    hybrid_control(hybrid, 10 * tt_SECOND, R_30MBS, 45, hybrid_opts());
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    EXPECT_TRUE(hybrid->cap < 45U);
+    // Control: a gap that is not a whole body, layout unknown, stays one event in p only.
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    hybrid->mtu_loss = estimate_of(50, 1000);
+    hybrid_rx_note(node, SENDER_ID, 7, 1000, 5, THRASH_COUNT, 1, false); // met mid-sample, as an MTU unit
+    hybrid->rx_writers[0].layout_n = 0;
+    uint32_t events = hybrid->rx_loss.events;
+    hybrid_rx_note(node, SENDER_ID, 7, 1000, THRASH_COUNT - 1U, THRASH_COUNT, 1, false); // 6-19 lost
+    EXPECT_EQ_U32(0, hybrid->window.lost);
+    EXPECT_EQ_U32(events + 1U, hybrid->rx_loss.events);
+}
+
 // Rule (e) on the reader's side needs frame loss to be no excuse: a writer none of whose runs ever arrived loses the
 // one run of a 3-unit sample with its tail through - at p_mtu near 50% that is what frame loss does (L0 0.79): nothing;
 // at p_mtu near 0, the same sample twice is (L0 2e-6 a sample): one unit at once.
@@ -3878,6 +3912,7 @@ int main(void) {
     test_p_is_announced_when_n_star_moves();
     test_none_seen_takes_its_frames();
     test_the_path_rule_needs_frame_loss_to_be_no_excuse();
+    test_a_writer_of_unknown_layout_has_its_lost_bodies_counted();
     test_nine_writers_keep_their_entries();
     test_the_reader_replaces_the_writer_seen_longest_ago();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
