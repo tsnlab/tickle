@@ -5183,6 +5183,26 @@ static void hybrid_rx_missed(struct tt_Context* node, struct tt_HybridRxWriter* 
     }
 }
 
+// The entry a writer the reader does not hold takes: a free one, else the one whose writer was seen longest ago
+// (seen_tick, at the reader's tick), counted as an eviction. Until 2026-10-27 the entries were taken in turn (8 of
+// them): one writer more than entries replaced an active writer's entry every sample, and none of them kept the
+// state its losses are counted by.
+static struct tt_HybridRxWriter* hybrid_rx_entry_for_new(struct tt_HybridState* hybrid) {
+    struct tt_HybridRxWriter* oldest = NULL;
+    uint16_t now = (uint16_t)hybrid->ticks;
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+        struct tt_HybridRxWriter* entry = &hybrid->rx_writers[i];
+        if (entry->source == tt_CONTEXT_ID_INVALID) {
+            return entry;
+        }
+        if (oldest == NULL || (uint16_t)(now - entry->seen_tick) > (uint16_t)(now - oldest->seen_tick)) {
+            oldest = entry;
+        }
+    }
+    hybrid->rx_writer_evictions++;
+    return oldest;
+}
+
 // One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
 // [index, index + units), as a run or as one MTU unit. A repair - addressed to this reader alone, where every first
 // transmission goes to everyone (tt_Context.rx_targeted) - counts for nothing: what was lost of its sample was counted
@@ -5203,8 +5223,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     if (writer == NULL) {
         // First met, possibly mid-sample: what came before is not known to have been sent to it.
-        writer = &hybrid->rx_writers[hybrid->rx_writer_next];
-        hybrid->rx_writer_next = (uint8_t)((hybrid->rx_writer_next + 1U) % tt_HYBRID_RX_WRITERS);
+        writer = hybrid_rx_entry_for_new(hybrid);
         *writer = (struct tt_HybridRxWriter) {0};
         writer->entity_id = entity_id;
         writer->sample = sample;
@@ -5223,6 +5242,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         writer->next = 0;
         writer->body_lost = 0;
     }
+    writer->seen_tick = (uint16_t)hybrid->ticks;
     if (sample != writer->sample || index + units <= writer->next) {
         return; // an older sample's unit, or a repair
     }
@@ -5258,7 +5278,8 @@ static void hybrid_rx_superseded(struct tt_Context* node, uint8_t source, uint32
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
         struct tt_HybridRxWriter* entry = &node->hybrid.rx_writers[i];
         if (entry->source != tt_CONTEXT_ID_INVALID && entry->source == source && entry->entity_id == entity_id) {
-            entry->superseded += samples;
+            uint32_t total = entry->superseded + samples;
+            entry->superseded = (uint16_t)(total < UINT16_MAX ? total : UINT16_MAX);
             return;
         }
     }
@@ -28095,7 +28116,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // events it forgot (loss_estimate_forget_stale()). A rig arm reads it; there is no other.
     TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
                 "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu receiver_drops=%lu "
-                "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu missed_samples=%lu",
+                "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu missed_samples=%lu "
+                "rx_writer_evictions=%lu",
                 node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
                 (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
                 (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
@@ -28106,7 +28128,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->hybrid.path_failures, (unsigned long)node->hybrid.receiver_drops,
                 (unsigned long)node->hybrid.receiver_lost, (unsigned)node->hybrid.rx_loss.events,
                 (unsigned)node->hybrid.rx_loss.frames, (unsigned long)node->hybrid.stale_forgets,
-                (unsigned long)node->hybrid.stale_events, (unsigned long)node->hybrid.missed_samples);
+                (unsigned long)node->hybrid.stale_events, (unsigned long)node->hybrid.missed_samples,
+                (unsigned long)node->hybrid.rx_writer_evictions);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

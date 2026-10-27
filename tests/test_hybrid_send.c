@@ -1649,6 +1649,69 @@ static void test_receiver_drops_are_not_path_loss(void) {
     test_mock_receiver_drops = 0;
 }
 
+// Writers of one source, `writers` of them, each sending 21-unit samples - a run of 20 and the tail alone - round by
+// round, the first round whole and the next `lossy_rounds` with every run lost and only the tail through: the shape in
+// which a stream's runs all die in the reader host's reassembly memory (the PC A/B, 2026-10-27). Returns the runs the
+// reader's window counts lost.
+#define THRASH_COUNT 21U
+static uint32_t thrash_case(uint32_t writers, uint32_t lossy_rounds) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid->mtu_loss = estimate_of(0, 100000); // a clean MTU baseline
+    for (uint32_t round = 0; round <= lossy_rounds; round++) {
+        for (uint32_t w = 0; w < writers; w++) {
+            uint32_t sample = 1000U + (round * THRASH_COUNT);
+            if (round == 0) {
+                hybrid_rx_note(node, SENDER_ID, 10U + w, sample, 0, THRASH_COUNT, THRASH_COUNT - 1U, true);
+            }
+            hybrid_rx_note(node, SENDER_ID, 10U + w, sample, THRASH_COUNT - 1U, THRASH_COUNT, 1, false);
+        }
+    }
+    return hybrid->window.lost;
+}
+
+// Nine writers: one more than the reader's table held until 2026-10-27, which then replaced an active writer's entry
+// every sample, met each writer anew at its tail - no gap behind it - and counted none of the lost runs: the collapse
+// test saw nothing, and the writer was never told (the PC A/B's BEST_EFFORT stream beside 8 RELIABLE ones got 0 of 300
+// in half its runs). Every writer keeps its entry now, its lost runs are counted, and the window collapses. 17 writers,
+// more than the table holds now, are counted as evictions (the limit, rx_writer_evictions).
+static void test_nine_writers_keep_their_entries(void) {
+    EXPECT_EQ_U32(9U * 4U, thrash_case(9, 4));
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    EXPECT_EQ_U64(0, hybrid->rx_writer_evictions);
+    hybrid_control(hybrid, 10 * tt_SECOND, R_30MBS, 45, hybrid_opts());
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    EXPECT_TRUE(hybrid->cap < 45U);
+    // Control: as many writers as the table holds lose nothing to it either; past it, the recycling is counted.
+    EXPECT_EQ_U32((uint32_t)tt_HYBRID_RX_WRITERS * 4U, thrash_case(tt_HYBRID_RX_WRITERS, 4));
+    EXPECT_EQ_U64(0, readers[0].ctx.hybrid.rx_writer_evictions);
+    (void)thrash_case(tt_HYBRID_RX_WRITERS + 1U, 4);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_writer_evictions > 0U);
+}
+
+// The entry a new writer takes is a free one, else the one whose writer was seen longest ago - not an active one.
+static void test_the_reader_replaces_the_writer_seen_longest_ago(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    for (uint32_t w = 0; w < tt_HYBRID_RX_WRITERS; w++) {
+        hybrid->ticks = w == 3U ? 1U : 5U; // writer 13 seen at tick 1, every other at tick 5
+        hybrid_rx_note(node, SENDER_ID, 10U + w, 100, 0, 3, 2, true);
+    }
+    hybrid->ticks = 6;
+    hybrid_rx_note(node, SENDER_ID, 99, 100, 0, 3, 2, true); // a writer more: takes writer 13's entry
+    EXPECT_EQ_U64(1, hybrid->rx_writer_evictions);
+    bool kept = true;
+    bool gone = true;
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+        gone = gone && hybrid->rx_writers[i].entity_id != 13U;
+        kept = kept && (hybrid->rx_writers[i].entity_id != 10U || hybrid->rx_writers[i].seen_tick == 5U);
+    }
+    EXPECT_TRUE(gone);
+    EXPECT_TRUE(kept);
+}
+
 // Rule (e) on the reader's side needs frame loss to be no excuse: a writer none of whose runs ever arrived loses the
 // one run of a 3-unit sample with its tail through - at p_mtu near 50% that is what frame loss does (L0 0.79): nothing;
 // at p_mtu near 0, the same sample twice is (L0 2e-6 a sample): one unit at once.
@@ -3815,6 +3878,8 @@ int main(void) {
     test_p_is_announced_when_n_star_moves();
     test_none_seen_takes_its_frames();
     test_the_path_rule_needs_frame_loss_to_be_no_excuse();
+    test_nine_writers_keep_their_entries();
+    test_the_reader_replaces_the_writer_seen_longest_ago();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
     test_frame_loss_never_moves_the_cap();
