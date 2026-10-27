@@ -1260,11 +1260,20 @@ delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead de
 - **The WORSE row** (read after the run, descriptive). One S rep, `ess1_r4_S` ge10b4-rel_large-4 (start load 4.1),
   delivered 129 of 150. Its reader logged "Reliable gap too large to track (14425 ahead of 23083) - jumping ahead". That
   is a repair late by more than the reader's 8,192-seq_no window: latency max 1.04 s, 21 samples skipped. Its writer
-  had 28 timeout releases with a wait >= 65 ms, so the back-off was engaged. The neighbouring S rep had 2. No R4 rep of
+  had 30 timeout releases with a wait >= 65 ms. G's reps have such waits too (median 5.5 a rep, at most 18 in its
+  A/A), so this does not show that the back-off was engaged. No R4 rep of
   M or A here, nor of any tree in `EWF`, delivered fewer than 150. In the other cells no tree lost delivery to a gap
   jump. Gap-jump reps: e M 0, A 2, S 3 (of 720); q M 3, A 1, S 0; r4 S 1, M 0, A 0. One rep in 8 cannot tell a cost
   from chance. It is also the cost the back-off can have: a lossy path (10%, bursts of 4) whose reader shows no
-  progress between two resends of a unit gets that unit repaired up to 64 timeouts later. More R4 reps would settle it.
+  progress between two resends of a unit gets that unit repaired up to 64 timeouts later.
+- **R4 follow-up** (`r4_short_ab.sh` + `r4_short_read.py`, committed `434bf520` before the run; 15:23-16:05, load
+  0.1-0.4; the same trees, all three at once; Wi-Fi ctl and ge10b4 rel_large, 32 reps a tree; SHORT = fewer than 150
+  delivered or any gap jump). Control ctl: no SHORT rep in any tree (PASS). ge10b4: S 2 of 32 against G + A 1 of 64
+  (G 1, A 0), one-sided p 0.26 -> **UNDECIDED** by the rule (S's 2 is above the A/A's own count, 1). All three
+  SHORT reps are start-of-rep misses. The reader's first delivered sample was index 18 in one (132 of 150) and index 1
+  in the others (149 of 150), with nothing missing after it. None lost samples mid-rep as the ess1 rep did, and no rep
+  of any tree had a gap jump (0 of 96). Timeout releases with a wait >= 65 ms, median / max a rep: G 6.5 / 22, A
+  7.5 / 726, S 7.5 / 27.
 - Load: the lead's gates (12:20-12:30) fell in E round 20. Its reps started at load 11.8 and are left out of latency
   by the load rule; two of G's storms and one of its A/A's are among them (e20).
 - **1% p99 add-on** (asked by the lead after the rig's Array1m 1% check of G, `EWF`: median p99 +0.54 ms on the
@@ -1277,7 +1286,7 @@ delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead de
   the rig's cross-host Array1m 1% cell, so it does not clear the rig's reading.
 
 Data: `~/ews_stall_results/` (`ess1_*`, `ess1.read.txt`, `ess1.driver.log`, `STATUS.txt`, `p99a_*`, `p99a.read.txt`,
-gate, test-linux and mutant logs, `smoke_q1/`); trees `~/ews_stall_trees/` and `~/ews_p99_trees/` (each with its
+`r4s1_*`, `r4s1.read.txt`, gate, test-linux and mutant logs, `smoke_q1/`); trees `~/ews_stall_trees/` and `~/ews_p99_trees/` (each with its
 `PROVENANCE.txt`).
 
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
@@ -1460,7 +1469,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
-| EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on) | harness `aabe81c9`, add-on `362dec45` (each run as its pre-rebase commit); M = A = `45129b71`, S = `646d27d4` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
+| EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`434bf520`, the R4 follow-up) | harness `aabe81c9`, add-on `362dec45` (each run as its pre-rebase commit); M = A = `45129b71`, S = `646d27d4` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
