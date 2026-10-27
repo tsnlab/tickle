@@ -110,14 +110,14 @@ MUTANTS = [
     ),
     (
         "a sample ahead takes the oldest unpinned pool slot",
-        "        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, slot)) {",
+        "        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, oldest)) {",
         "        if (false) {",
         "test_reliable_none_ahead_never_pins_the_own_slot",
     ),
     (
         "... but never a pinned one",
-        "        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, slot)) {",
-        "        if (frag_slot_busy(candidate) && frag_claimed_before(candidate, slot)) {",
+        "        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, oldest)) {",
+        "        if (frag_slot_busy(candidate) && frag_claimed_before(candidate, oldest)) {",
         "test_reliable_none_ahead_never_pins_the_own_slot",
     ),
     (
