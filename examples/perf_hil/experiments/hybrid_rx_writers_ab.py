@@ -40,6 +40,8 @@ reader still deciding no collapse there, or a WORSE in R2-R4.
 Overall: PASS when T, C, W, R1-R4 all pass; VOID when C is MOVED, W fails or every cell is VOID; INCONCLUSIVE when
 nothing failed and something is UNDECIDED; FAIL otherwise.
 
+REPS 8 of 40 s each (hybrid_rx_writers_ab.sh's defaults) is what was run for it.
+
 Usage: hybrid_rx_writers_ab.py <runs.txt>
 """
 import math

@@ -18,20 +18,23 @@
 # control - N + 1 writers within M's 8 entries), L in LOSSES (default "1 5"). A FRESH namespace pair for every run: the
 # kernel keeps incomplete IP reassemblies 30 s, and a namespace reused from a lossy run starts with its reassembly
 # memory full (sub_reassembly_pc_ab.sh reused one, and its BEST_EFFORT reading was not independent between runs).
+# DUR 40 s (set before the first registered run, after two probes): in a fresh namespace the reassembly memory takes
+# ~8 s of 5% loss to fill, so 3 and 10 s runs ended before the squeeze the change is about (a 40 s probe at n8 5%:
+# M's reader cap 45, collapses 0, ReasmFails ~17,000, BEST_EFFORT 8.9%; F's collapsed to cap 1, BEST_EFFORT 34%).
 # The reader's hybrid line (collapses, cap, rx_writer_evictions) and its namespace's IP reassembly counters
 # (/proc/net/snmp Reasm*) are kept per run: the treatment and its witness.
 #
-# Usage: [M_SHA=..] [F_SHA=..] [REPS=10] [DUR=10] [SIZE=30000] [RATE=30] [STREAMS="4 8 12"] [LOSSES="1 5"]
+# Usage: [M_SHA=..] [F_SHA=..] [REPS=8] [DUR=40] [SIZE=30000] [RATE=30] [STREAMS="4 8 12"] [LOSSES="1 5"]
 #        [OUT=/home/semih/hybrid_rx_results/ab_<time>] hybrid_rx_writers_ab.sh
-# Needs passwordless `sudo -n ip` (tc runs inside the namespace through `ip netns exec`). Long (~60 min at the
+# Needs passwordless `sudo -n ip` (tc runs inside the namespace through `ip netns exec`). Long (~115 min at the
 # defaults): launch detached and wait for the line it always ends with, "=== hybrid_rx_writers_ab ended".
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 M_SHA=${M_SHA:-$(git -C "$REPO" rev-parse --short origin/main)}
 F_SHA=${F_SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
-REPS=${REPS:-10}
-DUR=${DUR:-10}
+REPS=${REPS:-8}
+DUR=${DUR:-40}
 SIZE=${SIZE:-30000}
 RATE=${RATE:-30}
 STREAMS=${STREAMS:-4 8 12}
