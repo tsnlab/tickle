@@ -104,8 +104,8 @@ MUTANTS = [
     ),
     (
         "a no-buffer RELIABLE sample ahead prefers the pool",
-        "    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no) &&",
-        "    if (false &&",
+        "    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no)) {",
+        "    if (false) {",
         "test_reliable_none_ahead_never_pins_the_own_slot",
     ),
     (
