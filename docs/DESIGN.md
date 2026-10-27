@@ -503,7 +503,8 @@ releases at ge1b1 not falling.
   resend clears it, so a reader that drops part of each burst at its socket - its repairs keep arriving - is repaired
   at the plain timeout, as before (the per-unit back-off kept through progress, EWS's candidate F, slowed it from 2 s
   to 8 s). Sim (`test_a_stalled_reader_does_not_storm`): 80 ms stalls on a 1.5 ms timeout sent each unit 30 times,
-  now 6. 3 bits in each slot (`stalls`); the slot stays 24 B. Judging an ACKNACK by when it arrived (EWS item 4) was
+  now 6. **Measured** (RESULTS `EWB`): a forced 100 ms reader stall, STORM in 2 of 20 reps against G's 14 of 20; LAND
+  no by the rules on one R4 row (one rep of 8 delivered 129 of 150). 3 bits in each slot (`stalls`); the slot stays 24 B. Judging an ACKNACK by when it arrived (EWS item 4) was
   not taken: the HALs give no receive time, and a stalled reader's ACKNACKs arrive on time anyway.
 - **State.** Per context `tt_LARGE_REPAIR_SLOTS` (the widest reader window, 8,192) slots of 24 B - seq_no, Publisher,
   reader context, serial, time, seed, resends, left-out and untimed marks, stall count - 192 KiB, indexed by seq_no; a slot another unit took makes that unit

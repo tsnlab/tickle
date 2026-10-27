@@ -1209,6 +1209,77 @@ Data: `~/ewf_results/` (`ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `ewf1.dri
 mutant logs); trees `~/ewf_trees/` (each with its `PROVENANCE.txt`); rig `~/rig_results_safe/` (`queue_core_ab_ews.log`,
 `ews_1m_20261027-075746*`, `ews_4m_20261027-075746*`).
 
+### The writer storm's stall: the timeout backs off while the reader shows nothing, PC netns (`EWB`, 2026-10-27, not landed)
+
+**TL;DR.** On branch `ab/eth-storm-stall` (core `646d27d4`, measured as its pre-rebase build on `45129b71`, the same code)
+the repair timeout of a unit doubles for each resend of it in a row with no progress shown between, at most x64. Any
+progress since the resend clears it. This closes the stall that `EWF` left open. The cell: a forced whole-sample loss
+every 3 s, with the reader taking in no large data for 100 ms after it asks for the sample. There G stormed in 14 of
+20 reps and its A/A in 16 of 20, all of them through the timeout; this change stormed in 2 of 20, neither through the
+timeout (p 0.0001). Median resends a rep: 138,120 against 88,946. In that cell delivery went from 92.6% to 99.8% and
+p99 from 195 to 137 ms. Natural ETHERNET amp reps: 0 storms in 720, against 7 in 1,440 for G and its A/A (p 0.058,
+UNDECIDED). One registered row is WORSE: R4 ge10b4 rel_large delivered 98.25% against 100%. That is one rep of 8, which
+delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead decides.
+
+- **The change** (DESIGN.md section 4, "The timeout backs off while the reader shows nothing"). `tt_LargeRepair` gains
+  a 3-bit stall count; `left_out` and `untimed` become 1-bit fields, so the slot stays 24 B. No wire change. A resend
+  that no ACKNACK asked for clears the count.
+- **Why not EWS item 4** (judge an ACKNACK by when it arrived, not when a busy writer read it): no HAL takes a receive
+  time (no `SO_TIMESTAMP*`). Adding one is no wire change, but it touches every receive path (recvmmsg, the
+  io_uring ring, the drain ring, GRO, FreeRTOS). It would not change this stall either: a stalled reader's ACKNACKs
+  arrive on time and show nothing.
+- **Tests** (`test_large_sample`). `test_a_stalled_reader_does_not_storm` runs the queued path with 80 ms reader
+  stalls on each whole sample's resend, srtt 750 us at the stall. Copies of each pending unit at a stall's end: the
+  parent 30 (99,996 resent), this change 6 (36,473); the criterion is 8. In
+  `test_the_repair_timeout_backs_off_while_the_reader_shows_nothing` (200 ms with nothing shown) the top unit is resent
+  22 times by the parent and 4 times by this change, and progress brings back one plain timeout. The slow reader
+  (38,249 resent, 11 of 11 delivered) and the warning test (0 warnings) read as on the parent. Five new mutants die,
+  and two old anchors were re-pointed at the new wait line. The full sweep: 76 of 76. Gates 16 of 16. `make
+  test-linux` PASS.
+- **A/B** (`eth_storm_stall_ab.sh` + `eth_storm_stall_read.py`, committed before the run, rebased as
+  `aabe81c9`; M = G `45129b71`, A = G again, S = `646d27d4`'s pre-rebase build; 09:43-14:20, start load 2.8; 720 ETHERNET amp reps a tree,
+  95 a Wi-Fi arm, 20 forced, pinned and stall reps):
+
+| | M (G) | A (G) | S |
+|---|---:|---:|---:|
+| stall (q): STORM reps / 20 (timeout-driven) | 14 (14) | 16 (16) | **2 (0)** |
+| stall: resends, median a rep | 138,120 | 129,764 | **88,946** |
+| stall: delivered % / p99 ms | 92.64 / 195.4 | 96.45 / 211.2 | 99.83 / 136.9 |
+| pinned + forced (p) / forced (x): STORM reps / 20 | 0 / 0 | 0 / 0 | 0 / 0 |
+| ETHERNET amp: STORM reps / 720 (all timeout-driven) | 5 | 2 | **0** |
+| ETHERNET amp: p50 / p99 ms (median rep) | 9.54 / 11.13 | 9.54 / 11.11 | 9.54 / 11.11 |
+| R4 ge10b4 rel_large delivered % | 100.00 | 100.00 | **98.25** (WORSE) |
+| R4 ge10b4 rel_large one-way p50 ms | 135.5 | 119.9 | 105.2 |
+
+- **Verdicts as registered**: C1, C2 and C3 (the A/A controls) PASS. STALL PASS: storms BREAKS IT (2 of 20 against
+  14 of 20, p 0.0001) and resends BOUNDED (-49,174, band 13,812). LOOP NOT WORSE in p and x. NATURAL UNDECIDED, both
+  for all storms and for timeout-driven ones: 0 of 720 against 7 of 1,440, p 0.058. Every storm came from a rep that
+  started at load >= 4 (5 + 2 of 140 a tree there, 0 of ~580 below). NO WORSE: 1 row WORSE, R4 ge10b4 rel_large
+  delivered (below); every other row of e, x, p, q, the four Wi-Fi arms and R4 is NOT WORSE. R4 NOT WORSE (S's p50
+  -30 ms). **LAND S: no**, on that one row.
+- **The WORSE row** (read after the run, descriptive). One S rep, `ess1_r4_S` ge10b4-rel_large-4 (start load 4.1),
+  delivered 129 of 150. Its reader logged "Reliable gap too large to track (14425 ahead of 23083) - jumping ahead". That
+  is a repair late by more than the reader's 8,192-seq_no window: latency max 1.04 s, 21 samples skipped. Its writer
+  had 28 timeout releases with a wait >= 65 ms, so the back-off was engaged. The neighbouring S rep had 2. No R4 rep of
+  M or A here, nor of any tree in `EWF`, delivered fewer than 150. In the other cells no tree lost delivery to a gap
+  jump. Gap-jump reps: e M 0, A 2, S 3 (of 720); q M 3, A 1, S 0; r4 S 1, M 0, A 0. One rep in 8 cannot tell a cost
+  from chance. It is also the cost the back-off can have: a lossy path (10%, bursts of 4) whose reader shows no
+  progress between two resends of a unit gets that unit repaired up to 64 timeouts later. More R4 reps would settle it.
+- Load: the lead's gates (12:20-12:30) fell in E round 20. Its reps started at load 11.8 and are left out of latency
+  by the load rule; two of G's storms and one of its A/A's are among them (e20).
+- **1% p99 add-on** (asked by the lead after the rig's Array1m 1% check of G, `EWF`: median p99 +0.54 ms on the
+  head-built arms; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py`, committed before the run, rebased as
+  `362dec45`). PC netns ETHERNET at 1% random loss (ge1b1), 1 MiB RELIABLE at 30 Hz, 40 reps a tree at once, 14:21-14:47,
+  start load 0.2. n came from EWF's per-rep p99 IQR, 0.66 ms. Median per-rep p99: main `b61e2302` 13.74 and 13.40 ms
+  (the A/A), G 13.05, S 12.92; delivered 100% everywhere, no storm. **VOID by its rule**: the A/A differed by 0.34 ms,
+  above its 0.25 ms limit. Descriptively, G - main is -0.69 ms (bootstrap 95% interval -1.18 to +0.01) and S - G is
+  -0.14 (-0.71 to +0.55). So the PC shows no sign of the +0.54 ms, and its spread cannot exclude 0.5 ms. This is not
+  the rig's cross-host Array1m 1% cell, so it does not clear the rig's reading.
+
+Data: `~/ews_stall_results/` (`ess1_*`, `ess1.read.txt`, `ess1.driver.log`, `STATUS.txt`, `p99a_*`, `p99a.read.txt`,
+gate, test-linux and mutant logs, `smoke_q1/`); trees `~/ews_stall_trees/` and `~/ews_p99_trees/` (each with its
+`PROVENANCE.txt`).
+
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 
 **TL;DR.** The IP-run mode above is not a build's and not a cost the design accepts: the writer kept an old p. The
@@ -1350,6 +1421,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
+| EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on) | harness `aabe81c9`, add-on `362dec45` (each run as its pre-rebase commit); M = A = `45129b71`, S = `646d27d4` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
