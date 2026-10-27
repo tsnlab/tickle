@@ -22957,20 +22957,20 @@ static bool frag_ahead_prefers_pool(struct tt_Subscriber* sub, uint8_t source, u
 // Subscriber's older partial samples - most of the time: run 2 of the PC A/B lost 6% at 4 streams, 5% loss, and every
 // loss was a window jump with nothing ahead of the watermark recorded (2026-10-27).
 static struct tt_FragSlot* frag_pool_for_ahead(struct tt_Context* node, struct tt_FragSlot* unused) {
-    struct tt_FragSlot* slot = frag_pool_free_or_spent(node, unused);
-    if (slot != NULL) {
-        return slot;
+    struct tt_FragSlot* oldest = frag_pool_free_or_spent(node, unused);
+    if (oldest != NULL) {
+        return oldest;
     }
     for (uint32_t i = 0; i < node->frag_slots_used; i++) {
         struct tt_FragSlot* candidate = &node->frag_slots[i];
-        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, slot)) {
-            slot = candidate;
+        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, oldest)) {
+            oldest = candidate;
         }
     }
-    if (slot != NULL && slot->received != 0) {
+    if (oldest != NULL && oldest->received != 0) {
         node->frag_abandoned++;
     }
-    return slot;
+    return oldest;
 }
 
 // A slot from the pool for sub, else by reclaim (frag_reclaimable(): its own reassemblies first, the oldest unpinned
