@@ -197,6 +197,9 @@ int main(void) {
         .data_encode = fake_encode,
         .data_decode = fake_decode,
         .data_free = fake_free,
+        // Bounded (its samples are empty): no link fragments it, so a BEST_EFFORT Subscriber needs no reassembly slot
+        // and no storage (docs/DESIGN.md section 8, "Reassembly slots").
+        .max_encoded_size = 4,
     };
 
     // See this file's own top comment on why the interrupt-then-lock pattern is needed here -

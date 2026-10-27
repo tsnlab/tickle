@@ -9182,6 +9182,14 @@ static tt_ret_t subscriber_reset(struct tt_Context* node, struct tt_Subscriber* 
 #if tt_LARGE_SAMPLES
     sub->large_held = 0;
 #endif
+#if tt_FRAG_ENABLED
+    // No slot of its own until tt_Node_create_subscriber() carves one; its other fields are written when it is claimed.
+    sub->frag_own.received = 0;
+    sub->frag_own.done = false;
+    sub->frag_own.owner = sub;
+    sub->frag_own.bytes = NULL;
+    sub->frag_own.capacity = 0;
+#endif
     sub->qos_lifespan_ns = 0;      // the resolved QoS no hot field holds: tt_Node_create_subscriber() sets it
     sub->writer_lifespans = false; // QoS plan D1: set when a writer with a lifespan is announced or created
     sub->qos_history_depth = 0;
@@ -14872,6 +14880,10 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
                 (unsigned long)sub->gap_evicted, (unsigned long)sub->superseded);
 }
 
+#if tt_FRAG_ENABLED
+static void frag_release_subscriber(struct tt_Context* node, const struct tt_Subscriber* sub);
+#endif
+
 static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
     if (sub == NULL || sub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -14882,6 +14894,7 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
     if (node->frag_fast_sub == sub) {
         node->frag_fast_sub = NULL; // its part-assembled sample goes with it, as its reorder buffer does
     }
+    frag_release_subscriber(node, sub);
 #endif
 #if tt_LARGE_SAMPLES
     large_abandon_subscriber(node, sub); // its large samples being put together, and their buffers
@@ -15127,13 +15140,45 @@ static void publisher_layout_of(const struct tt_TypeSupport* type, const struct 
     layout->depth_kept = kept < actual->history.depth ? kept : actual->history.depth;
 }
 
-// A Subscriber's: its ACK tracking window when wider or narrower than the builtin one, and its reorder buffer.
+// A Subscriber's: its ACK tracking window when wider or narrower than the builtin one, its reorder buffer, and its own
+// reassembly slot.
 struct subscriber_layout {
     size_t tracking_bytes; // 0: the builtin window (tt_Subscriber.builtin_tracking)
     uint16_t slot_bytes;   // reorder stride, 0 without a buffer
     size_t reorder_bytes;
+    uint32_t frag_cdr; // CDR bytes its own reassembly slot holds, 0 without one
+    size_t frag_bytes;
     size_t total;
 };
+
+#if tt_FRAG_ENABLED
+// The whole-DATA limit of the narrowest link a sender may have (link_control_length() at tt_LINK_MTU_MIN, at most
+// tt_CONTROL_MAX_LENGTH): a sample that goes whole there goes whole from every sender.
+#define FRAG_NEVER_CONTROL                                                               \
+    ((uint32_t)tt_LINK_MTU_MIN - LINK_IPV4_UDP_HEADERS < (uint32_t)tt_CONTROL_MAX_LENGTH \
+         ? (uint32_t)tt_LINK_MTU_MIN - LINK_IPV4_UDP_HEADERS                             \
+         : (uint32_t)tt_CONTROL_MAX_LENGTH)
+
+// CDR bytes a Subscriber's own reassembly slot holds (docs/DESIGN.md section 8, "Reassembly slots"; the user,
+// 2026-10-27): every Subscriber that puts fragmented samples together in slots - BEST_EFFORT, or RELIABLE with no
+// reorder buffer - owns one, so its delivery never waits on what other Subscribers hold in the node's pool. 0 for a
+// RELIABLE one with a buffer, which holds its fragments there, and for a type whose largest sample no link fragments.
+// A type with no bound, or a bound its binding only estimated (max_encoded_size_estimated), takes the largest sample;
+// + 4 is a pool slot's room for the padding a cached record adds (FRAG_MAX_CDR).
+static uint32_t subscriber_frag_cdr(const struct tt_TypeSupport* type, const struct tt_QosProfile* actual) {
+    uint16_t slots = actual->reliability.reorder_slots;
+    if (actual->reliability.kind == tt_QOS_RELIABILITY_RELIABLE && slots != 0 && slots != tt_QOS_REORDER_NONE) {
+        return 0;
+    }
+    uint32_t cdr = type->max_encoded_size == 0 || type->max_encoded_size_estimated ||
+                           type->max_encoded_size > (uint32_t)tt_MAX_SAMPLE_LENGTH
+                       ? (uint32_t)tt_MAX_SAMPLE_LENGTH
+                       : type->max_encoded_size;
+    uint32_t whole = (uint32_t)sizeof(struct tt_Header) +
+                     ROUNDUP((uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)) + cdr);
+    return whole <= FRAG_NEVER_CONTROL ? 0U : cdr + 4U;
+}
+#endif
 
 static void subscriber_layout_of(const struct tt_TypeSupport* type, const struct tt_QosProfile* actual,
                                  struct subscriber_layout* layout) {
@@ -15152,7 +15197,12 @@ static void subscriber_layout_of(const struct tt_TypeSupport* type, const struct
         layout->slot_bytes = (uint16_t)tt_REORDER_SLOT_SIZE(payload);
         layout->reorder_bytes = (size_t)slots * layout->slot_bytes;
     }
-    layout->total = QOS_ALIGN8(layout->tracking_bytes) + QOS_ALIGN8(layout->reorder_bytes);
+#if tt_FRAG_ENABLED
+    layout->frag_cdr = subscriber_frag_cdr(type, actual);
+    layout->frag_bytes = layout->frag_cdr != 0 ? (size_t)tt_FRAG_DATA_HEADER_LENGTH + layout->frag_cdr : 0U;
+#endif
+    layout->total =
+        QOS_ALIGN8(layout->tracking_bytes) + QOS_ALIGN8(layout->reorder_bytes) + QOS_ALIGN8(layout->frag_bytes);
 }
 
 // Caller storage for a Client's outstanding requests or a Server's cached responses: per call / per entry, the
@@ -15528,6 +15578,14 @@ static tt_ret_t node_create_subscriber_qos_locked(struct tt_Node* owner, struct 
         sub->reorder_slot_bytes = layout.slot_bytes;
         qos_free_reorder_slots(sub->reorder_storage, sub->reorder_slots, sub->reorder_slot_bytes);
     }
+#if tt_FRAG_ENABLED
+    if (layout.frag_bytes != 0) {
+        // Not touched here: a slot's bytes are written only by the fragments placed in them.
+        sub->frag_own.bytes =
+            (uint8_t*)qos_carve(storage, QOS_ALIGN8(layout.tracking_bytes) + QOS_ALIGN8(layout.reorder_bytes));
+        sub->frag_own.capacity = layout.frag_cdr;
+    }
+#endif
     result = register_endpoint_locked(node, (struct tt_Endpoint*)sub, owner, false);
     if (result == tt_RET_OK) {
         qos_judge_created(node, (struct tt_Endpoint*)sub);
@@ -19367,6 +19425,8 @@ struct data_delivery_ctx {
     // A sample the node's reassembly pool put together, for best-effort Subscribers only: a reliable one
     // took its fragments one by one, each under its own seq_no.
     bool best_effort_only;
+    // A sample one Subscriber's reassembly slot put together (reassemble_fragment()): for it alone. NULL: every match.
+    const struct tt_Subscriber* only;
 };
 
 // Milestone 35 - the actual per-Subscriber body process_data() used to run once (against find_
@@ -20571,6 +20631,9 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     if (ctx->best_effort_only && sub->reliable && !TT_ORDERING_DISABLED) {
         return; // it took this sample's fragments itself, each under its own seq_no
     }
+    if (ctx->only != NULL && ctx->only != sub) {
+        return; // put together in another Subscriber's slot: this one has its own
+    }
 
     // QoS roadmap #1 (RxO matching, Milestone 31) - an incompatible Publisher's DATA is dropped
     // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
@@ -20695,7 +20758,8 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
 }
 
 static bool process_data_for(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port, bool best_effort_only) {
+                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port, bool best_effort_only,
+                             const struct tt_Subscriber* only) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
         TT_LOG_ERROR("Illegal DataHeader");
@@ -20732,6 +20796,7 @@ static bool process_data_for(struct tt_Context* node, struct tt_Header* header, 
         .sender_ip = sender_ip,
         .sender_port = sender_port,
         .best_effort_only = best_effort_only,
+        .only = only,
     };
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, deliver_data_to_subscriber, &ctx);
     return !ctx.decode_failed;
@@ -20739,7 +20804,7 @@ static bool process_data_for(struct tt_Context* node, struct tt_Header* header, 
 
 static bool process_data(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                          uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
-    return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false);
+    return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false, NULL);
 }
 
 // Whether slot `slot` names the call (receiver, client_tag, seq_no). Meaningful while the slot holds a live entry
@@ -22562,8 +22627,8 @@ static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header,
 }
 
 #if tt_FRAG_ENABLED
-// CDR bytes a reassembly slot can hold.
-#define FRAG_SLOT_CAPACITY (sizeof(((struct tt_FragSlot*)0)->bytes) - tt_FRAG_DATA_HEADER_LENGTH)
+// CDR bytes a pool slot can hold.
+#define FRAG_SLOT_CAPACITY ((uint32_t)tt_FRAG_SLOT_BYTES - (uint32_t)tt_FRAG_DATA_HEADER_LENGTH)
 _Static_assert(FRAG_SLOT_CAPACITY >= FRAG_MAX_CDR, "a reassembly slot must hold the largest fragmented sample");
 
 // Where fragment `index` starts within the sample's CDR, given the payload of a full continuation.
@@ -22588,6 +22653,11 @@ static bool frag_claimed_before(const struct tt_FragSlot* slot, const struct tt_
     return than == NULL || (int32_t)(slot->claimed - than->claimed) < 0;
 }
 
+// Whether the slot holds a reassembly: one being put together, or a whole sample it keeps (done).
+static bool frag_slot_busy(const struct tt_FragSlot* slot) {
+    return slot->received != 0 || slot->done;
+}
+
 // Whether the reassembly of `slot` spans seq_no: its sample's datagrams are slot->seq_no to + frag_count - 1.
 static bool frag_slot_spans(const struct tt_FragSlot* slot, uint32_t seq_no) {
     return seq_delta(seq_no, slot->seq_no) >= 0 && seq_delta(seq_no, slot->seq_no + slot->frag_count) < 0;
@@ -22600,22 +22670,14 @@ static bool proxy_has_recorded(const struct tt_WriterProxy* proxy, uint32_t seq_
            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset));
 }
 
-// Whether the node has a RELIABLE Subscriber with no reorder buffer - the only kind that pins a reassembly slot.
-static bool node_has_unbuffered_reliable(const struct tt_Context* node) {
-    for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        const struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            const struct tt_Subscriber* sub = (const struct tt_Subscriber*)endpoint;
-            if (sub->reliable && !TT_ORDERING_DISABLED && reorder_payload_capacity(sub) == 0) {
-                return true;
-            }
-        }
-    }
-    return false;
+// A RELIABLE Subscriber with no reorder buffer: its fragmented samples are put together in reassembly slots, which are
+// its reorder buffer (frag_sub_advance()) - the only kind of owner that pins one.
+static bool frag_unbuffered_reliable(const struct tt_Subscriber* sub) {
+    return sub->reliable && !TT_ORDERING_DISABLED && reorder_payload_capacity(sub) == 0;
 }
 
 // Whether the Subscriber tracking slot's writer with proxy has recorded a datagram of its sample (frag_slot_pinned()'s
-// question, for one Subscriber).
+// question).
 static bool frag_slot_recorded_by(const struct tt_WriterProxy* proxy, const struct tt_FragSlot* slot) {
     for (uint32_t index = 0; index < slot->frag_count; index++) {
         if (proxy_has_recorded(proxy, slot->seq_no + index)) {
@@ -22625,120 +22687,312 @@ static bool frag_slot_recorded_by(const struct tt_WriterProxy* proxy, const stru
     return false;
 }
 
-// Whether a reassembly is pinned: a RELIABLE Subscriber with no reorder buffer, for which the pool is the reorder
-// buffer (frag_pool_advance_unbuffered()), has recorded a datagram of its sample that it has not been handed yet - the
-// sample its watermark is in, or one ahead of that. Reclaimed, a recorded datagram would be lost for good: the writer
-// never sends an acknowledged one again. Without the pin the oldest reassembly - exactly the sample waited on - went
-// first: `fragstream` at 1% loss delivered 147 of 600, "Abandoning reassembly" past #100 (2026-10-24).
-static bool frag_slot_pinned(const struct tt_Context* node, const struct tt_FragSlot* slot) {
-    for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
-            continue;
-        }
-        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-        if (!sub->reliable || TT_ORDERING_DISABLED || reorder_payload_capacity(sub) != 0) {
-            continue;
-        }
-        const struct tt_WriterProxy* proxy = find_writer_proxy(sub, slot->source, slot->entity_id);
-        if (proxy == NULL || seq_delta(slot->seq_no + slot->frag_count, proxy->ack_seq_no) <= 0) {
-            continue; // past the watermark: delivered, or given up on
-        }
-        if (frag_slot_spans(slot, proxy->ack_seq_no) || frag_slot_recorded_by(proxy, slot)) {
-            return true;
-        }
+// Whether a reassembly is pinned: its owner is a RELIABLE Subscriber with no reorder buffer, for which its slots are
+// the reorder buffer (frag_sub_advance()), and it has recorded a datagram of the sample that it has not been handed yet
+// - the sample its watermark is in, or one ahead of that. Reclaimed, a recorded datagram would be lost for good: the
+// writer never sends an acknowledged one again. Without the pin the oldest reassembly - exactly the sample waited on -
+// went first: `fragstream` at 1% loss delivered 147 of 600, "Abandoning reassembly" past #100 (2026-10-24). Asked of
+// the owner alone: only it records into its slots (until 2026-10-27 every Subscriber of the node was asked).
+static bool frag_slot_pinned(const struct tt_FragSlot* slot) {
+    struct tt_Subscriber* sub = slot->owner;
+    if (sub == NULL || !frag_slot_busy(slot) || !frag_unbuffered_reliable(sub)) {
+        return false;
     }
-    return false;
+    const struct tt_WriterProxy* proxy = find_writer_proxy(sub, slot->source, slot->entity_id);
+    if (proxy == NULL || seq_delta(slot->seq_no + slot->frag_count, proxy->ack_seq_no) <= 0) {
+        return false; // past the watermark: delivered, or given up on
+    }
+    return frag_slot_spans(slot, proxy->ack_seq_no) || frag_slot_recorded_by(proxy, slot);
+}
+
+// Whether a slot holds nothing anyone needs: free, or a whole sample its owner has had - a BEST_EFFORT one is handed
+// its sample when it completes, a RELIABLE one when its watermark passes it.
+static bool frag_slot_spent(const struct tt_FragSlot* slot) {
+    if (!frag_slot_busy(slot)) {
+        return true;
+    }
+    if (!slot->done || slot->owner == NULL || !frag_unbuffered_reliable(slot->owner)) {
+        return slot->done;
+    }
+    const struct tt_WriterProxy* proxy = find_writer_proxy(slot->owner, slot->source, slot->entity_id);
+    return proxy == NULL || seq_delta(slot->seq_no + slot->frag_count, proxy->ack_seq_no) <= 0;
 }
 
 // How many of the pool's slots are not pinned (frag_slot_pinned()) - free ones first, which cost nothing to tell -
-// counting no further than `enough`.
+// counting no further than `enough`. Subscribers' own slots are not counted: nobody else can take them.
 static uint32_t frag_pool_unpinned(const struct tt_Context* node, uint32_t enough) {
     uint32_t unpinned = (uint32_t)tt_FRAG_REASSEMBLY_SLOTS - node->frag_slots_used; // never claimed
     for (uint32_t i = 0; i < node->frag_slots_used && unpinned < enough; i++) {
-        const struct tt_FragSlot* slot = &node->frag_slots[i];
-        unpinned += slot->received == 0 && !slot->done ? 1U : 0U;
+        unpinned += frag_slot_busy(&node->frag_slots[i]) ? 0U : 1U;
     }
     for (uint32_t i = 0; i < node->frag_slots_used && unpinned < enough; i++) {
         const struct tt_FragSlot* slot = &node->frag_slots[i];
-        if ((slot->received != 0 || slot->done) && !frag_slot_pinned(node, slot)) {
+        if (frag_slot_busy(slot) && !frag_slot_pinned(slot)) {
             unpinned++;
         }
     }
     return unpinned < enough ? unpinned : enough;
 }
 
-// How many reassemblies are pinned (frag_slot_pinned()).
+// How many of the pool's reassemblies are pinned (frag_slot_pinned()).
 static uint32_t frag_pool_pinned(const struct tt_Context* node) {
     return (uint32_t)tt_FRAG_REASSEMBLY_SLOTS - frag_pool_unpinned(node, tt_FRAG_REASSEMBLY_SLOTS);
 }
 
-// The reassemblies frag_slot_for() would reclaim - the oldest done, the oldest being put together - of those not
-// pinned (frag_slot_pinned()). False when every one is pinned.
-static bool frag_pool_oldest_unpinned(struct tt_Context* node, struct tt_FragSlot** oldest_done,
-                                      struct tt_FragSlot** oldest) {
-    *oldest_done = NULL;
-    *oldest = NULL;
-    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
-        struct tt_FragSlot* slot = &node->frag_slots[i];
-        if (slot->received != 0 && !frag_slot_pinned(node, slot)) {
-            *oldest = frag_claimed_before(slot, *oldest) ? slot : *oldest;
-        } else if (slot->done && !frag_slot_pinned(node, slot)) {
-            *oldest_done = frag_claimed_before(slot, *oldest_done) ? slot : *oldest_done;
+// The slots holding sub's reassemblies, one per call: its own first, then the pool's it has claimed. NULL past the
+// last; *cursor starts at 0.
+static struct tt_FragSlot* frag_sub_next(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t* cursor) {
+    if (*cursor == 0) {
+        *cursor = 1;
+        if (frag_slot_busy(&sub->frag_own)) {
+            return &sub->frag_own;
         }
     }
-    return *oldest_done != NULL || *oldest != NULL;
+    while (*cursor <= node->frag_slots_used) {
+        struct tt_FragSlot* slot = &node->frag_slots[*cursor - 1];
+        (*cursor)++;
+        if (slot->owner == sub && frag_slot_busy(slot)) {
+            return slot;
+        }
+    }
+    return NULL;
 }
 
-// The slot already collecting this sample - or, marked done, the one that completed it (the caller drops
-// the fragment as a duplicate) - or a newly claimed one: a slot never used, else the one whose completed
-// sample is oldest, else the incomplete reassembly claimed longest ago, which is abandoned and counted - of those
-// not pinned (frag_slot_pinned()). NULL when every slot is pinned: the fragment is then dropped, and - never recorded
-// - asked for again.
-// A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
-static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t seq_no,
-                                         uint8_t frag_count) {
-    struct tt_FragSlot* unused = NULL;
-    struct tt_FragSlot* oldest_done = NULL;
+// sub's reassembly of this writer's sample spanning seq_no - being put together, or whole (a done slot keeps its bytes
+// until it is claimed again) - or NULL.
+static struct tt_FragSlot* frag_sub_spanning(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t source,
+                                             uint32_t entity_id, uint32_t seq_no) {
+    uint32_t cursor = 0;
+    for (struct tt_FragSlot* slot = frag_sub_next(node, sub, &cursor); slot != NULL;
+         slot = frag_sub_next(node, sub, &cursor)) {
+        if (slot->source == source && slot->entity_id == entity_id && frag_slot_spans(slot, seq_no)) {
+            return slot;
+        }
+    }
+    return NULL;
+}
+
+// Whether sub's own reassembly in `slot` is not given up for the arriving sample (seq_no): a BEST_EFFORT Subscriber's
+// newer sample of the same writer, since the older one, delivered after it, would be discarded (an old sample's resend
+// another Subscriber asked for once took the slot of the sample this one was putting together). A RELIABLE one gives
+// up the reassembly claimed longest ago, as the pool always did: none of its slots that may be taken holds anything
+// recorded.
+static bool frag_sub_needs_first(const struct tt_Subscriber* sub, const struct tt_FragSlot* slot, uint8_t source,
+                                 uint32_t entity_id, uint32_t seq_no) {
+    return !frag_unbuffered_reliable(sub) && slot->source == source && slot->entity_id == entity_id &&
+           seq_delta(slot->seq_no, seq_no) > 0;
+}
+
+// The reclaim frag_slot_for() falls back to when sub's own slot and the pool have nothing free or spent: the oldest
+// unpinned reassembly of sub's own (its own slot or a pool slot it holds) that it does not need first; else, in the
+// pool, the oldest unpinned one of any other owner. NULL when every one is pinned or needed. sub NULL (a continuation
+// no Subscriber can be named for yet): only another such - it never displaces a Subscriber's reassembly, so traffic
+// none of them has asked for cannot either. with_own false: sub's own slot is not a candidate.
+static struct tt_FragSlot* frag_reclaimable(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t source,
+                                            uint32_t entity_id, uint32_t seq_no, bool with_own) {
+    struct tt_FragSlot* mine = NULL;
+    struct tt_FragSlot* other = NULL;
+    if (with_own && sub != NULL && sub->frag_own.capacity != 0 && frag_slot_busy(&sub->frag_own) &&
+        !frag_slot_pinned(&sub->frag_own) && !frag_sub_needs_first(sub, &sub->frag_own, source, entity_id, seq_no)) {
+        mine = &sub->frag_own;
+    }
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
+        struct tt_FragSlot* slot = &node->frag_slots[i];
+        if (!frag_slot_busy(slot) || frag_slot_pinned(slot)) {
+            continue;
+        }
+        if (sub != NULL && slot->owner == sub) {
+            if (!frag_sub_needs_first(sub, slot, source, entity_id, seq_no)) {
+                mine = frag_claimed_before(slot, mine) ? slot : mine;
+            }
+        } else if (sub != NULL || slot->owner == NULL) {
+            other = frag_claimed_before(slot, other) ? slot : other;
+        }
+    }
+    return mine != NULL ? mine : other;
+}
+
+// A pool slot never used or free, else the one whose spent sample (frag_slot_spent()) is oldest; NULL when every pool
+// slot holds something someone needs. unused: the first free one below frag_slots_used, or NULL.
+static struct tt_FragSlot* frag_pool_free_or_spent(struct tt_Context* node, struct tt_FragSlot* unused) {
+    if (unused != NULL) {
+        return unused;
+    }
+    if (node->frag_slots_used < tt_FRAG_REASSEMBLY_SLOTS) {
+        return &node->frag_slots[node->frag_slots_used++];
+    }
+    // Every pool slot is busy. Only here is any pinning asked: a node with a free slot pays nothing for it.
     struct tt_FragSlot* oldest = NULL;
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
+        struct tt_FragSlot* candidate = &node->frag_slots[i];
+        if (candidate->done && frag_slot_spent(candidate) && frag_claimed_before(candidate, oldest)) {
+            oldest = candidate;
+        }
+    }
+    return oldest;
+}
+
+// A pool slot taken for owner: its bytes are frag_slot_bytes[] at its own index.
+static void frag_pool_attach(struct tt_Context* node, struct tt_FragSlot* slot, struct tt_Subscriber* owner) {
+    slot->owner = owner;
+    slot->bytes = node->frag_slot_bytes[slot - node->frag_slots];
+    slot->capacity = FRAG_SLOT_CAPACITY;
+}
+
+// Whether a BEST_EFFORT Subscriber's sample arriving (seq_no) is newer than the one its own slot is putting together
+// from the same writer: the newer takes the own slot (frag_slot_for()). A BEST_EFFORT Subscriber that has a newer
+// sample discards an older one, so the sample it can still use must be where nothing else can take it: left to the pool
+// beside an older partial, it was abandoned there for other Subscribers' samples (2026-10-27, 528 of 531 whole on the
+// wire).
+static bool frag_newest_takes_own(const struct tt_Subscriber* sub, const struct tt_FragSlot* own, uint8_t source,
+                                  uint32_t entity_id, uint32_t seq_no) {
+    return own->received != 0 && !frag_unbuffered_reliable(sub) && own->source == source &&
+           own->entity_id == entity_id && seq_delta(seq_no, own->seq_no) > 0;
+}
+
+// The oldest unpinned reassembly sub holds in the pool, or NULL.
+static struct tt_FragSlot* frag_sub_oldest_in_pool(struct tt_Context* node, const struct tt_Subscriber* sub) {
+    struct tt_FragSlot* oldest = NULL;
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
+        struct tt_FragSlot* slot = &node->frag_slots[i];
+        if (slot->owner == sub && frag_slot_busy(slot) && !frag_slot_pinned(slot) &&
+            frag_claimed_before(slot, oldest)) {
+            oldest = slot;
+        }
+    }
+    return oldest;
+}
+
+// Moves the partial reassembly in `from` (a Subscriber's own slot) into the pool slot `dest`, for the same owner: only
+// the bytes placed so far - every fragment below the highest one placed lies within frag_offset() of its end - or,
+// with the continuation size not known yet, the last fragment parked at the end (frag_place()).
+static void frag_slot_move(struct tt_Context* node, struct tt_FragSlot* dest, const struct tt_FragSlot* from) {
+    frag_pool_attach(node, dest, from->owner);
+    dest->received = from->received;
+    dest->done = false;
+    dest->source = from->source;
+    dest->entity_id = from->entity_id;
+    dest->seq_no = from->seq_no;
+    dest->frag_count = from->frag_count;
+    dest->cont_length = from->cont_length;
+    dest->last_length = from->last_length;
+    dest->claimed = from->claimed;
+    _tt_memcpy(dest->bytes, from->bytes, tt_FRAG_DATA_HEADER_LENGTH);
+    const uint8_t* src = from->bytes + tt_FRAG_DATA_HEADER_LENGTH;
+    uint8_t* dst = dest->bytes + tt_FRAG_DATA_HEADER_LENGTH;
+    uint32_t last = (uint32_t)from->frag_count - 1;
+    if (from->cont_length == 0) {
+        if ((from->received & (1ULL << last)) != 0) { // nothing but the parked last fragment can have been placed
+            _tt_memcpy(dst + dest->capacity - from->last_length, src + from->capacity - from->last_length,
+                       from->last_length);
+        }
+        return;
+    }
+    uint32_t high = last;
+    while (high > 0 && (from->received & (1ULL << high)) == 0) {
+        high--;
+    }
+    uint32_t end = high == last ? frag_offset(last, from->cont_length) + from->last_length
+                                : frag_offset(high + 1, from->cont_length);
+    _tt_memcpy(dst, src, end < from->capacity ? end : from->capacity);
+}
+
+// The slot already collecting this sample for sub - its own, or a pool slot it holds, or a pool slot no Subscriber
+// has taken, which sub takes over - marked done when it completed it (the caller drops the fragment as a duplicate);
+// NULL when none. *unused: the first free pool slot below frag_slots_used, or NULL.
+static struct tt_FragSlot* frag_slot_held(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_FragSlot* own,
+                                          uint8_t source, uint32_t entity_id, uint32_t seq_no,
+                                          struct tt_FragSlot** unused) {
+    *unused = NULL;
+    if (own != NULL && frag_slot_busy(own) && frag_slot_is(own, source, entity_id, seq_no)) {
+        return own;
+    }
     // Slots at and past frag_slots_used have never been claimed: free, and their headers unwritten, so not read. The
     // first of them is the lowest-numbered free slot whenever none below it is free, as the full walk found it.
     for (uint32_t i = 0; i < node->frag_slots_used; i++) {
         struct tt_FragSlot* slot = &node->frag_slots[i];
-        if ((slot->received != 0 || slot->done) && frag_slot_is(slot, source, entity_id, seq_no)) {
+        if (!frag_slot_busy(slot)) {
+            *unused = *unused != NULL ? *unused : slot;
+        } else if (frag_slot_is(slot, source, entity_id, seq_no) && (slot->owner == sub || slot->owner == NULL)) {
+            slot->owner = sub; // taken over, when nobody had it
             return slot;
         }
+    }
+    return NULL;
+}
+
+// A BEST_EFFORT Subscriber's own slot for its newest sample (frag_newest_takes_own()): the older one it held goes to
+// the pool - to a free or spent slot, else to the place of the oldest this Subscriber holds there, which is
+// abandoned; never to another owner's. Nowhere left, the older one is abandoned.
+static struct tt_FragSlot* frag_own_for_newest(struct tt_Context* node, struct tt_Subscriber* sub,
+                                               struct tt_FragSlot* own, struct tt_FragSlot* unused) {
+    struct tt_FragSlot* dest = frag_pool_free_or_spent(node, unused);
+    dest = dest != NULL ? dest : frag_sub_oldest_in_pool(node, sub);
+    if (dest == NULL || dest->received != 0) {
+        node->frag_abandoned++;
+    }
+    if (dest != NULL) {
+        frag_slot_move(node, dest, own);
+    }
+    return own;
+}
+
+// A slot from the pool for sub, else by reclaim (frag_reclaimable(): its own reassemblies first, the oldest unpinned
+// of another owner's last), abandoned and counted; NULL when none may be taken. A pool slot is attached to sub; the
+// reclaim may also give sub's own slot back.
+static struct tt_FragSlot* frag_pool_claim(struct tt_Context* node, struct tt_Subscriber* sub,
+                                           struct tt_FragSlot* unused, uint8_t source, uint32_t entity_id,
+                                           uint32_t seq_no) {
+    struct tt_FragSlot* slot = frag_pool_free_or_spent(node, unused);
+    if (slot == NULL) {
+        slot = frag_reclaimable(node, sub, source, entity_id, seq_no, true);
+        if (slot == NULL) {
+            return NULL;
+        }
         if (slot->received != 0) {
-            oldest = frag_claimed_before(slot, oldest) ? slot : oldest;
-        } else if (slot->done) {
-            oldest_done = frag_claimed_before(slot, oldest_done) ? slot : oldest_done;
-        } else if (unused == NULL) {
-            unused = slot;
+            node->frag_abandoned++;
+            // Throttled like the RxO drop: under loss this is routine - a sample that lost a fragment holds its
+            // slot until its retransmission, which carries every fragment again and so needs nothing the slot
+            // held - and one line per event was 28,542 lines in a 5 s p4 run at 5% loss, each a write() of
+            // its own on the receive path being measured. The counter keeps the exact figure.
+            if (frag_log_due(node->frag_abandoned)) {
+                TT_LOG_WARNING("Abandoning reassembly of seq_no %u from node %u for a newer sample (abandoned #%lu)",
+                               slot->seq_no, slot->source, (unsigned long)node->frag_abandoned);
+            }
         }
     }
-    if (unused == NULL && node->frag_slots_used < tt_FRAG_REASSEMBLY_SLOTS) {
-        unused = &node->frag_slots[node->frag_slots_used++];
+    if (sub == NULL || slot != &sub->frag_own) {
+        frag_pool_attach(node, slot, sub);
     }
-    // A slot must be reclaimed, and some may be pinned: the same choice among those that are not. Only here is any
-    // Subscriber asked: a node with a free slot pays nothing for it. The oldest done slot, when nothing pins it - the
-    // usual case, a whole sample already delivered - is what the search among the unpinned would choose, for one walk
-    // of the endpoints rather than one a slot: with 64 other no-buffer Subscribers in the node that search was most of
-    // the 68,216 instructions an in-order 3-datagram sample took (2026-10-25, a microbench; 9,847 with a buffer).
-    if (unused == NULL && (oldest_done == NULL || frag_slot_pinned(node, oldest_done)) &&
-        node_has_unbuffered_reliable(node) && !frag_pool_oldest_unpinned(node, &oldest_done, &oldest)) {
-        return NULL;
+    return slot;
+}
+
+// The slot sub puts this sample together in (docs/DESIGN.md section 8, "Reassembly slots"): the one it already holds
+// for it (frag_slot_held()); else, newly claimed, in this order: its own slot, free or spent (frag_slot_spent()), or
+// for a BEST_EFFORT Subscriber holding an older sample of the writer there, its own slot with that one moved to the
+// pool (frag_newest_takes_own()); a pool slot never used or free; the pool slot whose spent sample is oldest; the
+// oldest unpinned reassembly of its own it does not need first, abandoned; the oldest unpinned one in the pool of any
+// other owner, abandoned and counted. NULL when none is left: the fragment is then dropped, and - never recorded -
+// asked for again by a RELIABLE Subscriber. Another Subscriber's own slot is never a candidate, and a pinned slot
+// (frag_slot_pinned()) never reclaimed: one Subscriber's delivery does not depend on another's QoS or load (the user,
+// 2026-10-27). sub NULL: a pool slot no Subscriber has taken, from the pool's free and spent and other such.
+// A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
+static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t source,
+                                         uint32_t entity_id, uint32_t seq_no, uint8_t frag_count) {
+    struct tt_FragSlot* own = sub != NULL && sub->frag_own.capacity != 0 ? &sub->frag_own : NULL;
+    struct tt_FragSlot* unused = NULL;
+    struct tt_FragSlot* slot = frag_slot_held(node, sub, own, source, entity_id, seq_no, &unused);
+    if (slot != NULL) {
+        return slot;
     }
-    struct tt_FragSlot* slot = unused != NULL ? unused : oldest_done;
-    if (slot == NULL) {
-        slot = oldest;
-        node->frag_abandoned++;
-        // Throttled like the RxO drop: under loss this is routine - a sample that lost a fragment holds its
-        // slot until its retransmission, which carries every fragment again and so needs nothing the slot
-        // held - and one line per event was 28,542 lines in a 5 s p4 run at 5% loss, each a write() of
-        // its own on the receive path being measured. The counter keeps the exact figure.
-        if (frag_log_due(node->frag_abandoned)) {
-            TT_LOG_WARNING("Abandoning reassembly of seq_no %u from node %u for a newer sample (abandoned #%lu)",
-                           slot->seq_no, slot->source, (unsigned long)node->frag_abandoned);
+    if (own != NULL && frag_slot_spent(own)) {
+        slot = own;
+    } else if (own != NULL && frag_newest_takes_own(sub, own, source, entity_id, seq_no)) {
+        slot = frag_own_for_newest(node, sub, own, unused);
+    } else {
+        slot = frag_pool_claim(node, sub, unused, source, entity_id, seq_no);
+        if (slot == NULL) {
+            return NULL;
         }
     }
     slot->received = 0;
@@ -22760,16 +23014,16 @@ static bool frag_learn_cont_length(struct tt_FragSlot* slot, uint32_t cont_lengt
         return slot->cont_length == cont_length;
     }
     uint32_t last = (uint32_t)slot->frag_count - 1;
-    if (cont_length <= tt_FRAG_FIRST_SHORTFALL || frag_offset(last, cont_length) >= FRAG_SLOT_CAPACITY) {
+    if (cont_length <= tt_FRAG_FIRST_SHORTFALL || frag_offset(last, cont_length) >= slot->capacity) {
         return false;
     }
     uint8_t* cdr = slot->bytes + tt_FRAG_DATA_HEADER_LENGTH;
     if ((slot->received & (1ULL << last)) != 0) {
         uint32_t offset = frag_offset(last, cont_length);
-        if (slot->last_length > cont_length || offset + slot->last_length > FRAG_SLOT_CAPACITY) {
+        if (slot->last_length > cont_length || offset + slot->last_length > slot->capacity) {
             return false;
         }
-        memmove(cdr + offset, cdr + FRAG_SLOT_CAPACITY - slot->last_length, slot->last_length);
+        memmove(cdr + offset, cdr + slot->capacity - slot->last_length, slot->last_length);
     }
     slot->cont_length = (uint16_t)cont_length;
     return true;
@@ -22789,13 +23043,13 @@ static bool frag_place(struct tt_FragSlot* slot, uint32_t index, const uint8_t* 
     if (index != last) {
         offset = frag_offset(index, slot->cont_length);
     } else if (slot->cont_length == 0) {
-        offset = FRAG_SLOT_CAPACITY - length; // parked until the continuation size is known
+        offset = slot->capacity - length; // parked until the continuation size is known
     } else if (length <= slot->cont_length) {
         offset = frag_offset(last, slot->cont_length);
     } else {
         return false;
     }
-    if (length > FRAG_SLOT_CAPACITY || offset > FRAG_SLOT_CAPACITY - length) {
+    if (length > slot->capacity || offset > slot->capacity - length) {
         return false;
     }
     _tt_memcpy(cdr + offset, payload, length);
@@ -22806,21 +23060,7 @@ static bool frag_place(struct tt_FragSlot* slot, uint32_t index, const uint8_t* 
     return true;
 }
 
-// The pool's reassembly of this writer's sample spanning seq_no - being put together, or whole (a done slot keeps its
-// bytes until it is claimed again) - or NULL.
-static struct tt_FragSlot* frag_pool_spanning(struct tt_Context* node, uint8_t source, uint32_t entity_id,
-                                              uint32_t seq_no) {
-    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
-        struct tt_FragSlot* slot = &node->frag_slots[i];
-        if ((slot->received != 0 || slot->done) && slot->source == source && slot->entity_id == entity_id &&
-            frag_slot_spans(slot, seq_no)) {
-            return slot;
-        }
-    }
-    return NULL;
-}
-
-// Records every datagram of slot's sample the pool holds and sub has not recorded yet (update_reliable_ack()).
+// Records every datagram of slot's sample the slot holds and sub has not recorded yet (update_reliable_ack()).
 static void frag_pool_record_held(struct tt_Context* node, struct tt_Subscriber* sub, const struct tt_FragSlot* slot,
                                   uint32_t sender_ip, uint16_t sender_port) {
     const struct tt_WriterProxy* proxy = find_writer_proxy(sub, slot->source, slot->entity_id);
@@ -22837,15 +23077,17 @@ static void frag_pool_record_held(struct tt_Context* node, struct tt_Subscriber*
 
 // A datagram just placed for a sample ahead of the one the watermark is in, recorded - so the ACKNACK no longer asks
 // for it, and a datagram lost in the sample being waited on shows as a gap at once - when its slot can be pinned
-// without starving anything else: the writer's own sample at the watermark has a slot, and two slots stay unpinned for
-// other writers' and best-effort reassemblies. Otherwise it stays placed and unrecorded, as before. Not recording
-// these, `fragstream` at 1% loss delivered 558 of 600 and at 5% 267; recording them all (32 slots, unbounded) 600 and
-// 600 (2026-10-24).
+// without starving anything else: the writer's own sample at the watermark has a slot, the sample is in the pool, and
+// two pool slots stay unpinned for other writers' and other Subscribers' reassemblies. Otherwise it stays placed and
+// unrecorded, as before. Not recording these, `fragstream` at 1% loss delivered 558 of 600 and at 5% 267; recording
+// them all (32 slots, unbounded) 600 and 600 (2026-10-24).
 //
-// Whether the slot is pinned already is asked of sub's own tracking (frag_slot_recorded_by()), not of every Subscriber
-// (frag_slot_pinned(), a walk of the node's endpoints), and the bound counts unpinned slots only until it has three
-// (frag_pool_unpinned()): both walks ran for every datagram ahead (2026-10-25). A slot only another Subscriber pinned
-// is bounded as if unpinned, which at worst leaves it unrecorded for this one: asked for again, as before.
+// Never in sub's own slot: pinned there by a sample ahead, it would leave sub no slot it can count on for the sample
+// its watermark moves to next, which would then wait on what the pool's other owners leave (2026-10-27). Pinned only
+// by the sample at the watermark, the own slot is free for the next one once that one is delivered.
+//
+// The bound counts unpinned slots only until it has three (frag_pool_unpinned()): the walk ran for every datagram
+// ahead (2026-10-25).
 static void frag_pool_record_ahead(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                    struct tt_Header* header, uint32_t placed_seq_no, uint32_t sender_ip,
                                    uint16_t sender_port) {
@@ -22854,12 +23096,12 @@ static void frag_pool_record_ahead(struct tt_Context* node, struct tt_Subscriber
     if (seq_delta(placed_seq_no, proxy->ack_seq_no) <= 0 || proxy_has_recorded(proxy, placed_seq_no)) {
         return;
     }
-    struct tt_FragSlot* slot = frag_pool_spanning(node, source, entity_id, placed_seq_no);
+    struct tt_FragSlot* slot = frag_sub_spanning(node, sub, source, entity_id, placed_seq_no);
     if (slot == NULL || frag_slot_spans(slot, proxy->ack_seq_no)) {
-        return; // the sample at the watermark is frag_pool_advance_unbuffered()'s
+        return; // the sample at the watermark is frag_sub_advance()'s
     }
     if (!frag_slot_recorded_by(proxy, slot)) {
-        if (frag_pool_spanning(node, source, entity_id, proxy->ack_seq_no) == NULL ||
+        if (slot == &sub->frag_own || frag_sub_spanning(node, sub, source, entity_id, proxy->ack_seq_no) == NULL ||
             frag_pool_unpinned(node, 3) <= 2) {
             return;
         }
@@ -22868,8 +23110,8 @@ static void frag_pool_record_ahead(struct tt_Context* node, struct tt_Subscriber
     frag_pool_record_held(node, sub, slot, sender_ip, sender_port);
 }
 
-// Hands a whole sample in the pool to sub, in order (deliver_in_order()). header is a datagram's from the same writer's
-// node, for the byte order of the DataHeader the slot keeps.
+// Hands a whole sample in one of sub's slots to sub, in order (deliver_in_order()). header is a datagram's from the
+// same writer's node, for the byte order of the DataHeader the slot keeps.
 static void frag_pool_hand_over(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                 struct tt_Header* header, const struct tt_FragSlot* slot) {
     const struct tt_DataHeader* data_header = (const struct tt_DataHeader*)slot->bytes;
@@ -22879,7 +23121,7 @@ static void frag_pool_hand_over(struct tt_Context* node, struct tt_Subscriber* s
                      node->rx_via_data_port, NULL);
 }
 
-// A whole sample in the pool at or past sub's watermark of its writer: what of it is not recorded yet is recorded as
+// A whole sample in sub's slot at or past its watermark of its writer: what of it is not recorded yet is recorded as
 // one span from the watermark (the bits the recorded path would have set one datagram at a time), and it is delivered
 // unless it already was. False when it could not be recorded, so nothing after it can be delivered either.
 static bool frag_pool_deliver_whole(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
@@ -22902,8 +23144,8 @@ static bool frag_pool_deliver_whole(struct tt_Context* node, struct tt_Subscribe
     return true;
 }
 
-// For one Subscriber: the samples from its watermark on, in order, as far as the pool holds them whole; then the one
-// the watermark is in, if the pool holds part of it, has what it holds recorded.
+// For one Subscriber: the samples from its watermark on, in order, as far as its slots hold them whole; then the one
+// the watermark is in, if a slot holds part of it, has what it holds recorded.
 static void frag_pool_walk_unbuffered(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
                                       uint8_t source, uint32_t entity_id, uint32_t sender_ip, uint16_t sender_port) {
     const struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
@@ -22912,7 +23154,7 @@ static void frag_pool_walk_unbuffered(struct tt_Context* node, struct tt_Subscri
     }
     uint32_t cursor = proxy->ack_seq_no;
     for (;;) {
-        const struct tt_FragSlot* slot = frag_pool_spanning(node, source, entity_id, cursor);
+        const struct tt_FragSlot* slot = frag_sub_spanning(node, sub, source, entity_id, cursor);
         proxy = find_writer_proxy(sub, source, entity_id);
         if (slot == NULL || proxy == NULL || seq_delta(proxy->ack_seq_no, slot->seq_no) < 0) {
             return; // nothing there, or a gap before it
@@ -22930,14 +23172,14 @@ static void frag_pool_walk_unbuffered(struct tt_Context* node, struct tt_Subscri
     }
 }
 
-// Whether the reassembly pool is sub's reorder buffer (frag_pool_advance_unbuffered()) and holds anything at all.
+// Whether reassembly slots are sub's reorder buffer (frag_sub_advance()) and any may hold something of it.
 static bool frag_pool_is_reorder_buffer(const struct tt_Context* node, const struct tt_Subscriber* sub) {
-    return node->frag_slots_used != 0 && sub->reliable && !TT_ORDERING_DISABLED && reorder_payload_capacity(sub) == 0;
+    return (node->frag_slots_used != 0 || frag_slot_busy(&sub->frag_own)) && frag_unbuffered_reliable(sub);
 }
 
 // sub's watermark of a writer moved other than by the pool's own walk: a HEARTBEAT gave up on a gap
 // (advance_past_unavailable(), jump_ack_baseline()), or a DATA landed in order and absorbed what was recorded after it.
-// What the pool holds whole below the watermark and has not delivered is handed over, in order - as drain_reorder()
+// What its slots hold whole below the watermark and have not delivered is handed over, in order - as drain_reorder()
 // hands over what a reorder buffer holds behind a gap given up on: KEEP_LAST gives up what the writer no longer has,
 // not what the reader has - and the walk goes on from the watermark, which may now be at a sample the pool holds.
 // Without this a sample recorded ahead was skipped for good (the watermark absorbed it, the walk starts past it), and
@@ -22952,8 +23194,9 @@ static void frag_pool_after_watermark_move(struct tt_Context* node, struct tt_Su
             return;
         }
         const struct tt_FragSlot* next = NULL; // the lowest whole sample below the watermark not yet delivered
-        for (uint32_t i = 0; i < node->frag_slots_used; i++) {
-            const struct tt_FragSlot* slot = &node->frag_slots[i];
+        uint32_t cursor = 0;
+        for (const struct tt_FragSlot* slot = frag_sub_next(node, sub, &cursor); slot != NULL;
+             slot = frag_sub_next(node, sub, &cursor)) {
             if (slot->done && slot->source == source && slot->entity_id == entity_id &&
                 seq_delta(slot->seq_no, proxy->ack_seq_no) < 0 &&
                 seq_delta(proxy->highest_delivered, slot->seq_no) < 0 &&
@@ -22970,66 +23213,91 @@ static void frag_pool_after_watermark_move(struct tt_Context* node, struct tt_Su
 }
 
 // A RELIABLE Subscriber with no reorder buffer (tt_QOS_REORDER_NONE - rmw_tickle's shape for an unbounded or large
-// type since 2026-10-20) takes its fragmented samples from the reassembly pool, which serves as its reorder buffer.
-// Every datagram of the sample its writer's watermark is in is recorded as it is placed, in any order - so a lost one
-// is a gap of its own, asked for at once and alone, as with a buffer - and so is every datagram of a sample ahead of
-// it while the pool can spare the slot (frag_pool_record_ahead()). A slot holding a recorded datagram not yet handed
-// over is never reclaimed (frag_slot_pinned()); one that is not recorded may be, which loses nothing - the writer still
-// holds it, and the ACKNACK asks for it again. Each sample is delivered when it is whole and the watermark has passed
-// it, in order, as far as the pool holds them; one the watermark reaches only partly placed has what it holds recorded
-// then.
+// type since 2026-10-20) takes its fragmented samples from its reassembly slots - its own and those it holds in the
+// pool - which serve as its reorder buffer. Every datagram of the sample its writer's watermark is in is recorded as
+// it is placed, in any order - so a lost one is a gap of its own, asked for at once and alone, as with a buffer - and
+// so is every datagram of a sample ahead of it while the pool can spare the slot (frag_pool_record_ahead()). A slot
+// holding a recorded datagram not yet handed over is never reclaimed (frag_slot_pinned()); one that is not recorded
+// may be, which loses nothing - the writer still holds it, and the ACKNACK asks for it again. Each sample is delivered
+// when it is whole and the watermark has passed it, in order, as far as the slots hold them; one the watermark reaches
+// only partly placed has what it holds recorded then.
 //
 // The first version (a0d6ea3a) put the sample together in frag_scratch, one sample of one writer at a time and only in
 // order, unrecorded until whole, and dropped it when anything disturbed it. The rmw acceptance case `fragstream` (two
 // writers of 60,000-byte Images and one of 30,000-byte PointCloud2s, KEEP_LAST 10, 30 Hz) lost 156 of 600 samples on
 // a clean link - two writers dropped each other's samples - and 479 of 600 at 1% loss and 564 at 5%: a lost datagram
 // cost the rest of its sample and every later one of its writer, all resent, until KEEP_LAST gave them up.
-static void frag_pool_advance_unbuffered(struct tt_Context* node, struct tt_Header* header, uint8_t source,
-                                         uint32_t entity_id, uint32_t placed_seq_no, uint32_t sender_ip,
-                                         uint16_t sender_port) {
-    for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
-            continue;
-        }
-        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-        if (!sub->reliable || TT_ORDERING_DISABLED || reorder_payload_capacity(sub) != 0 ||
-            subscriber_refuses_writer(node, sub, source, endpoint->id, entity_id)) {
-            continue;
-        }
-        frag_pool_walk_unbuffered(node, sub, header, source, entity_id, sender_ip, sender_port);
-        struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
-        if (proxy != NULL) {
-            frag_pool_record_ahead(node, sub, proxy, header, placed_seq_no, sender_ip, sender_port);
-        }
+static void frag_sub_advance(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
+                             uint8_t source, uint32_t entity_id, uint32_t placed_seq_no, uint32_t sender_ip,
+                             uint16_t sender_port) {
+    if (subscriber_refuses_writer(node, sub, source, sub->endpoint.id, entity_id)) {
+        return;
+    }
+    frag_pool_walk_unbuffered(node, sub, header, source, entity_id, sender_ip, sender_port);
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
+    if (proxy != NULL) {
+        frag_pool_record_ahead(node, sub, proxy, header, placed_seq_no, sender_ip, sender_port);
     }
 }
 
-// One user-data fragment for best-effort Subscribers, placed in the reassembly pool under its sample's
-// seq_no. Once every fragment has arrived, the sample goes to process_data_for() exactly as a DATA carrying
-// it would have, for best-effort Subscribers only. data_header is the FRAG_FIRST's DataHeader, NULL for a
-// continuation.
+// Whether the sample in `slot` fits it with this fragment placed: at the continuation size known, or this fragment's,
+// the last fragment's offset plus its length (this one's, the one placed, or at least a byte) within its room.
+static bool frag_fits(const struct tt_FragSlot* slot, uint32_t index, uint32_t length) {
+    uint32_t last = (uint32_t)slot->frag_count - 1;
+    uint32_t cont = slot->cont_length;
+    if (cont == 0 && index != last) {
+        cont = index == 0 ? length + (uint32_t)tt_FRAG_FIRST_SHORTFALL : length;
+    }
+    if (cont == 0) {
+        return length <= slot->capacity;
+    }
+    uint32_t tail = slot->last_length != 0 ? (uint32_t)slot->last_length : 1U; // at least a byte, when not known
+    if (index == last) {
+        tail = length;
+    }
+    return frag_offset(last, cont) + tail <= slot->capacity;
+}
+
+// A sample larger than the Subscriber's own slot was sized for - a bound its binding under-stated - moves, with what is
+// placed of it, to a pool slot: one free or spent, else an unpinned one, sub's own first. NULL when none: dropped.
+static struct tt_FragSlot* frag_own_overflow(struct tt_Context* node, struct tt_Subscriber* sub) {
+    struct tt_FragSlot* own = &sub->frag_own;
+    struct tt_FragSlot* unused = NULL;
+    for (uint32_t i = 0; i < node->frag_slots_used && unused == NULL; i++) {
+        unused = frag_slot_busy(&node->frag_slots[i]) ? NULL : &node->frag_slots[i];
+    }
+    struct tt_FragSlot* dest = frag_pool_free_or_spent(node, unused);
+    if (dest == NULL) {
+        dest = frag_reclaimable(node, sub, own->source, own->entity_id, own->seq_no, false);
+        if (dest == NULL) {
+            return NULL;
+        }
+        node->frag_abandoned += dest->received != 0 ? 1U : 0U;
+    }
+    frag_slot_move(node, dest, own);
+    own->received = 0;
+    own->done = false;
+    return dest;
+}
+
+// One user-data fragment for one Subscriber that reassembles - BEST_EFFORT, or RELIABLE with no reorder buffer - placed
+// in its slot for the sample's seq_no (frag_slot_for()); sub NULL: in a pool slot no Subscriber has taken yet. Once
+// every fragment has arrived, a BEST_EFFORT Subscriber's sample goes to process_data_for() exactly as a DATA carrying
+// it would have, for that Subscriber only (every BEST_EFFORT one of the endpoint, for sub NULL); a RELIABLE one's is
+// delivered in order (frag_sub_advance()). data_header is the FRAG_FIRST's DataHeader, NULL for a continuation.
 //
 // A partial sample is not dropped when a newer one from the same writer starts, although a seq_no gap
 // would allow it: a gap from reordering is not a loss, and a sample whose last datagram was merely
-// overtaken would be lost for nothing. The pool's own rule - the reassembly claimed longest ago goes
+// overtaken would be lost for nothing. The slots' own rule - the reassembly claimed longest ago goes
 // first - clears what really was lost.
-static bool reassemble_fragment(struct tt_Context* node, struct tt_Header* header, const uint8_t* payload,
-                                uint32_t length, const struct tt_DataHeader* data_header, uint32_t entity_id,
-                                uint32_t seq_no, uint32_t index, uint32_t count, uint32_t sender_ip,
-                                uint16_t sender_port, bool unbuffered) {
-    if (count < 2 || count > tt_FRAG_MAX_COUNT || index >= count || length == 0) {
-        node->frag_dropped++;
-        if (frag_log_due(node->frag_dropped)) {
-            TT_LOG_ERROR("Illegal fragment %u of %u (%u bytes, dropped #%lu)", index, count, length,
-                         (unsigned long)node->frag_dropped);
-        }
-        return false;
-    }
-
-    struct tt_FragSlot* slot = frag_slot_for(node, header->source, entity_id, seq_no, (uint8_t)count);
+static bool reassemble_fragment(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Header* header,
+                                const uint8_t* payload, uint32_t length, const struct tt_DataHeader* data_header,
+                                uint32_t entity_id, uint32_t seq_no, uint32_t index, uint32_t count, uint32_t sender_ip,
+                                uint16_t sender_port) {
+    bool unbuffered = sub != NULL && frag_unbuffered_reliable(sub);
+    struct tt_FragSlot* slot = frag_slot_for(node, sub, header->source, entity_id, seq_no, (uint8_t)count);
     if (slot == NULL) {
-        node->frag_dropped++; // every slot is pinned (frag_slot_for())
+        node->frag_dropped++; // nothing sub may take (frag_slot_for())
         return true;
     }
     if (slot->done) {
@@ -23037,10 +23305,16 @@ static bool reassemble_fragment(struct tt_Context* node, struct tt_Header* heade
         if (unbuffered) {
             // Whole, but ahead of an unbuffered Subscriber's watermark when it completed; a resend of it means the
             // watermark may have reached it since.
-            frag_pool_advance_unbuffered(node, header, header->source, entity_id, seq_no + index, sender_ip,
-                                         sender_port);
+            frag_sub_advance(node, sub, header, header->source, entity_id, seq_no + index, sender_ip, sender_port);
         }
         return true;
+    }
+    if (sub != NULL && slot == &sub->frag_own && slot->frag_count == count && !frag_fits(slot, index, length)) {
+        slot = frag_own_overflow(node, sub);
+        if (slot == NULL) {
+            node->frag_dropped++;
+            return true;
+        }
     }
     if (slot->frag_count != count || !frag_place(slot, index, payload, length)) {
         node->frag_dropped++;
@@ -23055,33 +23329,61 @@ static bool reassemble_fragment(struct tt_Context* node, struct tt_Header* heade
     }
     if (slot->received != frag_all_received(count)) {
         if (unbuffered) {
-            frag_pool_advance_unbuffered(node, header, header->source, entity_id, seq_no + index, sender_ip,
-                                         sender_port);
+            frag_sub_advance(node, sub, header, header->source, entity_id, seq_no + index, sender_ip, sender_port);
         }
         return true;
     }
 
     uint32_t cdr_len = frag_offset(count - 1, slot->cont_length) + slot->last_length;
     node->frag_reassembled++;
-    bool processed = process_data_for(node, header, slot->bytes, 0, tt_FRAG_DATA_HEADER_LENGTH + cdr_len, sender_ip,
-                                      sender_port, true);
+    bool processed = true;
+    if (!unbuffered) {
+        processed = process_data_for(node, header, slot->bytes, 0, tt_FRAG_DATA_HEADER_LENGTH + cdr_len, sender_ip,
+                                     sender_port, true, sub);
+    }
     slot->received = 0;
     slot->done = true;
     if (unbuffered) {
-        frag_pool_advance_unbuffered(node, header, header->source, entity_id, seq_no + index, sender_ip, sender_port);
+        frag_sub_advance(node, sub, header, header->source, entity_id, seq_no + index, sender_ip, sender_port);
     }
     return processed;
 }
 
-// Whether the reassembly pool is already collecting this sample.
-static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample_seq_no) {
+// Whether a pool slot no Subscriber has taken is collecting this sample.
+static bool frag_pool_has_unowned(const struct tt_Context* node, uint8_t source, uint32_t entity_id,
+                                  uint32_t sample_seq_no) {
     for (uint32_t i = 0; i < node->frag_slots_used; i++) {
         const struct tt_FragSlot* slot = &node->frag_slots[i];
-        if (slot->received != 0 && frag_slot_is(slot, source, entity_id, sample_seq_no)) {
+        if (slot->owner == NULL && slot->received != 0 && frag_slot_is(slot, source, entity_id, sample_seq_no)) {
             return true;
         }
     }
     return false;
+}
+
+// Whether sub holds a slot for this sample, being put together or whole.
+static bool frag_sub_holds(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t source, uint32_t entity_id,
+                           uint32_t sample_seq_no) {
+    uint32_t cursor = 0;
+    for (const struct tt_FragSlot* slot = frag_sub_next(node, sub, &cursor); slot != NULL;
+         slot = frag_sub_next(node, sub, &cursor)) {
+        if (frag_slot_is(slot, source, entity_id, sample_seq_no)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A destroyed Subscriber's pool slots are freed with it: nothing else may be handed its samples.
+static void frag_release_subscriber(struct tt_Context* node, const struct tt_Subscriber* sub) {
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
+        struct tt_FragSlot* slot = &node->frag_slots[i];
+        if (slot->owner == sub) {
+            slot->owner = NULL;
+            slot->received = 0;
+            slot->done = false;
+        }
+    }
 }
 
 // Stores a fragment for a RELIABLE Subscriber in its reorder slot (seq_no % slots), where it waits until
@@ -23234,13 +23536,17 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
     }
     drain_reorder(node, sub, proxy);
 }
-
-// for_each_endpoint()'s visitor for one fragment: a RELIABLE Subscriber takes it now, datagram by
-// datagram; a best-effort one takes the whole sample from the reassembly pool (deliver_user_fragment()).
+// for_each_endpoint()'s visitor for one fragment: a RELIABLE Subscriber with a reorder buffer takes it now, datagram by
+// datagram; one with none, and a BEST_EFFORT one, put the sample together in a reassembly slot of their own
+// (reassemble_fragment()).
 struct frag_route_ctx {
     struct data_delivery_ctx* data;
-    bool best_effort_seen;
-    bool unbuffered_seen; // a RELIABLE Subscriber with no reorder buffer wants it: the pool puts its sample together
+    const struct tt_DataHeader* data_header; // the FRAG_FIRST's, NULL for a continuation
+    const uint8_t* payload;
+    uint32_t length;
+    uint32_t sample_seq_no;
+    bool taken;     // some Subscriber put it in a slot of its own
+    bool processed; // false: a Subscriber's reassembly refused it or failed to decode
 };
 
 static void route_fragment_to_subscriber(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -23251,33 +23557,46 @@ static void route_fragment_to_subscriber(struct tt_Context* node, struct tt_Endp
         return;
     }
     if (!sub->reliable || TT_ORDERING_DISABLED) {
-        route->best_effort_seen = true;
-        return;
-    }
-    // No reorder buffer (tt_QOS_REORDER_NONE - rmw_tickle's shape for an unbounded or large type since 2026-10-20):
-    // the sample is put together in the reassembly pool, unrecorded, and recorded and delivered whole when the
-    // writer's watermark reaches it (frag_pool_advance_unbuffered()). Not yet tracking the writer, it is the ordinary
-    // way.
-    const struct tt_WriterProxy* proxy =
-        reorder_payload_capacity(sub) == 0 ? find_writer_proxy(sub, ctx->header->source, ctx->entity_id) : NULL;
-    if (proxy != NULL) {
+        // A sample older than the last one this Subscriber was handed from the writer would be discarded whole
+        // (deliver_data_to_subscriber()): it claims nothing, so a resend another Subscriber asked for cannot take this
+        // one's slot from a sample it can still use.
+        const struct tt_WriterProxy* proxy =
+            TT_ORDERING_DISABLED ? NULL : find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+        if (proxy != NULL && seq_delta(route->sample_seq_no, proxy->ack_seq_no) < 0) {
+            node->frag_duplicate++;
+            return;
+        }
+    } else {
+        // No reorder buffer (tt_QOS_REORDER_NONE - rmw_tickle's shape for an unbounded or large type since 2026-10-20):
+        // the sample is put together in its slots, unrecorded, and recorded and delivered whole when the writer's
+        // watermark reaches it (frag_sub_advance()). Not yet tracking the writer, or with a buffer, it is the ordinary
+        // way.
+        const struct tt_WriterProxy* proxy =
+            reorder_payload_capacity(sub) == 0 ? find_writer_proxy(sub, ctx->header->source, ctx->entity_id) : NULL;
+        if (proxy == NULL) {
+            accept_reliable_fragment(node, sub, ctx, tt_is_native_endian(ctx->header));
+            return;
+        }
         uint32_t offset = ctx->seq_no - proxy->ack_seq_no;
         if (seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0 ||
             (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset))) {
             node->frag_duplicate++; // its sample is already delivered
             return;
         }
-        route->unbuffered_seen = true;
-        return;
     }
-    accept_reliable_fragment(node, sub, ctx, tt_is_native_endian(ctx->header));
+    route->taken = true;
+    if (!reassemble_fragment(node, sub, ctx->header, route->payload, route->length, route->data_header, ctx->entity_id,
+                             route->sample_seq_no, ctx->frag_index, ctx->frag_count, ctx->sender_ip,
+                             ctx->sender_port)) {
+        route->processed = false;
+    }
 }
 
 // One user-data fragment (not discovery, which process_frag() routes first). A FRAG_FIRST names its
-// endpoint; a FRAG_CONT does not, and goes to every Subscriber tracking its writer - or, when none is
-// tracking it yet (a writer's first sample, its continuation overtaking its first fragment), to the pool
-// if the node has any best-effort Subscriber at all. seq_no is this datagram's own; its sample is
-// seq_no - index. Best-effort Subscribers get the sample whole from the node's reassembly pool.
+// endpoint; a FRAG_CONT does not, and goes to every Subscriber tracking its writer or holding a slot for its sample -
+// or, when none is (a writer's first sample, its continuation overtaking its first fragment), to a pool slot no
+// Subscriber has taken, if the node has any best-effort Subscriber at all; the first Subscriber its sample's
+// FRAG_FIRST reaches takes that slot over. seq_no is this datagram's own; its sample is seq_no - index.
 static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                   uint32_t tail, const struct tt_DataHeader* data_header, uint32_t entity_id,
                                   uint32_t seq_no, uint32_t index, uint32_t count, uint32_t sender_ip,
@@ -23305,7 +23624,9 @@ static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* hea
         .frag_index = (uint8_t)index,
         .frag_count = (uint8_t)count,
     };
-    struct frag_route_ctx route = {&ctx, false, false};
+    uint32_t sample_seq_no = seq_no - index;
+    struct frag_route_ctx route = {&ctx, data_header, buffer + head, length, sample_seq_no, false, true};
+    bool unattributed = false; // a continuation no Subscriber tracks the writer of, with a best-effort one in the node
     if (data_header != NULL) {
         for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, ctx.endpoint_id, route_fragment_to_subscriber, &route);
     } else {
@@ -23317,21 +23638,22 @@ static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* hea
                 continue;
             }
             struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-            any_best_effort = any_best_effort || !sub->reliable || TT_ORDERING_DISABLED;
+            bool best_effort = !sub->reliable || TT_ORDERING_DISABLED;
+            any_best_effort = any_best_effort || best_effort;
             if (find_writer_proxy(sub, header->source, entity_id) != NULL) {
                 tracked = true;
                 route_fragment_to_subscriber(node, endpoint, &route);
+            } else if (best_effort && frag_sub_holds(node, sub, header->source, entity_id, sample_seq_no)) {
+                route_fragment_to_subscriber(node, endpoint, &route); // its FRAG_FIRST came first
             }
         }
-        route.best_effort_seen = route.best_effort_seen || (!tracked && any_best_effort);
+        unattributed = !tracked && any_best_effort;
     }
-    uint32_t sample_seq_no = seq_no - index;
-    if (route.best_effort_seen || route.unbuffered_seen ||
-        frag_pool_has(node, header->source, entity_id, sample_seq_no)) {
-        return reassemble_fragment(node, header, buffer + head, length, data_header, entity_id, sample_seq_no, index,
-                                   count, sender_ip, sender_port, route.unbuffered_seen);
+    if (!route.taken && (unattributed || frag_pool_has_unowned(node, header->source, entity_id, sample_seq_no))) {
+        return reassemble_fragment(node, NULL, header, buffer + head, length, data_header, entity_id, sample_seq_no,
+                                   index, count, sender_ip, sender_port);
     }
-    return true;
+    return route.processed;
 }
 #endif
 
@@ -23680,7 +24002,7 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     node->large.reassembled++;
     large_rx_drain(node);
     (void)process_data_for(node, &header, assembly->buffer, tt_LARGE_HEADER_OFFSET, tt_LARGE_CDR_OFFSET + cdr_len,
-                           fragment->sender_ip, fragment->sender_port, true);
+                           fragment->sender_ip, fragment->sender_port, true, NULL);
 #if tt_SAMPLE_LENDING
     node->lend.rx_base = saved.base;
     node->lend.rx_length = saved.length;
@@ -24100,7 +24422,7 @@ static void large_ref_deliver_best_effort(struct tt_Context* node, const struct 
     node->lend.rx_large = ref->chunk;
 #endif
     (void)process_data_for(node, &header, ref->chunk, tt_LARGE_HEADER_OFFSET, tt_LARGE_CDR_OFFSET + ref->cdr_len,
-                           ref->sender_ip, ref->sender_port, true);
+                           ref->sender_ip, ref->sender_port, true, NULL);
 #if tt_SAMPLE_LENDING
     node->lend.rx_base = saved.base;
     node->lend.rx_length = saved.length;

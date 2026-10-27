@@ -177,8 +177,14 @@ static void match_by_broadcast(struct tt_Publisher* publisher) {
     }
 }
 
+// Caller storage for a Subscriber that needs only its own reassembly slot (a BEST_EFFORT one of these unbounded topics,
+// tt_Subscriber_storage_size(); docs/DESIGN.md section 8, "Reassembly slots"): one per Subscriber alive at once.
+#define OWN_SLOT_STORAGE (tt_FRAG_SLOT_BYTES + 64)
+static uint64_t own_slot_storage[4][OWN_SLOT_STORAGE / sizeof(uint64_t)];
+
 // How init_pair_with() creates the pair. A NULL profile is TEST_QOS_UNRELIABLE, NULL options none, a NULL callback
-// on_data; storage is only used when the profile needs it, and must hold what tt_*_storage_size() says.
+// on_data; storage is only used when the profile needs it, and must hold what tt_*_storage_size() says. No Subscriber
+// storage is own_slot_storage[0].
 struct pair_qos {
     const struct tt_QosProfile* pub_qos;
     const struct tt_PublisherOptions* pub_options;
@@ -224,12 +230,14 @@ static void init_pair_with(uint32_t len, const struct pair_qos* q) {
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
+    void* sub_storage = q->sub_storage != NULL ? q->sub_storage : own_slot_storage[0];
+    size_t sub_storage_capacity = q->sub_storage != NULL ? q->sub_storage_capacity : sizeof(own_slot_storage[0]);
     size_t sub_storage_size = tt_Subscriber_storage_size(&receiver_topic, sub_qos);
-    EXPECT_TRUE(sub_storage_size <= q->sub_storage_capacity);
+    EXPECT_TRUE(sub_storage_size <= sub_storage_capacity);
     const struct tt_SubscriberOptions sub_options = {.callback = q->sub_callback != NULL ? q->sub_callback : on_data};
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
-                                 tt_Context_default_node(&receiver), &sub, &receiver_topic, ENDPOINT_NAME, sub_qos,
-                                 &sub_options, sub_storage_size != 0 ? q->sub_storage : NULL, sub_storage_size));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic,
+                                                       ENDPOINT_NAME, sub_qos, &sub_options,
+                                                       sub_storage_size != 0 ? sub_storage : NULL, sub_storage_size));
 }
 
 static void init_pair(uint32_t len) {
@@ -268,9 +276,11 @@ static void test_topics_up_to_the_sample_limit_can_be_created(void) {
     big_topic.data_size = tt_MAX_SAMPLE_LENGTH;
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &big_pub, &big_topic,
                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &big_sub, &big_topic,
-                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
-                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+    EXPECT_TRUE(tt_Subscriber_storage_size(&big_topic, &TEST_QOS_UNRELIABLE) <= sizeof(own_slot_storage[1]));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &big_sub, &big_topic, ENDPOINT_NAME,
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            own_slot_storage[1], sizeof(own_slot_storage[1])));
     // Control: one byte more is still refused.
     struct tt_Publisher too_big_pub;
     struct tt_Subscriber too_big_sub;
@@ -281,7 +291,7 @@ static void test_topics_up_to_the_sample_limit_can_be_created(void) {
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
                   tt_Node_create_subscriber(tt_Context_default_node(&receiver), &too_big_sub, &big_topic, "other",
                                             &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
-                                            NULL, 0));
+                                            own_slot_storage[2], sizeof(own_slot_storage[2])));
 }
 
 static void test_largest_data_is_not_fragmented(void) {
@@ -373,8 +383,9 @@ static void test_duplicate_fragments_deliver_once(void) {
     EXPECT_EQ_U64(1, receiver.frag_duplicate);
 }
 
+// Reassemblies under way for the pair's Subscriber: in the pool, and in its own slot.
 static int busy_slots(void) {
-    int busy = 0;
+    int busy = sub.frag_own.received != 0 ? 1 : 0;
     for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
         busy += receiver.frag_slots[i].received != 0 ? 1 : 0;
     }
@@ -426,30 +437,49 @@ static void test_samples_interleave_across_slots(void) {
     EXPECT_TRUE(delivered_intact);
 }
 
-static void test_full_pool_abandons_the_oldest_and_counts_it(void) {
-    // Fill every slot with a sample missing its last fragment, then start one more.
+// tracked: a DATA first, so the Subscriber tracks the writer and a continuation is routed to it; untracked, one it
+// holds no slot for goes to a pool slot no Subscriber has taken - two paths, one outcome.
+static void full_pool_case(bool tracked) {
+    // Fill every slot the Subscriber may use - the pool and its own - with a sample missing its last fragment, then
+    // start one more.
     init_pair(2800);
-    uint8_t lasts[tt_FRAG_REASSEMBLY_SLOTS + 1][tt_MAX_BUFFER_LENGTH];
-    uint32_t last_len[tt_FRAG_REASSEMBLY_SLOTS + 1];
-    for (int s = 0; s <= tt_FRAG_REASSEMBLY_SLOTS; s++) {
+    if (tracked) {
+        sample_len = 100;
+        publish_captured();
+        deliver(0);
+        EXPECT_EQ_INT(1, delivered_count);
+        delivered_count = 0;
+        sample_len = 2800;
+    }
+    enum { SUB_SLOTS = tt_FRAG_REASSEMBLY_SLOTS + 1 };
+    uint8_t lasts[SUB_SLOTS + 1][tt_MAX_BUFFER_LENGTH];
+    uint32_t last_len[SUB_SLOTS + 1];
+    for (int s = 0; s <= SUB_SLOTS; s++) {
         publish_captured();
         deliver(0);
         memcpy(lasts[s], datagrams[1], datagram_len[1]);
         last_len[s] = datagram_len[1];
     }
-    EXPECT_EQ_U64(1, receiver.frag_abandoned); // the ninth took the first one's slot
+    EXPECT_EQ_U64(1, receiver.frag_abandoned); // the last took the first one's slot
     EXPECT_EQ_INT(0, delivered_count);
 
-    // The abandoned sample's last fragment cannot complete it - it starts a new, incomplete slot...
+    // The abandoned sample's last fragment cannot complete it, and - older than every sample being put together from
+    // its writer, each of which a BEST_EFFORT Subscriber would deliver first and then discard it - it takes no slot
+    // from them: dropped, counted (until 2026-10-27 it started a new, incomplete one in sample 1's place).
     EXPECT_TRUE(process_packet(&receiver, lasts[0], 0, last_len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     EXPECT_EQ_INT(0, delivered_count);
-    // ...while every sample that kept its slot still completes (control: abandonment took exactly one).
-    // The new slot for sample 0 took sample 1's, so start from 2.
-    EXPECT_EQ_U64(2, receiver.frag_abandoned);
-    for (int s = 2; s <= tt_FRAG_REASSEMBLY_SLOTS; s++) {
+    EXPECT_EQ_U64(1, receiver.frag_abandoned);
+    EXPECT_EQ_U64(1, receiver.frag_dropped);
+    // Every sample that kept its slot still completes (control: abandonment took exactly one).
+    for (int s = 1; s <= SUB_SLOTS; s++) {
         EXPECT_TRUE(process_packet(&receiver, lasts[s], 0, last_len[s], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     }
-    EXPECT_EQ_INT(tt_FRAG_REASSEMBLY_SLOTS - 1, delivered_count);
+    EXPECT_EQ_INT(SUB_SLOTS, delivered_count);
+}
+
+static void test_full_pool_abandons_the_oldest_and_counts_it(void) {
+    full_pool_case(false);
+    full_pool_case(true);
 }
 
 // Rewrites one byte of a captured fragment's header, for the malformed-input tests below.
@@ -2491,9 +2521,11 @@ static void add_best_effort_subscriber(void) {
     second_topic.data_decode = second_checking_decode;
     receiver_topic.data_decode = first_checking_decode;
     memset(&sub2, 0, sizeof(sub2));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub2, &second_topic,
-                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
-                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+    EXPECT_TRUE(tt_Subscriber_storage_size(&second_topic, &TEST_QOS_UNRELIABLE) <= sizeof(own_slot_storage[1]));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub2, &second_topic, ENDPOINT_NAME,
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            own_slot_storage[1], sizeof(own_slot_storage[1])));
     first_delivered = second_delivered = 0;
 }
 
@@ -2554,12 +2586,15 @@ static void test_best_effort_beside_reliable_none_gets_every_sample(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
 }
 
-// Every slot pinned by the RELIABLE Subscriber - its first writer's sample A waiting on two datagrams with five whole
-// samples recorded behind it, and two other writers' samples part-placed - when a sample G arrives whole. With a
-// buffer the RELIABLE Subscriber pins nothing (the control): the pool is the BEST_EFFORT one's, and G is delivered to
-// it on arrival. Without one there is no slot for G, and the BEST_EFFORT Subscriber gets it only from the resend the
-// RELIABLE one asks for - late, and only if no later sample of that writer reached it first (a known limit, 2026-10-25:
-// the pool's slots are the node's, and a sample waiting on a repair holds its slot for the round trip).
+// Every pool slot and its own pinned by the RELIABLE Subscriber - its first writer's sample A waiting on two datagrams
+// (in its own slot) with six whole samples recorded behind it, and two other writers' samples part-placed - when a
+// sample G arrives whole. With a buffer the RELIABLE Subscriber pins nothing (the control): G is delivered to the
+// BEST_EFFORT one on arrival. Without one, until 2026-10-27 there was no slot for G, and the BEST_EFFORT Subscriber got
+// it only from the resend the RELIABLE one asks for - late, and only if no later sample of that writer reached it first
+// (2026-10-25: the pool's slots were the node's, and a sample waiting on a repair holds its slot for the round trip).
+// Now G goes to the BEST_EFFORT Subscriber's own slot, which nothing else may take (docs/DESIGN.md section 8,
+// "Reassembly slots").
+#define PINNED_AHEAD (tt_FRAG_REASSEMBLY_SLOTS - EXTRA_WRITERS) // whole samples recorded ahead: the rest of the pool
 struct pinned_outcome {
     int best_effort_on_arrival; // G's original datagrams
     int best_effort_after;      // and after A's repair and G's resend
@@ -2578,7 +2613,7 @@ static struct pinned_outcome pool_pinned_full_case(bool with_buffer) {
     first_delivered = second_delivered = 0;
     deliver_from(-1, &a, 0); // A's first datagram only: the watermark is in it
     static struct captured_sample s;
-    for (int k = 0; k < 5; k++) {
+    for (int k = 0; k < PINNED_AHEAD; k++) {
         capture_sample(&pub, &s); // whole, ahead of A: recorded while two slots stay unpinned
         for (int d = 0; d < 3; d++) {
             deliver_from(-1, &s, d);
@@ -2589,8 +2624,9 @@ static struct pinned_outcome pool_pinned_full_case(bool with_buffer) {
         deliver_from(k, &s, 0);
     }
     EXPECT_EQ_INT(0, first_delivered);
-    EXPECT_EQ_INT(5, second_delivered); // BEST_EFFORT took the five whole ones
+    EXPECT_EQ_INT(PINNED_AHEAD, second_delivered); // BEST_EFFORT took the whole ones
     EXPECT_EQ_U32(with_buffer ? 0U : (uint32_t)tt_FRAG_REASSEMBLY_SLOTS, frag_pool_pinned(&receiver)); // the shape
+    EXPECT_TRUE(with_buffer || frag_slot_pinned(&sub.frag_own)); // and A in the RELIABLE Subscriber's own
     int before = second_delivered;
     capture_sample(&pub, &s); // G, whole on the wire
     for (int d = 0; d < 3; d++) {
@@ -2598,7 +2634,7 @@ static struct pinned_outcome pool_pinned_full_case(bool with_buffer) {
     }
     struct pinned_outcome outcome = {.best_effort_on_arrival = second_delivered - before};
     for (int d = 1; d < 3; d++) {
-        deliver_from(-1, &a, d); // A's repair: A and the five behind it are delivered, their slots unpinned
+        deliver_from(-1, &a, d); // A's repair: A and the six behind it are delivered, their slots unpinned
     }
     for (int d = 0; d < 3; d++) {
         deliver_from(-1, &s, d); // G's resend, which the RELIABLE Subscriber asks for unless it has G already
@@ -2614,12 +2650,307 @@ static struct pinned_outcome pool_pinned_full_case(bool with_buffer) {
 static void test_best_effort_beside_reliable_none_when_every_slot_is_pinned(void) {
     struct pinned_outcome control = pool_pinned_full_case(true);
     EXPECT_EQ_INT(1, control.best_effort_on_arrival);
-    EXPECT_EQ_INT(1, control.best_effort_after); // the resend is a duplicate to it
-    EXPECT_EQ_INT(7, control.reliable);          // A, the five, G
+    EXPECT_EQ_INT(1, control.best_effort_after);       // the resend is a duplicate to it
+    EXPECT_EQ_INT(PINNED_AHEAD + 2, control.reliable); // A, the six, G
     struct pinned_outcome none = pool_pinned_full_case(false);
-    EXPECT_EQ_INT(0, none.best_effort_on_arrival); // the limit: no slot for G
-    EXPECT_EQ_INT(1, none.best_effort_after);      // late, from the resend
-    EXPECT_EQ_INT(7, none.reliable);
+    EXPECT_EQ_INT(1, none.best_effort_on_arrival); // its own slot (0 until 2026-10-27: no slot for G)
+    EXPECT_EQ_INT(1, none.best_effort_after);      // the resend is a duplicate to it
+    EXPECT_EQ_INT(PINNED_AHEAD + 2, none.reliable);
+}
+
+// --- Reassembly slots: one per Subscriber, the pool as overflow (docs/DESIGN.md section 8; the user, 2026-10-27)
+// -------
+
+static void on_data_uncounted(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)s;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+}
+
+// A second BEST_EFFORT Subscriber on the receiver, of a topic of its own ("frag_topic_b") with a Publisher of its own
+// on the sender; what it decodes is counted in second_delivered, and delivered_count stays the pair's Subscriber's.
+static struct tt_TypeSupport topic_b_tx;
+static struct tt_TypeSupport topic_b_rx;
+static struct tt_Publisher pub_b;
+
+static void add_best_effort_topic_b(void) {
+    topic_b_tx = sender_topic;
+    topic_b_tx.name = "frag_topic_b";
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&sender), &pub_b, &topic_b_tx,
+                                                      ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    match_by_broadcast(&pub_b);
+    topic_b_rx = receiver_topic;
+    topic_b_rx.name = "frag_topic_b";
+    topic_b_rx.data_decode = second_checking_decode;
+    memset(&sub2, 0, sizeof(sub2));
+    size_t size = tt_Subscriber_storage_size(&topic_b_rx, &TEST_QOS_UNRELIABLE);
+    EXPECT_TRUE(size <= sizeof(own_slot_storage[1]));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub2, &topic_b_rx,
+                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                       &(struct tt_SubscriberOptions) {.callback = on_data_uncounted},
+                                                       size != 0 ? own_slot_storage[1] : NULL, size));
+    second_delivered = 0;
+    second_intact = false;
+}
+
+// B, a sample of topic b, has its first fragment in; then `starts` samples of the pair's topic arrive with only their
+// first fragment each (never whole); then B's last. Whether B is delivered: until 2026-10-27 the pool was both
+// Subscribers' only room, and B's reassembly, the oldest, was abandoned for the other topic's once they filled it.
+static int two_best_effort_case(int starts) {
+    init_pair(2800);
+    add_best_effort_topic_b();
+    static struct captured_sample b;
+    static struct captured_sample a;
+    capture_sample(&pub_b, &b);
+    EXPECT_EQ_INT(2, b.count);
+    deliver_from(-1, &b, 0);
+    for (int k = 0; k < starts; k++) {
+        capture_sample(&pub, &a);
+        deliver_from(-1, &a, 0);
+    }
+    deliver_from(-1, &b, 1);
+    int got = second_delivered;
+    EXPECT_TRUE(got == 0 || second_intact);
+    EXPECT_EQ_INT(0, delivered_count); // none of the other topic's was whole
+    // Control: the other Subscriber still takes a whole sample of its own.
+    capture_sample(&pub, &a);
+    deliver_from(-1, &a, 0);
+    deliver_from(-1, &a, 1);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+    return got;
+}
+
+static void test_two_best_effort_subscribers_do_not_take_each_others_slots(void) {
+    // Control: with room in the pool, B is delivered whatever owns the slots.
+    EXPECT_EQ_INT(1, two_best_effort_case(tt_FRAG_REASSEMBLY_SLOTS - 2));
+    // Three pools' worth of the other topic's samples, each abandoned in turn: B is in its Subscriber's own slot.
+    EXPECT_EQ_INT(1, two_best_effort_case(3 * tt_FRAG_REASSEMBLY_SLOTS));
+    EXPECT_TRUE(receiver.frag_abandoned > 0); // the pool really was full, and reclaimed
+}
+
+// A BEST_EFFORT Subscriber's older sample, part-placed in its own slot, moves to the pool when a newer one of the same
+// writer arrives (frag_newest_takes_own()), and still completes intact there: once with fragment 0 placed (the
+// continuation size known, the bytes placed so far copied), once with only its last fragment (parked at the end of the
+// slot, moved to the end of the pool slot's).
+static void older_sample_moved_case(bool last_only) {
+    init_pair(4000); // three fragments
+    static struct captured_sample older;
+    static struct captured_sample newer;
+    sample_len = 100; // a DATA first: the Subscriber tracks the writer, so a continuation is its own from the start
+    capture_sample(&pub, &older);
+    deliver_from(-1, &older, 0);
+    EXPECT_EQ_INT(1, delivered_count);
+    delivered_count = 0;
+    sample_len = 4000;
+    sample_seed = 7;
+    capture_sample(&pub, &older);
+    EXPECT_EQ_INT(3, older.count);
+    sample_seed = 9;
+    capture_sample(&pub, &newer);
+    if (last_only) {
+        deliver_from(-1, &older, 2);
+    } else {
+        deliver_from(-1, &older, 0);
+        deliver_from(-1, &older, 2);
+    }
+    uint32_t older_seq_no = sub.frag_own.seq_no;
+    EXPECT_TRUE(sub.frag_own.received != 0); // the older, in its own slot
+    deliver_from(-1, &newer, 0);
+    EXPECT_TRUE(sub.frag_own.received != 0 && sub.frag_own.seq_no == older_seq_no + 3U); // the newer took it
+    EXPECT_EQ_U64(0, receiver.frag_abandoned); // the older was moved, not given up
+    expected_seed = 7;
+    deliver_from(-1, &older, 1);
+    if (last_only) {
+        deliver_from(-1, &older, 0);
+    }
+    expect_delivered_once(4000);
+    expected_seed = 9;
+    deliver_from(-1, &newer, 1);
+    deliver_from(-1, &newer, 2);
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    sample_seed = 3;
+    expected_seed = 3;
+}
+
+static void test_older_sample_moved_out_of_the_own_slot_completes(void) {
+    older_sample_moved_case(false);
+    older_sample_moved_case(true);
+}
+
+// A fragment of a sample older than the last one a BEST_EFFORT Subscriber was handed from that writer - a resend
+// another Subscriber asked for - claims no slot: it could only be discarded.
+static void test_best_effort_fragment_of_a_passed_sample_claims_nothing(void) {
+    init_pair(2800);
+    static struct captured_sample first;
+    static struct captured_sample second;
+    capture_sample(&pub, &first);
+    capture_sample(&pub, &second);
+    deliver_from(-1, &first, 0);
+    deliver_from(-1, &first, 1);
+    deliver_from(-1, &second, 0);
+    deliver_from(-1, &second, 1);
+    EXPECT_EQ_INT(2, delivered_count);
+    uint64_t duplicates = receiver.frag_duplicate;
+    deliver_from(-1, &first, 1); // the first sample's last fragment again: its slot is long reused
+    EXPECT_EQ_INT(0, busy_slots());
+    EXPECT_EQ_U64(duplicates + 1U, receiver.frag_duplicate);
+    EXPECT_EQ_INT(2, delivered_count);
+    // Control: the next sample's does claim one.
+    capture_sample(&pub, &first);
+    deliver_from(-1, &first, 1);
+    EXPECT_EQ_INT(1, busy_slots());
+}
+
+// A sample larger than the Subscriber's own slot was sized for - a bound its binding under-stated, 1,000 bytes for a
+// 2,800-byte sample - is put together in the pool instead, whole and intact, in either order of its fragments.
+static void test_sample_larger_than_its_own_slot_goes_to_the_pool(void) {
+    for (int reversed = 0; reversed < 2; reversed++) {
+        init_pair(2800);
+        EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub));
+        receiver_topic.max_encoded_size = 1000;
+        size_t size = tt_Subscriber_storage_size(&receiver_topic, &TEST_QOS_UNRELIABLE);
+        EXPECT_EQ_U64(QOS_ALIGN8((size_t)tt_FRAG_DATA_HEADER_LENGTH + 1000U + 4U), size);
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub, &receiver_topic,
+                                                           ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                           &(struct tt_SubscriberOptions) {.callback = on_data},
+                                                           own_slot_storage[0], sizeof(own_slot_storage[0])));
+        static struct captured_sample s;
+        sample_len = 100; // a DATA first: the Subscriber tracks the writer, so its continuations are its own
+        capture_sample(&pub, &s);
+        deliver_from(-1, &s, 0);
+        delivered_count = 0;
+        sample_len = 2800;
+        capture_sample(&pub, &s);
+        EXPECT_EQ_INT(2, s.count);
+        deliver_from(-1, &s, reversed ? 1 : 0);
+        EXPECT_EQ_U64(0, sub.frag_own.received); // moved out at once: it does not fit
+        deliver_from(-1, &s, reversed ? 0 : 1);
+        expect_delivered_once(2800);
+        EXPECT_EQ_U64(0, receiver.frag_dropped);
+    }
+}
+
+// Two BEST_EFFORT Subscribers of one writer each put its samples together in slots of their own, and each is handed
+// each sample once - its own reassembly's, never the other's (process_data_for()'s `only`). Two samples interleaved,
+// so the older one of each moves to the pool (frag_newest_takes_own()) where the other Subscriber's copy also is.
+// The cost, counted: one reassembly per Subscriber per sample.
+static void test_two_best_effort_subscribers_of_one_writer_each_reassemble(void) {
+    init_pair(2800);
+    add_best_effort_subscriber(); // sub2, same topic: what each decodes is counted apart
+    static struct captured_sample s;
+    static struct captured_sample t;
+    sample_len = 100; // a DATA first: both track the writer
+    capture_sample(&pub, &s);
+    deliver_from(-1, &s, 0);
+    EXPECT_EQ_INT(1, first_delivered);
+    EXPECT_EQ_INT(1, second_delivered);
+    first_delivered = second_delivered = 0;
+    sample_len = 2800;
+    capture_sample(&pub, &s);
+    capture_sample(&pub, &t);
+    uint64_t reassembled = receiver.frag_reassembled;
+    deliver_from(-1, &s, 0);
+    deliver_from(-1, &t, 0);
+    deliver_from(-1, &s, 1);
+    deliver_from(-1, &t, 1);
+    EXPECT_EQ_INT(2, first_delivered);
+    EXPECT_EQ_INT(2, second_delivered);
+    EXPECT_TRUE(first_intact);
+    EXPECT_TRUE(second_intact);
+    EXPECT_EQ_U32(0, sub.out_of_order_discarded); // nothing handed twice
+    EXPECT_EQ_U32(0, sub2.out_of_order_discarded);
+    EXPECT_EQ_U64(reassembled + 4U, receiver.frag_reassembled);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+}
+
+// A no-buffer RELIABLE Subscriber records a sample ahead of its watermark only in the pool, never in its own slot:
+// pinned there by a sample ahead, the slot would not be there for the sample the watermark moves to next, which would
+// then wait on what other Subscribers leave in the pool (frag_pool_record_ahead()). A's first datagram in the own slot,
+// B's first in the pool (recorded ahead); A completes, the watermark moves to B, and C arrives whole into the own slot,
+// now spent: there it stays unrecorded. B's repair delivers B, then C, in order.
+static void test_reliable_none_ahead_never_pins_the_own_slot(void) {
+    tracked_none_pair(4000); // A: seq_no 2..4
+    static struct captured_sample a;
+    static struct captured_sample b;
+    static struct captured_sample c;
+    for (int d = 0; d < 3; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    capture_sample(&pub, &b); // 5..7
+    capture_sample(&pub, &c); // 8..10
+    deliver_from(-1, &a, 0);
+    EXPECT_TRUE(sub.frag_own.received != 0 && frag_slot_pinned(&sub.frag_own)); // A, at the watermark
+    deliver_from(-1, &b, 0);
+    EXPECT_TRUE(proxy_has_recorded(sender_proxy(), 5)); // B recorded ahead, in the pool
+    deliver_from(-1, &a, 1);
+    deliver_from(-1, &a, 2);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_U32(6, sender_proxy()->ack_seq_no); // the watermark is in B
+    for (int d = 0; d < 3; d++) {
+        deliver_from(-1, &c, d);
+    }
+    EXPECT_TRUE(sub.frag_own.done && sub.frag_own.seq_no == 8U); // C, whole, in the own slot
+    EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 8));         // and not recorded there
+    EXPECT_TRUE(!frag_slot_pinned(&sub.frag_own));
+    deliver_from(-1, &b, 1);
+    deliver_from(-1, &b, 2);
+    EXPECT_EQ_INT(3, delivered_count); // B, then C
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(11, sender_proxy()->ack_seq_no);
+}
+
+// A destroyed Subscriber's pool slots go with it: no slot is left naming it, and its samples' fragments open none.
+static void test_destroyed_subscriber_leaves_no_pool_slot(void) {
+    init_pair(2800);
+    add_best_effort_topic_b();
+    static struct captured_sample b;
+    for (int k = 0; k < 3; k++) {
+        capture_sample(&pub_b, &b); // first fragments only: the newest in its own slot, the older ones in the pool
+        deliver_from(-1, &b, 0);
+    }
+    int held = 0;
+    for (uint32_t i = 0; i < receiver.frag_slots_used; i++) {
+        held += receiver.frag_slots[i].owner == &sub2 && receiver.frag_slots[i].received != 0 ? 1 : 0;
+    }
+    EXPECT_EQ_INT(2, held);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+    for (uint32_t i = 0; i < receiver.frag_slots_used; i++) {
+        EXPECT_TRUE(receiver.frag_slots[i].owner != &sub2);
+        EXPECT_EQ_U64(0, receiver.frag_slots[i].received);
+    }
+}
+
+// What each Subscriber's caller storage takes for its own slot (tt_Subscriber_storage_size()): a BEST_EFFORT or
+// no-buffer RELIABLE one of an unbounded type, the largest sample; of a bounded one, its bound; nothing for a type no
+// link fragments or a RELIABLE one with a buffer (its fragments wait there). Printed: the delta per Subscriber.
+static void test_own_slot_storage_size(void) {
+    struct tt_TypeSupport type = receiver_topic;
+    struct tt_QosProfile none = TEST_QOS_RELIABLE_READER;
+    none.reliability.reorder_slots = tt_QOS_REORDER_NONE;
+    struct tt_QosProfile buffered = TEST_QOS_RELIABLE_READER;
+    buffered.reliability.reorder_slots = TEST_REORDER_SLOTS;
+    const size_t unbounded = QOS_ALIGN8((size_t)tt_FRAG_DATA_HEADER_LENGTH + tt_MAX_SAMPLE_LENGTH + 4U);
+    type.max_encoded_size = 0;
+    EXPECT_EQ_U64(unbounded, tt_Subscriber_storage_size(&type, &TEST_QOS_UNRELIABLE));
+    EXPECT_EQ_U64(unbounded, tt_Subscriber_storage_size(&type, &none));
+    size_t buffered_size = tt_Subscriber_storage_size(&type, &buffered);
+    EXPECT_EQ_U64((size_t)TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES, buffered_size); // the buffer alone
+    type.max_encoded_size = 1000;
+    EXPECT_EQ_U64(QOS_ALIGN8((size_t)tt_FRAG_DATA_HEADER_LENGTH + 1000U + 4U),
+                  tt_Subscriber_storage_size(&type, &TEST_QOS_UNRELIABLE));
+    type.max_encoded_size_estimated = true; // a size the binding chose, not a bound: the largest sample
+    EXPECT_EQ_U64(unbounded, tt_Subscriber_storage_size(&type, &TEST_QOS_UNRELIABLE));
+    type.max_encoded_size_estimated = false;
+    type.max_encoded_size = 64; // goes whole even on a tt_LINK_MTU_MIN link
+    EXPECT_EQ_U64(0, tt_Subscriber_storage_size(&type, &TEST_QOS_UNRELIABLE));
+    printf("test_data_frag: own reassembly slot per Subscriber at tt_MAX_SAMPLE_LENGTH %u: unbounded %zu B, bound "
+           "1000 %zu B, bound 64 0 B, buffered RELIABLE 0 B\n",
+           (unsigned)tt_MAX_SAMPLE_LENGTH, unbounded, QOS_ALIGN8((size_t)tt_FRAG_DATA_HEADER_LENGTH + 1000U + 4U));
 }
 
 // (a) again, the other way a watermark moves past a sample recorded ahead: a DATA. A writer's A (fragmented) has its
@@ -2687,6 +3018,7 @@ static struct tt_Subscriber ms_rel[MS_MAX_STREAMS];
 static struct tt_Subscriber ms_be[MS_MAX_STREAMS];
 static uint64_t ms_pub_storage[MS_MAX_STREAMS][(size_t)64U * 1024U / sizeof(uint64_t)];
 static uint64_t ms_sub_storage[MS_MAX_STREAMS][MS_SUB_STORAGE / sizeof(uint64_t)];
+static uint64_t ms_be_storage[MS_MAX_STREAMS][OWN_SLOT_STORAGE / sizeof(uint64_t)];
 static struct tt_ReliableCacheIndex ms_cache_index[MS_MAX_STREAMS][MS_CACHE_DEPTH];
 static uint8_t ms_cache_arena[MS_MAX_STREAMS]
                              [tt_RELIABLE_CACHE_ARENA_BYTES(MS_CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
@@ -2815,10 +3147,12 @@ static void ms_create_stream(int w, const struct tt_QosProfile* pub_qos, const s
                                                        &(struct tt_SubscriberOptions) {.callback = ms_on_data},
                                                        sub_size != 0 ? ms_sub_storage[w] : NULL, sub_size));
     if (best_effort) {
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Node_create_subscriber(tt_Context_default_node(&receiver), &ms_be[w], &ms_rx_topic[w],
-                                                ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
-                                                &(struct tt_SubscriberOptions) {.callback = ms_on_data}, NULL, 0));
+        size_t be_size = tt_Subscriber_storage_size(&ms_rx_topic[w], &TEST_QOS_UNRELIABLE);
+        EXPECT_TRUE(be_size <= sizeof(ms_be_storage[w]));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &ms_be[w],
+                                                           &ms_rx_topic[w], ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                           &(struct tt_SubscriberOptions) {.callback = ms_on_data},
+                                                           be_size != 0 ? ms_be_storage[w] : NULL, be_size));
     }
 }
 
@@ -2954,13 +3288,20 @@ static void test_many_reliable_none_streams_all_progress(void) {
                    ms_peak_pinned, (double)control.took / 1e6, control.per_sample);
         }
     }
-    // The fallback was reached: with more streams than slots and loss, fragments were dropped with every slot pinned.
+    // The pool was under pressure: with more streams than slots and loss, recording ahead filled it to its bound (two
+    // left unpinned, frag_pool_record_ahead()). Until 2026-10-27, with the pool every stream's only room, this run
+    // dropped 4,201 fragments with every slot pinned; each Subscriber's own slot now takes the sample it waits on.
     struct ms_result crowded = multi_run(16, false, false, 50, 20 * tt_SECOND);
-    EXPECT_TRUE(crowded.dropped > 0);
+    EXPECT_TRUE(ms_peak_pinned >= (uint32_t)tt_FRAG_REASSEMBLY_SLOTS - 2U);
+    EXPECT_EQ_U64(0, crowded.dropped);
 }
 
 // (c) again, under load: of the samples whose original datagrams all crossed the channel, how many the BEST_EFFORT
-// Subscriber got - beside a no-buffer RELIABLE one, and beside a buffered one (the control, which leaves it the pool).
+// Subscriber got - beside a no-buffer RELIABLE one, and beside a buffered one (which leaves the pool to the BEST_EFFORT
+// Subscribers). Every one, in both (the user, 2026-10-27: a Subscriber's delivery depends on its own QoS, the network
+// and its own reading only). Until then, with the pool every Subscriber's only room, the BEST_EFFORT ones got 152 of
+// 265 beside 8 no-buffer streams at 5% loss - the RELIABLE ones' held samples pinned every slot - and 154 of 640 beside
+// 16 buffered ones on a clean link: 16 BEST_EFFORT Subscribers' samples, interleaved, took each other's slots.
 static void test_best_effort_beside_many_reliable_none_streams(void) {
     static const int stream_counts[] = {3, 8, 16};
     static const uint32_t losses[] = {0, 10, 50};
@@ -2975,9 +3316,11 @@ static void test_best_effort_beside_many_reliable_none_streams(void) {
                 EXPECT_TRUE(ms_be_tally[w].in_order);
                 EXPECT_TRUE(ms_be_tally[w].intact);
             }
-            if (losses[l] == 0 && streams < tt_FRAG_REASSEMBLY_SLOTS) {
+            if (losses[l] == 0) {
                 EXPECT_EQ_INT(streams * MS_SAMPLES, none.be_got_of_those);
             }
+            EXPECT_EQ_INT(none.be_complete_on_wire, none.be_got_of_those);
+            EXPECT_EQ_INT(control.be_complete_on_wire, control.be_got_of_those);
             printf("test_data_frag: BEST_EFFORT beside %2d no-buffer streams at %2u/1000 loss - got %d of %d whole on "
                    "the wire (%lu dropped all pinned); beside buffered %d of %d\n",
                    streams, losses[l], none.be_got_of_those, none.be_complete_on_wire, (unsigned long)none.dropped,
@@ -3059,6 +3402,14 @@ int main(void) {
     test_reliable_none_data_absorbs_a_whole_sample();
     test_best_effort_beside_reliable_none_gets_every_sample();
     test_best_effort_beside_reliable_none_when_every_slot_is_pinned();
+    test_two_best_effort_subscribers_do_not_take_each_others_slots();
+    test_older_sample_moved_out_of_the_own_slot_completes();
+    test_best_effort_fragment_of_a_passed_sample_claims_nothing();
+    test_sample_larger_than_its_own_slot_goes_to_the_pool();
+    test_two_best_effort_subscribers_of_one_writer_each_reassemble();
+    test_reliable_none_ahead_never_pins_the_own_slot();
+    test_destroyed_subscriber_leaves_no_pool_slot();
+    test_own_slot_storage_size();
     test_many_reliable_none_streams_all_progress();
     test_best_effort_beside_many_reliable_none_streams();
 

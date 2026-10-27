@@ -972,8 +972,9 @@ typedef struct rmw_tickle_publisher_t {
 #define RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT \
     (((uint32_t)RMW_TICKLE_TRACKING_WORDS * 64U) / RMW_TICKLE_HEARTBEATS_PER_WINDOW)
 // rmw_tickle_subscriber_t.queue_limit: what a KEEP_ALL queue holds beyond its admission limit - every sample core's
-// reorder window can hold, plus every fragment reassembly slot.
-#define RMW_TICKLE_KEEP_ALL_HEADROOM (((size_t)RMW_TICKLE_TRACKING_WORDS * 64U) + (size_t)tt_FRAG_REASSEMBLY_SLOTS)
+// reorder window can hold, plus every fragment reassembly slot a subscription can hold: the node's pool and its own
+// (docs/DESIGN.md section 8, "Reassembly slots").
+#define RMW_TICKLE_KEEP_ALL_HEADROOM (((size_t)RMW_TICKLE_TRACKING_WORDS * 64U) + (size_t)tt_FRAG_REASSEMBLY_SLOTS + 1U)
 
 // How many samples a RELIABLE subscription can hold while it waits for a gap.
 //
@@ -1058,6 +1059,9 @@ typedef struct rmw_tickle_subscriber_t {
     //     rmw_tickle: without it a RELIABLE Subscriber still delivers in order, but under real loss
     //     one lost datagram becomes a re-request for everything behind it - reliable receive
     //     throughput more than halved on the HIL rig the moment ordered delivery landed.
+    //   - 2026-10-27 (the user): the subscription's own fragment reassembly slot, for a BEST_EFFORT one or a RELIABLE
+    //     one with no reorder buffer whose type can be fragmented - its bound, or tt_MAX_SAMPLE_LENGTH for an
+    //     unbounded type (docs/DESIGN.md section 8, "Reassembly slots"). Untouched until a fragment lands in it.
     void* qos_storage;
     struct tt_TypeSupport topic; // see rmw_tickle_publisher_t.topic's own comment
     rmw_tickle_node_t* node;

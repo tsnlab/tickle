@@ -604,6 +604,26 @@ static void test_malformed_runs(bool large) {
     }
 }
 
+// Whether any reassembly slot of ctx - the pool's, or a Subscriber's own (docs/DESIGN.md section 8, "Reassembly slots")
+// - is collecting this sample.
+static bool reassembly_has(struct tt_Context* ctx, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    for (uint32_t i = 0; i < ctx->frag_slots_used; i++) {
+        if (ctx->frag_slots[i].received != 0 && frag_slot_is(&ctx->frag_slots[i], source, entity_id, seq_no)) {
+            return true;
+        }
+    }
+    for (uint32_t i = 0; i < ctx->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = ctx->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            const struct tt_FragSlot* own = &((const struct tt_Subscriber*)endpoint)->frag_own;
+            if (own->received != 0 && frag_slot_is(own, source, entity_id, seq_no)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // A run from this context itself is not received, as no fragment of its own is.
 static void test_self_sent_run_ignored(void) {
     init_pair(SMALL_LEN, false);
@@ -615,10 +635,10 @@ static void test_self_sent_run_ignored(void) {
     (void)process_packet(&receiver, copy, 0, len, receiver.hal.own_ip, receiver.hal.own_port, tt_TRANSPORT_UDP);
     EXPECT_EQ_U64(1, receiver.rx_self_sent);
     EXPECT_EQ_U64(0, receiver.frag_reassembled);
-    EXPECT_TRUE(!frag_pool_has(&receiver, RECEIVER_ID, pub.endpoint.entity_id, sample_header.seq_no));
-    // Control: the same run from the sender is taken into the pool, so the check above can see one.
+    EXPECT_TRUE(!reassembly_has(&receiver, RECEIVER_ID, pub.endpoint.entity_id, sample_header.seq_no));
+    // Control: the same run from the sender is taken into a reassembly slot, so the check above can see one.
     feed_run(0, SMALL_UNITS - 1);
-    EXPECT_TRUE(frag_pool_has(&receiver, SENDER_ID, pub.endpoint.entity_id, sample_header.seq_no));
+    EXPECT_TRUE(reassembly_has(&receiver, SENDER_ID, pub.endpoint.entity_id, sample_header.seq_no));
 }
 
 int main(void) {

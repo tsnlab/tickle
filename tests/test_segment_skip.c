@@ -327,6 +327,26 @@ static void test_a_mixed_backlog_keeps_the_keep_all_topic_complete(void) {
     rig_down();
 }
 
+// Whether any reassembly slot of ctx - the pool's, or a Subscriber's own (docs/DESIGN.md section 8, "Reassembly slots")
+// - is collecting this sample.
+static bool reassembly_has(struct tt_Context* ctx, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    for (uint32_t i = 0; i < ctx->frag_slots_used; i++) {
+        if (ctx->frag_slots[i].received != 0 && frag_slot_is(&ctx->frag_slots[i], source, entity_id, seq_no)) {
+            return true;
+        }
+    }
+    for (uint32_t i = 0; i < ctx->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = ctx->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            const struct tt_FragSlot* own = &((const struct tt_Subscriber*)endpoint)->frag_own;
+            if (own->received != 0 && frag_slot_is(own, source, entity_id, seq_no)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Fragmented samples. Three two-fragment samples, the last one's continuation claimed by its writer and not yet
 // published - a writer mid-copy. The first is superseded by the second (complete) and skipped, both its records;
 // the second is delivered; the third is partial and must not be skipped or counted as newer, and once its
@@ -350,8 +370,8 @@ static void test_a_partial_fragmented_sample_is_not_skipped(void) {
     EXPECT_EQ_U32(1, seen_a.count);
     EXPECT_EQ_U32(601, seen_a.values[0]);
     EXPECT_EQ_U64(1, rig.owner.rx_shm_skipped_superseded); // 600 only; 602 was partial
-    // 600's continuation went with it: nothing of it waits in the reassembly pool to be abandoned later.
-    EXPECT_TRUE(!frag_pool_has(&rig.owner, rig.sender.id, rig.pub_a.endpoint.entity_id, 1));
+    // 600's continuation went with it: nothing of it waits in a reassembly slot to be abandoned later.
+    EXPECT_TRUE(!reassembly_has(&rig.owner, rig.sender.id, rig.pub_a.endpoint.entity_id, 1));
 
     last->sequence = 6; // the writer finishes
     drain_all();

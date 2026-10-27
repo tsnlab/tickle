@@ -319,11 +319,11 @@ static struct tt_ReliableCache cache;
 // order (tickle.h, reorder_storage): PAIR_REORDER gives the reader MIXED_REORDER_SLOTS of them.
 #define MIXED_REORDER_SLOTS tt_RELIABLE_BITMAP_MAX_BITS // the wide window: fewer are refused (test_reorder_window.c)
 #define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
-// The RELIABLE reader's storage: its wide window, then its reorder buffer when it has one
-// (tt_Subscriber_storage_size()).
+// The RELIABLE reader's storage: its wide window, then its reorder buffer when it has one, else its own reassembly
+// slot (tt_Subscriber_storage_size(); docs/DESIGN.md section 8, "Reassembly slots").
 static uint64_t sub_storage[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) +
                             (MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t))];
-static uint64_t sub_b_storage[(size_t)tt_MAX_PEER_COUNT * WIDE_WORDS];
+static uint64_t sub_b_storage[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) + (tt_FRAG_SLOT_BYTES / sizeof(uint64_t))];
 // What the RELIABLE writer's creation carves; the pair's cache (above) replaces it.
 static uint64_t created_storage[(size_t)256U * 1024U / sizeof(uint64_t)];
 

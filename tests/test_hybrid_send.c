@@ -140,6 +140,8 @@ struct reader {
     struct tt_Context ctx;
     struct tt_TypeSupport topic;
     struct tt_Subscriber sub;
+    // Its caller storage: its own reassembly slot (tt_Subscriber_storage_size(); docs/DESIGN.md section 8).
+    uint64_t sub_storage[(tt_MAX_SAMPLE_LENGTH + 64) / sizeof(uint64_t)];
     uint32_t ip;
     int delivered;
     int torn;
@@ -302,10 +304,12 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
         r->topic.data_decode = checking_decode;
         r->topic.data_free = free_nothing;
 #if HYBRID_QOS_AT_CREATION
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Node_create_subscriber(tt_Context_default_node(&r->ctx), &r->sub, &r->topic, ENDPOINT_NAME,
-                                                &TEST_QOS_UNRELIABLE,
-                                                &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+        size_t storage_size = tt_Subscriber_storage_size(&r->topic, &TEST_QOS_UNRELIABLE);
+        EXPECT_TRUE(storage_size <= sizeof(r->sub_storage));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&r->ctx), &r->sub, &r->topic,
+                                                           ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
+                                                           &(struct tt_SubscriberOptions) {.callback = on_data},
+                                                           storage_size != 0 ? r->sub_storage : NULL, storage_size));
 #else
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&r->ctx, &r->sub, &r->topic, ENDPOINT_NAME, on_data));
 #endif
