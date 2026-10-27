@@ -34,7 +34,14 @@ Rules (each printed with its verdict):
       R1-R4 are VOID, whatever they say.
   T   no torn sample in any run of any arm.
 What would falsify the change: R1 FAIL (the slots do not reach the network shape), or a WORSE in R2-R4 (a cost).
-Overall: PASS when T, C, R1-R4 all pass; VOID when C or every cell is VOID; FAIL otherwise.
+DECIDING (added 2026-10-27, before the first run): a verdict against a floor wider than the effect it must see
+decides nothing - a NOT WORSE that no cost could fail passes by construction. So each metric has a widest floor at
+which its cell still decides, DECIDES below; a cell whose floor is wider is UNDECIDED for that metric:
+  delivery (be_pct, rel_pct, ctl_pct) 2 points; latency (rel_p50, rel_p99, ctl_p50) 25%; CPU 10%.
+  R1 is UNDECIDED when no lossy cell is BETTER and every lossy cell's be_pct floor is wider than its bound.
+  R2-R4 are UNDECIDED (and list the cells) when no cell is WORSE and some cell is UNDECIDED; C is UNDECIDED likewise.
+Overall: PASS when T, C, R1-R4 all pass; VOID when C is MOVED or every cell is VOID; INCONCLUSIVE when nothing failed
+and something is UNDECIDED; FAIL otherwise. REPS 10 (sub_reassembly_pc_ab.sh's default) is what was run for it.
 
 Usage: sub_reassembly_pc_ab.py <runs.txt>
 """
@@ -46,6 +53,8 @@ import sys
 ARMS = ("M", "A", "F")
 FIXED = {"be_pct": 0.5, "rel_pct": 0.5, "ctl_pct": 0.5, "rel_p50": 0.05, "rel_p99": 0.05, "ctl_p50": 0.05,
          "cpu": 0.03}
+DECIDES = {"be_pct": 2.0, "rel_pct": 2.0, "ctl_pct": 2.0, "rel_p50": 0.25, "rel_p99": 0.25, "ctl_p50": 0.25,
+           "cpu": 0.10}
 RELATIVE = {"rel_p50", "rel_p99", "ctl_p50", "cpu"}
 HIGHER_IS_BETTER = {"be_pct", "rel_pct", "ctl_pct"}
 
@@ -159,13 +168,16 @@ def main():
         print(f"VOID cell {cell}: fewer than 3 valid runs of some arm")
 
     table = {}
-    print("\ncell          metric   d(F)        floor     verdict")
+    print("\ncell          metric   d(F)        floor     n(F)  verdict")
     for cell in live:
         for metric in ("be_pct", "rel_pct", "rel_p50", "rel_p99", "cpu", "ctl_pct", "ctl_p50"):
             v, d_f, floor = verdict(runs, cell, metric)
+            if v == "HELD" and not floor <= DECIDES[metric]:
+                v = "UNDECIDED"
             table[(cell, metric)] = v
             unit = "" if metric not in RELATIVE else " (rel)"
-            print(f"{cell:13s} {metric:8s} {d_f:+10.4f} {floor:9.4f}  {v}{unit}")
+            n_f = len(deltas(runs, cell, "F", metric))
+            print(f"{cell:13s} {metric:8s} {d_f:+10.4f} {floor:9.4f} {n_f:5d}  {v}{unit}")
 
     def loss_of(cell):
         return float(cell.split("_")[1][1:])
@@ -174,7 +186,12 @@ def main():
     torn = sum(r.get("torn", 0) for r in runs if r["void"] is None)
     results["T"] = "PASS" if torn == 0 else f"FAIL ({torn} torn)"
     control = [table[(c, m)] for c in live for m in ("ctl_pct", "ctl_p50")]
-    results["C"] = "HELD" if control and all(v == "HELD" for v in control) else ("VOID" if not control else "MOVED")
+    if not control:
+        results["C"] = "VOID"
+    elif any(v in ("BETTER", "WORSE") for v in control):
+        results["C"] = "MOVED"
+    else:
+        results["C"] = "HELD" if all(v == "HELD" for v in control) else "UNDECIDED"
     lossy = [c for c in live if loss_of(c) > 0]
     m_dropped = {c: statistics.fmean(r["frag_dropped"] for r in runs
                                      if r["cell"] == c and r["arm"] == "M" and r["void"] is None) for c in lossy}
@@ -184,10 +201,23 @@ def main():
         results["R1"] = "VOID (main dropped no fragment for want of a slot in any lossy cell)"
     else:
         be = [table[(c, "be_pct")] for c in lossy]
-        results["R1"] = "PASS" if "BETTER" in be and "WORSE" not in be else f"FAIL ({', '.join(be)})"
+        if "BETTER" in be and "WORSE" not in be:
+            results["R1"] = "PASS"
+        elif "WORSE" not in be and all(v == "UNDECIDED" for v in be):
+            results["R1"] = "UNDECIDED (every lossy cell's floor is wider than 2 points)"
+        else:
+            results["R1"] = f"FAIL ({', '.join(be)})"
     for rule, metrics in (("R2", ("rel_pct",)), ("R3", ("rel_p50", "rel_p99")), ("R4", ("cpu",))):
         worse = [f"{c} {m}" for c in live for m in metrics if table[(c, m)] == "WORSE"]
-        results[rule] = "PASS" if live and not worse else ("VOID" if not live else f"FAIL ({'; '.join(worse)})")
+        undecided = [f"{c} {m}" for c in live for m in metrics if table[(c, m)] == "UNDECIDED"]
+        if not live:
+            results[rule] = "VOID"
+        elif worse:
+            results[rule] = f"FAIL ({'; '.join(worse)})"
+        elif undecided:
+            results[rule] = f"UNDECIDED ({'; '.join(undecided)})"
+        else:
+            results[rule] = "PASS"
     print()
     for rule in ("T", "C", "R1", "R2", "R3", "R4"):
         print(f"{rule}: {results[rule]}")
@@ -195,6 +225,8 @@ def main():
         overall = "VOID"
     elif all(results[r] in ("PASS", "HELD") for r in ("T", "C", "R1", "R2", "R3", "R4")):
         overall = "PASS"
+    elif all(results[r].split()[0] in ("PASS", "HELD", "UNDECIDED") for r in ("T", "C", "R1", "R2", "R3", "R4")):
+        overall = "INCONCLUSIVE"
     else:
         overall = "FAIL"
     print(f"OVERALL: {overall}")
