@@ -22999,8 +22999,10 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, struct tt_Subs
     if (slot != NULL) {
         return slot;
     }
-    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no) &&
-        (slot = frag_pool_free_or_spent(node, unused)) != NULL) {
+    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no)) {
+        slot = frag_pool_free_or_spent(node, unused);
+    }
+    if (slot != NULL) {
         frag_pool_attach(node, slot, sub);
     } else if (own != NULL && frag_slot_spent(own)) {
         slot = own;
