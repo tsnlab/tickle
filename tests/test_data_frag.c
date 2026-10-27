@@ -2945,6 +2945,7 @@ static void test_reliable_none_ahead_never_pins_the_own_slot(void) {
     static struct captured_sample b;
     static struct captured_sample c;
     static struct captured_sample w;
+    static struct captured_sample ws[AHEAD_WRITERS];
     for (int d = 0; d < 3; d++) {
         memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
         a.len[d] = datagram_len[d];
@@ -2966,8 +2967,8 @@ static void test_reliable_none_ahead_never_pins_the_own_slot(void) {
     delivered_count = 0;
     deliver_from(-1, &a, 0);
     for (int k = 0; k < AHEAD_WRITERS; k++) {
-        capture_sample(&ahead_pub[k], &w);
-        deliver_from(k, &w, 0); // its watermark sample, in the pool: pinned
+        capture_sample(&ahead_pub[k], &ws[k]);
+        deliver_from(k, &ws[k], 0); // its watermark sample, in the pool: pinned
     }
     deliver_from(-1, &b, 0);
     EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 5)); // the bound: not recorded
@@ -2975,15 +2976,25 @@ static void test_reliable_none_ahead_never_pins_the_own_slot(void) {
     deliver_from(-1, &a, 2);
     EXPECT_EQ_INT(1, delivered_count);
     EXPECT_EQ_U32((uint32_t)tt_FRAG_REASSEMBLY_SLOTS, frag_pool_pinned(&receiver)); // B now pinned too: all of them
-    for (int d = 0; d < 3; d++) {
-        deliver_from(-1, &c, d);
+    deliver_from(-1, &c, 0);
+    deliver_from(-1, &c, 1);
+    EXPECT_TRUE(sub.frag_own.received != 0 && sub.frag_own.seq_no == 8U); // C, part-placed, in the own slot
+    // The other writers' samples complete, and the pool has room again: C's last datagram still lands in the own slot,
+    // and recording ahead there stays refused - room in the pool does not make the own slot the place to pin.
+    int before = delivered_count;
+    for (int k = 0; k < AHEAD_WRITERS; k++) {
+        deliver_from(k, &ws[k], 1);
+        deliver_from(k, &ws[k], 2);
     }
+    EXPECT_EQ_INT(before + AHEAD_WRITERS, delivered_count);
+    EXPECT_TRUE(frag_pool_unpinned(&receiver, 3) > 2U);
+    deliver_from(-1, &c, 2);
     EXPECT_TRUE(sub.frag_own.done && sub.frag_own.seq_no == 8U); // C, whole, in the own slot
-    EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 8));         // and not recorded there
+    EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 8) && !proxy_has_recorded(sender_proxy(), 10)); // not recorded
     EXPECT_TRUE(!frag_slot_pinned(&sub.frag_own));
     deliver_from(-1, &b, 1);
     deliver_from(-1, &b, 2);
-    EXPECT_EQ_INT(3, delivered_count); // B, then C
+    EXPECT_EQ_INT(before + AHEAD_WRITERS + 2, delivered_count); // B, then C
     EXPECT_TRUE(delivered_intact);
     EXPECT_EQ_U32(11, sender_proxy()->ack_seq_no);
 }
