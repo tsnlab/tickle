@@ -747,7 +747,14 @@ struct tt_RunWindow {
 
 // What a reader knows of one writer's unit stream: the sample it is receiving and the next unit expected of it - a unit
 // beyond `next` is a gap - and how the writer lays a sample out (layout_n: its n, 1 for MTU units, 0 not yet seen).
-#define tt_HYBRID_RX_WRITERS 8
+// tt_HYBRID_RX_WRITERS of them a context, the least recently active replaced by a writer not among them
+// (hybrid_rx_note()). A reader receiving fragmented samples from more writers than that at once recycles entries
+// every sample, and a writer met anew at its tail has no gap behind it: its lost runs are not counted, and the
+// collapse test and rule (e) see nothing (2026-10-27: 8 entries and 9 writers - the PC A/B's BEST_EFFORT stream got 0
+// of 300 samples while every run died in the kernel's reassembly memory). rx_writer_evictions counts the recycling.
+#ifndef tt_HYBRID_RX_WRITERS
+#define tt_HYBRID_RX_WRITERS 16
+#endif
 struct tt_HybridRxWriter {
     uint32_t entity_id;
     uint32_t sample;          // the sample's first seq_no (any value: 0 is one past 2^32; source 0 is unused)
@@ -757,7 +764,9 @@ struct tt_HybridRxWriter {
     uint16_t next;
     // Samples of this writer's the segment drain passed over as superseded (KEEP_LAST skip-to-newest) since the
     // reader last noted one: received, not lost, and taken off the jump to the next sample (hybrid_rx_missed()).
-    uint32_t superseded;
+    // Saturating: more than fit are more than HYBRID_MISSED_MAX, where the jump is not read anyway.
+    uint16_t superseded;
+    uint16_t seen_tick; // the reader's tick (low 16 bits) of this writer's last datagram: the oldest is replaced first
     double path_odds;   // rule (e): the chance frame loss alone lost every run of its last all-lost samples
     uint32_t run_tick;  // the reader's tick (+1) at which a run of this writer's last got through; 0: none yet
     uint16_t body_lost; // units of the current sample before its tail found lost
@@ -803,8 +812,7 @@ struct tt_HybridState {
     uint32_t n_fail;
     uint32_t window_n; // the largest run sent in the window
     int32_t scale_streak;
-    uint16_t advertised;    // the ceiling every announce now carries (tt_AnnounceHeader.ip_reassembly_max)
-    uint8_t rx_writer_next; // the entry the next new writer replaces
+    uint16_t advertised; // the ceiling every announce now carries (tt_AnnounceHeader.ip_reassembly_max)
     uint8_t backoff;
     bool rx_capable; // this context's ceiling allows runs at all: only then is any of this kept
     bool cap_off;    // opts.net.reassembly_cap_off as create read it: no cap (a benchmark arm)
@@ -837,6 +845,9 @@ struct tt_HybridState {
     // Samples of a writer's the reader never saw and counted lost whole from the jump in its seq_no
     // (hybrid_rx_missed()).
     uint64_t missed_samples;
+    // Entries of rx_writers replaced while they held a writer: more writers at once than tt_HYBRID_RX_WRITERS, whose
+    // losses then go partly uncounted (see tt_HybridRxWriter).
+    uint64_t rx_writer_evictions;
 };
 #endif
 

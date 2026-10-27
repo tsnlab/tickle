@@ -771,7 +771,7 @@ keeps its seq_no. `n_max = min(45, peer's reassembly bytes / unit)`.
 
 | term | rule |
 |---|---|
-| **What the reader measures** | it rebuilds the writer's layout; a skipped unit is loss, a repair counts for nothing; whole lost samples come from seq_no jumps (at most 8). `p_mtu`: MTU-unit loss; `q(n)`: run survival; `R`: units/s; `D_s`: run datagrams/s per source |
+| **What the reader measures** | it rebuilds the writer's layout; a skipped unit is loss, a repair counts for nothing; whole lost samples come from seq_no jumps (at most 8). Per writer, in `tt_HYBRID_RX_WRITERS` (16) entries, the least recently active replaced: past that many writers at once a writer met anew at its tail has no gap behind it and its lost runs go uncounted (`rx_writer_evictions`); with 8 entries, 9 writers starved a BEST_EFFORT stream (2026-10-27). `p_mtu`: MTU-unit loss; `q(n)`: run survival; `R`: units/s; `D_s`: run datagrams/s per source |
 | **Estimating p** | `p = (events + 1) / frames` (a lost run is one event on `n` frames); halves at `tt_HYBRID_WINDOW_FRAMES` |
 | none seen | no event in `tt_HYBRID_NONE_SEEN_FRAMES` advertises `n_max`; until then a RELIABLE AUTO writer sends MTU units, one datagram a call |
 | stale events (the user, 2026-10-15) | up to `tt_HYBRID_STALE_EVENTS` forgotten once `(1 + C / F)^k >= 1e4` or `C >= 9.21 / p_min` clean frames |
