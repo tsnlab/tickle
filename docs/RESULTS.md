@@ -1052,7 +1052,7 @@ rules: no. The user chose to land it anyway (2026-10-26), after a rig check, whi
 Data: `~/rlf_results/` (`rlf1_*`, `rlf1.read.txt`, `rlf1.driver.log`, `rlf1.latency_quantiles.txt`, `diag/`); rig
 `~/rig_results_safe/` (`queue_core_ab_rlf.log`, `rlf_1m_20261027-000449*`, `rlf_4m_20261027-000449*`).
 
-### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26, not fixed; candidate in `EWF`)
+### The ETHERNET amp writer storm: a frozen timeout after a whole-sample loss, PC netns (`EWS`, 2026-10-26; the batch-drain trigger fixed by `EWF`, 2026-10-27)
 
 **TL;DR.** Main still storms on ETHERNET's amp cell (1 MiB RELIABLE at 30 Hz, 1 Gbit/s): 30 of 2,400 traced reps,
 and the rate follows the PC's load (0 of 495 reps started at load under 2, 8 of 1,251 at 2-4, 22 of 654 at 4 or
@@ -1134,7 +1134,7 @@ changes.
 Data: `~/ews_results/` (`ews1_r*_i*/`, `ews1.read.txt`, `ews1.driver.log`, `provoke/`, `provoke2/`, `force1/`,
 `STATUS.txt`).
 
-### The writer storm's fix: the repair timeout waits while the reader progresses, PC netns (`EWF`, 2026-10-27, not landed)
+### The writer storm's fix: the repair timeout waits while the reader progresses, PC netns (`EWF`, 2026-10-27, landed 2026-10-27)
 
 **TL;DR.** On branch `ab/eth-storm-backoff` (core `3bd2acec`, measured as its pre-rebase build on `fc5fb79b`) the repair timeout runs from the resend or from the
 reader's last progress, whichever is later. Progress means an ACKNACK showing a later large send received than any
@@ -1195,8 +1195,19 @@ main's again. EWS's per-unit back-off (F) also breaks the forced loop. In that r
   back-off that applies only while no progress is shown, or EWS's item 4 (judge an ACKNACK by when it arrived). Then
   run this harness again, with the natural cell under load as the question.
 
+- **Rig** (2026-10-27, pre = main `b61e2302`, head = `ab/eth-storm-backoff` `45129b71`, aa = head again; the landing
+  rule set before the run: core gate v2 PASS; in every Array cell head delivers no less than pre by more than
+  |aa - head|, and its median p99 is not above pre's by more than max(|aa - head|, 1 ms)). Core gate v2
+  (`coreAB_45129b71_20261027-062602`): PASS, 0/88 WORSE. `rmw_keepall_rig.sh`, 5 reps of 60 s: delivered 100% on every
+  arm and cell. Median p99 aa / head / pre: Array1m 0% 9.40 / 9.38 / 9.39 ms, 0.1% 9.44 / 9.45 / 9.45, 1% 10.48 /
+  10.53 / 9.99; Array4m 0% 36.69 / 36.61 / 36.68. LAND. The 1% cell's +0.54 ms is inside the rule's 1 ms floor but
+  seen on both head-built arms (aa as well), so it may be G's: per-rep excess p99 pre 0.44-0.77 ms, head 0.70-1.82,
+  aa 0.28-1.55. Not explained yet; the follow-up's A/B is to read it.
+- **Landed** on the user's decision (2026-10-27): G as a partial fix on rig PASS, the no-progress stall a follow-up.
+
 Data: `~/ewf_results/` (`ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `ewf1.driver.log`, `STATUS.txt`, gate and
-mutant logs); trees `~/ewf_trees/` (each with its `PROVENANCE.txt`).
+mutant logs); trees `~/ewf_trees/` (each with its `PROVENANCE.txt`); rig `~/rig_results_safe/` (`queue_core_ab_ews.log`,
+`ews_1m_20261027-075746*`, `ews_4m_20261027-075746*`).
 
 ### The hybrid mode at 1% was a latched p (rig data, PC netns, `HMA`)
 

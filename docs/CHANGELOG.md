@@ -203,6 +203,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A large writer's repair timeout waits while the reader progresses** (2026-10-27; [DESIGN.md](DESIGN.md) section 4,
+  "Large-sample resend order"; RESULTS `EWS`, `EWF`). After a whole-sample loss on ETHERNET's amp cell, the resend
+  batch took longer to drain than the 2 x srtt timeout; every ACKNACK released it again and Karn froze the timeout
+  (30 of 2,400 PC reps, up to 5.7 M resent). The timeout now runs from the resend or the reader's last progress,
+  whichever is later (8 B a reader entry, no wire change). PC: forced loop 0 of 20 against main's 10 of 20, no cell
+  WORSE. Rig: core gate v2 PASS 0/88; Array1m/4m delivery 100%, p99 within the rule (1% +0.54 ms). A reader that
+  shows no progress at all can still loop: a follow-up.
 - **A reader folds no recovery into its retry estimate as faster than the least repair transit** (2026-10-27;
   [DESIGN.md](DESIGN.md) section 2, "The least-transit floor"; RESULTS `RLC`, `RLF`). A probe whose repair was
   already on its way gave ~0.1-0.2 ms samples and collapsed the estimate for the rep (Wi-Fi 10 of 600 reps, ETHERNET
