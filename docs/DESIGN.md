@@ -670,7 +670,35 @@ step B (same host) and the hybrid transport. Pre-registrations (L1-L4, B1-B2): s
 | **every datagram takes its own seq_no** (the user, 2026-09-26) | a k-fragment sample uses k seq_nos, named by its first; a lost fragment is resent alone; KEEP_LAST evicts whole samples; KEEP_ALL admits a sample only if all of it fits |
 | sender | encode once in `tx_buffer`, one `sendmmsg()` |
 | RELIABLE receiver | in-order fragments assemble in `frag_scratch` (`frag_fast_take()`); others go to the reorder buffer; never torn (`reorder_abandoned`) |
-| BEST_EFFORT receiver | `tt_FRAG_REASSEMBLY_SLOTS` keyed by (source, entity, sample); full: reuse a completed one, then abandon the oldest |
+| BEST_EFFORT receiver, and RELIABLE with no reorder buffer | its own reassembly slot, then the node's pool: "Reassembly slots" below |
+
+### Reassembly slots: one per Subscriber, the node pool as overflow
+
+TL;DR (the user, 2026-10-27): a Subscriber's delivery depends only on its own QoS, the network and its own reading.
+Every Subscriber that puts fragmented samples together in slots - BEST_EFFORT, or RELIABLE with
+`tt_QOS_REORDER_NONE` - owns one slot in its caller storage. The node's `tt_FRAG_REASSEMBLY_SLOTS` (8) are shared
+overflow. No wire change. A RELIABLE Subscriber with a reorder buffer is unchanged: its fragments wait in its buffer.
+
+| rule | detail |
+|---|---|
+| key | (owner, source, entity, sample seq_no). Each local Subscriber of a writer puts the sample together in its own slot |
+| cost of k local Subscribers of one writer | k copies of every fragment and k slots, against one shared copy before |
+| claim order | 1 the slot it already holds for the sample (or a pool slot no Subscriber has taken holding it, which it takes over); 2 its own slot, free or spent; 3 a free pool slot; 4 the pool slot whose spent sample is oldest; 5 abandon the oldest unpinned reassembly it holds itself, own slot or pool; 6 abandon the oldest unpinned one in the pool held by another; 7 none: dropped (`frag_dropped`), a RELIABLE Subscriber asks again |
+| spent | free, or a whole sample its owner has had: BEST_EFFORT on completion, RELIABLE once its watermark passed it |
+| never taken | another Subscriber's own slot (no code path reaches it); a pinned slot: one holding a datagram its no-buffer RELIABLE owner recorded and has not been handed (`frag_slot_pinned()`, asked of the owner only) |
+| BEST_EFFORT | a newer sample of the same writer takes the own slot; the older partial moves to a free or spent pool slot or to the place of its own oldest there, else is abandoned. Step 5 never gives up a newer sample for an older one. A fragment of a sample older than the last one delivered from that writer claims nothing |
+| no-buffer RELIABLE | records ahead only in the pool, and only while 2 pool slots stay unpinned. Its own slot is pinned only by the sample its watermark is in, so the next watermark sample always has a slot it can count on |
+| no Subscriber named yet | a continuation ahead of its FRAG_FIRST, from a writer no Subscriber tracks, goes to a pool slot with no owner. It never displaces an owned reassembly. The first Subscriber the FRAG_FIRST reaches takes it over; a second Subscriber of it misses that one sample (a writer's first sample only) |
+| too large for the own slot | a bound the binding under-stated: the sample moves to a pool slot and completes there |
+| storage | `tt_Subscriber_storage_size()` adds `ALIGN8(16 + cdr + 4)`: cdr = the type's bound, or `tt_MAX_SAMPLE_LENGTH` when unbounded or `max_encoded_size_estimated`; 0 when the largest sample goes whole on a `tt_LINK_MTU_MIN` link, and for a buffered RELIABLE Subscriber. Not touched at creation |
+| rmw_tickle | sizes `max_encoded_size` by its reorder slot, so it marks it estimated when the type is unbounded or larger than one slot. Per subscription at rmw's 65,507-byte sample: +65,528 B for those (virtual until a fragment lands), +16 + bound + PSN + 4 for a bounded type that fragments on a narrow link, 0 otherwise; `RMW_TICKLE_KEEP_ALL_HEADROOM` + 1 |
+| destroy | its pool slots are freed with it |
+| scope | the DATA_FRAG small path; stage 2's `tt_LARGE_ASSEMBLIES` are unchanged. One own slot per Subscriber: a Subscriber with several fragmenting writers shares it among them and relies on the pool for the rest |
+
+Measured in `tests/test_data_frag.c` (sim, 40 rounds of 3-datagram samples, shuffled per round), BEST_EFFORT samples
+whole on the wire that were delivered, before -> after: beside 8 no-buffer RELIABLE streams at 5% loss 152/265 ->
+all; 16 BEST_EFFORT Subscribers beside buffered RELIABLE ones, clean link, 154/640 -> 640/640. No-buffer RELIABLE,
+16 streams at 5%: 16.87 -> 5.45 datagrams a sample, 4,201 -> 0 fragments dropped with every slot pinned.
 
 ### Stage 2: samples above 64 KB
 
