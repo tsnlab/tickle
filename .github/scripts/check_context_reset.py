@@ -96,6 +96,10 @@ SURVIVES_RESET = {
                             "update_parts_any() reads no row whose count is 0, and reset_node_state() zeroes the counts",
     "frag_slots": "frag_slot_for(), which claims slot frag_slots_used and writes its header; nothing reads a slot at or "
                   "past frag_slots_used, which reset_node_state() does reset",
+    # 2026-10-27: the pool slots' bytes, apart from their headers since a Subscriber's own slot has its bytes in caller
+    # storage (DESIGN.md section 8, "Reassembly slots").
+    "frag_slot_bytes": "frag_pool_attach(), which points a pool slot at its row when frag_slot_for() claims it; only "
+                       "fragments placed in that slot write the row, and only a claimed slot reads it",
     "rx_buffer": "the receive (the HAL) or a segment record copied in; nothing reads past what was put there",
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
                    "does initialise that, so the payload never needs to be",

@@ -115,12 +115,15 @@ struct tt_LockStats {
 // tickle.c checks the two agree.
 #define tt_FRAG_DATA_HEADER_LENGTH 16
 
-// One sample being put back together from its fragments (tt_SUBMESSAGE_TYPE_FRAG_FIRST/_CONT) - see
-// process_frag() in tickle.c. A node holds tt_FRAG_REASSEMBLY_SLOTS of these, shared by every sender
-// and every Subscriber, rather than one set per Subscriber or per remote writer: which samples are in
-// flight at once is a property of the traffic, not of how many endpoints happen to exist.
+struct tt_Subscriber;
+
+// One sample being put back together from its fragments (tt_SUBMESSAGE_TYPE_FRAG_FIRST/_CONT) for one Subscriber - see
+// process_frag() in tickle.c. Each Subscriber that reassembles (BEST_EFFORT, or RELIABLE without a reorder buffer) owns
+// one in its caller storage (struct tt_Subscriber.frag_own), and a node holds tt_FRAG_REASSEMBLY_SLOTS more as
+// overflow shared by all of them (docs/DESIGN.md section 8, "Reassembly slots"; the user, 2026-10-27): one
+// Subscriber's delivery never depends on another's QoS or load.
 //
-// bytes[] holds the sample exactly as a DATA submessage body would - DataHeader, then CDR - so a
+// bytes holds the sample exactly as a DATA submessage body would - DataHeader, then CDR - so a
 // completed slot is handed to process_data() as if it had arrived whole. 8-aligned, which puts the CDR
 // 16 bytes in, at 0 mod 8, and keeps generated codecs' 4-aligned reads valid (a reassembled sample is never lent,
 // so it need not match rx_buffer's 4 mod 8).
@@ -145,9 +148,14 @@ struct tt_FragSlot {
     // that could never complete, one for every sample whose first fragment was lost (2026-09-26: 26,711
     // in a 5 s veth run at 5% loss, the same at 8, 32 and 128 slots).
     bool done;
-    // + 4: a retransmission is cut from the cached record, which is padded to a multiple of 4
-    tt_ALIGNAS(8) uint8_t bytes[tt_FRAG_DATA_HEADER_LENGTH + tt_MAX_SAMPLE_LENGTH + 4];
+    // The Subscriber the sample is put together for; NULL for a pool slot no Subscriber has taken yet (a continuation
+    // ahead of its FRAG_FIRST from a writer none tracks). A pool slot's owner is set when it is claimed.
+    struct tt_Subscriber* owner;
+    uint8_t* bytes;    // tt_FRAG_DATA_HEADER_LENGTH + capacity bytes, 8-aligned
+    uint32_t capacity; // CDR bytes bytes can hold; 0: no slot (a Subscriber that needs none)
 };
+// A pool slot's bytes: + 4, a retransmission is cut from the cached record, which is padded to a multiple of 4.
+#define tt_FRAG_SLOT_BYTES (((tt_FRAG_DATA_HEADER_LENGTH + tt_MAX_SAMPLE_LENGTH + 4) + 7) & ~7)
 #endif
 
 // A request for a peer's endpoint list not yet answered (struct tt_Context.discovery_requests); attempts == 0
@@ -1979,8 +1987,10 @@ struct tt_Context {
     uint64_t rx_via_well_known_datagrams;
 
 #if tt_FRAG_ENABLED
-    // DATA_FRAG reassembly - struct tt_FragSlot above.
+    // DATA_FRAG reassembly - struct tt_FragSlot above: the overflow pool every reassembling Subscriber shares beside
+    // its own slot. A slot's bytes point into frag_slot_bytes, set when it is claimed.
     struct tt_FragSlot frag_slots[tt_FRAG_REASSEMBLY_SLOTS];
+    tt_ALIGNAS(8) uint8_t frag_slot_bytes[tt_FRAG_REASSEMBLY_SLOTS][tt_FRAG_SLOT_BYTES];
     // Slots [0, frag_slots_used) have been claimed since the reset and are the only ones read; the others are free
     // and their headers unwritten, so a context that never reassembles writes none of the slots' pages (2026-10-22).
     uint32_t frag_slots_used;
@@ -4093,6 +4103,12 @@ struct tt_Subscriber { // extends endpoint
     // Core-owned: the context's large assemblies (struct tt_LargeAssembly) held for this RELIABLE Subscriber - while
     // any are, its drain looks for a large sample at each seq_no it walks (DESIGN.md section 8).
     uint16_t large_held;
+#endif
+#if tt_FRAG_ENABLED
+    // Core-owned: this Subscriber's own reassembly slot (struct tt_FragSlot), its bytes in the caller storage
+    // (tt_Subscriber_storage_size()); capacity 0 when it needs none - a buffered RELIABLE Subscriber, or a type no link
+    // fragments. Only this Subscriber's samples are ever put together in it (docs/DESIGN.md section 8).
+    struct tt_FragSlot frag_own;
 #endif
 
     // As tt_Publisher's: the resolved QoS no field above holds, for tt_Subscriber_get_actual_qos(). Last.

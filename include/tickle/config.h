@@ -985,9 +985,10 @@
 #ifndef tt_HYBRID_PATH_ALPHA
 #define tt_HYBRID_PATH_ALPHA 1e-6
 #endif
-// Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
-// of another sample arrives, the reassembly started longest ago is abandoned and counted
-// (tt_Context.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
+// The node's overflow reassembly slots, shared by every Subscriber that reassembles, beside the one slot each such
+// Subscriber owns in its caller storage (docs/DESIGN.md section 8, "Reassembly slots"). When none can be taken, the
+// oldest reassembly that loses nothing recorded is abandoned and counted (tt_Context.frag_abandoned) - never dropped
+// silently, since a silent drop here looks exactly like loss.
 // Each slot holds one whole sample (tt_MAX_SAMPLE_LENGTH plus a DataHeader); nothing is allocated.
 #ifndef tt_FRAG_REASSEMBLY_SLOTS
 #define tt_FRAG_REASSEMBLY_SLOTS 8

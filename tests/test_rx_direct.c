@@ -162,7 +162,9 @@ static struct tt_TypeSupport receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
-static uint64_t tracking[tt_MAX_PEER_COUNT * WIDE_WORDS];
+// The Subscriber's caller storage: its window, and its own reassembly slot (tt_Subscriber_storage_size()).
+static uint64_t tracking[((size_t)tt_MAX_PEER_COUNT * WIDE_WORDS) + (tt_FRAG_SLOT_BYTES / sizeof(uint64_t))];
+static uint64_t sub_be_storage[tt_FRAG_SLOT_BYTES / sizeof(uint64_t)]; // the BEST_EFFORT one's own slot
 
 static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
@@ -627,9 +629,10 @@ static void test_batch_run_past_the_window(void) {
 // A best-effort Subscriber beside the RELIABLE one: every run a unit at a time, so both get the sample.
 static void test_batch_not_with_a_best_effort_subscriber(void) {
     init_pair(true);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic,
-                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
-                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic, ENDPOINT_NAME,
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            sub_be_storage, sizeof(sub_be_storage)));
     feed(run_bytes, build_run(0, RUN_N));
     feed_rest_from(RUN_N);
     EXPECT_EQ_INT(2, delivered);
@@ -656,9 +659,10 @@ static void test_batch_not_with_a_best_effort_subscriber(void) {
 // go to it a unit at a time as before, so it completes and is freed with the RELIABLE one.
 static void test_batch_not_with_a_best_effort_assembly(void) {
     init_pair(true);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic,
-                                                       ENDPOINT_NAME, &TEST_QOS_UNRELIABLE,
-                                                       &(struct tt_SubscriberOptions) {.callback = on_data}, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Node_create_subscriber(tt_Context_default_node(&receiver), &sub_be, &receiver_topic, ENDPOINT_NAME,
+                                            &TEST_QOS_UNRELIABLE, &(struct tt_SubscriberOptions) {.callback = on_data},
+                                            sub_be_storage, sizeof(sub_be_storage)));
     feed(run_bytes, build_run(0, RUN_N));
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub_be));
     feed_rest_from(RUN_N);

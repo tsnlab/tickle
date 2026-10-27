@@ -673,6 +673,14 @@ static void subscription_profile(rmw_tickle_subscriber_t* sub_impl, const rmw_qo
                                  struct tt_QosProfile* profile) {
     uint32_t slot_payload = resolve_reorder_slot_payload(sub_impl);
     sub_impl->topic.max_encoded_size = slot_payload;
+    // A slot's payload is a sizing choice, not the type's bound, when the type is unbounded or larger than one slot:
+    // said so, core sizes the subscription's own fragment reassembly slot for the largest sample rather than for one
+    // reorder slot (docs/DESIGN.md section 8, "Reassembly slots").
+    sub_impl->topic.max_encoded_size_estimated =
+        NULL == sub_impl->callbacks ||
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == sub_impl->callbacks->tickle_max_encoded_size ||
+        (unsigned long long)sub_impl->callbacks->tickle_max_encoded_size + RMW_TICKLE_PSN_BYTES >
+            (unsigned long long)slot_payload;
     // As core strides it: never past its 16-bit stride, rounded up to 8.
     const uint32_t widest = UINT16_MAX - (uint32_t)sizeof(struct tt_ReorderSlot) - 7U;
     uint16_t slot_bytes = (uint16_t)tt_REORDER_SLOT_SIZE(slot_payload < widest ? slot_payload : widest);
@@ -832,8 +840,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
-    // The tracking window and the RELIABLE reorder buffer: in caller storage core lays out, sized by the profile
-    // (QoS redesign step 3; rmw_tickle_subscriber_t.qos_storage says what each is for).
+    // The tracking window, the RELIABLE reorder buffer and the subscription's own fragment reassembly slot: in caller
+    // storage core lays out, sized by the profile (QoS redesign step 3; rmw_tickle_subscriber_t.qos_storage says what
+    // each is for).
     struct tt_QosProfile profile;
     subscription_profile(sub_impl, qos_profile, &profile);
     size_t storage_size = tt_Subscriber_storage_size(&sub_impl->topic, &profile);

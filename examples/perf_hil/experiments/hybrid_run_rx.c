@@ -145,9 +145,12 @@ static int receive(const char* broadcast, int context_id, int timeout_s) {
                                                         .accept_callback = NULL,
                                                         .accept_callback_param = NULL};
     static struct tt_Subscriber sub;
-    if (tt_Subscriber_storage_size(&topic, &qos) != 0 ||
-        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, ENDPOINT, &qos, &options, NULL, 0) !=
-            tt_RET_OK ||
+    // Its own reassembly slot since 2026-10-27 (docs/DESIGN.md section 8, "Reassembly slots"); calloc is 8-aligned.
+    size_t storage_size = tt_Subscriber_storage_size(&topic, &qos);
+    void* storage = storage_size != 0 ? calloc(1, storage_size) : NULL;
+    if ((storage_size != 0 && storage == NULL) ||
+        tt_Node_create_subscriber(tt_Context_default_node(&node), &sub, &topic, ENDPOINT, &qos, &options, storage,
+                                  storage_size) != tt_RET_OK ||
         tt_Context_set_large_buffers(&node, buffer_acquire, buffer_release, NULL) != tt_RET_OK) {
         printf("RESULT: error=subscriber\n");
         return 1;

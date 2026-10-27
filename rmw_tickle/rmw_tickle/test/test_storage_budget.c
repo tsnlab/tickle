@@ -51,6 +51,7 @@
     ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 #define BOUNDED_PAYLOAD 76
 #define BOUNDED_DATAGRAM_PAYLOAD 1400 // a bounded type near one datagram, for the slot payload knob
+#define WIDE_BOUNDED_PAYLOAD 30000    // a bounded type of many datagrams, for the own reassembly slot
 
 // What one message costs a publisher's cache: its CDR behind rmw_tickle's psn header, as core caches it -
 // one record, or one per fragment once it outgrows a datagram (clamp_record_bytes(), rmw_publisher.c).
@@ -246,6 +247,25 @@ static void reorder_shape(enum rmw_qos_reliability_policy_e reliability, uint16_
     *slot_bytes = impl->tickle_subscriber.reorder_slot_bytes;
     *has_storage = NULL != impl->tickle_subscriber.reorder_storage;
     assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));
+}
+
+// The CDR bytes of the subscription's own fragment reassembly slot core carved in its storage (docs/DESIGN.md section
+// 8, "Reassembly slots", 2026-10-27), 0 for none.
+static uint32_t own_slot_capacity(enum rmw_qos_reliability_policy_e reliability) {
+    rmw_qos_profile_t q = qos(reliability, 10);
+    rmw_subscription_options_t opts = rmw_get_default_subscription_options();
+    rmw_subscription_t* sub = rmw_create_subscription(node, &handle, "/budget", &q, &opts);
+    assert(NULL != sub);
+    uint32_t capacity = ((rmw_tickle_subscriber_t*)sub->data)->tickle_subscriber.frag_own.capacity;
+    assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));
+    return capacity;
+}
+
+// What the own slot adds to a subscription's storage, as core lays it out: its DataHeader and CDR, 8-aligned.
+#define OWN_SLOT_ALIGN 8ULL
+static unsigned long long own_slot_bytes(uint32_t capacity) {
+    unsigned long long bytes = (unsigned long long)tt_FRAG_DATA_HEADER_LENGTH + capacity;
+    return capacity == 0 ? 0ULL : ((bytes + OWN_SLOT_ALIGN - 1ULL) / OWN_SLOT_ALIGN) * OWN_SLOT_ALIGN;
 }
 
 static unsigned long long min_ull(unsigned long long a, unsigned long long b) {
@@ -531,6 +551,31 @@ int main(void) {
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(!has_storage && 0 == slots);
+
+    // --- the own reassembly slot: a BEST_EFFORT subscription, or a RELIABLE one with no reorder buffer, of a type
+    // that can be fragmented. Its size is the type's bound where rmw_tickle's sizing bound is the type's, and the
+    // largest sample where that bound is only a reorder slot's (max_encoded_size_estimated).
+    const uint32_t largest = (uint32_t)tt_MAX_SAMPLE_LENGTH + 4U;
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT) == largest); // unbounded
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_RELIABLE) == largest);    // unbounded: no reorder buffer
+    printf("test_storage_budget: own reassembly slot, unbounded type: BEST_EFFORT +%llu B, RELIABLE +%llu B\n",
+           own_slot_bytes(largest), own_slot_bytes(largest));
+    callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD; // goes whole on any link
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT) == 0);
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_RELIABLE) == 0);
+    callbacks.tickle_max_encoded_size = BOUNDED_DATAGRAM_PAYLOAD; // one datagram, two on a narrow link
+    uint32_t near = own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
+    assert(near == BOUNDED_DATAGRAM_PAYLOAD + RMW_TICKLE_PSN_BYTES + 4U);
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_RELIABLE) == 0); // its reorder buffer holds its fragments
+    printf("test_storage_budget: own reassembly slot, %u-byte type: BEST_EFFORT +%llu B, RELIABLE +0 B\n",
+           (unsigned)BOUNDED_DATAGRAM_PAYLOAD, own_slot_bytes(near));
+    callbacks.tickle_max_encoded_size = WIDE_BOUNDED_PAYLOAD; // larger than a reorder slot: not the bound rmw passes
+    uint32_t wide = own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
+    assert(own_slot_capacity(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT) == largest);
+    assert(wide == 0 || wide == largest);
+    printf("test_storage_budget: own reassembly slot, %u-byte type: BEST_EFFORT +%llu B, RELIABLE +%llu B\n",
+           (unsigned)WIDE_BOUNDED_PAYLOAD, own_slot_bytes(largest), own_slot_bytes(wide));
+    callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
 
     stop_context();
     assert(RMW_RET_OK == rmw_init_options_fini(&options));
