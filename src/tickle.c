@@ -22937,17 +22937,40 @@ static struct tt_FragSlot* frag_own_for_newest(struct tt_Context* node, struct t
     return own;
 }
 
-// Whether a no-buffer RELIABLE Subscriber's sample starts ahead of its writer's watermark: it goes to a free or spent
-// pool slot before the Subscriber's own, where it could be recorded (frag_pool_record_ahead() records ahead only in the
-// pool) - the own slot is kept for the sample the watermark is in. In the own slot whenever that was spent, such a
-// sample stayed unrecorded and was asked for again: the PC A/B's 4 streams at 5% loss lost 1-12% of the RELIABLE
-// samples, p99 +89% (sub_reassembly_pc_ab, 2026-10-27).
+// Whether a no-buffer RELIABLE Subscriber's sample starts ahead of its writer's watermark: it goes to the pool before
+// the Subscriber's own slot, where it can be recorded (frag_pool_record_ahead() records ahead only in the pool) - the
+// own slot is kept for the sample the watermark is in (frag_pool_for_ahead()). In the own slot whenever that was spent,
+// such a sample stayed unrecorded and was asked for again: the PC A/B's 4 streams at 5% loss lost 1-12% of the
+// RELIABLE samples, p99 +89% (sub_reassembly_pc_ab run 1, 2026-10-27).
 static bool frag_ahead_prefers_pool(struct tt_Subscriber* sub, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
     if (!frag_unbuffered_reliable(sub)) {
         return false;
     }
     const struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
     return proxy != NULL && seq_delta(seq_no, proxy->ack_seq_no) > 0;
+}
+
+// The pool slot for a no-buffer RELIABLE Subscriber's sample ahead (frag_ahead_prefers_pool()): a free or spent one,
+// else the reassembly claimed longest ago of any owner's that is not pinned - the pool's own age order, as before the
+// Subscribers owned slots - abandoned and counted. NULL when every pool slot is pinned: the own slot then. Taking only
+// a free or spent one, the sample still fell to the own slot, unrecorded, whenever the pool held a BEST_EFFORT
+// Subscriber's older partial samples - most of the time: run 2 of the PC A/B lost 6% at 4 streams, 5% loss, and every
+// loss was a window jump with nothing ahead of the watermark recorded (2026-10-27).
+static struct tt_FragSlot* frag_pool_for_ahead(struct tt_Context* node, struct tt_FragSlot* unused) {
+    struct tt_FragSlot* slot = frag_pool_free_or_spent(node, unused);
+    if (slot != NULL) {
+        return slot;
+    }
+    for (uint32_t i = 0; i < node->frag_slots_used; i++) {
+        struct tt_FragSlot* candidate = &node->frag_slots[i];
+        if (frag_slot_busy(candidate) && !frag_slot_pinned(candidate) && frag_claimed_before(candidate, slot)) {
+            slot = candidate;
+        }
+    }
+    if (slot != NULL && slot->received != 0) {
+        node->frag_abandoned++;
+    }
+    return slot;
 }
 
 // A slot from the pool for sub, else by reclaim (frag_reclaimable(): its own reassemblies first, the oldest unpinned
@@ -22982,7 +23005,7 @@ static struct tt_FragSlot* frag_pool_claim(struct tt_Context* node, struct tt_Su
 
 // The slot sub puts this sample together in (docs/DESIGN.md section 8, "Reassembly slots"): the one it already holds
 // for it (frag_slot_held()); else, newly claimed, in this order: for a no-buffer RELIABLE Subscriber's sample ahead of
-// its watermark, a free or spent pool slot (frag_ahead_prefers_pool()); its own slot, free or spent
+// its watermark, a pool slot (frag_pool_for_ahead()); its own slot, free or spent
 // (frag_slot_spent()), or for a BEST_EFFORT Subscriber holding an older sample of the writer there, its own slot with
 // that one moved to the pool (frag_newest_takes_own()); a pool slot never used or free; the pool slot whose spent
 // sample is oldest; the oldest unpinned reassembly of its own it does not need first, abandoned; the oldest unpinned
@@ -23000,7 +23023,7 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, struct tt_Subs
         return slot;
     }
     if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no)) {
-        slot = frag_pool_free_or_spent(node, unused);
+        slot = frag_pool_for_ahead(node, unused);
     }
     if (slot != NULL) {
         frag_pool_attach(node, slot, sub);

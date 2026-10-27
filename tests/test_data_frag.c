@@ -2869,14 +2869,14 @@ static void test_two_best_effort_subscribers_of_one_writer_each_reassemble(void)
 
 // A no-buffer RELIABLE Subscriber records a sample ahead of its watermark only in the pool, never in its own slot:
 // pinned there by a sample ahead, the slot would not be there for the sample the watermark moves to next, which would
-// then wait on what other Subscribers leave in the pool (frag_pool_record_ahead()). So a sample ahead goes to a free or
-// spent pool slot first (frag_ahead_prefers_pool()), recorded there; only with the pool full does it take the own
-// slot, unrecorded. A's first datagram in the own slot, B's first in the pool (recorded ahead); A completes and the
-// watermark moves to B; C arrives whole - with room in the pool, into it and recorded (until the preference: into the
-// own slot, unrecorded and asked for again - the PC A/B's 4-stream 5% cell lost RELIABLE samples, 2026-10-27); with
-// the pool full of another Subscriber's partial samples, into the own slot, unrecorded. Either way B's repair delivers
-// B, then C, in order.
-static void ahead_case(bool pool_full) {
+// then wait on what other Subscribers leave in the pool (frag_pool_record_ahead()). So a sample ahead goes to the pool
+// first - a free or spent slot, else the oldest unpinned of any owner's (frag_pool_for_ahead()) - and is recorded
+// there; only with every pool slot pinned does it take the own slot, unrecorded. A's first datagram in the own slot,
+// B's first in the pool (recorded ahead); A completes and the watermark moves to B; C arrives whole. With the pool full
+// of another Subscriber's partial samples, C takes the oldest of them and is recorded (run 1 and run 2 of the PC A/B,
+// 2026-10-27: C took the own slot, unrecorded, and was asked for again - 4 streams at 5% loss lost RELIABLE samples).
+// B's repair delivers B, then C, in order.
+static void ahead_case(bool pool_has_room) {
     tracked_none_pair(4000); // A: seq_no 2..4
     static struct captured_sample a;
     static struct captured_sample b;
@@ -2888,7 +2888,7 @@ static void ahead_case(bool pool_full) {
     }
     capture_sample(&pub, &b); // 5..7
     capture_sample(&pub, &c); // 8..10
-    if (pool_full) {
+    if (!pool_has_room) {
         add_best_effort_topic_b();
     }
     deliver_from(-1, &a, 0);
@@ -2899,36 +2899,93 @@ static void ahead_case(bool pool_full) {
     deliver_from(-1, &a, 2);
     EXPECT_EQ_INT(1, delivered_count);
     EXPECT_EQ_U32(6, sender_proxy()->ack_seq_no); // the watermark is in B
-    for (int k = 0; pool_full && k < 2 * tt_FRAG_REASSEMBLY_SLOTS; k++) {
+    for (int k = 0; !pool_has_room && k < 2 * tt_FRAG_REASSEMBLY_SLOTS; k++) {
         capture_sample(&pub_b, &other); // first datagrams only: another Subscriber's partial samples, unpinned
         deliver_from(-1, &other, 0);
     }
-    if (pool_full) {
+    if (!pool_has_room) {
         EXPECT_EQ_U32(tt_FRAG_REASSEMBLY_SLOTS, receiver.frag_slots_used);
         for (uint32_t i = 0; i < receiver.frag_slots_used; i++) {
             EXPECT_TRUE(receiver.frag_slots[i].received != 0); // nothing free or spent
         }
     }
+    uint64_t abandoned = receiver.frag_abandoned;
     for (int d = 0; d < 3; d++) {
         deliver_from(-1, &c, d);
     }
-    bool in_own = sub.frag_own.done && sub.frag_own.seq_no == 8U;
-    EXPECT_TRUE(in_own == pool_full);
-    EXPECT_TRUE(proxy_has_recorded(sender_proxy(), 8) == !pool_full); // recorded in the pool, never in the own slot
+    EXPECT_TRUE(!(sub.frag_own.done && sub.frag_own.seq_no == 8U));                // not in the own slot
+    EXPECT_TRUE(proxy_has_recorded(sender_proxy(), 8));                            // recorded, in the pool
+    EXPECT_EQ_U64(abandoned + (pool_has_room ? 0U : 1U), receiver.frag_abandoned); // the oldest partial, given up
     EXPECT_TRUE(!frag_slot_pinned(&sub.frag_own));
     deliver_from(-1, &b, 1);
     deliver_from(-1, &b, 2);
     EXPECT_EQ_INT(3, delivered_count); // B, then C
     EXPECT_TRUE(delivered_intact);
     EXPECT_EQ_U32(11, sender_proxy()->ack_seq_no);
-    if (pool_full) {
+    if (!pool_has_room) {
         EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
     }
 }
 
+// The guarantee itself: with every pool slot pinned, a sample ahead takes the own slot and stays unrecorded there.
+// Seven more writers of the topic, each tracked (a DATA first), each with its watermark sample part-placed in the pool
+// while A holds the own slot: seven pins whatever the record-ahead bound. B's first datagram takes the eighth slot,
+// unrecorded (two unpinned would not stay); A completes, the watermark moves into B, which pins it. C arrives whole:
+// nothing in the pool may be taken, the own slot is spent - C goes there, and is not recorded.
+#define AHEAD_WRITERS (tt_FRAG_REASSEMBLY_SLOTS - 1)
+static struct tt_Context ahead_node[AHEAD_WRITERS];
+static struct tt_Publisher ahead_pub[AHEAD_WRITERS];
+
 static void test_reliable_none_ahead_never_pins_the_own_slot(void) {
-    ahead_case(false);
     ahead_case(true);
+    ahead_case(false);
+
+    tracked_none_pair(4000); // A: seq_no 2..4
+    static struct captured_sample a;
+    static struct captured_sample b;
+    static struct captured_sample c;
+    static struct captured_sample w;
+    for (int d = 0; d < 3; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    capture_sample(&pub, &b); // 5..7
+    capture_sample(&pub, &c); // 8..10
+    uint32_t len = sample_len;
+    for (int k = 0; k < AHEAD_WRITERS; k++) {
+        init_bare_node(&ahead_node[k], (uint8_t)(3 + k));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Node_create_publisher(tt_Context_default_node(&ahead_node[k]), &ahead_pub[k], &sender_topic,
+                                               ENDPOINT_NAME, &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+        match_by_broadcast(&ahead_pub[k]);
+        sample_len = 100;
+        capture_sample(&ahead_pub[k], &w);
+        deliver_from(k, &w, 0); // tracked
+    }
+    sample_len = len;
+    delivered_count = 0;
+    deliver_from(-1, &a, 0);
+    for (int k = 0; k < AHEAD_WRITERS; k++) {
+        capture_sample(&ahead_pub[k], &w);
+        deliver_from(k, &w, 0); // its watermark sample, in the pool: pinned
+    }
+    deliver_from(-1, &b, 0);
+    EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 5)); // the bound: not recorded
+    deliver_from(-1, &a, 1);
+    deliver_from(-1, &a, 2);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_U32((uint32_t)tt_FRAG_REASSEMBLY_SLOTS, frag_pool_pinned(&receiver)); // B now pinned too: all of them
+    for (int d = 0; d < 3; d++) {
+        deliver_from(-1, &c, d);
+    }
+    EXPECT_TRUE(sub.frag_own.done && sub.frag_own.seq_no == 8U); // C, whole, in the own slot
+    EXPECT_TRUE(!proxy_has_recorded(sender_proxy(), 8));         // and not recorded there
+    EXPECT_TRUE(!frag_slot_pinned(&sub.frag_own));
+    deliver_from(-1, &b, 1);
+    deliver_from(-1, &b, 2);
+    EXPECT_EQ_INT(3, delivered_count); // B, then C
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(11, sender_proxy()->ack_seq_no);
 }
 
 // A destroyed Subscriber's pool slots go with it: no slot is left naming it, and its samples' fragments open none.
