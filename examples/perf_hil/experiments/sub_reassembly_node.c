@@ -401,6 +401,14 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
     double cpu_before = cpu_ms();
     poll_for(node, DISCOVERY_NS + (uint64_t)(opts->duration_s * (double)NS_PER_S) + DRAIN_NS + SUB_EXTRA_NS);
     double cpu = cpu_ms() - cpu_before;
+    // A build without fragmentation (the core default, which `make lint` compiles) has no reassembly to count.
+    unsigned long frag[4] = {0, 0, 0, 0};
+#if tt_FRAG_ENABLED
+    frag[0] = (unsigned long)node->frag_reassembled;
+    frag[1] = (unsigned long)node->frag_abandoned;
+    frag[2] = (unsigned long)node->frag_dropped;
+    frag[3] = (unsigned long)node->frag_duplicate;
+#endif
     printf("RESULT: role=sub streams=%u size=%u own_slot_bytes=%zu rel_delivered=%u rel_torn=%u rel_p50_us=%.1f "
            "rel_p99_us=%.1f be_delivered=%u be_torn=%u be_p50_us=%.1f be_p99_us=%.1f ctl_delivered=%u ctl_torn=%u "
            "ctl_p50_us=%.1f ctl_p99_us=%.1f cpu_ms=%.1f frag_reassembled=%lu frag_abandoned=%lu frag_dropped=%lu "
@@ -409,9 +417,8 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
            latency_us(&tally[CLASS_REL], PERCENTILE_50), latency_us(&tally[CLASS_REL], PERCENTILE_99),
            tally[CLASS_BE].delivered, tally[CLASS_BE].torn, latency_us(&tally[CLASS_BE], PERCENTILE_50),
            latency_us(&tally[CLASS_BE], PERCENTILE_99), tally[CLASS_CTL].delivered, tally[CLASS_CTL].torn,
-           latency_us(&tally[CLASS_CTL], PERCENTILE_50), latency_us(&tally[CLASS_CTL], PERCENTILE_99), cpu,
-           (unsigned long)node->frag_reassembled, (unsigned long)node->frag_abandoned,
-           (unsigned long)node->frag_dropped, (unsigned long)node->frag_duplicate);
+           latency_us(&tally[CLASS_CTL], PERCENTILE_50), latency_us(&tally[CLASS_CTL], PERCENTILE_99), cpu, frag[0],
+           frag[1], frag[2], frag[3]);
     return 0;
 }
 
