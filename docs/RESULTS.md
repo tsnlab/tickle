@@ -1273,16 +1273,26 @@ went to MTU for 60 s. The drain was not where runs died. Nothing changed then; o
 - Archive (`hybrid_mode_netns.sh` runs of HMA): 12 of 37 GSO-on reps had a stale forget, each with the warning and
   runs of 45; none of 44 GSO-off reps did. The sim reproduces the forget (`test_train_losses_outlast_the_stale_rule`).
 
-### After a stale forget, no estimate: the chain gone, CPU at 1% up (PC netns, `HSF`)
+### After a stale forget, no estimate: the chain gone, CPU at 1% up (PC netns, `HSF`; landed 2026-10-27)
 
 **TL;DR.** The user's options (a) + (e) (DESIGN.md section 8, "Train losses and the stale rule") remove the chain: 0 of
 79 reps against 14 of 79 on main (and 20 of 79 on the A/A arm). The pre-registered verdict is **FAIL** on cost: CPU per
 MB at 1% WORSE (sub +7.6% / +8.9%, pub +15.7% / +18.1%). Most of it is main's chain itself: a CHAIN rep ends in the
 writer's rule (e), MTU units for 60 s, so it cannot wander into runs of 2 (the boundary noise of `HMA`, ~2x the CPU).
-p99, p50 and delivery not WORSE; the 0% cell unchanged.
+p99, p50 and delivery not WORSE; the 0% cell unchanged. The user chose to land it on the overall judgement (2026-10-27).
+On the rig, after the run below, CPU at 1% is equal and nothing is WORSE.
 
-- **Run** (`hybrid_stale_forget_ab.sh`, registered first, `0f992aab`): M = main `fc5fb79b`, A = M's bench again (A/A),
-  F = the fix (`85a45d56`), interleaved rounds, each a 0% and a 1% rep of `hybrid_forget_netns.sh` (1 MiB RELIABLE
+- **Rig** (2026-10-27, pre = main `b61e2302`, head = branch `ab/hybrid-stale-forget-v2` (this change before its rebase onto `3e353df1`), aa = head again; the
+  landing rule set before the run: core gate v2 PASS; in every Array cell head delivers no less than pre by more than
+  |aa - head|, and its median p99 is not above pre's by more than max(|aa - head|, 1 ms); CPU at 1% reported, not
+  blocking). Core gate v2 (run of 2026-10-27 09:19, `~/rig_results_safe/core_ab/`): PASS, 0/88 WORSE. `rmw_keepall_rig.sh`, 5 reps of 60 s:
+  delivered 100% on every arm and cell. Median p99 aa / head / pre: Array1m 0% 9.39 / 9.39 / 9.39 ms, 0.1% 9.47 /
+  9.46 / 9.45, 1% 10.21 / 10.05 / 9.94; Array4m 0% 36.69 / 36.70 / 36.69. Array1m 1% CPU ms/MB per rep, sub / pub:
+  head 4.43-4.70 / 3.45-3.61, pre 4.54-5.08 / 3.47-3.81, aa 4.51-4.98 / 3.47-4.01. LAND. Data: `~/rig_results_safe/`
+  (`queue_core_ab_hsf.log`, `hsf_1m_20261027-105417*`, `hsf_4m_20261027-105417*`).
+
+- **Run** (`hybrid_stale_forget_ab.sh`, registered first, `d0272836`): M = main `fc5fb79b`, A = M's bench again (A/A),
+  F = the fix (`4244d84e`), interleaved rounds, each a 0% and a 1% rep of `hybrid_forget_netns.sh` (1 MiB RELIABLE
   KEEP_LAST 10, 30 Hz, GSO on, 10 s, writer-egress netem) in fresh namespaces. Run 1 45 rounds, run 3 36 (run 2
   stopped after one round: `origin/main` had moved on to the RLF commits, so M was not F's parent). Results:
   `/home/semih/hsf_results/ab_run1`, `ab_run3`.
@@ -1297,7 +1307,7 @@ p99, p50 and delivery not WORSE; the 0% cell unchanged.
   1.06-1.30 ms/MB. F's 11 reps with a forget take the mode any rep takes: 0-70% of samples at n = 2, pub 1.08-4.75.
   F's reps with a forget and no n = 2 cost 1.08-1.12, as M's MTU-only reps (1.03-1.10): the re-measured sample itself
   costs little.
-- **Secondary reading** (registered after run 1, before run 3, `dfe563f4`): reps without CHAIN only. Run 3:
+- **Secondary reading** (registered after run 1, before run 3, `1900c1f0`): reps without CHAIN only. Run 3:
   **EXPLAINED** - n = 2 share F 0.19 against M+A 0.10 (Mann-Whitney p 0.34, SAME), CPU F-M sub +0.3%, pub +6.0%
   within the A/A's 10%. Run 1, re-read post hoc: n = 2 share SAME (p 0.72), pub +8.6% against an A/A of 4.0%: not
   explained there. So a residual pub cost of 0-9% at 1% is not ruled out.
