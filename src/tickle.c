@@ -22937,6 +22937,19 @@ static struct tt_FragSlot* frag_own_for_newest(struct tt_Context* node, struct t
     return own;
 }
 
+// Whether a no-buffer RELIABLE Subscriber's sample starts ahead of its writer's watermark: it goes to a free or spent
+// pool slot before the Subscriber's own, where it could be recorded (frag_pool_record_ahead() records ahead only in the
+// pool) - the own slot is kept for the sample the watermark is in. In the own slot whenever that was spent, such a
+// sample stayed unrecorded and was asked for again: the PC A/B's 4 streams at 5% loss lost 1-12% of the RELIABLE
+// samples, p99 +89% (sub_reassembly_pc_ab, 2026-10-27).
+static bool frag_ahead_prefers_pool(struct tt_Subscriber* sub, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    if (!frag_unbuffered_reliable(sub)) {
+        return false;
+    }
+    const struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
+    return proxy != NULL && seq_delta(seq_no, proxy->ack_seq_no) > 0;
+}
+
 // A slot from the pool for sub, else by reclaim (frag_reclaimable(): its own reassemblies first, the oldest unpinned
 // of another owner's last), abandoned and counted; NULL when none may be taken. A pool slot is attached to sub; the
 // reclaim may also give sub's own slot back.
@@ -22968,15 +22981,16 @@ static struct tt_FragSlot* frag_pool_claim(struct tt_Context* node, struct tt_Su
 }
 
 // The slot sub puts this sample together in (docs/DESIGN.md section 8, "Reassembly slots"): the one it already holds
-// for it (frag_slot_held()); else, newly claimed, in this order: its own slot, free or spent (frag_slot_spent()), or
-// for a BEST_EFFORT Subscriber holding an older sample of the writer there, its own slot with that one moved to the
-// pool (frag_newest_takes_own()); a pool slot never used or free; the pool slot whose spent sample is oldest; the
-// oldest unpinned reassembly of its own it does not need first, abandoned; the oldest unpinned one in the pool of any
-// other owner, abandoned and counted. NULL when none is left: the fragment is then dropped, and - never recorded -
-// asked for again by a RELIABLE Subscriber. Another Subscriber's own slot is never a candidate, and a pinned slot
-// (frag_slot_pinned()) never reclaimed: one Subscriber's delivery does not depend on another's QoS or load (the user,
-// 2026-10-27). sub NULL: a pool slot no Subscriber has taken, from the pool's free and spent and other such.
-// A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
+// for it (frag_slot_held()); else, newly claimed, in this order: for a no-buffer RELIABLE Subscriber's sample ahead of
+// its watermark, a free or spent pool slot (frag_ahead_prefers_pool()); its own slot, free or spent
+// (frag_slot_spent()), or for a BEST_EFFORT Subscriber holding an older sample of the writer there, its own slot with
+// that one moved to the pool (frag_newest_takes_own()); a pool slot never used or free; the pool slot whose spent
+// sample is oldest; the oldest unpinned reassembly of its own it does not need first, abandoned; the oldest unpinned
+// one in the pool of any other owner, abandoned and counted. NULL when none is left: the fragment is then dropped, and
+// - never recorded - asked for again by a RELIABLE Subscriber. Another Subscriber's own slot is never a candidate, and
+// a pinned slot (frag_slot_pinned()) never reclaimed: one Subscriber's delivery does not depend on another's QoS or
+// load (the user, 2026-10-27). sub NULL: a pool slot no Subscriber has taken, from the pool's free and spent and other
+// such. A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
 static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t source,
                                          uint32_t entity_id, uint32_t seq_no, uint8_t frag_count) {
     struct tt_FragSlot* own = sub != NULL && sub->frag_own.capacity != 0 ? &sub->frag_own : NULL;
@@ -22985,7 +22999,10 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, struct tt_Subs
     if (slot != NULL) {
         return slot;
     }
-    if (own != NULL && frag_slot_spent(own)) {
+    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no) &&
+        (slot = frag_pool_free_or_spent(node, unused)) != NULL) {
+        frag_pool_attach(node, slot, sub);
+    } else if (own != NULL && frag_slot_spent(own)) {
         slot = own;
     } else if (own != NULL && frag_newest_takes_own(sub, own, source, entity_id, seq_no)) {
         slot = frag_own_for_newest(node, sub, own, unused);

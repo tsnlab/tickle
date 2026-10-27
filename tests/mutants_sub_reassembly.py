@@ -103,6 +103,12 @@ MUTANTS = [
         "test_reliable_none_ahead_never_pins_the_own_slot",
     ),
     (
+        "a no-buffer RELIABLE sample ahead prefers the pool",
+        "    if (own != NULL && frag_ahead_prefers_pool(sub, source, entity_id, seq_no) &&",
+        "    if (false &&",
+        "test_reliable_none_ahead_never_pins_the_own_slot",
+    ),
+    (
         "a destroyed Subscriber's slots go with it",
         "    frag_release_subscriber(node, sub);\n",
         "",
