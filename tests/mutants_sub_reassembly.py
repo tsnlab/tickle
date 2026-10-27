@@ -26,8 +26,8 @@ SRC = "src/tickle.c"
 MUTANTS = [
     (
         "own slot first",
-        "    if (own != NULL && frag_slot_spent(own)) {\n        slot = own;",
-        "    if (false) {\n        slot = own;",
+        "    } else if (own != NULL && frag_slot_spent(own)) {\n        slot = own;",
+        "    } else if (false) {\n        slot = own;",
         "test_best_effort_beside_reliable_none_when_every_slot_is_pinned",
     ),
     (
