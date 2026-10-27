@@ -681,9 +681,25 @@ overflow. No wire change. A RELIABLE Subscriber with a reorder buffer is unchang
 | no Subscriber named yet | a continuation ahead of its FRAG_FIRST, from a writer no Subscriber tracks, goes to a pool slot with no owner. It never displaces an owned reassembly. The first Subscriber the FRAG_FIRST reaches takes it over; a second Subscriber of it misses that one sample (a writer's first sample only) |
 | too large for the own slot | a bound the binding under-stated: the sample moves to a pool slot and completes there |
 | storage | `tt_Subscriber_storage_size()` adds `ALIGN8(16 + cdr + 4)`: cdr = the type's bound, or `tt_MAX_SAMPLE_LENGTH` when unbounded or `max_encoded_size_estimated`; 0 when the largest sample goes whole on a `tt_LINK_MTU_MIN` link, and for a buffered RELIABLE Subscriber. Not touched at creation |
-| rmw_tickle | sizes `max_encoded_size` by its reorder slot, so it marks it estimated when the type is unbounded or larger than one slot. Per subscription at rmw's 65,507-byte sample: +65,528 B for those (virtual until a fragment lands), +16 + bound + PSN + 4 for a bounded type that fragments on a narrow link, 0 otherwise; `RMW_TICKLE_KEEP_ALL_HEADROOM` + 1 |
+| rmw_tickle | sizes `max_encoded_size` by its reorder slot, so it marks it estimated when the type is unbounded or larger than one slot (the own slot then holds the largest sample). `RMW_TICKLE_KEEP_ALL_HEADROOM` + 1. Storage per subscription in the table below |
 | destroy | its pool slots are freed with it |
 | scope | the DATA_FRAG small path; stage 2's `tt_LARGE_ASSEMBLIES` are unchanged. One own slot per Subscriber: a Subscriber with several fragmenting writers shares it among them and relies on the pool for the rest |
+
+**Memory: what the own slot adds per Subscriber**, measured (`test_storage_budget` prints the rmw rows,
+`test_data_frag`'s `test_own_slot_storage_size` the core ones). Caller storage, untouched until a fragment lands:
+virtual until the subscription receives a fragmented sample.
+
+| build, type | BEST_EFFORT | RELIABLE, no reorder buffer | RELIABLE with a buffer |
+|---|---|---|---|
+| rmw_tickle (65,507 B), unbounded | +65,528 B | +65,528 B (rmw's shape for it) | - |
+| rmw_tickle, bounded 30,000 B | +65,528 B (rmw passes a slot's size, marked estimated) | +65,528 B (by the rule; not rmw's shape) | +0 B (rmw's shape for it) |
+| rmw_tickle, bounded 1,400 B | +1,432 B | +1,432 B (by the rule; not rmw's shape) | +0 B (rmw's shape for it) |
+| rmw_tickle, bounded 76 B (whole on any link) | +0 B | +0 B | +0 B |
+| core, `tt_MAX_SAMPLE_LENGTH` 16,000, unbounded | +16,024 B | +16,024 B | +0 B |
+| core default (no fragmentation) | +0 B | +0 B | +0 B |
+
+Plus `sizeof(struct tt_FragSlot)` header in every `struct tt_Subscriber` of a fragmenting build, and the node pool's 8
+slot headers gain an owner, a pointer and a capacity; the pool's bytes are unchanged.
 
 Measured in `tests/test_data_frag.c` (sim, 40 rounds of 3-datagram samples, shuffled per round), BEST_EFFORT samples
 whole on the wire that were delivered, before -> after: beside 8 no-buffer RELIABLE streams at 5% loss 152/265 ->
