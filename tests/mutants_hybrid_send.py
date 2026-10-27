@@ -1330,9 +1330,56 @@ MUTANTS = [
         "    struct tt_HybridState* hybrid = &node->hybrid;\n    struct tt_HybridRxWriter* writer = NULL;",
         SEND,
     ),
+    (
+        "rx writers: 8 entries, as before 2026-10-27",
+        "include/tickle/tickle.h",
+        "#define tt_HYBRID_RX_WRITERS 16",
+        "#define tt_HYBRID_RX_WRITERS 8",
+        SEND,
+    ),
+    (
+        "rx writers: the first held entry replaced, not the one seen longest ago",
+        "src/tickle.c",
+        "        if (oldest == NULL || (uint16_t)(now - entry->seen_tick) > (uint16_t)(now - oldest->seen_tick)) {",
+        "        if (oldest == NULL) {",
+        SEND,
+    ),
+    (
+        "rx writers: a free entry not taken first",
+        "src/tickle.c",
+        "        if (entry->source == tt_CONTEXT_ID_INVALID) {\n            return entry;\n        }\n        if (oldest == NULL",
+        "        if (oldest == NULL",
+        SEND,
+    ),
+    (
+        "rx writers: when a writer was seen not kept",
+        "src/tickle.c",
+        "    writer->seen_tick = (uint16_t)hybrid->ticks;\n",
+        "",
+        SEND,
+    ),
+    (
+        "rx writers: a replacement not counted",
+        "src/tickle.c",
+        "    hybrid->rx_writer_evictions++;\n",
+        "",
+        SEND,
+    ),
+    (
+        "unknown layout: a whole body lost in p only, as before 2026-10-27",
+        "src/tickle.c",
+        "        if (layout == 0U && from == 0U && body_end == tail && node->hybrid.cap >= 2U) {",
+        "        if (false) {",
+        SEND,
+    ),
+    (
+        "unknown layout: a partial gap counted as runs too",
+        "src/tickle.c",
+        "        if (layout == 0U && from == 0U && body_end == tail && node->hybrid.cap >= 2U) {",
+        "        if (layout == 0U && node->hybrid.cap >= 2U) {",
+        SEND,
+    ),
 ]
-
-
 
 
 def build_and_run(binary, control=None):
