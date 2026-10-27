@@ -80,7 +80,8 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   wireless stage. K stays held for that wire change (the user, 2026-10-26).
   **2026-10-27** (RESULTS `EWS`, `EWF`): ETHERNET amp's writer storm (a whole sample's resend batch outlasting a
   2 x srtt timeout). Landed: the timeout waits while the reader progresses (forced loop 0 of 20 against 10 of 20; rig
-  core gate PASS 0/88, Array delivery 100%, 1% p99 +0.5 ms within the rule). Left: a stall with no progress still loops.
+  core gate PASS 0/88, Array delivery 100%, 1% p99 +0.5 ms within the rule). The stall with no progress: landed the same
+  day (RESULTS `EWB`, a per-unit back-off while the reader shows nothing; forced stall 2 of 20 against 14 of 20; rig PASS).
   **2026-10-27** (RESULTS `RLC`, `RLF`): the least-transit floor stops the reader's collapse on every link (0 of 840
   PC reps against 22 of 840). It costs Wi-Fi latency, which the user accepted; it landed after the rig check passed.
 

@@ -1209,9 +1209,9 @@ Data: `~/ewf_results/` (`ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `ewf1.dri
 mutant logs); trees `~/ewf_trees/` (each with its `PROVENANCE.txt`); rig `~/rig_results_safe/` (`queue_core_ab_ews.log`,
 `ews_1m_20261027-075746*`, `ews_4m_20261027-075746*`).
 
-### The writer storm's stall: the timeout backs off while the reader shows nothing, PC netns (`EWB`, 2026-10-27, not landed)
+### The writer storm's stall: the timeout backs off while the reader shows nothing, PC netns (`EWB`, 2026-10-27, landed 2026-10-27)
 
-**TL;DR.** On branch `ab/eth-storm-stall` (core `646d27d4`, measured as its pre-rebase build on `45129b71`, the same code)
+**TL;DR.** On branch `ab/eth-storm-stall` (core `102ec895`, measured as its pre-rebase build on `45129b71`, the same code)
 the repair timeout of a unit doubles for each resend of it in a row with no progress shown between, at most x64. Any
 progress since the resend clears it. This closes the stall that `EWF` left open. The cell: a forced whole-sample loss
 every 3 s, with the reader taking in no large data for 100 ms after it asks for the sample. There G stormed in 14 of
@@ -1219,7 +1219,8 @@ every 3 s, with the reader taking in no large data for 100 ms after it asks for 
 timeout (p 0.0001). Median resends a rep: 138,120 against 88,946. In that cell delivery went from 92.6% to 99.8% and
 p99 from 195 to 137 ms. Natural ETHERNET amp reps: 0 storms in 720, against 7 in 1,440 for G and its A/A (p 0.058,
 UNDECIDED). One registered row is WORSE: R4 ge10b4 rel_large delivered 98.25% against 100%. That is one rep of 8, which
-delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead decides.
+delivered 129 of 150 samples (below). So LAND reads no by the rules; 32 more reps left it UNDECIDED. The user chose to
+land it on the rig check (2026-10-27), which passed.
 
 - **The change** (DESIGN.md section 4, "The timeout backs off while the reader shows nothing"). `tt_LargeRepair` gains
   a 3-bit stall count; `left_out` and `untimed` become 1-bit fields, so the slot stays 24 B. No wire change. A resend
@@ -1237,7 +1238,7 @@ delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead de
   and two old anchors were re-pointed at the new wait line. The full sweep: 76 of 76. Gates 16 of 16. `make
   test-linux` PASS.
 - **A/B** (`eth_storm_stall_ab.sh` + `eth_storm_stall_read.py`, committed before the run, rebased as
-  `aabe81c9`; M = G `45129b71`, A = G again, S = `646d27d4`'s pre-rebase build; 09:43-14:20, start load 2.8; 720 ETHERNET amp reps a tree,
+  `be0faaf0`; M = G `45129b71`, A = G again, S = `102ec895`'s pre-rebase build; 09:43-14:20, start load 2.8; 720 ETHERNET amp reps a tree,
   95 a Wi-Fi arm, 20 forced, pinned and stall reps):
 
 | | M (G) | A (G) | S |
@@ -1266,7 +1267,7 @@ delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead de
   jump. Gap-jump reps: e M 0, A 2, S 3 (of 720); q M 3, A 1, S 0; r4 S 1, M 0, A 0. One rep in 8 cannot tell a cost
   from chance. It is also the cost the back-off can have: a lossy path (10%, bursts of 4) whose reader shows no
   progress between two resends of a unit gets that unit repaired up to 64 timeouts later.
-- **R4 follow-up** (`r4_short_ab.sh` + `r4_short_read.py`, committed `434bf520` before the run; 15:23-16:05, load
+- **R4 follow-up** (`r4_short_ab.sh` + `r4_short_read.py`, committed `463bfaab` before the run; 15:23-16:05, load
   0.1-0.4; the same trees, all three at once; Wi-Fi ctl and ge10b4 rel_large, 32 reps a tree; SHORT = fewer than 150
   delivered or any gap jump). Control ctl: no SHORT rep in any tree (PASS). ge10b4: S 2 of 32 against G + A 1 of 64
   (G 1, A 0), one-sided p 0.26 -> **UNDECIDED** by the rule (S's 2 is above the A/A's own count, 1). All three
@@ -1278,12 +1279,20 @@ delivered 129 of 150 samples (below). So LAND reads no by the rules. The lead de
   by the load rule; two of G's storms and one of its A/A's are among them (e20).
 - **1% p99 add-on** (asked by the lead after the rig's Array1m 1% check of G, `EWF`: median p99 +0.54 ms on the
   head-built arms; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py`, committed before the run, rebased as
-  `362dec45`). PC netns ETHERNET at 1% random loss (ge1b1), 1 MiB RELIABLE at 30 Hz, 40 reps a tree at once, 14:21-14:47,
+  `9aa8972f`). PC netns ETHERNET at 1% random loss (ge1b1), 1 MiB RELIABLE at 30 Hz, 40 reps a tree at once, 14:21-14:47,
   start load 0.2. n came from EWF's per-rep p99 IQR, 0.66 ms. Median per-rep p99: main `b61e2302` 13.74 and 13.40 ms
   (the A/A), G 13.05, S 12.92; delivered 100% everywhere, no storm. **VOID by its rule**: the A/A differed by 0.34 ms,
   above its 0.25 ms limit. Descriptively, G - main is -0.69 ms (bootstrap 95% interval -1.18 to +0.01) and S - G is
   -0.14 (-0.71 to +0.55). So the PC shows no sign of the +0.54 ms, and its spread cannot exclude 0.5 ms. This is not
   the rig's cross-host Array1m 1% cell, so it does not clear the rig's reading.
+
+- **Rig** (2026-10-27, pre = main `3e353df1` (G), head = branch `ab/eth-storm-stall` (this change before its rebase onto
+  `149a281f`), aa = head again; the rule set before the run: core gate v2 PASS; in every Array cell head delivers no
+  less than pre by more than |aa - head|, and its median p99 is not above pre's by more than max(|aa - head|, 1 ms)).
+  Core gate v2 (run of 2026-10-27 17:05, `~/rig_results_safe/core_ab/`): PASS, 0/88 WORSE. `rmw_keepall_rig.sh`, 5 reps
+  of 60 s: delivered 100% on every arm and cell. Median p99 aa / head / pre: Array1m 0% 9.37 / 9.38 / 9.36 ms, 0.1%
+  9.45 / 9.45 / 9.46, 1% 10.22 / 9.93 / 10.32; Array4m 0% 36.66 / 36.53 / 36.55. PASS. Rig data: `~/rig_results_safe/`
+  (`queue_core_ab_ess.log`, `ess_1m_20261027-183916*`, `ess_4m_20261027-183916*`).
 
 Data: `~/ews_stall_results/` (`ess1_*`, `ess1.read.txt`, `ess1.driver.log`, `STATUS.txt`, `p99a_*`, `p99a.read.txt`,
 `r4s1_*`, `r4s1.read.txt`, gate, test-linux and mutant logs, `smoke_q1/`); trees `~/ews_stall_trees/` and `~/ews_p99_trees/` (each with its
@@ -1469,7 +1478,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | TVS | `storm_tv_ab.sh` (`wifi_repair_ab.sh`, read by `storm_tv_read.py`), `storm_trace.patch` + `storm_trace_scan.py` / `storm_trace_read.py` / `storm_sub_trace.py`, `large_repair_followups_netns.sh` PHASE=tail, `test_large_sample`, `wire_identity_resend_order.sh` | storm-fix: M/A `849fdccf`, F `8d0d2eed`, K/FK + 11908dea | 2026-10-25 | `~/storm_results/`: `ab1_tv.storm.txt`, `ab1_arms.storm.txt`, `ab1_{tv,arms}_*/`, `repro_trace_T{1,2,3}/`, `trace2_*/`, `tail1/`; r4_storm in `~/r4_results/` |
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
-| EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`434bf520`, the R4 follow-up) | harness `aabe81c9`, add-on `362dec45` (each run as its pre-rebase commit); M = A = `45129b71`, S = `646d27d4` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
+| EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`463bfaab`, the R4 follow-up) | harness `be0faaf0`, add-on `9aa8972f` (each run as its pre-rebase commit); M = A = `45129b71`, S = `102ec895` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |

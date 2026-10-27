@@ -213,6 +213,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A large writer's repair timeout backs off while the reader shows no progress** (2026-10-27; [DESIGN.md](DESIGN.md)
+  section 4, "Large-sample resend order"; RESULTS `EWB`). After G, a reader that took in nothing for ~100 ms still
+  looped the timeout. A unit's timeout now doubles for each resend of it in a row with no progress shown between, at
+  most x64; any progress clears it (3 bits in the 24 B slot, no wire change). PC: forced stall 2 of 20 storm reps
+  against 14 of 20, natural ETHERNET amp 0 of 720 against 7 of 1,440 (UNDECIDED), Wi-Fi tv delivery 92.6% -> 99.8%;
+  one R4 ge10b4 rep of 8 delivered 129 of 150 (32 more reps: UNDECIDED). Landed on the user's decision. Rig: core gate
+  v2 PASS 0/88; Array1m/4m delivery 100%, p99 equal.
 - **A large writer's repair timeout waits while the reader progresses** (2026-10-27; [DESIGN.md](DESIGN.md) section 4,
   "Large-sample resend order"; RESULTS `EWS`, `EWF`). After a whole-sample loss on ETHERNET's amp cell, the resend
   batch took longer to drain than the 2 x srtt timeout; every ACKNACK released it again and Karn froze the timeout
