@@ -1401,6 +1401,41 @@ On the rig, after the run below, CPU at 1% is equal and nothing is WORSE.
   within the A/A's 10%. Run 1, re-read post hoc: n = 2 share SAME (p 0.72), pub +8.6% against an A/A of 4.0%: not
   explained there. So a residual pub cost of 0-9% at 1% is not ruled out.
 
+### Reassembly slots per Subscriber, PC netns (`SRS`, 2026-10-27, not landed)
+
+**TL;DR.** Every Subscriber that reassembles owns a slot (DESIGN.md section 8, "Reassembly slots"; the user,
+2026-10-27). Run 3, the final code, is **INCONCLUSIVE** as registered: nothing WORSE anywhere. Beside 8 no-buffer
+RELIABLE streams at 5% loss, RELIABLE delivery goes 80.4% -> 100.00%, p99 182 -> 36 ms and CPU -10%; main drops 215
+fragments a run with every slot pinned, the change 0. The BEST_EFFORT stream's own delivery is UNDECIDED in every
+lossy cell: its A/A floor is 8-20 points, and every arm has runs where it gets 0 of 300 (under diagnosis, not this
+change). Runs 1 and 2 FAILED on a cost the change had introduced at 4 streams: a RELIABLE sample ahead of the
+watermark sat unrecorded in its Subscriber's spent own slot. Run 3's code sends it to the pool's oldest unpinned slot
+first, and the cost is gone.
+
+- **Run** (`sub_reassembly_pc_ab.sh`, rules in `sub_reassembly_pc_ab.py`, registered `50687787`, decide bounds and
+  REPS 10 `104bf641`). M = main `149a281f`, A = M again (A/A), F = the change. Per cell, 10 reps of 10 s each: N
+  RELIABLE streams of 30,000-byte samples at 30 Hz, read by Subscribers with no reorder buffer; one BEST_EFFORT stream
+  of the same; a control of 64-byte RELIABLE samples through a reorder buffer. netem on the writer: delay 1 ms, loss
+  L%. Results in `/home/semih/sub_reasm_results/ab_full`, `ab_run2`, `ab_run3`.
+
+| run, F | n4 5%: RELIABLE %, p99 ms (M / F) | n8 5%: RELIABLE %, p99 ms (M / F) | verdict |
+|---|---|---|---|
+| 1, `4705d704` | 100 / 97.16, 36 / 67 (WORSE) | 86.6 / 99.92 (BETTER), 126 / 41 | FAIL (R3) |
+| 2, `cbdba9d6` (a free pool slot first) | 100 / 94.17 (WORSE), 36 / 105 (WORSE), CPU +4.1% (WORSE) | 81.8 / 99.99, 147 / 36 | FAIL (R2-R4) |
+| 3, `28069b80` (the oldest unpinned pool slot first) | 100 / 100, 36 / 36 | 80.4 / 100.00 (BETTER), 182 / 36 (BETTER), CPU -10% (BETTER) | INCONCLUSIVE |
+
+- **Run 3's undecided rules.** R3: in the 1% cells main's own p99 differs 7.2x (n4) and 4.7x (n8) between M and A,
+  wider than the 25% at which a cell decides; F lies between them. R1: BEST_EFFORT delivery M / A / F at 5% is
+  20.2 / 15.5 / 10.9 % (n4) and 6.2 / 9.3 / 5.5 % (n8), at 1% 71.8 / 70.0 / 72.7 and 49.4 / 50.3 / 56.4. Within
+  floors of 8-20 points.
+- **The cost of runs 1 and 2** (diagnostic runs with counters, not committed). Every lost RELIABLE sample was a window
+  jump. In each, the sample at the watermark was whole in the pool but for one datagram, and nothing ahead of it was
+  recorded. One sample ahead was in the own slot, unrecorded; the rest of the pool was the BEST_EFFORT Subscriber's
+  older partial samples. So the ACKNACK asked for whole samples again. Main reclaims the oldest pool slot for a sample
+  ahead and records it there. Restoring that order for this one case (`06b50f74`): 4 streams at 5% gave 5 of 5 runs
+  1200/1200, against 3 of 5 losing on `cbdba9d6`.
+- **Memory**: DESIGN.md section 8 ("Memory: what the own slot adds per Subscriber").
+
 ### A recvmmsg batch's rows in place, PC netns (`RXIP`)
 
 **TL;DR.** One payload copy is left on the small-sample socket path: datagrams 2..N of a `recvmmsg()` batch are copied
@@ -1479,6 +1514,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
 | EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`463bfaab`, the R4 follow-up) | harness `be0faaf0`, add-on `9aa8972f` (each run as its pre-rebase commit); M = A = `45129b71`, S = `102ec895` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
+| SRS | `sub_reassembly_pc_ab.sh` + `sub_reassembly_node.c`, read by `sub_reassembly_pc_ab.py` | harness `50687787`, rules `104bf641`; M = A = `149a281f`, F = `4705d704` (run 1), `cbdba9d6` (run 2), `28069b80` (run 3; `ab/sub-reassembly`) | 2026-10-27 | `/home/semih/sub_reasm_results/`: `ab_full`, `ab_run2`, `ab_run3`, `diag/`, `STATUS.txt` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
