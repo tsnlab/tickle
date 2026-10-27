@@ -18,16 +18,16 @@
 # stream of the same; the control, 64-byte RELIABLE samples at 100 Hz read through a reorder buffer. Cells "n<N>_l<L>"
 # for N in STREAMS (default "4 8") and L in LOSSES (default "0 1 5"), DUR seconds each.
 #
-# Usage: [M_SHA=..] [F_SHA=..] [REPS=5] [DUR=10] [SIZE=30000] [RATE=30] [STREAMS="4 8"] [LOSSES="0 1 5"]
+# Usage: [M_SHA=..] [F_SHA=..] [REPS=10] [DUR=10] [SIZE=30000] [RATE=30] [STREAMS="4 8"] [LOSSES="0 1 5"]
 #        [OUT=/home/semih/sub_reasm_results/ab_<time>] sub_reassembly_pc_ab.sh
-# Needs passwordless `sudo -n ip` (tc runs inside the namespace through `ip netns exec`). Long (~27 min at the
+# Needs passwordless `sudo -n ip` (tc runs inside the namespace through `ip netns exec`). Long (~55 min at the
 # defaults): launch detached and wait for the line it always ends with, "=== sub_reassembly_pc_ab ended".
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 M_SHA=${M_SHA:-$(git -C "$REPO" rev-parse --short origin/main)}
 F_SHA=${F_SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
-REPS=${REPS:-5}
+REPS=${REPS:-10}
 DUR=${DUR:-10}
 SIZE=${SIZE:-30000}
 RATE=${RATE:-30}
