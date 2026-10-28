@@ -1401,7 +1401,7 @@ On the rig, after the run below, CPU at 1% is equal and nothing is WORSE.
   within the A/A's 10%. Run 1, re-read post hoc: n = 2 share SAME (p 0.72), pub +8.6% against an A/A of 4.0%: not
   explained there. So a residual pub cost of 0-9% at 1% is not ruled out.
 
-### Reassembly slots per Subscriber, PC netns (`SRS`, 2026-10-27, not landed)
+### Reassembly slots per Subscriber, PC netns (`SRS`, 2026-10-27, landed 2026-10-28 `d57eb469`)
 
 **TL;DR.** Every Subscriber that reassembles owns a slot (DESIGN.md section 8, "Reassembly slots"; the user,
 2026-10-27). Run 3, the final code, is **INCONCLUSIVE** as registered: nothing WORSE anywhere. Beside 8 no-buffer
@@ -1444,6 +1444,30 @@ first, and the cost is gone.
   9.39 / 9.40 / 9.39 ms, 0.1% 9.44 / 9.43 / 9.45, 1% 10.13 / 10.14 / 10.33; Array4m 0% 36.69 / 36.73 / 36.71. PASS. Not
   landed: the user decides. Rig data: `~/rig_results_safe/` (`queue_core_ab_sra.log`, `sra_1m_20261027-213634*`,
   `sra_4m_20261027-213634*`).
+
+### The hybrid reader's writer table, PC netns and rig (`HRW`, 2026-10-28, landed)
+
+- **TL;DR.** With 9 or more writers fragmenting at once, the reader's 8-entry writer table was recycled every sample:
+  lost runs went uncounted, no collapse was ever decided (cap 45 in 30 of 30 runs at 8 streams) and the kernel's IP
+  reassembly memory stayed full, so a BEST_EFFORT stream got as little as 0 of 300. Fix: 16 entries, the writer seen
+  longest ago replaced (`rx_writer_evictions` counts it), and a whole body lost while the writer's layout is unknown
+  counted as runs of rule (e)'s guess (DESIGN.md section 8). No wire change.
+- **Run** (`hybrid_rx_writers_ab.sh`, rules in `hybrid_rx_writers_ab.py`, a fresh namespace per run, 8 reps of 40 s;
+  N = 4/8/12 RELIABLE streams of 30,000 B at 30 Hz, one BEST_EFFORT stream, a 64 B control; loss 1% and 5%).
+  - Run 1 on main 9bdbe1ed (F 8cde7f53, both before (c)): FAIL, 8 streams 5% RELIABLE p99 WORSE. BEST_EFFORT units
+    now arrived and took slots from main's shared pool. One rule added before run 2 (`236228f4`): past the floor but
+    within F's own 2 SE is UNDECIDED.
+  - Run 2 on (c) (M 5851f798, F aa38399b; `2ae7b83d` and `96a2b507` after the rebase): INCONCLUSIVE, nothing WORSE.
+    BEST_EFFORT BETTER at 8 streams 5% 9.1 -> 12.5%, 12 streams 1% 38.4 -> 55.3%, 12 streams 5% 8.3 -> 15.6%;
+    RELIABLE delivery and CPU NOT WORSE; p99 UNDECIDED only in the 1% cells (main's own A/A spread is wider than the
+    bound), equal at 5% (35.8 / 35.8 ms at 8 streams). Runs losing more than 1% RELIABLE: M 1, A 0, F 1 of 48 each,
+    not looked at.
+- **Rig** (2026-10-28, pre = 5851f798, head = aa38399b, aa = head again; the same rule as `SRS`): core gate v2 PASS
+  (`coreAB_aa38399b_20261028-163505`; 2/88 listed, c4 and c15 server user instructions +0.23%; no CPU or latency row
+  WORSE). Array1m 0/0.1/1% delivery 100% in every arm, 1% p99 head 10.10, pre 10.00, aa 10.04 ms; Array4m delivery
+  100%, p99 36.68 ms in all three. Landed on the user's decision.
+- **Open.** The cap is node-wide: at 1% the collapse also moves RELIABLE writers to MTU units. A per-writer cap is a wire
+  change: noted, not proposed.
 
 ### A recvmmsg batch's rows in place, PC netns (`RXIP`)
 
@@ -1524,6 +1548,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
 | EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`463bfaab`, the R4 follow-up) | harness `be0faaf0`, add-on `9aa8972f` (each run as its pre-rebase commit); M = A = `45129b71`, S = `102ec895` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
 | SRS | `sub_reassembly_pc_ab.sh` + `sub_reassembly_node.c`, read by `sub_reassembly_pc_ab.py` | harness `12bf3d98` (50687787 before its rebase), rules `65e8056e` (104bf641 before its rebase); M = A = `149a281f`, F = `0d947642` (4705d704 before its rebase) (run 1), `9cc9f0d4` (cbdba9d6 before its rebase) (run 2), `911c7c3c` (28069b80 before its rebase) (run 3; `ab/sub-reassembly`) | 2026-10-27 | `/home/semih/sub_reasm_results/`: `ab_full`, `ab_run2`, `ab_run3`, `diag/`, `STATUS.txt` |
+| HRW | `hybrid_rx_writers_ab.sh` + `hybrid_rx_writers_ab.py`; rig `rig_queue_core_ab.sh`, `rmw_keepall_rig.sh` via `~/rig_jobs/hrw_queue.sh` | harness `304afa8b`, rules `236228f4`; run 1 M = 9bdbe1ed, F = 8cde7f53; run 2 M = 5851f798, F = aa38399b (`96a2b507` after the rebase) | 2026-10-28 | `/home/semih/hybrid_rx_results/`: `ab_run1`, `ab_run2`, `STATUS.txt`; `~/rig_results_safe/core_ab/coreAB_aa38399b_20261028-163505/`, `hrw_1m_20261028-180649.*`, `hrw_4m_20261028-180649.*` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |

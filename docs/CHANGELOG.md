@@ -213,6 +213,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **The hybrid reader keeps 16 writers, replacing the one seen longest ago, and counts a whole body lost before
+  its writer's layout is known** (2026-10-28; [DESIGN.md](DESIGN.md) section 8; RESULTS `HRW`). With 9 or more
+  fragmenting writers the 8 entries were recycled every sample, no collapse was decided and a BEST_EFFORT stream got as
+  little as 0 of 300. PC netns A/B on (c) INCONCLUSIVE, nothing WORSE: BEST_EFFORT 8.3 -> 15.6% (12 streams, 5%) and
+  38.4 -> 55.3% (12 streams, 1%). Landed on the user's decision. Rig: core gate v2 PASS (2/88 listed, +0.23% user
+  instructions); Array1m/4m delivery 100%, p99 within the rule. `rx_writer_evictions` on the hybrid line. No wire change.
 - **Every Subscriber that reassembles owns a reassembly slot; the node's 8 are overflow** (the user, 2026-10-27;
   [DESIGN.md](DESIGN.md) section 8, "Reassembly slots"; RESULTS `SRS`). Slots pinned by no-buffer RELIABLE streams
   starved a BEST_EFFORT Subscriber of the same node (8 streams at 5%: 152 of 265 delivered), and 16 BEST_EFFORT
