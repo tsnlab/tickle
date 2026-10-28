@@ -152,6 +152,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **zenoh-pico is re-measured as a fourth, reference column of the core campaign** (the user, 2026-10-28; [RESULTS.md](RESULTS.md)
+  `ZF`). zenoh-pico is pinned to release 1.10.2 (`fdfc065e`); BEST_EFFORT over UDP, RELIABLE over TCP, the same cells and
+  rotated order as the scored columns (`d5b75bc1`, `1998d6fc`). Its TCP session drops at max rate and under loss; the
+  cause is not investigated. The harnesses' `best_effort_latency` is now `reliable_latency`'s bench with BEST_EFFORT and
+  reports the reliability it ran (`16614bda`); the old one had no warm-up window and every campaign row of it was void.
 - **After a stale forget a reader announces no estimate, not "none seen"** (the user, 2026-10-26, options (a) + (e), landed on the overall judgement 2026-10-27;
   [DESIGN.md](DESIGN.md) section 8, "Train losses and the stale rule"; [RESULTS.md](RESULTS.md) `HFN`, `HSF`). A forget
   empties the reader's p (`loss_p` 0, announced at that tail), so the writer sends the next sample one MTU unit a send

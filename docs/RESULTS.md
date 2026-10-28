@@ -61,7 +61,7 @@ It now repeats the section tables.
   tap -> callback is shorter: 24.9-26.4 against 38.8-39.7 / 49.4-53.6 us (`KH2`, `132548dd`). Corrected 2026-10-21
   (was "kernel wake ~6 us slower") and 2026-10-23 (`KH`'s ~4-5 us -> `KH2`'s +2.4 / +1.3).
 - Hybrid AUTO's p99 is above forced MTU at 0.01% and 0.1% loss ([Hybrid](#hybrid-transport-large-samples-rig)).
-- zenoh-pico (reference) has the better figure in rows 5, 6, 7, 18, 19 and 35 ([zenoh](#zenoh-pico-and-rmw_zenoh-reference-not-scored)).
+- zenoh-pico 1.10.2 (reference) beats TickLE in no throughput or CPU cell; its RELIABLE latency p99 is just below TickLE's at P1 and P3, and its TCP session dies at max rate and under loss ([zenoh](#zenoh-pico-and-rmw_zenoh-reference-not-scored)).
 
 ## How to read these numbers
 
@@ -343,42 +343,95 @@ new reader's first sample arrives ~2 ms later at p1.
 
 ### zenoh-pico and rmw_zenoh (reference, not scored)
 
-**An older measurement, not re-run against today's main.** Never scored: no WIN/DRAW/LOSE, no count. These are the
-figures published beside the scored columns until `29826912` (2026-10-18), from zenoh-pico's own sessions (`Z`,
-2026-09-29/30, pinned, ondemand governor), so a margin against TickLE is looser than a within-row one. TickLE's column
-is the figure published beside it then (`A` / `T`, `09a0437d`, 2026-10-08), not today's. Arms: **†** TCP, the only
-configuration where zenoh-pico's reliability is real (its RELIABLE means monotonic sequence numbers, not
-retransmission); untagged = its UDP-multicast best-effort arm. **✗** = measured, and the TCP session died a few hundred
-samples into a max-rate run above 76 B while its publisher kept reporting success; never a figure.
+**zenoh-pico 1.10.2** (release tag, commit 6a881c21, pinned in `examples/perf_hil/zenohpico/build.sh` since `fdfc065e`) on the rig,
+2026-10-28, in the same campaign and the same rotated order as the scored columns (`ZF`). Never scored: no WIN/DRAW/LOSE,
+no count. Transport: BEST_EFFORT over **UDP** (zenoh-pico's multicast session), RELIABLE over **TCP** (†), the only
+configuration where its reliability is real; its UDP RELIABLE has no retransmission (a `@TODO` in 1.10.2's
+`_z_unicast_handle_frame`). Median of 3 reps; a cell with fewer than 3 usable reps is `VOID`. Goodput is complete
+samples a second at the subscriber; BEST_EFFORT throughput runs at max rate, RELIABLE at 10 kHz offered (`-i 0.0001`) unless marked max. Drift control (c1
+repeated last) moved every framework less than its rep spread. Array1m is not run: zenoh-pico's default
+`FRAG_MAX_SIZE` is 4096. rmw_zenoh is not in this round.
 
-| row | metric | zenoh-pico | TickLE then | zenoh-pico source (`examples/perf_hil/results/`) |
-|---|---|---:|---:|---|
-| 1 / 3 | RTT mean, send stamp, P1 / P2, ms | 0.221 † / 0.246 † | 0.206 / 0.231 | `zenoh_latency_reliable_8673ab4d_2026-09-29.txt` |
-| 2 / 4 | RTT max (tail), P1 / P2, ms | 0.336 † / 0.372 † | 0.252 / 0.266 | the same |
-| 5 / 6 | RTT mean / max, +10 ms netem, ms | 10.07 / 12.15 | 10.11 / 12.20 | `zenoh_zn_N2_8673ab4d_2026-09-29.txt` |
-| 6a / 6b | RTT mean, P3 / P4, ms | 0.248 † / 0.402 † | 0.234 / 0.249 | `zenoh_latency_p3p4_934f90de_2026-09-30.txt` |
-| 7 | RELIABLE goodput, P1, Mbps | 236.8 † | 107 | `zenoh_cells_31d58011_2026-09-29.txt` |
-| 8-10 | RELIABLE goodput, P2-P4 | ✗ † | 937 / 943 / 943 | `zenoh_payload_sweep_56d3a0a5_2026-09-29.txt` (89-673 samples a 5 s run) |
-| 11 | BEST_EFFORT goodput, P1, max rate, Mbps | 53.4 | 115 | `zenoh_cells_31d58011_2026-09-29.txt` |
-| 11a / 11b / 11c | BEST_EFFORT, P2 / P3 / P4, Mbps | 867 / 941 ‡ / 945 ‡ | 938 / 943 ‡ / 944 ‡ | `zenoh_payload_sweep_56d3a0a5_2026-09-29.txt` |
-| 13-17 | RELIABLE under 5% loss / reorder, retention | ✗ † | 93.0 Mbps (13); 86.9% / 91.6% (16-17) | `zenoh_zn_N1_8673ab4d_2026-09-29.txt` (TCP, 5% loss); its best-effort arm under loss: `zenoh_loss_p1p4_be3d42bf_2026-09-30.txt` |
-| 18 / 19 | CPU, throughput client / server, P1, cpu_s/Msample | 2.57 † / 1.42 † | 5.7 / 2.7 | `zenoh_cells_31d58011_2026-09-29.txt` |
-| 20-23, 26-27 | CPU at P2, P4, 5% loss | ✗ † | | |
-| 24 / 25 | CPU, latency, P1 / P2 | 121.1 / 144.6 | 34.3 / 35.0 | `zenoh_latency_besteffort_8673ab4d_2026-09-29.txt` |
-| 28 / 32 | peak RSS, throughput client / server, P1, KB | 2,127 † / 2,127 † | 2,087 / 2,057 | `zenoh_cells_31d58011_2026-09-29.txt` |
-| 31 | peak RSS, latency client, P1, KB | 2,135 | 1,813 | `zenoh_latency_besteffort_8673ab4d_2026-09-29.txt` |
-| 29-30, 33-34 | peak RSS at P2, P4, 5% loss | ✗ † | | |
-| 35 | wire bytes per sample, P1 | 93.6 † | 138 | `zenoh_cells_31d58011_2026-09-29.txt` |
-| 36-40 | wire bytes at P2-P4, 5% loss | ✗ † | | |
-| 41 | framing, one datagram, B | 63.0 (UDP arm: 139.0 B a sample - 76 B) | 62.0 | `zenoh_cells_31d58011_2026-09-29.txt` |
+Throughput, samples/s (delivered %):
 
-- zenoh-pico has the better figure in rows 5, 6, 7, 18, 19 and 35 and ties at the link ceiling in 11b-11c. Its P1 TCP
-  lead (row 7) comes from coalescing about eleven samples into each TCP segment (0.094 packets per sample against
-  TickLE's 1.005), a different mechanism from per-sample datagrams. Under loss its best-effort arm keeps 98.2% / 99.6%
-  only because dropping is free, so it is not set beside a recovered figure.
-- **Corrected 2026-10-28:** the "better figure" list also named row 24; its figures (121.1 against 34.3 cpu_s/Msample)
-  do not support that.
-- **rmw_zenoh** (`rmw_zenoh_cpp` 0.2.9 over TCP through its router, jazzy; reference): RTT mean from creation, block
+| cell | TickLE | CycloneDDS | Fast DDS | zenoh-pico |
+|---|---:|---:|---:|---:|
+| BEST_EFFORT P1 N0 | 198,696 (100.0) | 100,095 (89.2) | 62,452 (83.0) | 87,370 (100.0) |
+| BEST_EFFORT P2 N0 | 90,720 (100.0) | 87,421 (99.2) | 53,761 (82.9) | 83,396 (100.0) |
+| BEST_EFFORT P3 N0 | 82,791 (100.0) | 57,280 (79.1) | 42,895 (96.6) | 71,756 (100.0) |
+| BEST_EFFORT P4 N0 | 42,131 (100.0) | 41,799 (99.8) | 40,119 (98.2) | 36,942 (100.0) |
+| RELIABLE P1 N0 | 9,389 (100.0) | 6,001 (100.0) | 5,522 (100.0) | 6,001 (100.0) † |
+| RELIABLE P2 N0 | 9,400 (100.0) | 6,000 (100.0) | 5,500 (100.0) | 6,000 (100.0) † |
+| RELIABLE P3 N0 | 9,400 (100.0) | 5,999 (100.0) | 5,440 (100.0) | 6,000 (100.0) † |
+| RELIABLE P4 N0 | 9,403 (100.0) | 5,997 (100.0) | 5,252 (100.0) | 5,809 (100.0) † |
+| RELIABLE P1 N0 max | 191,319 (100.0) | 81,094 (100.0) | 24,608 (100.0) | died 3/3 † |
+| RELIABLE P4 N0 max | 42,118 (100.0) | 39,770 (100.0) | 33,029 (100.0) | died 3/3 † |
+| BEST_EFFORT P1 0.1% | 163,115 (99.9) | 102,140 (95.6) | 53,633 (76.1) | 84,117 (99.9) |
+| BEST_EFFORT P4 0.1% | 42,087 (99.8) | 41,528 (99.0) | 40,344 (98.7) | 39,378 (99.7) |
+| RELIABLE P1 0.1% | 9,388 (100.0) | 6,002 (100.0) | 5,511 (100.0) | 6,000 (100.0) † |
+| RELIABLE P4 0.1% | 9,403 (100.0) | 5,904 (100.0) | 5,228 (100.0) | 5,672 (100.0) † |
+| BEST_EFFORT P1 1% | 192,318 (99.0) | 101,831 (97.3) | 51,648 (71.2) | 84,609 (99.0) |
+| BEST_EFFORT P4 1% | 41,711 (98.0) | 41,331 (97.7) | 39,804 (96.5) | 39,107 (97.0) |
+| RELIABLE P1 1% | 9,398 (100.0) | 5,575 (100.0) | 5,497 (100.0) | 6,028 (100.0) † |
+| RELIABLE P4 1% | 9,401 (100.0) | 3,848 (100.0) | VOID | died 2/3 † |
+| BEST_EFFORT P1 5% | 186,900 (95.0) | 102,317 (93.9) | 47,629 (73.7) | 81,284 (95.0) |
+| BEST_EFFORT P4 5% | 40,021 (90.2) | VOID | VOID | 32,211 (86.1) |
+| RELIABLE P1 5% | 9,385 (100.0) | 2,247 (100.0) | 5,499 (100.0) | died 2/3 † |
+| RELIABLE P4 5% | 9,393 (100.0) | 560 (100.0) | VOID | died 3/3 † |
+
+Latency, round trip from creation, p50 / p99 ms (all delivered 100% unless noted; the BEST_EFFORT rows are a follow-up run,
+2026-10-29, `16614bda`, all 24 reps ok and every one reporting `reliability=best_effort`):
+
+| cell | TickLE | CycloneDDS | Fast DDS | zenoh-pico |
+|---|---:|---:|---:|---:|
+| RELIABLE P1 N0 | 0.200 / 0.241 | 0.253 / 0.279 | 0.282 / 0.316 | 0.218 / 0.235 † |
+| RELIABLE P2 N0 | 0.225 / 0.266 | 0.268 / 0.302 | 0.307 / 0.359 | 0.246 / 0.269 † |
+| RELIABLE P3 N0 | 0.229 / 0.274 | 0.282 / 0.321 | 0.333 / 0.377 | 0.249 / 0.266 † |
+| RELIABLE P4 N0 | 0.244 / 0.281 | 0.292 / 0.339 | 0.348 / 0.392 | 0.410 / 0.426 † |
+| BEST_EFFORT P1 N0 | 0.200 / 0.234 | 0.239 / 0.277 | 0.271 / 0.307 | 0.218 / 0.244 |
+| BEST_EFFORT P4 N0 | 0.242 / 0.285 | 0.287 / 0.318 | 0.315 / 0.385 | 0.266 / 0.299 |
+| RELIABLE P1 0.1% | 0.201 / 0.240 | 0.251 / 0.290 | VOID | 0.218 / 0.235 † |
+| RELIABLE P4 0.1% | 0.251 / 0.290 | 0.293 / 0.363 | VOID | 0.415 / 0.435 † |
+| RELIABLE P1 1% | 0.201 / 250.4 | 0.250 / 0.284 | VOID | 0.220 / 203.9 † |
+| RELIABLE P4 1% | 0.243 / 250.4 | 0.291 / 100.9 | VOID | 0.411 / 4.2 † |
+| RELIABLE P1 5% | 0.203 / 250.4 | 0.253 / 100.6 | VOID | 0.220 / 208.9 † |
+| RELIABLE P4 5% | 0.249 / 250.5 | 0.293 / 200.8 | 0.347 / 258.3 (50%) | 0.410 / 208.8 † |
+
+CPU, client + server per delivered sample (throughput) or round trip (latency), us, N0:
+
+| cell | TickLE | CycloneDDS | Fast DDS | zenoh-pico |
+|---|---:|---:|---:|---:|
+| T BEST_EFFORT P1 | 7.31 | 30.20 | 38.06 | 20.02 |
+| T BEST_EFFORT P2 | 9.38 | 30.07 | 41.09 | 20.93 |
+| T BEST_EFFORT P3 | 9.67 | 46.46 | 46.71 | 23.04 |
+| T BEST_EFFORT P4 | 18.22 | 40.88 | 44.22 | 45.75 |
+| T RELIABLE P1 | 23.72 | 43.35 | 74.86 | 37.00 |
+| T RELIABLE P2 | 24.41 | 45.66 | 76.30 | 34.69 |
+| T RELIABLE P3 | 24.51 | 51.31 | 81.15 | 34.19 |
+| T RELIABLE P4 | 34.47 | 52.32 | 88.68 | 54.60 |
+| L RELIABLE P1 | 29.1 | 52.2 | 103.1 | 88.9 |
+| L RELIABLE P2 | 31.1 | 54.4 | 104.7 | 97.6 |
+| L RELIABLE P3 | 31.2 | 60.8 | 111.3 | 97.2 |
+| L RELIABLE P4 | 41.6 | 62.0 | 118.8 | 154.4 |
+| T RELIABLE P1 max | 7.58 | 21.47 | 61.46 | - |
+| T RELIABLE P4 max | 19.70 | 34.24 | 57.45 | - |
+| L BEST_EFFORT P1 | 29.3 | 49.0 | 64.4 | 90.6 |
+| L BEST_EFFORT P4 | 40.6 | 58.0 | 73.6 | 152.9 |
+
+- **zenoh-pico's TCP session drops.** RELIABLE at max rate died in every rep at P1 (3/3, after about 2.1 million
+  samples each) and P4 (3/3), and under loss at P4 1% (2/3), P1 5% (2/3) and P4 5% (3/3): the subscriber stops
+  receiving while the publisher keeps reporting successful puts. At 10 kHz with no loss it survived every rep. The same
+  shape reproduces off the rig on a PC veth (`zenoh_tcp_disconnect_repro.sh`: 15/15 survived at 1-10 kHz with no loss;
+  died 5/9 at max rate, 4/4 at max rate with 1% loss, 2/2 at 10 kHz with 5% loss), with the subscriber logging
+  `Dropping peer due to processing error`. The cause is not investigated; it is expected from zenoh-pico's internal
+  structure.
+- Where it completes, zenoh-pico delivers every BEST_EFFORT sample at N0 (the DDS pair lose 0.2-21%), at 44-92% of
+  TickLE's goodput. Its RELIABLE latency p50 at P1-P3 is within 0.025 ms of TickLE's, with a p99 just below TickLE's at
+  P1 and P3; at P4 it is 0.41 ms against TickLE's 0.24. Its CPU per sample or round trip is 1.4-3.8 times TickLE's.
+- Under 1-5% loss the RELIABLE latency p99 is a repair wait: TickLE 250 ms in every cell, zenoh-pico about 200 ms (4.2
+  ms at P4 1%), CycloneDDS 0.28-201 ms.
+- The September figures (1.10.1, pinned, from zenoh-pico's own sessions) are at `git show 88e73b56:docs/RESULTS.md`.
+- **rmw_zenoh** (`rmw_zenoh_cpp` 0.2.9 over TCP through its router, jazzy; reference, older): RTT mean from creation, block
   wait, 48c-51c 0.449 / 0.445 / 0.686 / 0.682 ms (`Wc`, `29826912`); rows 68-71 70,072 / 70,484 KB and 91.8 / 94.1 ms
   (`W`, `934f90de`). It accepts DEADLINE and LIVELINESS but refuses their events (`UnsupportedEventTypeError`, rows
   45-46).
@@ -420,7 +473,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | SB2 | `stepb_rtt_rig.sh`, `stepb_rtt_read.py` | `28fd075e` | 2026-10-20 | `stepb_rtt_28fd075e_20261020-181744.*` |
 | HY | hybrid arms | d8980f9b (ab/hybrid-land) | 2026-10-12 | `hybridLand_s2_loss_20261012-021743.*` |
 | NS | `nosend_benefit_rig.sh` | `b265e86f` vs branch | 2026-10-16 | `nosend_benefit/20261016-020518/reading.txt` |
-| Z | `examples/perf_hil/zenohpico/` (reference) | `8673ab4d`, `31d58011`, `56d3a0a5`, `934f90de`, `be3d42bf` | 2026-09-29, -30 | `results/zenoh_*.txt` |
+| ZF | `zenoh_fair_queue.sh`, `zenoh_fair_be_latency_queue.sh`, `zenoh_fair_read.py` (reference column; zenoh-pico 1.10.2) | `1998d6fc` / `16614bda` | 2026-10-28 | `~/zenoh_fair_results/zenoh_fair_20261028-203558.txt.zenoh_fair`, `zenoh_fair_be_latency_20261028-235332.*` |
 
 **Versions:** CycloneDDS 11.0.1 (iceoryx 2.0.5) and Fast DDS 2.14.6 native; jazzy's rmws (CycloneDDS 0.10.5, Fast DDS
 2.14.6). Vendors are distribution packages (`-O2`); TickLE `-O2 -DNDEBUG`. Open work: [ROADMAP.md](ROADMAP.md).
@@ -447,7 +500,7 @@ each code's full reading is in the pre-shortening text (top of this file).
 | RLC | The reader's retry estimate collapses on main ~1 rep in 60 (Wi-Fi 1 MiB) and ~1 in 12 (ETHERNET amp): an ambiguous seed of 3-90 us locks the interval for 2-9 s. No loss; 2-3x resends and duplicates | main `81daa880` | 2026-10-26 | `~/rlc_results/` |
 | RLF | Least-transit floor on the reader's path samples: COLLAPSE 22/840 -> **0/840** (p 2e-7), resends -1..-15%, duplicates -9..-46%. One WORSE row: `tv` median rep p50 68.5 -> 74.3 ms (ge5b4 p99 256 -> 274, within band). Rig PASS. Landed 2026-10-27 on the user's call | main `a5b52eee`; rig `fc5fb79b` / `dc4fa180` | 2026-10-26, -27 | `~/rlf_results/` |
 | EWS | ETHERNET amp writer storm, 30 of 2,400 traced reps, load-driven: one ACKNACK folds ~250 Karn samples into srtt, the timeout is a bare 2 x srtt, and a whole lost sample (722 units, a 9.5 ms batch) outlasts it; then every ACKNACK re-releases every unit. Forced: timeout pinned 1.5 ms stormed 10/20, with a per-unit back-off 0/20 (p 0.0002) | census `2b482592`, force `231f10bd` | 2026-10-26 | `~/ews_results/` |
-| EWF | The repair timeout runs from the later of the resend and the reader's last progress (G): forced loop 10/20 -> 0/20, no row WORSE. Partial: a stall with no progress still storms. Rig PASS; its Array1m 1% p99 +0.54 ms on head-built arms, unexplained. Landed 2026-10-27 | `3bd2acec`; rig `b61e2302` / `45129b71` | 2026-10-27 | `~/ewf_results/` |
+| EWF | The repair timeout runs from the later of the resend and the reader's last progress (G): forced loop 10/20 -> 0/20, no row WORSE. Partial: a stall with no progress still storms. Rig PASS; its Array1m 1% p99 +0.54 ms on head-built arms was noise: a 12-rep recheck (B5, 2026-10-28) gave median p99 pre 10.23, G 10.12, A/A 9.99 ms, no cost by the registered rule (G - pre <= 0.2 ms). Landed 2026-10-27 | `3bd2acec`; rig `b61e2302` / `45129b71` | 2026-10-27, -28 | `~/ewf_results/`, `~/rig_results_safe/gcost_1m_20261028-195231.txt` |
 | EWB | The timeout doubles per resend with no progress between (at most x64). Stall cell storms 14/20 -> 2/20 (none through the timeout), delivery 92.6 -> 99.8%, p99 195 -> 137 ms; natural amp 7/1,440 -> 0/720 (UNDECIDED). One WORSE row (R4 ge10b4 delivered 98.25%, one rep of 8); 32-rep follow-up UNDECIDED. PC 1% p99 add-on VOID. Rig PASS; landed on the user's call | `102ec895`; rig pre `3e353df1` | 2026-10-27 | `~/ews_stall_results/` |
 | HMA | Hybrid IP-run mode at 1% was a latched p (re-announced only on a factor of 2, and the n = 1 / 2 boundary 0.886% is inside 1%'s band). Fix: re-announce when n* moves. Rig (`HMAR`): IP-run reps 5/12 -> 0/24 (p 0.002); median p99 +0.22 ms | pre `7694bc87`, fix `3f0cf05e` | 2026-10-25 | `haa_1m_20261025-002405.txt` |
 | HFN | Runs of 45 at 1%: a stale forget announced "none seen", the runs filled the reader's IP reassembly memory, and the writer's rule (e) went to MTU for 60 s (4 of 16 reps) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` |
