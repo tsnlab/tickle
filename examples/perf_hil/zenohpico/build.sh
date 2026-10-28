@@ -4,13 +4,12 @@
 # zenoh-pico is not packaged, so this fetches and builds it into a prefix of its own the first time and
 # reuses it afterwards.
 #
-# ZENOH_PICO_REF names the ref to clone. It defaults to main, so it does NOT pin a commit - the version a rig
-# actually measured is whatever main was on the day that rig first built, and the only way to know it is to ask
-# the rig (`git log -1` in $SRC). The earlier wording here claimed the ref was pinned and printed "in the RESULT
-# line's own build tag"; neither is true. The RESULT line has no build tag, and its `transport=tcp` is a literal
-# in the printf, so nothing in a result says which library produced it. Both rig hosts were checked by hand on
-# 2026-09-30 and agree at d9b4eea (release 1.10.1), which is what every zenoh figure in COMPARISON.md refers to.
-#
+# ZENOH_PICO_REF names the ref to clone, and since 2026-10-28 it is PINNED: the release tag 1.10.2, commit
+# 6a881c21dad1f778d0529eb9f297bea339016526 (ZENOH_PICO_COMMIT). The clone is checked against that commit and the
+# build refuses if the tag has moved, so a figure always names the library that produced it. Every zenoh figure
+# before 2026-10-28 came from an unpinned clone of main that both rig hosts had at d9b4eea (release 1.10.1).
+# The default prefix carries the ref, so a 1.10.1 prefix already on a host is never reused for a 1.10.2 run.
+# Overriding ZENOH_PICO_REF without ZENOH_PICO_COMMIT skips the commit check and says so.
 # ZENOH_DEBUG turns zenoh-pico's own logging on (1 error, 2 info, 3 debug). It matters more than it looks:
 # WITHOUT it every _Z_LOG call in the library compiles to nothing, so a link that closes mid-run says nothing
 # anywhere, and the logging that does exist goes to stdout via printf, not to stderr. A harness that keeps only
@@ -24,7 +23,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCENARIO=${1:?usage: build.sh <scenario> <payload>}
 PAYLOAD=${2:?usage: build.sh <scenario> <payload>}
-ZENOH_PICO_REF=${ZENOH_PICO_REF:-main}
+ZENOH_PICO_REF=${ZENOH_PICO_REF:-1.10.2}
+if [ "$ZENOH_PICO_REF" = 1.10.2 ]; then
+    ZENOH_PICO_COMMIT=${ZENOH_PICO_COMMIT:-6a881c21dad1f778d0529eb9f297bea339016526}
+else
+    ZENOH_PICO_COMMIT=${ZENOH_PICO_COMMIT:-}
+fi
+# Build parallelism for zenoh-pico itself; default all cores (the rig), set ZENOH_BUILD_JOBS=2 on a shared PC.
+ZENOH_BUILD_JOBS=${ZENOH_BUILD_JOBS:-$(nproc)}
 ZENOH_DEBUG=${ZENOH_DEBUG:-}
 # Arbitrary CMake options for the zenoh-pico build, so a tuned arm can be built without editing this file.
 # The knobs that matter for the reliable cells above p1 are BATCH_UNICAST_SIZE (default 2048), FRAG_MAX_SIZE
@@ -33,8 +39,8 @@ ZENOH_DEBUG=${ZENOH_DEBUG:-}
 # established. Example:
 #   ZENOH_CMAKE_OPTS="-DZ_FEATURE_BATCHING=0" ZENOH_PICO_PREFIX=$HOME/zenohpico_install_nobatch ...
 ZENOH_CMAKE_OPTS=${ZENOH_CMAKE_OPTS:-}
-PREFIX=${ZENOH_PICO_PREFIX:-$HOME/zenohpico_install}
-SRC=${ZENOH_PICO_SRC:-$HOME/zenohpico_src}
+PREFIX=${ZENOH_PICO_PREFIX:-$HOME/zenohpico_install_$ZENOH_PICO_REF}
+SRC=${ZENOH_PICO_SRC:-$HOME/zenohpico_src_$ZENOH_PICO_REF}
 SHAPE_DIR="$HERE/../tickle/common/$PAYLOAD"
 CC=${CC:-gcc}
 
@@ -42,7 +48,7 @@ MARKER="$PREFIX/.tickle_zenoh_debug"
 # The marker records EVERY build option, not just the logging level. A prefix holding a library built with
 # different batching is as wrong to reuse as one built with logging on, and the RESULT line still carries no build
 # tag to tell them apart.
-WANT_DEBUG="${ZENOH_DEBUG:-none} opts:${ZENOH_CMAKE_OPTS:-none}"
+WANT_DEBUG="${ZENOH_DEBUG:-none} opts:${ZENOH_CMAKE_OPTS:-none} ref:$ZENOH_PICO_REF"
 if [ -f "$PREFIX/lib/libzenohpico.so" ] || [ -f "$PREFIX/lib/libzenohpico.a" ]; then
     # A prefix from before this marker existed can only have been built with logging off, because no earlier
     # version of this script could pass ZENOH_DEBUG at all. That is why "no marker" reads as "none" instead of
@@ -53,6 +59,8 @@ if [ -f "$PREFIX/lib/libzenohpico.so" ] || [ -f "$PREFIX/lib/libzenohpico.a" ]; 
     # same reasoning that lets an absent marker mean "none". Normalise rather than refuse, or changing the
     # marker's format would throw away every prefix that is in fact correct.
     case "$HAVE_DEBUG" in *" opts:"*) ;; *) HAVE_DEBUG="$HAVE_DEBUG opts:none" ;; esac
+    # A marker without a ref came from the unpinned clone of main (1.10.1 on the rig); it is never the pinned release.
+    case "$HAVE_DEBUG" in *" ref:"*) ;; *) HAVE_DEBUG="$HAVE_DEBUG ref:unpinned-main" ;; esac
     if [ "$HAVE_DEBUG" != "$WANT_DEBUG" ]; then
         echo "REFUSING: $PREFIX holds a zenoh-pico built with logging '$HAVE_DEBUG', this run asks for '$WANT_DEBUG'." >&2
         echo "Nothing in a RESULT line says which library produced it, so reusing one for the other would make a" >&2
@@ -63,6 +71,12 @@ if [ -f "$PREFIX/lib/libzenohpico.so" ] || [ -f "$PREFIX/lib/libzenohpico.a" ]; 
 else
     rm -rf "$SRC"
     git clone -q --depth 1 --branch "$ZENOH_PICO_REF" https://github.com/eclipse-zenoh/zenoh-pico.git "$SRC"
+    got=$(git -C "$SRC" rev-parse HEAD)
+    if [ -n "$ZENOH_PICO_COMMIT" ] && [ "$got" != "$ZENOH_PICO_COMMIT" ]; then
+        echo "REFUSING: $ZENOH_PICO_REF resolved to $got, pinned commit is $ZENOH_PICO_COMMIT (the tag moved?)" >&2
+        exit 1
+    fi
+    [ -z "$ZENOH_PICO_COMMIT" ] && echo "NOTE: ref $ZENOH_PICO_REF is not pinned to a commit; built $got" >&2
     debug_arg=()
     [ -n "$ZENOH_DEBUG" ] && debug_arg=(-DZENOH_DEBUG="$ZENOH_DEBUG")
     extra_arg=()
@@ -70,7 +84,7 @@ else
     [ -n "$ZENOH_CMAKE_OPTS" ] && extra_arg=($ZENOH_CMAKE_OPTS)
     cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         ${debug_arg[0]+"${debug_arg[@]}"} ${extra_arg[0]+"${extra_arg[@]}"} >/dev/null
-    cmake --build "$SRC/build" --parallel "$(nproc)" >/dev/null
+    cmake --build "$SRC/build" --parallel "$ZENOH_BUILD_JOBS" >/dev/null
     cmake --install "$SRC/build" >/dev/null
     printf '%s\n' "$WANT_DEBUG" >"$MARKER"
     echo "Built zenoh-pico $(git -C "$SRC" log --oneline -1) into $PREFIX with logging=$WANT_DEBUG"
