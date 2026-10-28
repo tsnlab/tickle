@@ -27,6 +27,7 @@ SMALL_MIN_REP = 2000
 # baseline (2026-10-22), whose reps other sessions' builds loaded past nproc/2; the header fixed only the 2000 a rep.
 POOLED_MIN = 2 * SMALL_MIN_REP
 LARGE_MIN_REP = 100
+SEND_DEFICIT_MAX = 100  # sends the writer counted and its egress qdisc never saw (header, ADDED 2026-10-29)
 SMALL_HZ = 100  # the small cells' offered rate (wifi_burst_loss_netns.sh SMALL_HZ)
 PERIOD_MS = 10.0  # one sample period at 100 Hz: detection by the next sample
 ROUND_FACTOR = 1.5  # a repair round: a round trip and half a round trip of retry timer
@@ -61,7 +62,8 @@ def result_of(lines, role_prefix):
 
 
 def counters_of(path):
-    """Per node label: veth tx_bytes and, per netem handle (10 broadcast, 20 unicast), sent packets and drops."""
+    """Per node label: veth tx_bytes and, per netem handle (10 broadcast, 20 unicast) and for the prio root ("root",
+    kept apart from the bands, which it sums), sent packets and drops."""
     nodes = {}
     label = None
     handle = None
@@ -70,14 +72,19 @@ def counters_of(path):
             label = line.split()[1]
             d = kv(line)
             nodes[label] = {"tx_bytes": int(d.get("tx_bytes", 0)), "tx_packets": int(d.get("tx_packets", 0)),
-                            "bands": {}}
+                            "bands": {}, "root": None}
             handle = None
+        elif line.startswith("qdisc prio") and label is not None:
+            handle = "root"  # the prio root: everything the node's egress saw, both bands
         elif line.startswith("qdisc netem") and label is not None:
             handle = line.split()[2].rstrip(":")
         elif line.strip().startswith("Sent") and label is not None and handle is not None:
             m = re.search(r"Sent (\d+) bytes (\d+) pkt \(dropped (\d+)", line)
             if m:
-                nodes[label]["bands"][handle] = (int(m.group(2)), int(m.group(3)))
+                if handle == "root":
+                    nodes[label]["root"] = (int(m.group(2)), int(m.group(3)))
+                else:
+                    nodes[label]["bands"][handle] = (int(m.group(2)), int(m.group(3)))
             handle = None
     return nodes
 
@@ -163,6 +170,20 @@ def load_runs(out, profile="ethernet"):
                 r["ends"][res["ctx"]] = int(res["end_ns"])
         if r["ping"] is None or r["echo"] is None or r["idle"] is None:
             r["void"].append("a RESULT line is missing")
+        # The send deficit (header, ADDED 2026-10-29): sends the writer counted that its egress qdisc never saw.
+        # Judged only where the writer's unicast band carried one frame per skb, as the instrument needs: netem drops a
+        # GSO skb as one packet however many datagrams it holds, so with UDP offload on a lossy arm shows a deficit of
+        # its own making (the first baseline: 920-12,948 in every lossy rel_large rep, which segs_per_skb voids anyway).
+        p_cnt = r["counters"].get("p", {})
+        root = p_cnt.get("root")
+        u_sent, u_drop = p_cnt.get("bands", {}).get("20", (0, 0))
+        u_skbs = max(0, p_cnt.get("tx_packets", 0) - p_cnt.get("bands", {}).get("10", (0, 0))[0]) + u_drop
+        one_frame = u_skbs > 0 and (u_sent + u_drop) <= 1.05 * u_skbs
+        if r["ping"] is not None and "tx_datagrams" in r["ping"] and root is not None and one_frame:
+            r["deficit"] = int(r["ping"]["tx_datagrams"]) - root[0] - root[1]
+            if r["deficit"] > SEND_DEFICIT_MAX:
+                r["void"].append(f"send deficit {r['deficit']}: sends the writer counted never reached its qdisc "
+                                 f"(over {SEND_DEFICIT_MAX})")
         r["treat_void"], r["treat"] = treatment(r, profile)
         runs.append(r)
     return runs

@@ -123,6 +123,24 @@
 # is in wifi_repair_ab.sh's header (the clock control). The clock packets count in R2's R; each node's sender prints
 # how many it sent (clock.log), and a run whose sender sent under 90% of N x its duration is VOID for that reading.
 #
+# ADDED 2026-10-29 (C8), BEFORE ITS FIRST RUN - NO ARP, AND THE SEND DEFICIT. Every node's veth has a fixed MAC and
+# every node a permanent neighbour entry for the other two (topo()), so no ARP is ever sent. Until now ARP, which is not
+# IP and so missed the broadcast filters, went through the lossy unicast band: a reader's ARP reply lost in a
+# Gilbert-Elliott bad state left the writer's entry INCOMPLETE for seconds, and the kernel discarded every send to the
+# reader before the qdisc - a start-of-rep outage no arm configured (c8_arp_outage.sh: r4s1's R rep, 18 samples lost,
+# 13,042 sends that never reached the qdisc). Static entries rather than a third, unshaped band for ARP: nothing is left
+# to classify or to time - no neighbour state machine (probes, INCOMPLETE, its queue of 3 skbs), no ARP packet counted
+# in a band's burst or its realized loss - and the qdisc structure every arm and reading rests on is unchanged. What it
+# gives up is a real Wi-Fi link's own ARP losses, which are not what this harness measures. Each node's neighbour table
+# is printed at the end of a run (counters.txt, "neigh"). The reader's new VOID rule: a rep whose writer counted more
+# than 100 sends that its egress qdisc never saw (ping's tx_datagrams - the prio root's Sent + dropped) lost datagrams
+# no arm configured, and is VOID, listed with the deficit. It is judged only where the writer's unicast band carried
+# one frame per skb (NODE_ENV=TT_UDP_OFFLOAD=0, as segs_per_skb already demands): netem drops a GSO skb as one packet
+# however many datagrams it holds, which on the first baseline gave every lossy rel_large rep a deficit of its own
+# making. Replayed on 850 earlier rel_large reps (the first baseline, smoke1, r4s1's three trees, C8's census), it
+# lists exactly the four C8's deficit scan found: r4s1 reps 1 (the R rep) and 27, census B2 rep 71 and F2 rep 72. Otherwise it can only miss such a loss, never invent one: an
+# IP-fragmented datagram (rel_large ctl) or a CLOCK_PPS packet counts in the qdisc and not in tx_datagrams.
+#
 # Usage: [REPS=3] [REP_FIRST=1] [DUR=30] [ARMS="ctl ge1b2 ..."] [CELLS="be_small rel_small rel_large"] [PROFILE=ethernet|wifi]
 #        [OUT=dir] wifi_burst_loss_netns.sh
 #   LARGE_HZ (default 5) sets rel_large's rate. OUT defaults to ~/rig_results_safe/wifi_baseline/<stamp>: raw logs per run
@@ -254,6 +272,7 @@ print(f"clock sent={n} secs={time.monotonic() - t0:.3f} pps={pps:g}", flush=True
 '
 
 IPS=(10.78.0.1 10.78.0.2 10.78.0.3)
+MACS=(02:78:00:00:00:01 02:78:00:00:00:02 02:78:00:00:00:03) # fixed, for the permanent neighbour entries (C8)
 BCAST=10.78.0.255
 
 # topo RUN: the hub and the three node namespaces of one run, each node's egress shaped for $ARM (tv: phase 0).
@@ -269,11 +288,19 @@ topo() {
         echo "$ns" >>"$NS_LIST"
         NS[k]=$ns
         sudo -n ip netns add "$ns" || return 1
-        sudo -n ip -n "$HUB" link add "hp$k" type veth peer name wl0 netns "$ns" || return 1
+        sudo -n ip -n "$HUB" link add "hp$k" type veth peer name wl0 address "${MACS[$k]}" netns "$ns" || return 1
         sudo -n ip -n "$HUB" link set "hp$k" master br0 && sudo -n ip -n "$HUB" link set "hp$k" up || return 1
         sudo -n ip -n "$ns" addr add "${IPS[$k]}/24" brd + dev wl0 || return 1
         sudo -n ip -n "$ns" link set lo up && sudo -n ip -n "$ns" link set wl0 up || return 1
         shape "$ns" add || return 1
+    done
+    # No ARP (header, ADDED 2026-10-29): each node knows the other two's MACs for good.
+    local j
+    for k in 0 1 2; do
+        for j in 0 1 2; do
+            [ "$j" = "$k" ] && continue
+            sudo -n ip -n "${NS[$k]}" neigh replace "${IPS[$j]}" lladdr "${MACS[$j]}" dev wl0 nud permanent || return 1
+        done
     done
 }
 # shape NS add|change [ARM]: the prio root, its broadcast filters and both bands' netem.
@@ -316,6 +343,7 @@ counters() { # counters NS LABEL -> RUN_DIR/counters.txt: the veth and both band
             "tx_dropped=$(sudo -n ip netns exec "$ns" cat /sys/class/net/wl0/statistics/tx_dropped)" \
             "rx_dropped=$(sudo -n ip netns exec "$ns" cat /sys/class/net/wl0/statistics/rx_dropped)"
         sudo -n ip netns exec "$ns" tc -s qdisc show dev wl0
+        echo "neigh $label: $(sudo -n ip -n "$ns" neigh show dev wl0 | tr '\n' ';')"
     } >>"$RUN_DIR/counters.txt"
 }
 # node K ARGS...: one wifi_link_node or large bench in node namespace K, memory capped, output to RUN_DIR.
