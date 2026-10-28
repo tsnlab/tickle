@@ -541,7 +541,11 @@ static void test_every_accepted_profile_survives_loss(void) {
 }
 
 // The control: a buffer sized as before sends exactly what it sent on main 1511981c, before the check. The simulation
-// is deterministic (a fixed seed and the mock clock), so equality is the claim.
+// is deterministic (a fixed seed and the mock clock), so equality is the claim. Re-pinned 2026-10-29 (C8, here and in
+// test_several_writers_share_the_buffer()): the last match Heartbeat now asks for an ACKNACK and stays until the
+// reader's acknowledgement passes the match point, which moves the first rounds of every run; every rule held in every
+// row; the counts moved by -770..+35 DATA and -727..+34 ACKNACKs a run, 8 of 22 rows by more than 1% (4 writers at 5%
+// loss, no reorder buffer: 15,731 -> 14,961 DATA; with one: 8,740 -> 8,469 and overflow 259 -> 0).
 static void test_a_window_sized_buffer_behaves_as_before(void) {
     const struct {
         uint16_t slots;
@@ -553,13 +557,13 @@ static void test_a_window_sized_buffer_behaves_as_before(void) {
         uint32_t overflow;
     } before[] = {
         {256, 0, 50, SAMPLES, 2117, 118, 0},
-        {256, 0, 200, SAMPLES, 2509, 552, 0},
-        {255, 0, 200, SAMPLES, 2509, 552, 0},
-        {512, 0, 200, SAMPLES, 2509, 552, 0},
+        {256, 0, 200, SAMPLES, 2516, 501, 0},
+        {255, 0, 200, SAMPLES, 2516, 501, 0},
+        {512, 0, 200, SAMPLES, 2516, 501, 0},
         {tt_QOS_REORDER_NONE, 0, 50, SAMPLES, 3814, 1622, 1604},
         {tt_QOS_REORDER_NONE, 0, 200, SAMPLES, 4902, 1856, 1841},
         {4096, WIDE_WORDS, 50, 3U * SAMPLES, 6328, 325, 0},
-        {4096, WIDE_WORDS, 200, 3U * SAMPLES, 7522, 994, 0},
+        {4096, WIDE_WORDS, 200, 3U * SAMPLES, 7520, 997, 0},
     };
     for (size_t i = 0; i < sizeof(before) / sizeof(before[0]); i++) {
         struct run_result r =
@@ -610,8 +614,8 @@ static void test_several_writers_share_the_buffer(void) {
         uint64_t acknacks;
         uint32_t overflow;
     } after[] = {
-        {1, 50, 2117, 118, 0}, {1, 200, 2509, 552, 0},      {2, 50, 4231, 231, 0},   {2, 200, 5804, 1207, 571},
-        {3, 50, 6347, 341, 0}, {3, 200, 10268, 2953, 2113}, {4, 50, 8740, 704, 259}, {4, 200, 14025, 4426, 2988},
+        {1, 50, 2117, 118, 0}, {1, 200, 2516, 501, 0},      {2, 50, 4230, 232, 0}, {2, 200, 5803, 1207, 571},
+        {3, 50, 6344, 344, 0}, {3, 200, 10268, 2953, 2113}, {4, 50, 8469, 464, 0}, {4, 200, 14025, 4426, 2988},
     };
     for (size_t i = 0; i < sizeof(after) / sizeof(after[0]); i++) {
         struct run_result r = sim_run_writers(after[i].writers, 0, 0, SAMPLES, after[i].loss, 10 * tt_SECOND);
@@ -633,8 +637,8 @@ static void test_several_writers_share_the_buffer(void) {
         uint64_t acknacks;
         uint32_t overflow;
     } none_before[] = {
-        {2, 50, 7386, 3024, 2985},   {2, 200, 9973, 3774, 3741}, {3, 50, 11639, 5083, 5025},
-        {3, 200, 15090, 5762, 5715}, {4, 50, 15731, 6986, 6917}, {4, 200, 20001, 7644, 7588},
+        {2, 50, 7421, 3058, 3016},   {2, 200, 9973, 3774, 3741}, {3, 50, 11450, 4889, 4830},
+        {3, 200, 15090, 5762, 5715}, {4, 50, 14961, 6259, 6180}, {4, 200, 20001, 7644, 7588},
     };
     for (size_t i = 0; i < sizeof(none_before) / sizeof(none_before[0]); i++) {
         struct run_result r = sim_run_writers(none_before[i].writers, tt_QOS_REORDER_NONE, 0, SAMPLES,

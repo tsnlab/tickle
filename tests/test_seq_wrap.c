@@ -791,7 +791,8 @@ static void test_acknowledgements_compare_serially(void) {
         pub.peer_acks[1].first_owed_seq_no = base + 2U;
         pub.peer_acks[1].match_heartbeats_left = 2;
         uint32_t owed = 0;
-        EXPECT_TRUE(take_match_heartbeat(&pub, &owed));
+        bool solicit = false;
+        EXPECT_TRUE(take_match_heartbeat(&pub, &owed, &solicit));
         EXPECT_EQ_U32(base - 2U, owed);
         record_peer_ack(&pub, 7, 70, base + 1U); // past its owed point, across 2^32
         EXPECT_EQ_U32(0, pub.peer_acks[0].match_heartbeats_left);
