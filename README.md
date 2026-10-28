@@ -14,12 +14,12 @@ complete. P1-P4 = 76, 1292, 1424, 2800-byte payloads.
 | | TickLE | FastDDS | CycloneDDS | source |
 |---|---:|---:|---:|---|
 | Cross host, round trip from creation, P2 (ms) | **0.237** | 0.378 | 0.328 | row 3c, `596e9c9c` |
-| Cross host, RELIABLE goodput, P2 (Mbps) | **937** | 591 | 864 | row 8, `09a0437d` |
-| Cross host, RELIABLE throughput kept at 5% loss, P1 | **86.9%** | 43.1% | 4.8% | row 16, `09a0437d` |
-| Cross host, client peak memory, P1 (KB) | **2,087** | 15,947 | 5,407 | row 28, `09a0437d` |
-| Same host, BEST_EFFORT goodput, P4 (Mbps) | **25,066** | 0.70 | 1,854 | S3, `e521bbba` |
-| Same host, RELIABLE goodput, P4 (Mbps) | **14,917** | 1,924 | delivery failed | S6, `e521bbba` |
-| Same host, round trip from creation, P3 (ms) | **0.037** | 0.164 | 0.130 | S9c, `2579e822` |
+| Cross host, RELIABLE goodput, P2 (Mbps) | **937** | 579 | 864 | row 8, `d58873cf` |
+| Cross host, RELIABLE throughput kept at 5% loss, P1 | **84.9%** | 44.6% | 4.9% | row 16, `d58873cf` |
+| Cross host, client peak memory, P1 (KB) | **2,116** | 15,952 | 5,386 | row 28, `d58873cf` |
+| Same host, BEST_EFFORT goodput, P4 (Mbps) | **24,773** | 1.20 | 1,876 | S3, `60f49f6a` |
+| Same host, RELIABLE goodput, P4 (Mbps) | **15,247** | 1,879 | delivery failed | S6, `60f49f6a` |
+| Same host, round trip from creation, P3 (ms) | **0.037** | 0.158 | delivery failed | S9c, `0117126a` |
 
 Across the network TickLE scores 139 wins, 11 draws, 0 losses in 150 cells; through ROS 2 it wins all 52 same-host
 rows. It still loses 2 rows: subscriber CPU per MB against FastDDS for 4 MB messages at 15 Hz (+4.5%), and one
