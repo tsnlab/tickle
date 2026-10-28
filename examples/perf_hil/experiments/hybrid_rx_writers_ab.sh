@@ -24,6 +24,12 @@
 # The reader's hybrid line (collapses, cap, rx_writer_evictions) and its namespace's IP reassembly counters
 # (/proc/net/snmp Reasm*) are kept per run: the treatment and its witness.
 #
+# Run 1 (2026-10-27, M = origin/main 9bdbe1ed): FAIL on R3 (n8_l5 RELIABLE p99). Its cost was main's shared reassembly
+# pool, not the reader: every RELIABLE writer sent MTU units at 5% in all arms (the collapse moved only the BEST_EFFORT
+# writer, one run of 20 -> runs of 4-6), and the BEST_EFFORT units that now got through took pool slots from the
+# no-buffer RELIABLE Subscribers (frag_abandoned 2,131 -> 3,580 at n8_l5; main loses RELIABLE samples in every n8/n12
+# 5% run of every arm). Run 2 is therefore on top of the per-Subscriber slots: M_SHA = ab/sub-reassembly 5851f798,
+# F_SHA = ab/hybrid-rx-writers-srs (these commits rebased onto it), rules unchanged but for the UNDECIDED step above.
 # Usage: [M_SHA=..] [F_SHA=..] [REPS=8] [DUR=40] [SIZE=30000] [RATE=30] [STREAMS="4 8 12"] [LOSSES="1 5"]
 #        [OUT=/home/semih/hybrid_rx_results/ab_<time>] hybrid_rx_writers_ab.sh
 # Needs passwordless `sudo -n ip` (tc runs inside the namespace through `ip netns exec`). Long (~115 min at the
