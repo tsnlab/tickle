@@ -1346,6 +1346,15 @@ first, and the cost is gone.
   ahead and records it there. Restoring that order for this one case (`06b50f74`): 4 streams at 5% gave 5 of 5 runs
   1200/1200, against 3 of 5 losing on `cbdba9d6`.
 - **Memory**: DESIGN.md section 8 ("Memory: what the own slot adds per Subscriber").
+- **Rig** (2026-10-27, pre = main `149a281f`, head = `ab/sub-reassembly` `28069b80`, aa = head again; the rule set before
+  the run: core gate v2 PASS; in every Array cell head delivers no less than pre by more than |aa - head|, and its
+  median p99 is not above pre's by more than max(|aa - head|, 1 ms)). Core gate v2 (`coreAB_28069b80_20261027-200416`):
+  PASS, no CPU or latency row WORSE; 8 of 88 listed, not blocking: user instructions a sample +0.27-0.45% on the server
+  of c2, c3, c13, c14 and +0.08-0.14% on c10, c11, c16 (~5-6 instructions a received sample, the ownership check).
+  `rmw_keepall_rig.sh`, 5 reps of 60 s: delivered 100% on every arm and cell. Median p99 aa / head / pre: Array1m 0%
+  9.39 / 9.40 / 9.39 ms, 0.1% 9.44 / 9.43 / 9.45, 1% 10.13 / 10.14 / 10.33; Array4m 0% 36.69 / 36.73 / 36.71. PASS. Not
+  landed: the user decides. Rig data: `~/rig_results_safe/` (`queue_core_ab_sra.log`, `sra_1m_20261027-213634*`,
+  `sra_4m_20261027-213634*`).
 
 ### A recvmmsg batch's rows in place, PC netns (`RXIP`)
 
