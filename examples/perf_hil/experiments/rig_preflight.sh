@@ -223,7 +223,7 @@ declare -a SPECS=()
 for spec in "$@"; do
     IFS=':' read -r scen payload net _common _extra <<<"$spec"
     case "$scen:$payload:$net" in
-    *_throughput:p[1-4]:N[0-3] | reliable_latency:p[1-4]:N[0-3] | service_call:p[1-4]:N[04]) ;;
+    *_throughput:p[1-4]:N[0-3] | reliable_latency:p[1-4]:N[0-3] | best_effort_latency:p[1-4]:N[0-3] | service_call:p[1-4]:N[04]) ;;
     *) say "PREFLIGHT FAIL: cannot read cell spec '$spec' (want scenario:pN:NN:args:tickle_args)"; exit 1 ;;
     esac
     SPECS+=("$spec")
@@ -238,6 +238,9 @@ NOTES=()
 declare -A FW_OK=()
 # Scenarios only TickLE has (campaign_sweep.sh's TICKLE_ONLY_SCENARIOS): no vendor harness is built or run for them.
 tickle_only() { [ "$1" = service_call ]; }
+# The two latency scenarios, one bench with two reliabilities (tickle/common/LatencyReliability.h): read alike, and each
+# must report the reliability it is named for.
+is_latency() { case "$1" in reliable_latency | best_effort_latency) return 0 ;; esac; return 1; }
 build_fw() { # $1 fw
     local fw=$1 v scen size log
     case "$fw" in
@@ -291,8 +294,8 @@ required_fields() { # $1 scenario, $2 role
     reliable_throughput:server) echo "recv lost win_s win_recv win_recv_mbps warmup_s cooldown_s" ;;
     best_effort_throughput:client) echo "sent send_mbps win_s win_sent win_send_mbps warmup_s cooldown_s" ;;
     best_effort_throughput:server) echo "recv lost win_s win_recv win_recv_mbps warmup_s cooldown_s" ;;
-    reliable_latency:client) echo "sent recv rtt_min_ms rtt_avg_ms rtt_max_ms warmup cooldown measured measured_sent edge_max_s" ;;
-    reliable_latency:server) echo "" ;;
+    *_latency:client) echo "sent recv rtt_min_ms rtt_avg_ms rtt_max_ms warmup cooldown measured measured_sent edge_max_s" ;;
+    *_latency:server) echo "" ;;
     service_call:client) echo "sent recv timeouts probes probes_answered measured_sent measured calls_per_s rtt_avg_ms rtt_p99_ms warmup_s cooldown_s win_s" ;;
     service_call:server) echo "recv runs ignored dup_exec exec_max probe_ok probe_bad unjudged win_recv warmup_s cooldown_s" ;;
     esac
@@ -313,7 +316,7 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
     [ "$n" = 1 ] || echo "client printed $n RESULT lines, want 1" >>"$P"
     cline=$(grep '^RESULT:' "$clog" 2>/dev/null | head -1)
     sline=$(grep '^RESULT:' "$slog" 2>/dev/null | head -1)
-    if [ -z "$sline" ] && ! { [ "$scen" = reliable_latency ] && [ "$fw" != tickle ]; }; then
+    if [ -z "$sline" ] && ! { is_latency "$scen" && [ "$fw" != tickle ]; }; then
         echo "server printed no RESULT line" >>"$P"
     fi
     for role in client server; do
@@ -328,11 +331,11 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
         v=$(field "$line" window)
         if [ -n "$v" ]; then
             [ "$v" = ok ] || echo "$role: window=$v" >>"$P"
-        elif [ "$scen" != reliable_latency ] || [ "$role" = client ]; then
+        elif ! is_latency "$scen" || [ "$role" = client ]; then
             echo "$role: no window= field" >>"$P"
         fi
         # The TickLE latency server's line carries no BenchStats fields, so instrument= is read where it is printed.
-        if [ "$TOPO" = veth ] && { [ "$role" = client ] || [ "$scen" != reliable_latency ]; }; then
+        if [ "$TOPO" = veth ] && { [ "$role" = client ] || ! is_latency "$scen"; }; then
             v=$(field "$line" instrument)
             [ "$v" = ok ] || echo "$role: instrument=${v:-absent}" >>"$P"
         fi
@@ -361,8 +364,16 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
         if [ "$net" = N0 ] && [ "$(field "$cline" timeouts)" != 0 ]; then
             echo "client timeouts=$(field "$cline" timeouts) on a lossless link" >>"$P"
         fi
-    elif [ "$scen" = reliable_latency ]; then
+    elif is_latency "$scen"; then
         sent=$(field "$cline" sent); recv=$(field "$cline" recv)
+        # The treatment, as each latency line read it back from its own endpoints (the DDS servers print no line).
+        local want_rel=reliable
+        [ "$scen" = best_effort_latency ] && want_rel=best_effort
+        for line in "$cline" "$sline"; do
+            [ -n "$line" ] || continue
+            v=$(field "$line" reliability)
+            [ "$v" = "$want_rel" ] || echo "reliability=${v:-absent} on a $scen line, want $want_rel" >>"$P"
+        done
         local meas msent want
         meas=$(field "$cline" measured); msent=$(field "$cline" measured_sent)
         num_ok "$recv" && [ "${recv%.*}" -gt 0 ] || echo "client recv=${recv:-absent}, want > 0" >>"$P"
@@ -380,6 +391,9 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
         # A ping waits for its pong and then -i, so a run sends about -d / (-i + RTT): under N2, 66 in 1 s.
         want=$(awk -v d="$PF_LAT_D" -v i="$PF_LAT_I" -v r="$(field "$cline" rtt_avg_ms)" \
             'BEGIN{p = i + r / 1000.0; printf "%d", 0.8 * d / p}')
+        # Under loss a best-effort ping that is lost is given up after 500 ms, so the rate is the loss's and not the
+        # link's (5% loss each way at -i 5 ms: ~29 of the ~200 a lossless second sends). measured > 0 is still required.
+        [ "$scen" = best_effort_latency ] && [ "$net" = N1 ] && want=1
         if num_ok "$meas" && num_ok "$msent"; then
             [ "${meas%.*}" -gt 0 ] || echo "client measured=0" >>"$P"
             [ "${msent%.*}" -ge "$want" ] || echo "client measured_sent=$msent, want >= $want (80% of -d / (-i + rtt))" >>"$P"
@@ -434,7 +448,7 @@ run_job() { # $1 id, $2 fw, $3 spec
     mkdir -p "$jd"
     local nsa="pf$$-${id}a" nsb="pf$$-${id}b" va="pf$$v${id}a" vb="pf$$v${id}b"
     local args window keep_all=0
-    if [ "$scen" = reliable_latency ]; then
+    if is_latency "$scen"; then
         window="-W $PF_LAT_EDGE -C $PF_LAT_EDGE -I 0.001 -T $PF_LAT_EDGE_MAX_S"
         args="$common -i $PF_LAT_I -d $PF_LAT_D $window"
     elif [ "$scen" = service_call ]; then

@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     dds_delete_qos(ack_qos);
 
     // Both calls unconditionally, into separate variables (2026-09-20, real bug - see
-    // best_effort_latency/client.c's own doc comment for the full story): `!A(...) || !B(...)`
+    // reliable_latency/client.c's own doc comment for the full story): `!A(...) || !B(...)`
     // short-circuits B when A already succeeded, silently skipping one of the two match waits.
     bool reader_matched = wait_for_reader_match(participant, reader, 15.0);
     bool ack_writer_matched = wait_for_writer_match(participant, ack_writer, 15.0);

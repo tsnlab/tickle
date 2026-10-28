@@ -226,11 +226,10 @@ preflight_specs() {
     for spec in "${MATRIX[@]}"; do
         # A 7th field (MATRIX_SPECS) is an -i style rate, which rig_preflight.sh replaces with its own short -d/-i.
         IFS='|' read -r shape payload qos net scenario extra _common <<<"$spec"
-        # rig_preflight.sh reads N0-N3 and no best_effort_latency (2026-10-28, zenoh_fair_queue.sh's cells): a lossy
-        # N5/N6 cell is preflighted at N1's loss, and best_effort_latency, whose harness is reliable_latency's with
-        # BEST_EFFORT, is left to the campaign's own first run of it.
+        # rig_preflight.sh reads N0-N3 (2026-10-28, zenoh_fair_queue.sh's cells): a lossy N5/N6 cell is preflighted at
+        # N1's loss. best_effort_latency is preflighted like reliable_latency since it became that bench with
+        # BEST_EFFORT (tickle/common/LatencyReliability.h), reliability= read back on every line.
         case "$net" in N5 | N6) net=N1 ;; esac
-        [ "$scenario" = best_effort_latency ] && continue
         echo "$scenario:$payload:$net:$(common_args "$scenario" "$payload" "$qos"):$extra"
     done | awk '!seen[$0]++'
 }
@@ -496,6 +495,19 @@ qos_identity_void() { # $1 scenario, $2 payload, $3 qos, $4 fw, $5 result line
         esac
         return 0
     fi
+    # The latency benches report the reliability their endpoints were created with, read back from the endpoints
+    # (tickle/common/LatencyReliability.h; every TickLE line, the DDS clients'). A best_effort_latency row must say
+    # best_effort and nothing else, or it measured RELIABLE under a best-effort label. A reliable_latency row from a
+    # commit before the field carries none and passes; one that carries it must say reliable. No spaces in a reason:
+    # campaign_summary.py reads the verdict as one token.
+    case "$1:$5" in
+        best_effort_latency:*"reliability=reliable"* | best_effort_latency:*"reliability=mixed"* | \
+            best_effort_latency:*"reliability=unreadable"*) echo "reliability_not_best_effort"; return 0 ;;
+        best_effort_latency:*"reliability=best_effort"*) ;;
+        best_effort_latency:*) echo "no_reliability_field"; return 0 ;;
+        reliable_latency:*"reliability=best_effort"* | reliable_latency:*"reliability=mixed"* | \
+            reliable_latency:*"reliability=unreadable"*) echo "reliability_not_reliable"; return 0 ;;
+    esac
     [ "$1" = reliable_throughput ] || return 0
     case "$5" in *"max_blocking_ms=100.000"*) ;; *) echo "max_blocking_ms not 100"; return 0 ;; esac
     if [ "$3" = Q0 ]; then

@@ -38,6 +38,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -82,15 +83,16 @@ auto main() -> int {
 
     // scenario "reliable_latency" - RELIABLE on both sides, matching CycloneDDS's own QoS exactly
     // (COMPARISON.md's design principle 3). This comment said BEST_EFFORT until 2026-09-25, above code
-    // that has always set RELIABLE; the code was right.
+    // that has always set RELIABLE; the code was right. best_effort_latency: the same with BEST_EFFORT
+    // (LatencyReliability.h).
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.history().kind = KEEP_LAST_HISTORY_QOS;
     rqos.history().depth = history_depth;
-    rqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    rqos.reliability().kind = BENCH_LATENCY_BEST_EFFORT ? BEST_EFFORT_RELIABILITY_QOS : RELIABLE_RELIABILITY_QOS;
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.history().kind = KEEP_LAST_HISTORY_QOS;
     wqos.history().depth = history_depth;
-    wqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    wqos.reliability().kind = BENCH_LATENCY_BEST_EFFORT ? BEST_EFFORT_RELIABILITY_QOS : RELIABLE_RELIABILITY_QOS;
 
     Subscriber* const subscriber = participant->create_subscriber(SUBSCRIBER_QOS_DEFAULT);
     Publisher* const publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
@@ -101,7 +103,10 @@ auto main() -> int {
         return 1;
     }
 
-    printf("FastDDS reliable_latency server: reader on 'ping', writer on 'pong'\n");
+    // Not a RESULT line (the DDS latency servers print none); the treatment, read back, for the server's log.
+    printf("FastDDS " BENCH_LATENCY_SCENARIO " server: reader on 'ping', writer on 'pong', reliability=%s\n",
+           bench_reliability_name(writer->get_qos().reliability().kind == RELIABLE_RELIABILITY_QOS ? 1 : 0,
+                                  reader->get_qos().reliability().kind == RELIABLE_RELIABILITY_QOS ? 1 : 0));
 
     echo_until_interrupted(reader, writer);
 

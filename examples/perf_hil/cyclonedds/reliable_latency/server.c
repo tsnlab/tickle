@@ -21,6 +21,8 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
+#include "../common.h"
 #include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -52,9 +54,14 @@ int main(int argc, char** argv) {
 
     // scenario "reliable_latency" - RELIABLE on both sides (COMPARISON.md's design principle
     // 3: same QoS value across frameworks) + HISTORY depth=8 (COMPARISON.md's own QoS value
-    // matrix), the standing baseline depth used everywhere RELIABLE is on in this exercise.
+    // matrix), the standing baseline depth used everywhere RELIABLE is on in this exercise. best_effort_latency: the
+    // same with BEST_EFFORT (LatencyReliability.h).
     dds_qos_t* qos = dds_create_qos();
-    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
+    if (BENCH_LATENCY_BEST_EFFORT) {
+        dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
+    } else {
+        dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
+    }
     dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, 8);
 
     dds_entity_t reader = dds_create_reader(participant, ping_topic, qos, NULL);
@@ -69,7 +76,9 @@ int main(int argc, char** argv) {
     dds_set_status_mask(reader, DDS_DATA_AVAILABLE_STATUS);
     dds_waitset_attach(waitset, reader, 0);
 
-    printf("CycloneDDS reliable_latency server: reader on 'ping', writer on 'pong'\n");
+    // Not a RESULT line (the DDS latency servers print none); the treatment, read back, for the server's log.
+    printf("CycloneDDS " BENCH_LATENCY_SCENARIO " server: reader on 'ping', writer on 'pong', reliability=%s\n",
+           bench_reliability_name(cdds_is_reliable(writer), cdds_is_reliable(reader)));
 
     struct Bench sample;
     void* samples[1] = {&sample};

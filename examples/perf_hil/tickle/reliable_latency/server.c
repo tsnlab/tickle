@@ -28,6 +28,7 @@
 #include "BenchCreate.h"
 #include "BenchWindow.h"
 #include "CpuFreq.h"
+#include "LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
 //
@@ -41,6 +42,15 @@
 // 4096: tt_RELIABLE_BITMAP_MAX_BITS until large-message stage 2 raised it to 8192 (docs/DESIGN.md section 8), pinned
 // so these cells stay the experiment they were - the same ring, warmed the same way.
 #define BENCH_REORDER_SLOTS 4096
+
+// The two latency scenarios' reliability (LatencyReliability.h), chosen here rather than by a conditional at each use.
+#if BENCH_LATENCY_BEST_EFFORT
+#define BENCH_LATENCY_KIND tt_QOS_RELIABILITY_BEST_EFFORT
+#define BENCH_LATENCY_REORDER_SLOTS tt_QOS_REORDER_NONE // a best-effort reader holds no sample for a gap
+#else
+#define BENCH_LATENCY_KIND tt_QOS_RELIABILITY_RELIABLE
+#define BENCH_LATENCY_REORDER_SLOTS BENCH_REORDER_SLOTS
+#endif
 // The slot stride is core's since the QoS redesign: tt_Subscriber_storage_size() sizes it from BenchTopic's
 // max_encoded_size, a datagram's payload at most (docs/DESIGN.md section 9).
 
@@ -123,7 +133,7 @@ int main(int argc, char** argv) {
     }
 
     struct tt_Publisher pub;
-    // RELIABLE + HISTORY depth=8, as the client's (COMPARISON.md's QoS value matrix).
+    // RELIABLE + HISTORY depth=8, as the client's (COMPARISON.md's QoS value matrix); best_effort_latency: BEST_EFFORT.
     // VOLATILE, no DEADLINE, LIFESPAN or LIVELINESS lease. The retained samples are sized by core from the profile;
     // the history bytes are never below the arena this file used to declare, (8 + 1) records of this shape.
     const struct tt_QosProfile pub_qos = {
@@ -131,7 +141,7 @@ int main(int argc, char** argv) {
                     .depth = 8,
                     .bytes = BenchCreate_history_bytes(
                         8, tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
-        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .reliability = {.kind = BENCH_LATENCY_KIND},
         .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
         .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
         .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
@@ -159,9 +169,11 @@ int main(int argc, char** argv) {
     // Sized to hold a full tracking window of samples: the window is exactly how far ahead of its
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
+    //
+    // best_effort_latency: BEST_EFFORT and no reorder buffer, as the client's.
     const struct tt_QosProfile sub_qos = {
         .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
-        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = BENCH_REORDER_SLOTS},
+        .reliability = {.kind = BENCH_LATENCY_KIND, .tracking_words = 0, .reorder_slots = BENCH_LATENCY_REORDER_SLOTS},
         .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
         .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
         .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
@@ -183,14 +195,16 @@ int main(int argc, char** argv) {
     }
     BenchCpuFreq_sample(&g_echo_freq, tt_get_ns(), 0); // and its end
 
-    printf("RESULT: framework=tickle scenario=reliable_latency role=server cpu_mhz_mean=%.1f cpu_mhz_min=%.1f "
+    printf("RESULT: framework=tickle scenario=" BENCH_LATENCY_SCENARIO
+           " role=server cpu_mhz_mean=%.1f cpu_mhz_min=%.1f "
            "cpu_mhz_max=%.1f retransmitted=%u gap_abandoned=%u doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
-           "rx_shm=%llu tx_shm=%llu\n",
+           "rx_shm=%llu tx_shm=%llu reliability=%s\n",
            BenchCpuFreq_mean_mhz(&g_echo_freq), BenchCpuFreq_min_mhz(&g_echo_freq), BenchCpuFreq_max_mhz(&g_echo_freq),
            pub.retransmitted, sub.gap_abandoned, (unsigned long long)node.segment_doorbells_sent,
            (unsigned long long)node.segment_bells_rung, (unsigned long)node.segment_sleep_generation,
            (unsigned long long)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM],
-           (unsigned long long)node.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+           (unsigned long long)node.tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           bench_reliability_name((int)pub.reliable, (int)sub.reliable));
 
     tt_Context_destroy(&node);
     return 0;

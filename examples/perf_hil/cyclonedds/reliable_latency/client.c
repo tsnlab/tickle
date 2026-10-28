@@ -29,6 +29,7 @@
 #include "../../tickle/common/BenchWindow.h"
 #include "../../tickle/common/CpuFreq.h"
 #include "../../tickle/common/CreationTime.h"
+#include "../../tickle/common/LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
 #include "../../tickle/common/RttQuantiles.h"
 #include "../common.h"
 #include "Bench.h"
@@ -177,9 +178,14 @@ int main(int argc, char** argv) {
     dds_entity_t pong_topic = dds_create_topic(participant, &Bench_desc, "pong", NULL, NULL);
 
     // scenario "reliable_latency" - RELIABLE + HISTORY depth=8, matched exactly across every
-    // framework (COMPARISON.md's own design principle 3 / QoS value matrix).
+    // framework (COMPARISON.md's own design principle 3 / QoS value matrix). best_effort_latency: the same with
+    // BEST_EFFORT (LatencyReliability.h).
     dds_qos_t* qos = dds_create_qos();
-    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
+    if (BENCH_LATENCY_BEST_EFFORT) {
+        dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
+    } else {
+        dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
+    }
     dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, 8);
 
     dds_entity_t writer = dds_create_writer(participant, ping_topic, qos, NULL);
@@ -197,9 +203,13 @@ int main(int argc, char** argv) {
     // Give discovery a moment - a send before the writer/reader pair on both ends has matched
     // would just be lost, undercounting "sent" for no real reason.
     //
-    // Both calls unconditionally, into separate variables (2026-09-20, real bug - see
-    // best_effort_latency/client.c's own doc comment for the full story): `!A(...) || !B(...)`
-    // short-circuits B when A already succeeded, so the reader's own match never gets confirmed.
+    // Both calls unconditionally, into separate variables (2026-09-20, real bug found the hard
+    // way): `!wait_for_writer_match(...) || !wait_for_reader_match(...)` short-circuits - if the
+    // writer matches first (the common case), the reader's own wait_for_reader_match() is never
+    // even called, so the reader's own SUBSCRIPTION_MATCHED_STATUS is never confirmed before the
+    // send loop starts. Reproduced as a real, reliable 100% RTT loss on the rig even with a clean
+    // process restart and a generous 15s test window - not a network or discovery-speed issue.
+    // (It was first found in the old best_effort_latency client, which is now this file.)
     bool writer_matched = wait_for_writer_match(participant, writer, 10.0);
     bool reader_matched = wait_for_reader_match(participant, reader, 10.0);
     if (!writer_matched || !reader_matched) {
@@ -244,7 +254,7 @@ int main(int argc, char** argv) {
     double loss_pct = stats.transmitted > 0 ? (100.0 * (double)lost / (double)stats.transmitted) : 0.0;
     double avg = stats.measured_recv > 0 ? stats.sum_ms / (double)stats.measured_recv : 0.0;
 
-    printf("\n--- cyclonedds reliable_latency statistics ---\n");
+    printf("\n--- cyclonedds " BENCH_LATENCY_SCENARIO " statistics ---\n");
     printf("%lu sent, %lu received, %.0f%% loss\n", (unsigned long)stats.transmitted, (unsigned long)stats.received,
            loss_pct);
     if (stats.measured_recv > 0) {
@@ -252,18 +262,20 @@ int main(int argc, char** argv) {
                (unsigned long)stats.measured_recv);
     }
     bench_stats_end(&g_bench_stats);
-    printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
+    printf("RESULT: framework=cyclonedds scenario=" BENCH_LATENCY_SCENARIO " sent=%lu recv=%lu loss_pct=%.6f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
            "cooldown_end=%s "
-           "window=%s %s %s\n",
+           "window=%s reliability=%s %s %s\n",
            (unsigned long)stats.transmitted, (unsigned long)stats.received, loss_pct, stats.min_ms, avg, stats.max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
            cpu_mhz_at_rtt_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50), BenchRtt_quantile(&g_rtt, BENCH_RTT_P99),
            (unsigned)g_rtt.count, warmup_sent, cooldown_sent, (unsigned long)stats.measured_recv,
            (unsigned long)stats.measured_sent, edge_interval_s, edge_max_s, BenchWindow_edge_end_name(warmup_end),
            BenchWindow_edge_end_name(cooldown_end), stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
+           // The treatment as created, read back from the writer and the reader (LatencyReliability.h).
+           bench_reliability_name(cdds_is_reliable(writer), cdds_is_reliable(reader)),
            BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, stats.transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

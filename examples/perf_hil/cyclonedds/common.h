@@ -169,4 +169,18 @@ static inline const char* cdds_history_field(dds_entity_t entity, char* out, siz
     return out;
 }
 
+// Whether an entity actually runs RELIABLE, read back from the entity (tickle/common/LatencyReliability.h): 1 RELIABLE,
+// 0 BEST_EFFORT, -1 unreadable - so a failed read is never taken for BEST_EFFORT.
+static inline int cdds_is_reliable(dds_entity_t entity) {
+    dds_qos_t* qos = dds_create_qos();
+    dds_reliability_kind_t kind = DDS_RELIABILITY_BEST_EFFORT;
+    dds_duration_t max_blocking = 0;
+    int reliable = -1;
+    if (dds_get_qos(entity, qos) == DDS_RETCODE_OK && dds_qget_reliability(qos, &kind, &max_blocking)) {
+        reliable = kind == DDS_RELIABILITY_RELIABLE ? 1 : 0;
+    }
+    dds_delete_qos(qos);
+    return reliable;
+}
+
 #endif

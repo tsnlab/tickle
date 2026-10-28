@@ -30,6 +30,7 @@
 #include "BenchWindow.h"
 #include "CpuFreq.h"
 #include "CreationTime.h"
+#include "LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
 #include "RttQuantiles.h"
 
 static struct BenchStats g_bench_stats;
@@ -47,6 +48,15 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // 4096: tt_RELIABLE_BITMAP_MAX_BITS until large-message stage 2 raised it to 8192 (docs/DESIGN.md section 8), pinned
 // so these cells stay the experiment they were - the same ring, warmed the same way.
 #define BENCH_REORDER_SLOTS 4096
+
+// The two latency scenarios' reliability (LatencyReliability.h), chosen here rather than by a conditional at each use.
+#if BENCH_LATENCY_BEST_EFFORT
+#define BENCH_LATENCY_KIND tt_QOS_RELIABILITY_BEST_EFFORT
+#define BENCH_LATENCY_REORDER_SLOTS tt_QOS_REORDER_NONE // a best-effort reader holds no sample for a gap
+#else
+#define BENCH_LATENCY_KIND tt_QOS_RELIABILITY_RELIABLE
+#define BENCH_LATENCY_REORDER_SLOTS BENCH_REORDER_SLOTS
+#endif
 // The slot stride is core's since the QoS redesign: tt_Subscriber_storage_size() sizes it from BenchTopic's
 // max_encoded_size, a datagram's payload at most (docs/DESIGN.md section 9).
 // The default warm-up must write every reorder slot at least once (BenchWindow.h): a first-lap round trip pays the
@@ -288,7 +298,8 @@ int main(int argc, char** argv) {
 
     struct tt_Publisher pub;
     // scenario "reliable_latency" - RELIABLE + HISTORY depth=8, matched exactly across every
-    // framework (COMPARISON.md's own design principle 3 / QoS value matrix). VOLATILE, no DEADLINE,
+    // framework (COMPARISON.md's own design principle 3 / QoS value matrix). best_effort_latency: the same with
+    // BEST_EFFORT, which retains nothing, so the history is inert there (LatencyReliability.h). VOLATILE, no DEADLINE,
     // LIFESPAN or LIVELINESS lease. The retained samples are sized by core from the profile; the history
     // bytes are never below the arena this file used to declare, (8 + 1) records of this shape.
     const struct tt_QosProfile pub_qos = {
@@ -296,7 +307,7 @@ int main(int argc, char** argv) {
                     .depth = 8,
                     .bytes = BenchCreate_history_bytes(
                         8, tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData))))},
-        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE},
+        .reliability = {.kind = BENCH_LATENCY_KIND},
         .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
         .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
         .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
@@ -325,9 +336,11 @@ int main(int argc, char** argv) {
     // Sized to hold a full tracking window of samples: the window is exactly how far ahead of its
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
+    //
+    // best_effort_latency: BEST_EFFORT and no reorder buffer, which a best-effort reader has no sample to hold for.
     const struct tt_QosProfile sub_qos = {
         .history = {.kind = tt_QOS_HISTORY_KEEP_ALL},
-        .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .tracking_words = 0, .reorder_slots = BENCH_REORDER_SLOTS},
+        .reliability = {.kind = BENCH_LATENCY_KIND, .tracking_words = 0, .reorder_slots = BENCH_LATENCY_REORDER_SLOTS},
         .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
         .deadline = {.period_ns = tt_QOS_DURATION_INFINITE},
         .lifespan = {.duration_ns = tt_QOS_DURATION_INFINITE},
@@ -356,7 +369,7 @@ int main(int argc, char** argv) {
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
     double avg = measured_recv > 0 ? rtt_sum_ms / (double)measured_recv : 0.0;
 
-    printf("\n--- tickle reliable_latency statistics ---\n");
+    printf("\n--- tickle " BENCH_LATENCY_SCENARIO " statistics ---\n");
     printf("%lu sent, %lu received, %.0f%% loss\n", (unsigned long)transmitted, (unsigned long)received, loss_pct);
     if (measured_recv > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms over %lu measured round trips\n", rtt_min_ms, avg, rtt_max_ms,
@@ -377,12 +390,12 @@ int main(int argc, char** argv) {
     bench_stats_set_attach(&g_bench_stats, node.segment_attach, (size_t)tt_SEGMENT_ATTACH_COUNT,
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
-    printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
+    printf("RESULT: framework=tickle scenario=" BENCH_LATENCY_SCENARIO " sent=%lu recv=%lu loss_pct=%.6f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
            "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
-           "cooldown_end=%s window=%s poll_ret=%d %s "
+           "cooldown_end=%s window=%s poll_ret=%d reliability=%s %s "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
@@ -398,6 +411,8 @@ int main(int argc, char** argv) {
            warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
            edge_max_s, BenchWindow_edge_end_name(warmup_end), BenchWindow_edge_end_name(cooldown_end),
            measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", poll_ret,
+           // The treatment as created, read back from both endpoints (LatencyReliability.h).
+           bench_reliability_name((int)g_pub->reliable, (int)sub.reliable),
            BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields, sizeof g_creation_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

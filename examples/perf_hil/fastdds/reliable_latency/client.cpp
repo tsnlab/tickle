@@ -49,6 +49,7 @@
 #include "../../tickle/common/BenchWindow.h"
 #include "../../tickle/common/CpuFreq.h"
 #include "../../tickle/common/CreationTime.h"
+#include "../../tickle/common/LatencyReliability.h" // best_effort_latency is this file with BEST_EFFORT
 #include "../../tickle/common/RttQuantiles.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
@@ -227,7 +228,7 @@ namespace {
         }
     }
 
-    void report(const rtt_stats& stats, const client_options& opts) {
+    void report(const rtt_stats& stats, const client_options& opts, const char* reliability) {
         const uint64_t lost = stats.transmitted - stats.received;
         const double loss_pct =
             stats.transmitted > 0
@@ -235,7 +236,7 @@ namespace {
                 : 0.0;
         const double avg = stats.measured_recv > 0 ? stats.sum_ms / static_cast<double>(stats.measured_recv) : 0.0;
 
-        printf("\n--- fastdds reliable_latency statistics ---\n");
+        printf("\n--- fastdds " BENCH_LATENCY_SCENARIO " statistics ---\n");
         printf("%lu sent, %lu received, %.0f%% loss\n", static_cast<unsigned long>(stats.transmitted),
                static_cast<unsigned long>(stats.received), loss_pct);
         if (stats.measured_recv > 0) {
@@ -249,11 +250,11 @@ namespace {
         // finding and is a harness defect. Same source as the throughput client's, so the two cells name the arm the
         // same way.
         printf(
-            "RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
+            "RESULT: framework=fastdds scenario=" BENCH_LATENCY_SCENARIO " sent=%lu recv=%lu loss_pct=%.6f "
             "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
             "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
             "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
-            "cooldown_end=%s window=%s "
+            "cooldown_end=%s window=%s reliability=%s "
             "transport_profile=%s %s %s\n",
             static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
             stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
@@ -262,7 +263,7 @@ namespace {
             stats.cooldown_sent, static_cast<unsigned long>(stats.measured_recv),
             static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s, opts.edge_max_s,
             BenchWindow_edge_end_name(stats.warmup_end), BenchWindow_edge_end_name(stats.cooldown_end),
-            stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
+            stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", reliability, harness::transport_profile(),
             BenchCreation_fields(&g_creation, &g_rtt, g_creation_fields.data(), g_creation_fields.size()),
             harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
@@ -293,11 +294,12 @@ auto main(int argc, char** argv) -> int {
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.history().kind = KEEP_LAST_HISTORY_QOS;
     wqos.history().depth = history_depth;
-    wqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    // best_effort_latency: the same with BEST_EFFORT (LatencyReliability.h).
+    wqos.reliability().kind = BENCH_LATENCY_BEST_EFFORT ? BEST_EFFORT_RELIABILITY_QOS : RELIABLE_RELIABILITY_QOS;
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.history().kind = KEEP_LAST_HISTORY_QOS;
     rqos.history().depth = history_depth;
-    rqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    rqos.reliability().kind = BENCH_LATENCY_BEST_EFFORT ? BEST_EFFORT_RELIABILITY_QOS : RELIABLE_RELIABILITY_QOS;
 
     Publisher* const publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
     Subscriber* const subscriber = participant->create_subscriber(SUBSCRIBER_QOS_DEFAULT);
@@ -314,7 +316,10 @@ auto main(int argc, char** argv) -> int {
     rtt_stats stats;
     run_phases(writer, reader, opts, stats);
 
-    report(stats, opts);
+    // The treatment as created, read back from the writer and the reader (LatencyReliability.h).
+    report(stats, opts,
+           bench_reliability_name(writer->get_qos().reliability().kind == RELIABLE_RELIABILITY_QOS ? 1 : 0,
+                                  reader->get_qos().reliability().kind == RELIABLE_RELIABILITY_QOS ? 1 : 0));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
