@@ -32,10 +32,15 @@ else
     ZENOH_EP_LISTEN=""
     ZENOH_EP_CONNECT=""
 fi
-ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup env $ZENOH_EP_LISTEN $PIN stdbuf -oL ./server $* > /tmp/zenohpico_server.log 2>&1 < /dev/null &"
+# The server's PID is written by the process itself before it execs, and the stop below acts on that PID only after
+# /proc/PID/exe says it is this scenario's server - never `pkill -x server`, which matches any framework's server.
+ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR && rm -f /tmp/zenohpico_server.pid && (setsid sh -c 'echo \$\$ > /tmp/zenohpico_server.pid; exec env $ZENOH_EP_LISTEN $PIN stdbuf -oL ./server $*' > /tmp/zenohpico_server.log 2>&1 < /dev/null &)"
 sleep 2
-ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && env $ZENOH_EP_CONNECT $PIN stdbuf -oL ./client $*" | grep '^RESULT:'
+ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && env $ZENOH_EP_CONNECT $PIN stdbuf -oL ./client $*" | grep '^RESULT:' || true
 sleep 2
-ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
-sleep 1
+# shellcheck disable=SC2016 # expanded on the server Pi
+ssh_run "$RPI_SERVER" 'p=$(cat /tmp/zenohpico_server.pid 2>/dev/null) || exit 0
+case "$(readlink /proc/$p/exe 2>/dev/null)" in */zenohpico/'"$SCEN_DIR"'/server) kill -INT "$p" ;; *) exit 0 ;; esac
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /proc/$p ] || exit 0; sleep 1; done
+kill -TERM "$p" 2>/dev/null; true' || true
 ssh_run "$RPI_SERVER" "cat /tmp/zenohpico_server.log" | grep '^RESULT:'

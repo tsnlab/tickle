@@ -34,9 +34,13 @@
 // they generate from examples/perf_hil/idl. All this harness needs from the shape is its byte count,
 // which build.sh passes as -DBENCH_SAMPLE_BYTES exactly as it does for the other three.
 #include "BenchStats.h"
+#include "BenchWindow.h"
 
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 static struct BenchStats g_bench_stats;
+// The measured window: -d seconds between a warm-up and a cool-down, as every framework takes it (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 static volatile sig_atomic_t g_interrupted = 0;
 
 static void handle_sigint(int sig) {
@@ -56,6 +60,7 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0;
+    BenchWindow_init(&g_window);
     // BENCH_ZENOH_EXPRESS=1 is the same switch as -X, for the campaign: campaign_sweep.sh passes its per-cell extra
     // args to TickLE only, so the fairness arm has to arrive through the environment or it cannot be run from the
     // matrix at all. Both are reported as express= in the RESULT line, so a row always says which arm it was.
@@ -70,6 +75,8 @@ int main(int argc, char** argv) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-X") == 0) {
             express = true;
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
         // Options the other harnesses take and this one cannot honour are accepted and ignored on purpose,
         // so the campaign passes all four the same argv: -K/-N/-B/-C are history depth, a KEEP_ALL bound,
@@ -119,7 +126,9 @@ int main(int argc, char** argv) {
     uint64_t sent = 0;
     uint64_t write_fail = 0;
     const uint64_t start = now_ns();
-    const uint64_t deadline = start + (uint64_t)(duration_s * 1e9);
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    const double send_s = g_window.warmup_s + duration_s + g_window.cooldown_s;
+    const uint64_t deadline = start + (uint64_t)(send_s * 1e9);
     while (!g_interrupted && now_ns() < deadline) {
         const uint64_t stamp = now_ns();
         memcpy(buffer, &stamp, sizeof(stamp));
@@ -131,6 +140,7 @@ int main(int argc, char** argv) {
             write_fail++;
         } else {
             sent++;
+            BenchWindow_add(&g_window, stamp);
         }
         if (interval_s > 0.0) {
             struct timespec ts = {(time_t)interval_s, (long)((interval_s - (double)(time_t)interval_s) * 1e9)};
@@ -141,10 +151,12 @@ int main(int argc, char** argv) {
 
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=zenohpico scenario=best_effort_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f express=%d batch_multicast_bytes=%d %s\n",
+           "elapsed_s=%.3f send_mbps=%.3f express=%d transport=udp_multicast reliability=best_effort "
+           "batch_multicast_bytes=%d %s %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s,
            elapsed_s > 0.0 ? (double)sent * (double)BENCH_SAMPLE_BYTES * 8.0 / elapsed_s / 1e6 : 0.0, express ? 1 : 0,
            (int)Z_BATCH_MULTICAST_SIZE,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

@@ -29,9 +29,13 @@
 // they generate from examples/perf_hil/idl. All this harness needs from the shape is its byte count,
 // which build.sh passes as -DBENCH_SAMPLE_BYTES exactly as it does for the other three.
 #include "BenchStats.h"
+#include "BenchWindow.h"
 
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 static struct BenchStats g_bench_stats;
+// What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 static volatile sig_atomic_t g_interrupted = 0;
 
 static uint64_t g_received = 0;
@@ -63,6 +67,7 @@ static void on_sample(z_loaned_sample_t* sample, void* arg) {
     memcpy(&stamp, head, sizeof(stamp));
     memcpy(&seq, head + sizeof(stamp), sizeof(seq));
     g_received++;
+    BenchWindow_add(&g_window, stamp);
     // One-way delay is only meaningful when the two clocks are the same one, which they are not across
     // hosts - so it is summed here and reported, and the campaign reads it only for a same-host cell.
     const uint64_t arrived = now_ns();
@@ -78,11 +83,14 @@ static void on_sample(z_loaned_sample_t* sample, void* arg) {
 int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 20.0;
+    BenchWindow_init(&g_window);
     const char* iface = getenv("BENCH_IFACE") != NULL ? getenv("BENCH_IFACE") : "eth0";
     const char* keyexpr = "bench/stream";
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
     signal(SIGINT, handle_sigint);
@@ -112,7 +120,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const uint64_t deadline = now_ns() + (uint64_t)(duration_s * 1e9);
+    // -d is the client's measured window: the server outlives the client's 3 s settle, warm-up and cool-down
+    // by a margin, and is normally ended by SIGINT (run_scenario.sh) once the client has finished.
+    const double life_s = duration_s + g_window.warmup_s + g_window.cooldown_s + 15.0;
+    const uint64_t deadline = now_ns() + (uint64_t)(life_s * 1e9);
     while (!g_interrupted && now_ns() < deadline) {
         struct timespec ts = {0, 50000000};
         nanosleep(&ts, NULL);
@@ -124,10 +135,11 @@ int main(int argc, char** argv) {
     const uint64_t lost = sent_by_sender > g_received ? sent_by_sender - g_received : 0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=zenohpico scenario=best_effort_throughput role=server received=%lu "
-           "sent_by_sender=%lu lost=%lu loss_pct=%.3f mean_owd_ns=%lu %s\n",
+           "sent_by_sender=%lu lost=%lu loss_pct=%.3f mean_owd_ns=%lu %s %s\n",
            (unsigned long)g_received, (unsigned long)sent_by_sender, (unsigned long)lost,
            sent_by_sender > 0 ? 100.0 * (double)lost / (double)sent_by_sender : 0.0,
            (unsigned long)(g_received > 0 ? g_latency_sum_ns / g_received : 0),
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, g_received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

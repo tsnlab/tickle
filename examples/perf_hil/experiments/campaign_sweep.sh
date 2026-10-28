@@ -143,6 +143,12 @@ MATRIX=(
     "S|p1|Q0|N0|service_call|-r 0 -d 5"
     "S|p1|Q0|N4|service_call|-r 1000 -d 5"
 )
+# MATRIX_SPECS (2026-10-28, zenoh_fair_queue.sh) replaces the matrix above with its own cells, ';'-separated, each in
+# the same shape plus an optional 7th field: arguments given to EVERY framework (e.g. "-i 0.0001" for a fixed offered
+# rate), unlike the 6th, which only TickLE gets. Cell numbers then count the given list, not the matrix above.
+if [ -n "${MATRIX_SPECS:-}" ]; then
+    IFS=';' read -ra MATRIX <<<"$MATRIX_SPECS"
+fi
 # Scenarios only TickLE has (no DDS harness): built and run for tickle alone, whatever FWS says.
 TICKLE_ONLY_SCENARIOS="service_call"
 tickle_only() { case " $TICKLE_ONLY_SCENARIOS " in *" $1 "*) return 0 ;; esac; return 1; }
@@ -216,9 +222,10 @@ common_args() { # $1 scenario, $2 payload, $3 qos
 # is skipped with a note: running it there would spend the very rig time it exists to save.
 # PREFLIGHT_CELLS_ONLY=1 prints the cell specs rig_preflight.sh takes, one per line, and exits.
 preflight_specs() {
-    local spec shape payload qos net scenario extra
+    local spec shape payload qos net scenario extra _common
     for spec in "${MATRIX[@]}"; do
-        IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
+        # A 7th field (MATRIX_SPECS) is an -i style rate, which rig_preflight.sh replaces with its own short -d/-i.
+        IFS='|' read -r shape payload qos net scenario extra _common <<<"$spec"
         echo "$scenario:$payload:$net:$(common_args "$scenario" "$payload" "$qos"):$extra"
     done
 }
@@ -232,7 +239,9 @@ if [ "$DRY_RUN" != 1 ] && [ "${RIG_LOCK_HELD_HIL:-${RIG_LOCK_HELD:-0}}" != "1" ]
     export SHA
     if [ "${PREFLIGHT:-1}" != 0 ]; then
         mapfile -t pf_specs < <(preflight_specs)
-        if ! FWS="$FWS" "$HERE/rig_preflight.sh" "${pf_specs[@]}"; then
+        # PREFLIGHT_FWS: the frameworks rig_preflight.sh knows (it has no zenohpico arm; zenoh_fair_queue.sh preflights
+        # that one with zenoh_fair_preflight.sh before calling this).
+        if ! FWS="${PREFLIGHT_FWS:-$FWS}" "$HERE/rig_preflight.sh" "${pf_specs[@]}"; then
             echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed for $SHA (above). PREFLIGHT=0 overrides." >&2
             exit 1
         fi
@@ -273,6 +282,8 @@ tc_apply() {
             fi ;;
         N1) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
         N2) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
+        N5) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 0.1%" ;;
+        N6) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 1%" ;;
         N3) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
         N4) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" || return 1
             ssh_h "$RPI_CLIENT" "sudo -n tc qdisc add dev eth0 ingress" || return 1
@@ -292,6 +303,7 @@ tc_describe() {
         N0) echo "none" ;; N1) echo "loss 5%" ;;
         N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
         N4) echo "loss 5% each way" ;;
+        N5) echo "loss 0.1%" ;; N6) echo "loss 1%" ;;
     esac
 }
 # The shaping's own drop counters on the client's eth0, as "egress_dropped=<n> ingress_dropped=<n>": netem's and the
@@ -359,10 +371,11 @@ say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on every TickLE process;
 say "--- plan: ${#MATRIX[@]} combinations x [$FWS] x ${REPS} reps (scenarios $TICKLE_ONLY_SCENARIOS: TickLE only) ---"
 i=0
 for spec in "${MATRIX[@]}"; do
-    IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
+    IFS='|' read -r shape payload qos net scenario extra common_extra <<<"$spec"
     i=$((i + 1))
-    say "$(printf '%2d  %s  %-2s  %-2s  %-24s  %-22s  %s' \
-        "$i" "$shape" "$payload" "$qos" "$scenario" "$(tc_describe "$net")" "${extra:-(no extra args)}")"
+    say "$(printf '%2d  %s  %-2s  %-2s  %-24s  %-22s  %s%s' \
+        "$i" "$shape" "$payload" "$qos" "$scenario" "$(tc_describe "$net")" "${extra:-(no extra args)}" \
+        "${common_extra:+  all frameworks: $common_extra}")"
 done
 say ""
 [ -z "$SERVICE_NOTE" ] || say "NOTE: $SERVICE_NOTE"
@@ -468,6 +481,16 @@ wait_rig_quiet() {
 # case patterns only: a grep that matches nothing inside $(...) ends the sweep silently under
 # set -euo pipefail, which is how this script died at c8 on 2026-09-26.
 qos_identity_void() { # $1 scenario, $2 payload, $3 qos, $4 fw, $5 result line
+    # zenoh-pico (a REFERENCE column, zenoh_fair_queue.sh) has none of the DDS QoS settings to echo. What its row must
+    # state instead is the transport: TCP for every reliable_* cell (its only real reliability), UDP multicast for
+    # best_effort_*. A reliable row without transport=tcp would be a best-effort number wearing a reliable label.
+    if [ "$4" = zenohpico ]; then
+        case "$1:$5" in
+            reliable_*:*"transport=tcp"*) ;; best_effort_*:*"transport=udp_multicast"*) ;;
+            *) echo "zenohpico_transport" ;;
+        esac
+        return 0
+    fi
     [ "$1" = reliable_throughput ] || return 0
     case "$5" in *"max_blocking_ms=100.000"*) ;; *) echo "max_blocking_ms not 100"; return 0 ;; esac
     if [ "$3" = Q0 ]; then
@@ -549,6 +572,8 @@ cell() {
     [ -n "$common" ] && args="$common $args"
     # TickLE's extra args select KEEP_ALL; the DDS harnesses have it as their default (section 5).
     [ "$fw" = tickle ] && [ -n "$extra" ] && args="$extra $args"
+    # A MATRIX_SPECS cell's 7th field goes to every framework alike (an offered rate, say).
+    [ -n "${CELL_COMMON:-}" ] && args="$CELL_COMMON $args"
     local res raw nlines ninsn drops_before="" tc_fields=""
     # A service cell reads the shaping's drop counters around its run (service_cell_verdict.py R7).
     [ "$shape" = S ] && drops_before=$(tc_drop_counts)
@@ -652,7 +677,8 @@ for rep in $(seq 1 "$REPS"); do
     num=0
     idx=0
     for spec in "${MATRIX[@]}"; do
-        IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
+        IFS='|' read -r shape payload qos net scenario extra common_extra <<<"$spec"
+        CELL_COMMON=${common_extra:-}
         num=$((num + 1))
         [ -n "${CELLS:-}" ] && num="${CELL_NUMS[$idx]}"
         idx=$((idx + 1))

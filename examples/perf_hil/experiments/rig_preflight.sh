@@ -423,6 +423,7 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
 netem_for() {
     case "$1" in
     N0) echo "" ;; N1 | N4) echo "loss 5%" ;; N2) echo "delay 10ms 2ms" ;; N3) echo "delay 1ms reorder 5% 50%" ;;
+    N5) echo "loss 0.1%" ;; N6) echo "loss 1%" ;;
     esac
 }
 run_job() { # $1 id, $2 fw, $3 spec

@@ -38,11 +38,18 @@ static void on_ping(z_loaned_sample_t* sample, void* arg) {
 int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 20.0;
+    double edge_max_s = 20.0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            edge_max_s = atof(argv[++i]); // the client's edge bound (BenchWindow.h)
         }
     }
+    // -d is the client's MEASURED window; the client also settles (3 s) and runs two edges of up to -T seconds each.
+    // A server living only -d would be gone before the cool-down. It ends on SIGINT from run_scenario.sh; this is a
+    // cap.
+    duration_s += 2.0 * edge_max_s + 15.0;
     signal(SIGINT, handle_sigint);
 
     z_owned_session_t session;
