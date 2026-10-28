@@ -20658,19 +20658,16 @@ static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, st
 // neither: the samples declined after its last piggybacked Heartbeat were never asked for (rmw
 // test_loaned_messages' held case, 2026-10-09). No proxy yet means no baseline to measure a gap from; the writer's
 // first Heartbeat or accepted sample makes one.
-static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, const struct data_delivery_ctx* ctx) {
-    if (!sub->reliable) {
-        return; // BEST_EFFORT: a decline is a counted drop, nothing will send it again
+//
+// note_unrecorded() is the half after the proxy is found, shared with a no-buffer Subscriber's fragment that it placed
+// or dropped and could not record (note_unbuffered_unrecorded()).
+static void note_unrecorded(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no, uint32_t sender_ip,
+                            uint16_t sender_port) {
+    if (seq_delta(proxy->heartbeat_last_seq_no, seq_no) < 0) {
+        proxy->heartbeat_last_seq_no = seq_no;
     }
-    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
-    if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
-        return;
-    }
-    if (seq_delta(proxy->heartbeat_last_seq_no, ctx->seq_no) < 0) {
-        proxy->heartbeat_last_seq_no = ctx->seq_no;
-    }
-    proxy->sender_ip = ctx->sender_ip;
-    proxy->sender_port = ctx->sender_port;
+    proxy->sender_ip = sender_ip;
+    proxy->sender_port = sender_port;
     if (!proxy->acknack_scheduled) {
         if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
@@ -20679,6 +20676,17 @@ static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, co
             TT_LOG_ERROR("Cannot schedule acknack_retry");
         }
     }
+}
+
+static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, const struct data_delivery_ctx* ctx) {
+    if (!sub->reliable) {
+        return; // BEST_EFFORT: a decline is a counted drop, nothing will send it again
+    }
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+    if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
+        return;
+    }
+    note_unrecorded(node, proxy, ctx->seq_no, ctx->sender_ip, ctx->sender_port);
 }
 
 static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -23634,6 +23642,26 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
     }
     drain_reorder(node, sub, proxy);
 }
+
+// A no-buffer RELIABLE Subscriber's datagram still past its writer's watermark once its slots have had it counts as
+// announced, as a declined DATA does (note_declined()): the retry timer is armed, not fired, to ask from the watermark
+// on. What matters is the one not recorded - placed ahead of a sample no slot holds anything of
+// (frag_pool_record_ahead()), placed where it could not be pinned, or dropped for want of a slot; one recorded ahead
+// has its gap armed already (update_reliable_ack()), and this changes nothing for it. Without this such a reader sent
+// nothing while the writer's steady publishing held its idle HEARTBEAT back, on the premise that a sample arriving
+// reveals the losses before it - and one the reader cannot record reveals none. hybrid_rx_stall_probe (2026-10-28): a
+// stream whose first sample all came before the reader tracked its writer delivered nothing for 8 s, until KEEP_LAST
+// had evicted 230 samples; another, its samples' runs lost to the host's IP reassembly memory and only their tails
+// arriving, stopped for 5 s (test_data_frag.c, (i) and (ii)).
+static void note_unbuffered_unrecorded(struct tt_Context* node, struct tt_Subscriber* sub,
+                                       const struct data_delivery_ctx* ctx) {
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+    if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
+        return;
+    }
+    note_unrecorded(node, proxy, ctx->seq_no, ctx->sender_ip, ctx->sender_port);
+}
+
 // for_each_endpoint()'s visitor for one fragment: a RELIABLE Subscriber with a reorder buffer takes it now, datagram by
 // datagram; one with none, and a BEST_EFFORT one, put the sample together in a reassembly slot of their own
 // (reassemble_fragment()).
@@ -23687,6 +23715,9 @@ static void route_fragment_to_subscriber(struct tt_Context* node, struct tt_Endp
                              route->sample_seq_no, ctx->frag_index, ctx->frag_count, ctx->sender_ip,
                              ctx->sender_port)) {
         route->processed = false;
+    }
+    if (frag_unbuffered_reliable(sub)) {
+        note_unbuffered_unrecorded(node, sub, ctx);
     }
 }
 

@@ -138,6 +138,28 @@ MUTANTS = [
         "    return cdr + 4U;",
         "test_own_slot_storage_size",
     ),
+    (
+        "an unrecorded datagram past the watermark arms the retry",
+        "    if (frag_unbuffered_reliable(sub)) {\n        note_unbuffered_unrecorded(node, sub, ctx);\n    }\n",
+        "",
+        "test_reliable_none_tail_only_ahead_of_a_lost_sample_is_asked_for",
+    ),
+    (
+        "only a no-buffer RELIABLE Subscriber arms it",
+        "    if (frag_unbuffered_reliable(sub)) {\n        note_unbuffered_unrecorded(node, sub, ctx);",
+        "    if (true) {\n        note_unbuffered_unrecorded(node, sub, ctx);",
+        "test_reliable_none_in_order_and_best_effort_ask_nothing",
+    ),
+    (
+        "a datagram the watermark has passed arms nothing",
+        "                                       const struct data_delivery_ctx* ctx) {\n"
+        "    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);\n"
+        "    if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {",
+        "                                       const struct data_delivery_ctx* ctx) {\n"
+        "    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);\n"
+        "    if (proxy == NULL) {",
+        "test_reliable_none_in_order_and_best_effort_ask_nothing",
+    ),
 ]
 
 

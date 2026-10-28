@@ -3095,6 +3095,190 @@ static void test_reliable_none_data_absorbs_a_whole_sample(void) {
     }
 }
 
+// --- A no-buffer RELIABLE reader asks for what it cannot record (2026-10-28) ---------------------------------------
+//
+// A writer on a steady stream sends no HEARTBEAT by default: each publish pushes the idle one back, on the premise that
+// a sample arriving reveals every loss before it. For a reader with no reorder buffer it does not when the sample
+// cannot be recorded - placed ahead of a watermark no slot holds anything of (frag_pool_record_ahead()) - and the
+// reader then sent nothing until something else spoke. hybrid_rx_stall_probe (2026-10-28, /home/semih/b46_results) saw
+// both shapes: a stream whose first sample all arrived before the reader tracked its writer delivered nothing for 8 s,
+// until KEEP_LAST had evicted 230 samples; and one whose samples' runs were all lost to IP reassembly memory mid-run,
+// tails only, stopped for 5 s. Each case below lets only the receiver's own timers run, for one retry interval, and no
+// HEARTBEAT arrives.
+
+static int acknacks_sent;
+static uint32_t acknack_seq_no; // the last ACKNACK's watermark
+static uint64_t acknack_bits;   // and the first word of its bitmap: bit j asks for acknack_seq_no + j
+
+static void count_acknacks(const void* buf, size_t len) {
+    static uint8_t classic[tt_MAX_BUFFER_LENGTH * 2];
+    size_t classic_len = test_classic_form(buf, len, classic);
+    size_t at = sizeof(struct tt_Header);
+    while (at + sizeof(struct tt_SubmessageHeader) <= classic_len) {
+        struct tt_SubmessageHeader submessage;
+        memcpy(&submessage, classic + at, sizeof(submessage));
+        size_t body = at + sizeof(submessage);
+        if (submessage.type == tt_SUBMESSAGE_TYPE_ACKNACK &&
+            body + sizeof(struct tt_AckNackHeader) + sizeof(uint64_t) <= classic_len) {
+            struct tt_AckNackHeader acknack;
+            memcpy(&acknack, classic + body, sizeof(acknack));
+            acknacks_sent++;
+            acknack_seq_no = acknack.seq_no;
+            acknack_bits = 0;
+            if (acknack.bitmap_words != 0) {
+                memcpy(&acknack_bits, classic + body + sizeof(acknack), sizeof(acknack_bits));
+            }
+        }
+        if (submessage.length < sizeof(submessage)) {
+            break;
+        }
+        at += submessage.length;
+    }
+}
+
+// Runs the receiver's timers for one retry interval from now, counting the ACKNACKs it sends meanwhile.
+static void run_receiver_one_retry_interval(void) {
+    const struct tt_WriterProxy* proxy = sender_proxy();
+    EXPECT_TRUE(proxy != NULL);
+    uint64_t until = test_mock_now + (proxy != NULL ? reliable_retry_interval(&receiver, proxy) : 0U);
+    test_mock_send_hook = count_acknacks;
+    for (;;) {
+        bool has_next = false;
+        uint64_t next = 0;
+        while (run_due_entry(&receiver, test_mock_now, &has_next, &next)) {
+        }
+        if (!has_next || next > until) {
+            break;
+        }
+        test_mock_now = next > test_mock_now ? next : test_mock_now;
+    }
+    test_mock_now = until;
+    test_mock_send_hook = NULL;
+}
+
+static void reset_acknack_count(void) {
+    acknacks_sent = 0;
+    acknack_seq_no = 0;
+    acknack_bits = 0;
+}
+
+// (i) The writer's first sample, every datagram of it, arrives before the reader tracks the writer: the FRAG_FIRST is
+// refused (accept_reliable_fragment(): no buffer), the continuations are no tracked writer's. The match HEARTBEAT then
+// makes the proxy, at seq_no 1 (VOLATILE, owed from 1), and the next sample arrives whole - ahead of a watermark sample
+// the pool holds nothing of, so unrecorded. Within one retry interval the reader must ask for seq_no 1.
+static void test_reliable_none_first_sample_refused_at_first_contact_is_asked_for(void) {
+    init_pair_reliable_receiver(4000, false);
+    test_mock_now = tt_SECOND;
+    static struct captured_sample first;
+    static struct captured_sample second;
+    capture_sample(&pub, &first);  // seq_no 1..3
+    capture_sample(&pub, &second); // 4..6
+    EXPECT_EQ_INT(3, first.count);
+    EXPECT_EQ_INT(3, second.count);
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, first.bytes[d], 0, first.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_TRUE(sender_proxy() == NULL); // the shape: refused, and nothing tracks the writer yet
+    EXPECT_TRUE(sub.reorder_overflow >= 1);
+    struct tt_Header header;
+    memcpy(&header, first.bytes[0], sizeof(header));
+    struct heartbeat_ctx match = {&header, SENDER_IP, PORT, pub.endpoint.entity_id, 1, 0, tt_HEARTBEAT_FLAG_FINAL};
+    inform_subscriber_of_heartbeat(&receiver, &sub.endpoint, &match);
+    EXPECT_TRUE(sender_proxy() != NULL && sender_proxy()->ack_seq_no == 1);
+    reset_acknack_count();
+    test_mock_send_hook = count_acknacks;
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, second.bytes[d], 0, second.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    test_mock_send_hook = NULL;
+    EXPECT_EQ_INT(0, delivered_count);
+    run_receiver_one_retry_interval();
+    EXPECT_TRUE(acknacks_sent >= 1);
+    EXPECT_EQ_U32(1, acknack_seq_no);
+    EXPECT_TRUE((acknack_bits & 1U) != 0); // seq_no 1 asked for
+    // And the repair it asks for completes the stream: seq_no 1..3, then the second sample from where it lies.
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, first.bytes[d], 0, first.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, delivered_count); // the first sample, then the second, held whole
+}
+
+// (ii) Mid-run: sample A (seq_no 2..4) wholly lost, and of B (5..7) only the tail arrives - its runs lost, as when the
+// receiving host's IP reassembly memory is full. B is ahead of a watermark the pool holds nothing of: unrecorded.
+// Within one retry interval the reader must ask for seq_no 2. The control, A's own tail arriving, is recorded and asked
+// for at once - what shows the counting sees an ACKNACK when one is sent.
+static void tail_only_case(bool a_tail_arrives) {
+    tracked_none_pair(4000); // A: seq_no 2..4, captured
+    test_mock_now = tt_SECOND;
+    static struct captured_sample a;
+    static struct captured_sample b;
+    a.count = datagram_count;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(a.bytes[d], datagrams[d], datagram_len[d]);
+        a.len[d] = datagram_len[d];
+    }
+    capture_sample(&pub, &b); // 5..7
+    EXPECT_EQ_INT(3, a.count);
+    EXPECT_EQ_INT(3, b.count);
+    reset_acknack_count();
+    test_mock_send_hook = count_acknacks;
+    if (a_tail_arrives) {
+        EXPECT_TRUE(process_packet(&receiver, a.bytes[2], 0, a.len[2], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_TRUE(process_packet(&receiver, b.bytes[2], 0, b.len[2], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    test_mock_send_hook = NULL;
+    EXPECT_EQ_U32(2, sender_proxy()->ack_seq_no);
+    if (a_tail_arrives) {
+        EXPECT_TRUE(acknacks_sent >= 1); // the control: recorded, so asked for at once
+    }
+    run_receiver_one_retry_interval();
+    EXPECT_TRUE(acknacks_sent >= 1);
+    EXPECT_EQ_U32(2, acknack_seq_no);
+    EXPECT_TRUE((acknack_bits & 1U) != 0); // seq_no 2 asked for
+    EXPECT_EQ_INT(0, delivered_count);
+}
+
+static void test_reliable_none_tail_only_ahead_of_a_lost_sample_is_asked_for(void) {
+    tail_only_case(true); // the control
+    tail_only_case(false);
+}
+
+// What (i) and (ii) must not cost: a sample that arrives in order arms no retry timer and sends nothing, and a
+// BEST_EFFORT reader, which never asks, sends no ACKNACK for the same tail-only shape.
+static void test_reliable_none_in_order_and_best_effort_ask_nothing(void) {
+    tracked_none_pair(4000);
+    test_mock_now = tt_SECOND;
+    reset_acknack_count();
+    test_mock_send_hook = count_acknacks;
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    test_mock_send_hook = NULL;
+    expect_delivered_once(4000);
+    EXPECT_TRUE(!sender_proxy()->acknack_scheduled);
+    run_receiver_one_retry_interval();
+    EXPECT_EQ_INT(0, acknacks_sent);
+
+    init_pair(4000); // BEST_EFFORT both ends
+    test_mock_now = tt_SECOND;
+    static struct captured_sample a;
+    static struct captured_sample b;
+    static struct captured_sample c;
+    capture_sample(&pub, &a); // seq_no 1..3, delivered: the reader follows the writer
+    capture_sample(&pub, &b); // 4..6, lost
+    capture_sample(&pub, &c); // 7..9, its tail only
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, a.bytes[d], 0, a.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(1, delivered_count);
+    reset_acknack_count();
+    test_mock_send_hook = count_acknacks;
+    EXPECT_TRUE(process_packet(&receiver, c.bytes[2], 0, c.len[2], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    test_mock_send_hook = NULL;
+    run_receiver_one_retry_interval();
+    EXPECT_EQ_INT(0, acknacks_sent);
+}
+
 // (b) Many no-buffer RELIABLE streams in one node, more than the pool can pin. Two real nodes as in sim_run(): the
 // sender has `streams` RELIABLE KEEP_ALL Publishers, each on a topic of its own, and the receiver a RELIABLE
 // Subscriber of each - with no reorder buffer, or with a window-wide one (the control: it never touches the pool) -
@@ -3495,6 +3679,9 @@ int main(void) {
     test_loss_costs_the_lost_datagram_not_the_sample();
     test_reliable_none_eviction_heartbeat_keeps_a_whole_sample_ahead();
     test_reliable_none_data_absorbs_a_whole_sample();
+    test_reliable_none_first_sample_refused_at_first_contact_is_asked_for();
+    test_reliable_none_tail_only_ahead_of_a_lost_sample_is_asked_for();
+    test_reliable_none_in_order_and_best_effort_ask_nothing();
     test_best_effort_beside_reliable_none_gets_every_sample();
     test_best_effort_beside_reliable_none_when_every_slot_is_pinned();
     test_two_best_effort_subscribers_do_not_take_each_others_slots();
