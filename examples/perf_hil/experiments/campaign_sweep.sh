@@ -226,8 +226,13 @@ preflight_specs() {
     for spec in "${MATRIX[@]}"; do
         # A 7th field (MATRIX_SPECS) is an -i style rate, which rig_preflight.sh replaces with its own short -d/-i.
         IFS='|' read -r shape payload qos net scenario extra _common <<<"$spec"
+        # rig_preflight.sh reads N0-N3 and no best_effort_latency (2026-10-28, zenoh_fair_queue.sh's cells): a lossy
+        # N5/N6 cell is preflighted at N1's loss, and best_effort_latency, whose harness is reliable_latency's with
+        # BEST_EFFORT, is left to the campaign's own first run of it.
+        case "$net" in N5 | N6) net=N1 ;; esac
+        [ "$scenario" = best_effort_latency ] && continue
         echo "$scenario:$payload:$net:$(common_args "$scenario" "$payload" "$qos"):$extra"
-    done
+    done | awk '!seen[$0]++'
 }
 if [ "${PREFLIGHT_CELLS_ONLY:-0}" = 1 ]; then
     preflight_specs
