@@ -435,6 +435,7 @@ static const char* const scenario_names[] = {"ring",        "udp",        "pinne
 #define ACK_TIMEOUT_MS 2000   // a paced talker waiting this long for a take has a stopped listener (wait_for_window())
 #define LATE_ACK_WAIT_MS 2000 // after a failed flood publish, how long report_failed_flood_publish() waits for writable
 #define NS_PER_MS 1000000ULL
+#define TALKER_MAX_BLOCKING_MS "300" // the talker's RMW_TICKLE_MAX_BLOCKING_MS: no case expects a publish to block
 
 static bool is_held(enum scenario which) {
     return HELD == which || HELD_PINNED == which || HELD_SMALL == which;
@@ -622,17 +623,22 @@ static int talk_claimed_many(rmw_publisher_t* data, int from_listener, struct ta
 
 // The talker: publishes with loans, and reports its own ring refusals. Exits nonzero on any failure.
 static int talker(enum scenario which, int to_listener, int from_listener) {
+    // How long a KEEP_ALL publish waits for acknowledgements before it fails the case. Read at rmw_init(), so it is
+    // set before open_set(): set after it, from 2026-10-21 (df29ccf9) on, it was silently the 100 ms default, and a
+    // gate run under load failed held-pinned on one late acknowledgement (2026-10-23).
+    assert(0 == setenv("RMW_TICKLE_MAX_BLOCKING_MS", TALKER_MAX_BLOCKING_MS, 1));
     struct endpoint_set set;
     open_set(&set, "loan_talker");
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)set.node->data)->context_impl;
     struct talker_report report = {0, 0, 0, 0, 0, 0};
-    // A KEEP_ALL publish blocked on a stopped ring gives up after this long (the control case is the one that blocks).
-    assert(0 == setenv("RMW_TICKLE_MAX_BLOCKING_MS", "300", 1));
     if (CLAIMED == which || CLAIMED_MANY == which) {
         assert(0 == setenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS", "1", 1)); // read at publisher creation
     }
     rmw_publisher_t* data = make_publisher(set.node, &array1k_handle, TOPIC_DATA, qos_of(true, true, 0));
     assert(0 == unsetenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS"));
+    // The wait the flood actually gets, read back from the publisher, so the setting cannot go dead unnoticed again.
+    assert(strtoull(TALKER_MAX_BLOCKING_MS, NULL, 10) * NS_PER_MS ==
+           ((rmw_tickle_publisher_t*)data->data)->max_blocking_ns);
     rmw_publisher_t* held = NULL;
     if (is_held(which)) {
         held = make_publisher(set.node, &array1k_handle, TOPIC_HELD, qos_of(true, true, 0));

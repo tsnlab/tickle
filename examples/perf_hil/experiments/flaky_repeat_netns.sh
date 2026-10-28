@@ -14,7 +14,12 @@
 #
 # The netns has only lo, so every context in it is at 127.0.0.1, while /dev/shm - core's segments and context-id
 # registry, named by address, port and context id - is shared with every other netns on this PC. Two loops at once, or
-# a loop beside another session's lo-only test, keep apart only by port: give each loop its own ROS_DOMAIN_ID in SETUP.
+# a loop beside another session's lo-only test, keep apart only by port - and a ROS_DOMAIN_ID of their own does not
+# keep them apart: a segment is named by the context's data port, which each netns allocates on its own, so two netns
+# can hand out the same one. On 2026-10-29 concurrent test_loaned_messages loops met it ("Replacing segment ...
+# although a live context owns it - two contexts share its name"), and those runs failed in ways a lone loop did not
+# show in 600 runs (a RELIABLE sample 1127 delivered where 26 was due, a ring case that the ring carried under half of).
+# Run one loop at a time, and grep a failing run's output for that warning before reading anything into it.
 #
 # Each run gets a 120 s timeout, 4 GB of address space (ulimit -v, unless NO_VLIMIT=1, which ASan needs), a core dump
 # limit of unlimited (kernel.core_pattern decides where a core goes; on this PC apport puts it in
