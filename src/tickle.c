@@ -6220,9 +6220,19 @@ static void arm_match_heartbeat(struct tt_Publisher* pub, struct tt_PeerAck* ack
 // The lowest first_owed_seq_no among the entries still owed a match Heartbeat, each counted down by one; false when
 // none is. The lowest, because one datagram goes to every peer: a Subscriber matched later than another then starts
 // at the earlier match point - over-delivering what was written between the two matches, never losing.
-static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed) {
+//
+// Never down past the last one: only the reader's ACKNACK passing the match point says it has heard one
+// (record_peer_ack()), and only that or forgetting the reader (forget_peer_ack()) ends it. It used to count down to 0
+// whether or not anything was heard: a writer whose ARP entry for the reader stayed INCOMPLETE for 2-3 s had every send
+// of its first 11-16 publishes dropped before the wire, the count ran out unheard, the reader's first contact was a
+// plain HEARTBEAT, its VOLATILE baseline went past every sample the writer still held, and none was asked for (C8,
+// c8_arp_outage.sh: x = 2 lost all 11 in 6/6 runs, retx 0). A healthy reader that hears every FINAL match Heartbeat
+// has no reason to answer one, so the last is sent without FINAL (*solicit): the reader answers, and that ends it -
+// about one round trip of match Heartbeats and ACKNACKs more per match, not a Heartbeat ahead of every DATA.
+static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed, bool* solicit) {
     bool any = false;
     bool still_pending = false;
+    *solicit = false;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         struct tt_PeerAck* ack = &pub->peer_acks[i];
         if (ack->context_id == tt_CONTEXT_ID_INVALID || ack->match_heartbeats_left == 0) {
@@ -6232,7 +6242,11 @@ static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed) {
             *owed = ack->first_owed_seq_no;
             any = true;
         }
-        ack->match_heartbeats_left--;
+        if (ack->match_heartbeats_left > 1) {
+            ack->match_heartbeats_left--;
+        } else {
+            *solicit = true; // the last one stays, and asks the reader to answer
+        }
         still_pending |= ack->match_heartbeats_left != 0;
     }
     pub->match_heartbeat_pending = still_pending;
@@ -14263,20 +14277,21 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
         return; // with no matched reader nothing is sent (publisher_unmatched()); it stays owed
     }
     uint32_t owed = 0;
-    if (!take_match_heartbeat(pub, &owed)) {
+    bool solicit = false;
+    if (!take_match_heartbeat(pub, &owed, &solicit)) {
         return;
     }
+    uint8_t flags = solicit ? 0 : tt_HEARTBEAT_FLAG_FINAL; // the last one asks the reader to answer
     uint32_t first = owed;
     (void)publisher_oldest_seq_no(pub, &first); // the oldest retained, or the owed one when nothing is
     uint8_t count = count_peers(pub->peers);
     bool empty = node->tx_tail == sizeof(struct tt_Header);
     bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && empty;
     if (unicast && !pub->batch && !any_peer_on_segment(node, pub)) {
-        encode_heartbeat_range(node, pub, first, owed - 1, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
+        encode_heartbeat_range(node, pub, first, owed - 1, false, NULL, 0, flags);
         return;
     }
-    encode_heartbeat_range(node, pub, first, owed - 1, true, unicast ? pub->peers : NULL, unicast ? count : 0,
-                           tt_HEARTBEAT_FLAG_FINAL);
+    encode_heartbeat_range(node, pub, first, owed - 1, true, unicast ? pub->peers : NULL, unicast ? count : 0, flags);
 }
 
 // How many of pub's peers a HEARTBEAT announcing what pub sent goes to: all of them, unicast, while there are few

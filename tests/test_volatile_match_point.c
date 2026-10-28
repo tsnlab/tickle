@@ -21,9 +21,14 @@
 //   discovery-time Heartbeat lost; and with that and the first owed sample lost, which is still delivered (on main
 //   it was not);
 // - once the reader has acknowledged the owed sample, a publish carries no Heartbeat.
+// - C8 (2026-10-29): every send of the first tt_MATCH_HEARTBEATS + 4 publishes after the match lost (the writer's ARP
+//   entry for the reader INCOMPLETE), the reader's first contact the idle HEARTBEAT: it still gets what the writer
+//   holds (KEEP_LAST), from the match point (on main: nothing, its baseline went past every retained sample);
+// - a healthy stream carries the match Heartbeat only tt_MATCH_HEARTBEATS times, the last asking for the ACKNACK that
+//   ends it; a reader that never answers is owed it until it is forgotten.
 // Mutants, each killed here: no match Heartbeat; last_seq_no naming the owed sample rather than the one before it;
 // the Heartbeat naming the oldest retained sample instead of the owed one; the Heartbeat always in its own datagram;
-// the reader's ack not ending it.
+// the reader's ack not ending it; tests/mutants_volatile_match_point.py for the C8 rule.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -274,6 +279,9 @@ static void init_node(struct tt_Context* node, uint8_t id) {
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 }
 
+// 0: KEEP_ALL with DEPTH; otherwise KEEP_LAST with this depth.
+static uint32_t writer_keep_last;
+
 static void start(void) {
     test_mock_reset();
     test_mock_now = tt_SECOND;
@@ -291,8 +299,12 @@ static void start(void) {
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&writer));
     EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&reader));
 
-    const struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = DEPTH},
-                                      .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    struct tt_QosProfile qos = {.history = {.kind = tt_QOS_HISTORY_KEEP_ALL, .depth = DEPTH},
+                                .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}};
+    if (writer_keep_last != 0) {
+        qos.history.kind = tt_QOS_HISTORY_KEEP_LAST;
+        qos.history.depth = writer_keep_last;
+    }
     size_t storage_size = tt_Publisher_storage_size(&writer_topic, &qos);
     EXPECT_TRUE(storage_size <= sizeof(pub_storage));
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&writer), &pub, &writer_topic,
@@ -403,12 +415,106 @@ static void test_prematch_samples_never_reach_it_when_the_match_heartbeat_is_los
     stop();
 }
 
+// --- the reader's first contact after the match Heartbeats ran out (C8, 2026-10-29) -------------------------------
+
+// Every datagram from one node while it is set: the writer's sends dropped before the wire (its ARP entry for the
+// reader INCOMPLETE, c8_arp_outage.sh), or a reader that has gone silent.
+static uint8_t blacked_out;
+static bool drop_blacked_out(const struct datagram* datagram) {
+    return blacked_out != 0 && datagram->from == blacked_out;
+}
+
+static bool reader_met_writer(void) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub.writers[i].context_id == WRITER_ID) {
+            return true;
+        }
+    }
+    return false;
+}
+
+#define OUTAGE_PUBLISHES (tt_MATCH_HEARTBEATS + 4) // past the match Heartbeats every publish carries
+#define KEEP_LAST_DEPTH 4
+
+// The writer matched the reader, then every send of its first OUTAGE_PUBLISHES publishes was lost, so the reader's
+// first contact is a HEARTBEAT that is not a publish (the idle one). It must start at the match point: the samples the
+// writer still holds (KEEP_LAST_DEPTH) are owed to it and asked for, the older ones given up as evicted. On main the
+// match point stopped being announced after tt_MATCH_HEARTBEATS publishes nobody heard, the reader took last_seq_no + 1
+// as its baseline, and nothing was delivered or resent (c8_arp_outage.sh runs 3 and 4: all 11 or 16 lost, retx 0).
+static void test_first_contact_by_heartbeat_after_the_match_heartbeats_ran_out(void) {
+    writer_keep_last = KEEP_LAST_DEPTH;
+    start();
+    create_reader();
+    run_until(&writer, &reader, test_mock_now + (3 * tt_SECOND));
+    EXPECT_TRUE(any_peer_ack_matched(&pub)); // control: matched before the outage
+
+    drop = drop_blacked_out;
+    blacked_out = WRITER_ID;
+    publish(1, OUTAGE_PUBLISHES);
+    EXPECT_TRUE(!reader_met_writer()); // control: the outage held, the first contact is still to come
+    EXPECT_EQ_INT(0, delivered_count);
+    blacked_out = 0;
+
+    int heartbeats_before = heartbeats_with_data;
+    run_until(&writer, &reader, test_mock_now + tt_SECOND); // no publish: the idle HEARTBEAT is the first contact
+    EXPECT_TRUE(reader_met_writer());
+    EXPECT_EQ_INT(heartbeats_before, heartbeats_with_data); // control: no DATA-borne Heartbeat was the first contact
+    expect_delivered(OUTAGE_PUBLISHES - KEEP_LAST_DEPTH + 1, OUTAGE_PUBLISHES); // what the writer still holds
+    EXPECT_EQ_U32(OUTAGE_PUBLISHES - KEEP_LAST_DEPTH, sub.gap_evicted);         // from the match point: 1.. given up
+    stop();
+    writer_keep_last = 0;
+}
+
+// The cost of the above is bounded on a healthy stream: a reader that receives everything has no reason to acknowledge
+// a FINAL Heartbeat, so the last of the tt_MATCH_HEARTBEATS asks for an ACKNACK, and that answer ends it - as many
+// match Heartbeats as before, not one ahead of every DATA for the rest of the stream.
+static void test_a_healthy_stream_carries_the_match_heartbeat_only_until_its_reader_answers(void) {
+    start();
+    create_reader();
+    run_until(&writer, &reader, test_mock_now + (3 * tt_SECOND));
+    EXPECT_TRUE(any_peer_ack_matched(&pub));
+    publish(1, 3 * tt_MATCH_HEARTBEATS);
+    expect_delivered(1, 3 * tt_MATCH_HEARTBEATS);
+    EXPECT_EQ_INT(tt_MATCH_HEARTBEATS, heartbeats_with_data);
+    EXPECT_TRUE(!pub.match_heartbeat_pending);
+    stop();
+}
+
+// And for a reader that never answers at all, it ends when the writer forgets it.
+static void test_a_reader_that_never_answers_is_owed_it_until_forgotten(void) {
+    start();
+    create_reader();
+    run_until(&writer, &reader, test_mock_now + (3 * tt_SECOND));
+    EXPECT_TRUE(any_peer_ack_matched(&pub));
+    drop = drop_blacked_out;
+    blacked_out = READER_ID;
+    uint32_t value = 0;
+    for (int step = 0; step < 15 * 5 && any_peer_ack_matched(&pub); step++) { // 15 s at 5 Hz, past any lease
+        value++;
+        publish(value, value);
+        EXPECT_TRUE(pub.match_heartbeat_pending); // owed, every publish, while it is matched
+        run_until(&writer, &reader, test_mock_now + (200 * tt_MILLISECOND));
+    }
+    EXPECT_TRUE(value > tt_MATCH_HEARTBEATS + 2); // control: it outlived the match Heartbeats
+    EXPECT_TRUE(!any_peer_ack_matched(&pub));     // forgotten
+    uint32_t owed = 0;
+    EXPECT_TRUE(!match_point_owed(&pub, &owed)); // and owed nothing more
+    int before = heartbeats_with_data;
+    publish(value + 1, value + 1);
+    EXPECT_EQ_INT(before, heartbeats_with_data);
+    stop();
+    blacked_out = 0;
+}
+
 int main(void) {
     tt_current_log_level = TT_LOG_ERROR;
     test_first_sample_lost_after_the_match_is_still_delivered();
     test_prematch_samples_never_reach_a_volatile_reader();
     test_prematch_samples_never_reach_it_when_its_first_contact_is_a_later_data();
     test_prematch_samples_never_reach_it_when_the_match_heartbeat_is_lost();
+    test_first_contact_by_heartbeat_after_the_match_heartbeats_ran_out();
+    test_a_healthy_stream_carries_the_match_heartbeat_only_until_its_reader_answers();
+    test_a_reader_that_never_answers_is_owed_it_until_forgotten();
 
     if (test_result() != 0) {
         return 1;
