@@ -218,6 +218,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A RELIABLE Subscriber without a reorder buffer no longer goes silent on a stream it cannot record** (2026-10-29;
+  RESULTS `B4F`). A datagram it placed or dropped past its writer's watermark without recording it now counts as
+  announced and arms the ACKNACK retry, as a declined DATA does. Before, nothing asked for the gap while the writer's
+  steady publishing held its idle HEARTBEAT back, and the stream stalled until the next announce while KEEP_LAST evicted
+  the samples: at startup when the first sample came before the writer was tracked, and mid-run when IP reassembly
+  memory dropped whole samples. Wire unchanged (`391f8360`).
 - **The hybrid reader keeps 16 writers, replacing the one seen longest ago, and counts a whole body lost before
   its writer's layout is known** (2026-10-28; [DESIGN.md](DESIGN.md) section 8; RESULTS `HRW`). With 9 or more
   fragmenting writers the 8 entries were recycled every sample, no collapse was decided and a BEST_EFFORT stream got as
