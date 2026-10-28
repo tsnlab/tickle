@@ -213,6 +213,15 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **Every Subscriber that reassembles owns a reassembly slot; the node's 8 are overflow** (the user, 2026-10-27;
+  [DESIGN.md](DESIGN.md) section 8, "Reassembly slots"; RESULTS `SRS`). Slots pinned by no-buffer RELIABLE streams
+  starved a BEST_EFFORT Subscriber of the same node (8 streams at 5%: 152 of 265 delivered), and 16 BEST_EFFORT
+  Subscribers got 154 of 640 on a clean link; now all of both. Another Subscriber's own slot and a pinned slot are
+  never taken. Each such Subscriber's `tt_*_storage_size()` grows by one slot: rmw_tickle +65,528 B for an unbounded
+  type, +1,432 B for a 1,400 B BEST_EFFORT type, +0 for a small or buffered RELIABLE one. PC netns A/B run 3
+  INCONCLUSIVE, nothing WORSE (8 streams 5%: RELIABLE 80.4% -> 100%, p99 182 -> 36 ms, CPU -10%); landed on the user's
+  decision. Rig: core gate v2 PASS (8/88 listed, +0.08-0.45% user instructions a sample); Array1m/4m delivery 100%,
+  1% p99 10.14 against 10.33 ms. No wire change.
 - **A large writer's repair timeout backs off while the reader shows no progress** (2026-10-27; [DESIGN.md](DESIGN.md)
   section 4, "Large-sample resend order"; RESULTS `EWB`). After G, a reader that took in nothing for ~100 ms still
   looped the timeout. A unit's timeout now doubles for each resend of it in a row with no progress shown between, at

@@ -1412,17 +1412,17 @@ change). Runs 1 and 2 FAILED on a cost the change had introduced at 4 streams: a
 watermark sat unrecorded in its Subscriber's spent own slot. Run 3's code sends it to the pool's oldest unpinned slot
 first, and the cost is gone.
 
-- **Run** (`sub_reassembly_pc_ab.sh`, rules in `sub_reassembly_pc_ab.py`, registered `50687787`, decide bounds and
-  REPS 10 `104bf641`). M = main `149a281f`, A = M again (A/A), F = the change. Per cell, 10 reps of 10 s each: N
+- **Run** (`sub_reassembly_pc_ab.sh`, rules in `sub_reassembly_pc_ab.py`, registered `12bf3d98` (50687787 before its rebase), decide bounds and
+  REPS 10 `65e8056e` (104bf641 before its rebase)). M = main `149a281f`, A = M again (A/A), F = the change. Per cell, 10 reps of 10 s each: N
   RELIABLE streams of 30,000-byte samples at 30 Hz, read by Subscribers with no reorder buffer; one BEST_EFFORT stream
   of the same; a control of 64-byte RELIABLE samples through a reorder buffer. netem on the writer: delay 1 ms, loss
   L%. Results in `/home/semih/sub_reasm_results/ab_full`, `ab_run2`, `ab_run3`.
 
 | run, F | n4 5%: RELIABLE %, p99 ms (M / F) | n8 5%: RELIABLE %, p99 ms (M / F) | verdict |
 |---|---|---|---|
-| 1, `4705d704` | 100 / 97.16, 36 / 67 (WORSE) | 86.6 / 99.92 (BETTER), 126 / 41 | FAIL (R3) |
-| 2, `cbdba9d6` (a free pool slot first) | 100 / 94.17 (WORSE), 36 / 105 (WORSE), CPU +4.1% (WORSE) | 81.8 / 99.99, 147 / 36 | FAIL (R2-R4) |
-| 3, `28069b80` (the oldest unpinned pool slot first) | 100 / 100, 36 / 36 | 80.4 / 100.00 (BETTER), 182 / 36 (BETTER), CPU -10% (BETTER) | INCONCLUSIVE |
+| 1, `0d947642` (4705d704 before its rebase) | 100 / 97.16, 36 / 67 (WORSE) | 86.6 / 99.92 (BETTER), 126 / 41 | FAIL (R3) |
+| 2, `9cc9f0d4` (cbdba9d6 before its rebase) (a free pool slot first) | 100 / 94.17 (WORSE), 36 / 105 (WORSE), CPU +4.1% (WORSE) | 81.8 / 99.99, 147 / 36 | FAIL (R2-R4) |
+| 3, `911c7c3c` (28069b80 before its rebase) (the oldest unpinned pool slot first) | 100 / 100, 36 / 36 | 80.4 / 100.00 (BETTER), 182 / 36 (BETTER), CPU -10% (BETTER) | INCONCLUSIVE |
 
 - **Run 3's undecided rules.** R3: in the 1% cells main's own p99 differs 7.2x (n4) and 4.7x (n8) between M and A,
   wider than the 25% at which a cell decides; F lies between them. R1: BEST_EFFORT delivery M / A / F at 5% is
@@ -1432,10 +1432,10 @@ first, and the cost is gone.
   jump. In each, the sample at the watermark was whole in the pool but for one datagram, and nothing ahead of it was
   recorded. One sample ahead was in the own slot, unrecorded; the rest of the pool was the BEST_EFFORT Subscriber's
   older partial samples. So the ACKNACK asked for whole samples again. Main reclaims the oldest pool slot for a sample
-  ahead and records it there. Restoring that order for this one case (`06b50f74`): 4 streams at 5% gave 5 of 5 runs
-  1200/1200, against 3 of 5 losing on `cbdba9d6`.
+  ahead and records it there. Restoring that order for this one case (`e5f2f81b` (06b50f74 before its rebase)): 4 streams at 5% gave 5 of 5 runs
+  1200/1200, against 3 of 5 losing on `9cc9f0d4` (cbdba9d6 before its rebase).
 - **Memory**: DESIGN.md section 8 ("Memory: what the own slot adds per Subscriber").
-- **Rig** (2026-10-27, pre = main `149a281f`, head = `ab/sub-reassembly` `28069b80`, aa = head again; the rule set before
+- **Rig** (2026-10-27, pre = main `149a281f`, head = `ab/sub-reassembly` `911c7c3c` (28069b80 before its rebase), aa = head again; the rule set before
   the run: core gate v2 PASS; in every Array cell head delivers no less than pre by more than |aa - head|, and its
   median p99 is not above pre's by more than max(|aa - head|, 1 ms)). Core gate v2 (`coreAB_28069b80_20261027-200416`):
   PASS, no CPU or latency row WORSE; 8 of 88 listed, not blocking: user instructions a sample +0.27-0.45% on the server
@@ -1523,7 +1523,7 @@ Raw files in `~/rig_results_safe/`, or `examples/perf_hil/results/` for `results
 | EWS | `eth_storm_census.sh` + `eth_storm_trace.patch` + `eth_storm_read.py`, `eth_storm_provoke.sh` / `.py`, `eth_storm_force.sh` / `.py` (all over `wifi_burst_loss_netns.sh`) | census `2b482592` (main core + trace), provoke `4f9dcccd`, force `231f10bd` | 2026-10-26 | `~/ews_results/`: `ews1_r*_i*/`, `ews1.read.txt`, `provoke/`, `provoke2/`, `force1/`; the raising rep `~/rlf_results/rlf1_e5_A/runs/ge0.1b1-rel_large-6/` |
 | EWF | `eth_storm_fix_ab.sh` (prepare + run; `eth_storm_fix_make.py` for the forced, pinned and F trees; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_fix_read.py`; `eth_storm_fix_classes.py` (descriptive) | harness `0a0cc451`; M = A = `fc5fb79b`, F = `fc5fb79b` + back-off, G = `3bd2acec` (`ab/eth-storm-backoff`) | 2026-10-27 | `~/ewf_results/`: `ewf1_*`, `ewf1.read.txt`, `ewf1.classes.txt`, `STATUS.txt`; trees `~/ewf_trees/` |
 | EWB | `eth_storm_stall_ab.sh` (prepare + run; `eth_storm_fix_make.py` drop / pin, `eth_storm_stall_make.py` stall; `wifi_burst_loss_netns.sh`, `wifi_repair_ab.sh`), read by `eth_storm_stall_read.py`; `eth_storm_p99_ab.sh` + `eth_storm_p99_read.py` (the 1% p99 add-on); `r4_short_ab.sh` + `r4_short_read.py` (`463bfaab`, the R4 follow-up) | harness `be0faaf0`, add-on `9aa8972f` (each run as its pre-rebase commit); M = A = `45129b71`, S = `102ec895` (its pre-rebase build); add-on main `b61e2302` | 2026-10-27 | `~/ews_stall_results/`: `ess1_*`, `ess1.read.txt`, `p99a_*`, `p99a.read.txt`, `STATUS.txt`; trees `~/ews_stall_trees/`, `~/ews_p99_trees/` |
-| SRS | `sub_reassembly_pc_ab.sh` + `sub_reassembly_node.c`, read by `sub_reassembly_pc_ab.py` | harness `50687787`, rules `104bf641`; M = A = `149a281f`, F = `4705d704` (run 1), `cbdba9d6` (run 2), `28069b80` (run 3; `ab/sub-reassembly`) | 2026-10-27 | `/home/semih/sub_reasm_results/`: `ab_full`, `ab_run2`, `ab_run3`, `diag/`, `STATUS.txt` |
+| SRS | `sub_reassembly_pc_ab.sh` + `sub_reassembly_node.c`, read by `sub_reassembly_pc_ab.py` | harness `12bf3d98` (50687787 before its rebase), rules `65e8056e` (104bf641 before its rebase); M = A = `149a281f`, F = `0d947642` (4705d704 before its rebase) (run 1), `9cc9f0d4` (cbdba9d6 before its rebase) (run 2), `911c7c3c` (28069b80 before its rebase) (run 3; `ab/sub-reassembly`) | 2026-10-27 | `/home/semih/sub_reasm_results/`: `ab_full`, `ab_run2`, `ab_run3`, `diag/`, `STATUS.txt` |
 | TVS rig | `rig_queue_core_ab.sh` (gate v2), `rmw_keepall_rig.sh` + `largemsg_rig_summary.py` via `~/rig_jobs/storm_fix_queue.sh` | A `b434f649`, B `5b7c09e7` | 2026-10-26 | `~/rig_results_safe/core_ab/coreAB_5b7c09e7_20261025-234811/`, `tvs_1m_20261026-011959.*`, `tvs_4m_20261026-011959.*` |
 | HFN | `hybrid_forget_netns.sh` (PC netns; reader reassembly sampled; REREAD after its amendment) | `0f33a562` | 2026-10-25 | `hyb_forget/mech1/` (`results.txt`, `reread.txt`) |
 | SC0 | the same | `596e9c9c` | 2026-10-17 | `creation_rtt_samehost_596e9c9c_20261017-225621.*` |
