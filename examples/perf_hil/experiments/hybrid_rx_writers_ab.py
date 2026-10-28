@@ -20,8 +20,12 @@ valid runs of any arm.
 
 Per (cell, metric): d = mean over repetitions of (arm - M), points for percentages, relative for latency and CPU.
 FLOOR = max(fixed, |d(A)| + 2 SE(A)); fixed = 0.5 points, 5% latency, 3% CPU. BETTER / WORSE: d(F) beyond the floor
-and beyond 2 SE of F's own d; otherwise HELD - or UNDECIDED when the floor is wider than the metric's DECIDES bound
-(delivery 2 points, latency 25%, CPU 10%; as sub_reassembly_pc_ab.py, 104bf641).
+and beyond 2 SE of F's own d; HELD within the floor; UNDECIDED when the floor is wider than the metric's DECIDES bound
+(delivery 2 points, latency 25%, CPU 10%; as sub_reassembly_pc_ab.py, 104bf641), or when d(F) is past the floor but
+within F's own 2 SE (added after run 1, before run 2: run 1 read n8_l1's RELIABLE -6.1 points - one repetition of 8
+at 51% - and CPU +7.2% as HELD).
+Secondary, descriptive (added before run 2): per cell and arm, the runs that lost more than 1% of their RELIABLE
+samples - one bad repetition is what a mean hides.
 
 Rules:
   W   the witness: in at least one cell of more than 4 streams M's reader decided no collapse (median collapses 0) -
@@ -142,7 +146,9 @@ def verdict(runs, cell, metric):
     better = d_f > 0 if metric in HIGHER_IS_BETTER else d_f < 0
     if abs(d_f) > floor and abs(d_f) > 2.0 * se_f:
         return ("BETTER" if better else "WORSE"), d_f, floor
-    if not floor <= DECIDES[metric]:
+    if not floor <= DECIDES[metric] or abs(d_f) > floor:
+        # Past the floor but within F's own 2 SE: F's spread is too wide to call it either way (run 1: n8_l1 RELIABLE
+        # -6.1 points, one repetition of 8 at 51%, was read HELD) - UNDECIDED, not HELD.
         return "UNDECIDED", d_f, floor
     return "HELD", d_f, floor
 
@@ -179,6 +185,11 @@ def main():
     live = [c for c in cells if c not in void_cells]
     for cell in sorted(void_cells):
         print(f"VOID cell {cell}: fewer than 3 valid runs of some arm")
+
+    print("\nruns losing more than 1% of their RELIABLE samples (secondary, descriptive), M / A / F:")
+    for cell in cells:
+        bad = [sum(1 for r in valid(runs, cell, arm) if r["rel_pct"] < 99.0) for arm in ARMS]
+        print(f"  {cell:13s} {bad[0]} / {bad[1]} / {bad[2]}")
 
     table = {}
     print("\ncell          metric   d(F)        floor     n(F)  verdict")
