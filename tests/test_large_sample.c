@@ -1752,6 +1752,55 @@ static void test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once(void) {
     EXPECT_EQ_U64(0, copies); // asking sooner sent nothing twice: the writer resent 100 once more, as it had to
 }
 
+static void test_a_reveal_names_only_what_it_reveals(void) {
+    // O2 (C11, maybe_reveal_lost_repairs()): the watermark B and B+3 were asked for 5 ms ago together with B+5, whose
+    // repair just arrived; B+7 was asked for 2 ms ago, inside the 24 ms repair transit window. B+5's repair went after
+    // any repair of B or B+3 - they are lost - but B+7's may still be on its way. The reveal names B and B+3 and leaves
+    // B+7 out. Named whole (O, d80877cf), it named B+7 too, and on the PC's queued Wi-Fi path the writer's RACK time
+    // rule then resent such repairs early: duplicates 909-2,474 a rep against 171-446. Mutant (mutants_large_sample.py,
+    // "reveal names everything").
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return;
+    }
+    receiver.repair_timing = true;
+    test_mock_now += tt_SECOND;
+    uint64_t now = test_mock_now;
+    uint32_t base = proxy->ack_seq_no;
+    memset(proxy->received_bitmap, 0, (size_t)proxy_words(proxy) * sizeof(uint64_t));
+    proxy->received_bitmap[0] = 0x3FEULL & ~((1ULL << 3) | (1ULL << 7)); // 1..9 received but 3 and 7; 0 missing
+    proxy->received_words = 1; // the words in use, as proxy_*_received() keep it
+    proxy->heartbeat_last_seq_no = base - 1U;
+    proxy->large_arrival_ns = now;
+    proxy->transit_min_ns = (uint32_t)tt_MILLISECOND;
+    proxy->transit_srtt_ns = (uint32_t)(20 * tt_MILLISECOND);
+    proxy->transit_rttvar_ns = (uint32_t)tt_MILLISECOND;
+    proxy->reveal_ns = 0;
+    proxy->acknack_scheduled = true;
+    memset(proxy->requests, 0, sizeof(proxy->requests));
+    proxy->requests[0] = (struct tt_RepairRequest) {now - 5 * tt_MILLISECOND, base, base + 5U};
+    proxy->requests[1] = (struct tt_RepairRequest) {now - 2 * tt_MILLISECOND, base + 7U, base + 7U};
+    proxy->request_next = 2;
+    uint32_t queued = sim_tail;
+    sim_acting = RECEIVER_ID;
+    maybe_reveal_lost_repairs(&receiver, proxy, base + 5U);
+    EXPECT_EQ_U32(queued + 1U, sim_tail); // one ACKNACK went
+    sim_head = sim_tail;                  // nothing of it is delivered
+    proxy->acknack_scheduled = false;
+    // What it named, as the reader remembers its own requests (note_requested(): the first and last unit named).
+    const struct tt_RepairRequest* named = &proxy->requests[2];
+    printf("test_large_sample: a reveal at B+5 named B+%u..B+%u (B and B+3 revealed lost, B+7 on its way)\n",
+           named->first_seq_no - base, named->last_seq_no - base);
+    EXPECT_EQ_U64(test_mock_now, named->sent_ns);
+    EXPECT_EQ_U32(base, named->first_seq_no);
+    EXPECT_EQ_U32(base + 3U, named->last_seq_no);
+}
+
 static void test_reveals_are_paced_by_the_least_transit(void) {
     // The reveal asks again on a repair's arrival, and repairs arrive in runs: one ACKNACK each would be one per
     // repair. At most one per least repair transit (nothing it caused can have come back sooner). 4 x 1 MiB at 10% loss
@@ -3614,6 +3663,7 @@ int main(void) {
     test_a_repair_arriving_first_is_not_a_writer_still_sending();
     test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once();
     test_reveals_are_paced_by_the_least_transit();
+    test_a_reveal_names_only_what_it_reveals();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_two_readers_are_not_resent_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();

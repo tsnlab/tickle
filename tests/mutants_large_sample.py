@@ -299,8 +299,8 @@ MUTANTS = [
     ),
     (
         "(reveal) no reveal: a repair showing another lost asks nothing",
-        "    proxy->reveal_ns = now;\n    RSTAT_INC(acknack_reveal);\n    send_acknack(node, proxy);\n",
-        "    proxy->reveal_ns = now;\n    RSTAT_INC(acknack_reveal);\n",
+        "    RSTAT_INC(acknack_reveal);\n    send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);\n",
+        "    RSTAT_INC(acknack_reveal);\n",
         "test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once",
     ),
     (
@@ -308,6 +308,18 @@ MUTANTS = [
         "    if (proxy->reveal_ns != 0 && now - proxy->reveal_ns < proxy->transit_min_ns) {\n        return;\n    }\n",
         "",
         "test_reveals_are_paced_by_the_least_transit",
+    ),
+    (
+        "(reveal) reveal names everything (O, d80877cf)",
+        "    send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);\n}\n#endif\n",
+        "    send_acknack(node, proxy);\n}\n#endif\n",
+        "test_a_reveal_names_only_what_it_reveals",
+    ),
+    (
+        "(reveal) a request older than the arrived unit's keeps its skip below it",
+        "        if (request->sent_ns <= arrived_asked && low <= arrived_bit) {\n",
+        "        if (false) {\n",
+        "test_a_reveal_names_only_what_it_reveals",
     ),
     (
         "(srtt) a retry while the writer sends goes as any other",

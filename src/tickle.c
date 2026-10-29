@@ -16390,13 +16390,8 @@ static void note_requested(const struct tt_Context* node, struct tt_WriterProxy*
 // arrived may answer either, and timing it from the later request would shorten the estimate - the window - and ask for
 // repairs in flight again, which shortens it further. From the older one it errs long, which costs a lost repair one
 // late re-request instead.
-static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, uint64_t now) {
-    bool missing =
-        seq_no == proxy->ack_seq_no || (seq_no - proxy->ack_seq_no < proxy_window_bits(proxy) &&
-                                        !bitmap_test_bit(proxy->received_bitmap, seq_no - proxy->ack_seq_no));
-    if (!missing) {
-        return; // a second copy of something already here: it says nothing about the request it answers
-    }
+// When the oldest remembered request naming seq_no went out; 0 if none does.
+static uint64_t oldest_request_naming(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
     uint64_t oldest = 0;
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         const struct tt_RepairRequest* request = &proxy->requests[slot];
@@ -16405,6 +16400,17 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
             oldest = request->sent_ns;
         }
     }
+    return oldest;
+}
+
+static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, uint64_t now) {
+    bool missing =
+        seq_no == proxy->ack_seq_no || (seq_no - proxy->ack_seq_no < proxy_window_bits(proxy) &&
+                                        !bitmap_test_bit(proxy->received_bitmap, seq_no - proxy->ack_seq_no));
+    if (!missing) {
+        return; // a second copy of something already here: it says nothing about the request it answers
+    }
+    uint64_t oldest = oldest_request_naming(proxy, seq_no);
     if (oldest == 0 || now < oldest) {
         return; // named by no request still remembered - nothing to time it from
     }
@@ -17359,10 +17365,17 @@ static void take_first_contact_baseline(const struct tt_Subscriber* sub, struct 
 // at ge10b4 (r4_trace_read.py, 299 samples of 1 MiB): the reader asked again for a lost repair on its timer (37 ms at
 // the p50) 24 ms (p50) after a later repair had shown it lost.
 //
+// It names only what the arrival reveals (O2, 2026-10-30): a unit below the one just recorded whose requests all went
+// no later than the oldest request naming that one - so its repair, if it went, went before the arrived one. What a
+// later request named, or anything above the arrived unit, a request within the repair transit time is still waiting
+// on: left out, as answer_ack_request() leaves it out (repairs_in_flight()). Named whole (O, d80877cf), the reveal
+// asked again for repairs still queued on the path; the writer's RACK time rule released them early (617-1,367 releases
+// a rep against 43-87) and the reader got 909-2,474 duplicates a rep against main's 171-446 (C11 A/B, ge5b2-ge10b4).
+//
 // Not oftener than the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns): sooner, nothing
 // this ACKNACK caused can have come back, and the repairs that keep arriving would otherwise each send one. Not before
 // a transit was timed at all, and only while the retry timer runs (a gap is open). No wire change, no estimate touched.
-static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterProxy* proxy) {
+static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (!node->repair_timing || proxy->large_arrival_ns == 0 || proxy->transit_min_ns == 0 ||
         !proxy->acknack_scheduled) {
         return;
@@ -17371,9 +17384,45 @@ static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterP
     if (proxy->reveal_ns != 0 && now - proxy->reveal_ns < proxy->transit_min_ns) {
         return;
     }
+    uint64_t arrived_asked = oldest_request_naming(proxy, seq_no);
+    int high_bit = highest_relevant_bit(proxy);
+    int32_t arrived_bit = seq_delta(seq_no, proxy->ack_seq_no);
+    if (arrived_asked == 0 || high_bit < 0 || arrived_bit <= 0) {
+        return; // named by no request remembered: nothing to order it against
+    }
+    uint64_t window = repair_in_flight_ns(node, proxy);
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    int skip_count = 0;
+    for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
+        const struct tt_RepairRequest* request = &proxy->requests[slot];
+        if (request->sent_ns == 0 || now - request->sent_ns >= window ||
+            seq_delta(request->last_seq_no, proxy->ack_seq_no) < 0) {
+            continue; // forgotten, or overdue anyway: named
+        }
+        int32_t low = seq_delta(request->first_seq_no, proxy->ack_seq_no);
+        int32_t high = seq_delta(request->last_seq_no, proxy->ack_seq_no);
+        if (low < 0) {
+            low = 0;
+        }
+        if (high > high_bit) {
+            high = high_bit;
+        }
+        if (request->sent_ns <= arrived_asked && low <= arrived_bit) {
+            low = arrived_bit; // its units below the arrived one are revealed
+        }
+        if (low > high) {
+            continue;
+        }
+        skips[skip_count].low_bit = (int)low;
+        skips[skip_count].high_bit = (int)high;
+        skip_count++;
+    }
+    if (!names_any_open(proxy, high_bit, skips, skip_count)) {
+        return; // nothing revealed: every missing unit is on its way
+    }
     proxy->reveal_ns = now;
     RSTAT_INC(acknack_reveal);
-    send_acknack(node, proxy);
+    send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);
 }
 #endif
 
@@ -17503,7 +17552,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     }
 #if tt_LARGE_SAMPLES
     if (revealing && is_new && retry_already_armed) {
-        maybe_reveal_lost_repairs(node, proxy);
+        maybe_reveal_lost_repairs(node, proxy, seq_no);
     }
 #endif
     return is_new;
