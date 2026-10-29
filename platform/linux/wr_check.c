@@ -18,11 +18,19 @@
 //   arrives,
 //                   ring_others rises, the owner stays.
 //   4. handover   - the context's first move: the first waiter stops waiting (as rmw's poll thread does when it hands
-//                   the poll role to the executor) and another thread waits - it takes the ring at its second wait and
-//                   reads by it (2026-10-24: at its 64th before, so an rmw executor's first 64 waits used epoll).
-//      move       - another thread that waits the run a move needs (wr_move_after: twice the last move's) in a row
-//                   takes the ring, and reads by it (two shorter runs with the owner's wait between them do not);
-//                   moving it back takes twice the waits, not the same.
+//                   the poll role to the executor) and another thread waits and reads - its first two datagrams come
+//                   by epoll, and its next wait takes the ring and reads by it. The run counts datagrams read from the
+//                   data socket, not waits (2026-10-29), and every wait here reads one.
+//      move       - another thread whose waits read the run a move needs (wr_move_after: twice the last move's) takes
+//                   the ring at its next wait, and reads by it (two shorter runs with a datagram the owner read between
+//                   them do not); moving it back takes twice the run, not the same.
+//      idle owner - (a new context) thread B reads one datagram a cycle and the owner A then waits twice with nothing
+//                   to read, as a rmw ping's executor and its poll thread do: the ring is B's by the third cycle and
+//                   reads B's datagrams. Until 2026-10-29 every wait of the owner broke B's run, so it never moved.
+//      control    - (a new context) the same cycles with each of A's two waits reading a datagram too: the ring stays
+//                   A's - the idle-owner check is not met by any alternation of the two threads.
+//      well-known - (a new context) the idle-owner cycles with B's datagrams sent to the well-known socket: the ring
+//                   stays A's - only what its recvmsg would have read (the data socket) counts towards a move.
 //   5. wake       - tt_wake_signal() from another thread ends the owner's wait with no timeout (-3).
 //   6. both       - a wake and a datagram ready in the same wait: the datagram is handed out (it was read), and the
 //                   wake is reported by the next call - neither is lost.
@@ -298,7 +306,13 @@ static void check_first_owner_other(void) {
 
 // ---- 4
 
-#define HANDOVER_WAITS 2U // the most waits the first move may take (TT_RX_RING_MOVE_WAITS, hal_linux.h)
+#define HANDOVER_WAITS 2U // the datagrams the first move needs (TT_RX_RING_MOVE_WAITS, hal_linux.h)
+
+// A wait that reads one datagram sent to the data socket: the unit a move's run counts.
+static void receive_one(uint8_t* buf) {
+    send_seq(next_seq);
+    (void)expect_seq(buf, next_seq++);
+}
 
 static uint64_t handover_moves = 0;
 static uint64_t handover_others = 0;
@@ -307,17 +321,17 @@ static void* handover_waits(void* arg) {
     (void)arg;
     static uint8_t buf[BUFFER_BYTES];
     handover_id = self_id();
-    for (uint32_t wait = 0; wait < HANDOVER_WAITS && ctx.hal.wr_owner != handover_id; wait++) {
-        uint32_t seq = 0;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+    const uint64_t moves = ctx.hal.wr_moves;
+    for (uint32_t wait = 0; wait < HANDOVER_WAITS; wait++) {
+        receive_one(buf);
     }
-    handover_moves = ctx.hal.wr_moves;
+    if (ctx.hal.wr_moves != moves) {
+        fail("the ring moved before the run was read", (long)(ctx.hal.wr_moves - moves));
+    }
     handover_others = ctx.hal.wr_others;
     const uint64_t reads = ctx.hal.wr_reads;
-    send_seq(next_seq);
-    (void)expect_seq(buf, next_seq++);
+    receive_one(buf);
+    handover_moves = ctx.hal.wr_moves;
     if (ctx.hal.wr_owner == handover_id && ctx.hal.wr_reads != reads + 1U) {
         fail("the thread the ring moved to did not read by it", (long)(ctx.hal.wr_reads - reads));
     }
@@ -335,23 +349,24 @@ static void check_handover(void) {
     pthread_create(&thread, NULL, handover_waits, NULL);
     pthread_join(thread, NULL);
     if (handover_moves != 1U || ctx.hal.wr_owner != handover_id) {
-        fail("the ring did not move within two waits of a thread that took over from the first waiter",
+        fail("the ring did not move at the wait after two datagrams of a thread that took over from the first waiter",
              (long)handover_moves);
     }
-    if (handover_others - others + 1U != HANDOVER_WAITS) {
+    if (handover_others - others != HANDOVER_WAITS) {
         fail("the waits before the move were not on the epoll path, or not the run expected",
              (long)(handover_others - others));
     }
     // Back to this thread, for the checks after: the next move needs twice the run.
     static uint8_t buf[BUFFER_BYTES];
-    for (uint32_t wait = 0; wait <= 2U * HANDOVER_WAITS && ctx.hal.wr_owner != self_id(); wait++) {
-        uint32_t seq = 0;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+    for (uint32_t wait = 0; wait <= 2U * HANDOVER_WAITS; wait++) {
+        // After the wait a run as long as the last move's would have moved it at (the one after its datagrams).
+        if (wait == HANDOVER_WAITS + 1U && ctx.hal.wr_owner != handover_id) {
+            fail("the ring moved back without twice the run", (long)wait);
+        }
+        receive_one(buf);
     }
     if (ctx.hal.wr_owner != self_id() || ctx.hal.wr_moves != 2U) {
-        fail("the ring did not move back after twice the waits", ctx.hal.wr_owner);
+        fail("the ring did not move back after twice the run", ctx.hal.wr_owner);
     }
 }
 
@@ -362,10 +377,7 @@ static void* mover(void* arg) {
     static uint8_t buf[BUFFER_BYTES];
     mover_id = self_id();
     for (uint32_t wait = 0; wait < move_need; wait++) {
-        uint32_t seq = 0;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+        receive_one(buf);
     }
     const uint64_t reads = ctx.hal.wr_reads;
     send_seq(next_seq);
@@ -376,22 +388,19 @@ static void* mover(void* arg) {
     return NULL;
 }
 
-// Short runs: move_need - 1 waits, then the owner waits once, then as many again - never a run long enough.
+// Short runs: move_need - 1 datagrams, then the owner reads one, then as many again - never a run long enough.
 static pthread_barrier_t halves; // NOLINT(misc-include-cleaner) - <pthread.h> is included
 static void short_waits(void) {
     static uint8_t buf[BUFFER_BYTES];
     for (uint32_t wait = 0; wait + 1U < move_need; wait++) {
-        uint32_t seq = 0;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+        receive_one(buf);
     }
 }
 static void* short_runs(void* arg) {
     (void)arg;
     short_waits();
     pthread_barrier_wait(&halves);
-    pthread_barrier_wait(&halves); // the owner's wait in between
+    pthread_barrier_wait(&halves); // the owner's datagram in between
     short_waits();
     return NULL;
 }
@@ -410,35 +419,128 @@ static void check_move(void) {
     pthread_create(&thread, NULL, short_runs, NULL);
     pthread_barrier_wait(&halves);
     static uint8_t between[BUFFER_BYTES];
-    uint32_t seq0 = 0;
-    uint32_t ip0 = 0;
-    uint16_t port0 = 0;
-    (void)receive(between, SHORT_WAIT_NS, &seq0, &ip0, &port0);
+    receive_one(between);
     pthread_barrier_wait(&halves);
     pthread_join(thread, NULL);
     pthread_barrier_destroy(&halves);
     if (ctx.hal.wr_owner != owner || ctx.hal.wr_moves != moves) {
-        fail("the ring moved on a run of waits the owner's wait had broken", (long)(ctx.hal.wr_moves - moves));
+        fail("the ring moved on a run the owner's datagram had broken", (long)(ctx.hal.wr_moves - moves));
     }
     pthread_create(&thread, NULL, mover, NULL);
     pthread_join(thread, NULL);
     if (ctx.hal.wr_owner != mover_id || ctx.hal.wr_moves != moves + 1U) {
-        fail("the ring did not move to the thread that kept waiting", (long)(ctx.hal.wr_moves - moves));
+        fail("the ring did not move to the thread that kept reading", (long)(ctx.hal.wr_moves - moves));
     }
-    // Back to this thread for the checks below: not after as many waits, only after twice as many.
+    // Back to this thread for the checks below: not after as long a run, only after twice as long.
     static uint8_t buf[BUFFER_BYTES];
-    for (uint32_t wait = 0; wait < 2U * move_need; wait++) {
-        if (wait == move_need && ctx.hal.wr_owner != mover_id) {
-            fail("the ring moved back without twice the waits", (long)wait);
+    for (uint32_t wait = 0; wait <= 2U * move_need; wait++) {
+        if (wait == move_need + 1U && ctx.hal.wr_owner != mover_id) { // as in check_handover()
+            fail("the ring moved back without twice the run", (long)wait);
         }
-        uint32_t seq = 0;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+        receive_one(buf);
     }
     if (ctx.hal.wr_owner != self_id()) {
-        fail("the ring did not move back after twice the waits", ctx.hal.wr_owner);
+        fail("the ring did not move back after twice the run", ctx.hal.wr_owner);
     }
+}
+
+// Idle owner and its controls, each on a new context (the first move's run, TT_RX_RING_MOVE_WAITS): IDLE_CYCLES of
+// [B reads one datagram; A, the owner, waits twice] - A's waits idle, or (control) each reading a datagram too, or
+// (well-known) A's waits idle and B's datagrams sent to the well-known socket, which the ring's recvmsg never reads.
+enum idle_mode { IDLE_OWNER, IDLE_CONTROL, IDLE_WELL_KNOWN };
+static enum idle_mode idle_mode = IDLE_OWNER;
+#define IDLE_CYCLES 8U
+#define IDLE_OWNER_WAITS 2U
+#define IDLE_MOVED_BY 3U // the cycle by which B owns the ring: two datagrams by epoll, the third wait moves it
+static pthread_barrier_t cycle_step; // NOLINT(misc-include-cleaner) - <pthread.h> is included
+static int reader_id = 0;
+static void* cycle_reader(void* arg) {
+    (void)arg;
+    static uint8_t buf[BUFFER_BYTES];
+    reader_id = self_id();
+    for (uint32_t cycle = 0; cycle < IDLE_CYCLES; cycle++) {
+        pthread_barrier_wait(&cycle_step);
+        if (idle_mode == IDLE_WELL_KNOWN) {
+            send_seq_to(next_seq, true);
+            (void)expect_seq(buf, next_seq++);
+        } else {
+            receive_one(buf);
+        }
+        pthread_barrier_wait(&cycle_step);
+    }
+    return NULL;
+}
+
+// One cycle's reading, after B's datagram: the controls keep the ring with A; the idle owner loses it by IDLE_MOVED_BY.
+static void check_idle_cycle(enum idle_mode mode, int owner, uint32_t cycle, uint64_t reads) {
+    if (mode != IDLE_OWNER) {
+        if (ctx.hal.wr_owner != owner || ctx.hal.wr_moves != 0) {
+            fail(mode == IDLE_CONTROL ? "the ring left an owner that reads as much as the other thread (cycle)"
+                                      : "the ring moved for datagrams read from the well-known socket (cycle)",
+                 (long)cycle);
+        }
+        return;
+    }
+    if (cycle < IDLE_MOVED_BY) {
+        return;
+    }
+    if (ctx.hal.wr_owner != reader_id || ctx.hal.wr_moves != 1U) {
+        fail("the ring did not follow the thread that reads while the owner waits idle (cycle)", (long)cycle);
+    }
+    if (ctx.hal.wr_reads != reads + 1U) {
+        fail("the reader's datagram was not read by the ring (cycle)", (long)cycle);
+    }
+}
+
+// A's IDLE_OWNER_WAITS waits of one cycle: each reads a datagram (control) or times out.
+static void idle_owner_waits(bool owner_reads, uint32_t cycle) {
+    static uint8_t buf[BUFFER_BYTES];
+    uint32_t seq = 0;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    for (uint32_t wait = 0; wait < IDLE_OWNER_WAITS; wait++) {
+        if (owner_reads) {
+            receive_one(buf);
+        } else if (receive(buf, SHORT_WAIT_NS, &seq, &ip, &port) != GOT_TIMEOUT) {
+            fail("the owner's idle wait did not time out (cycle)", (long)cycle);
+        }
+    }
+}
+
+static void check_idle_owner(enum idle_mode mode) {
+    static const char* const names[] = {"idle owner", "control", "well-known"};
+    check_name = names[mode];
+    idle_mode = mode;
+    const bool owner_reads = mode == IDLE_CONTROL;
+    static uint8_t buf[BUFFER_BYTES];
+    if (create(tt_SWITCH_ON) != tt_RET_OK) {
+        fail("cannot create a context", 0);
+        return;
+    }
+    uint32_t seq = 0;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    (void)receive(buf, SHORT_WAIT_NS, &seq, &ip, &port);
+    const int owner = self_id();
+    if (ctx.hal.wr_owner != owner || ctx.hal.wr_move_after != HANDOVER_WAITS) {
+        fail("the first waiter does not own a new ring, or its first move needs another run",
+             (long)ctx.hal.wr_move_after);
+    }
+    pthread_barrier_init(&cycle_step, NULL, 2);
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    pthread_create(&thread, NULL, cycle_reader, NULL);
+    for (uint32_t cycle = 1; cycle <= IDLE_CYCLES; cycle++) {
+        const uint64_t reads = ctx.hal.wr_reads;
+        pthread_barrier_wait(&cycle_step);
+        pthread_barrier_wait(&cycle_step); // B has read its datagram
+        check_idle_cycle(mode, owner, cycle, reads);
+        idle_owner_waits(owner_reads, cycle);
+    }
+    pthread_join(thread, NULL);
+    pthread_barrier_destroy(&cycle_step);
+    printf("wr_check: [%s] ring_moves=%lu ring_reads=%lu ring_others=%lu\n", check_name,
+           (unsigned long)ctx.hal.wr_moves, (unsigned long)ctx.hal.wr_reads, (unsigned long)ctx.hal.wr_others);
+    (void)tt_Context_destroy(&ctx);
 }
 
 // ---- 5, 6
@@ -898,6 +1000,9 @@ int main(void) {
     enum check_exit alternate = check_alternate();
     alarm(ALARM_S);
     (void)tt_Context_destroy(&ctx);
+    check_idle_owner(IDLE_OWNER);
+    check_idle_owner(IDLE_CONTROL);
+    check_idle_owner(IDLE_WELL_KNOWN);
     check_refused(REFUSE_ALL, "refused io_uring");
     check_refused(REFUSE_DEFER, "refused DEFER_TASKRUN");
     check_switch_off();
@@ -908,7 +1013,9 @@ int main(void) {
     if (alternate != CHECK_PASS) {
         return alternate;
     }
-    printf("wr_check: PASS - first, owner, other, handover, move, wake, both, deadline, bell, stolen id, alternate%s, "
+    printf("wr_check: PASS - first, owner, other, handover, move, idle owner, control, well-known, wake, both, "
+           "deadline, bell, "
+           "stolen id, alternate%s, "
            "refused, "
            "switch\n",
            tt_LARGE_SAMPLES ? ", writable" : "");

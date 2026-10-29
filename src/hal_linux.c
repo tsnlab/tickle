@@ -3479,13 +3479,16 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 //   - The ring is made at tt_bind(), disabled (IORING_SETUP_R_DISABLED); the first thread to wait in tt_receive()
 //     enables it (IORING_REGISTER_ENABLE_RINGS) and owns it (wr_owner). The owner waits and reads through it; any
 //     other thread waits on the epoll set and reads with recvfrom(), exactly as without the ring.
-//   - The ring follows the thread that keeps the poll role: once another thread has made wr_move_after waits in a row
-//     (TT_RX_RING_MOVE_WAITS, 2, at first) while the owner made none, the ring is closed and made again, enabled by
-//     that thread; each move doubles the run the next one needs (to TT_RX_RING_MOVE_MAX), so two threads that share
-//     the role turn and turn about cannot make it move often: at most log2(MAX / 2) moves before the cap, then one
-//     per MAX waits at most. rmw's poll thread is the first waiter of every context (it polls from the start), and
-//     the executor that then holds the role takes the ring at its second wait (at its 64th until 2026-10-24, which
-//     kept the first 64 waits of every rmw_tickle executor on the epoll path - RESULTS KH2).
+//   - The ring follows the thread that receives the data: once another thread's waits have read wr_move_after
+//     data-socket datagrams in a row (TT_RX_RING_MOVE_WAITS, 2, at first) while the owner read none, that thread's
+//     next wait closes the ring and makes it again, enabled by it (wr_count() counts the run after each read, and
+//     wr_claim() only tests it). Waits that read nothing - timeouts, interrupts, the well-known socket's datagrams -
+//     count for neither thread. Each move doubles the run the next one needs (to TT_RX_RING_MOVE_MAX), so two threads
+//     that share the role turn and turn about cannot make it move often: at most log2(MAX / 2) moves before the cap,
+//     then one per MAX datagrams at most. rmw's poll thread is the first waiter of every context (it polls from the
+//     start), and the executor that then reads the replies takes the ring at its third wait. Until 2026-10-29 the run
+//     counted waits, and any wait of the owner broke it: a rmw ping's poll thread waited idle between two pings,
+//     once the executor's poll lease lapsed, so the executor that read every echo never took the ring (C12).
 //   - Both paths see every event: the ring holds a one-shot poll on the well-known socket and the wake eventfd,
 //     re-armed at the next wait after each completion (a re-armed poll on a member still readable completes at once,
 //     so the two are reported as the level-triggered epoll set reports them); multishot polls on the deadline timer and
@@ -3734,8 +3737,8 @@ static bool wr_enable(struct tt_hal* hal, int self) {
     return true;
 }
 
-// A wait by a thread that does not own the ring: the first waiter enables it; another takes it over after
-// wr_move_after waits in a row; otherwise it waits with epoll.
+// A wait by a thread that does not own the ring: the first waiter enables it; another takes it over once its run
+// (wr_count()) has reached wr_move_after; otherwise it waits with epoll.
 static __attribute__((noinline)) bool wr_claim(struct tt_hal* hal, int self) {
     if (hal->wr_owner == 0) {
         return wr_enable(hal, self);
@@ -3744,7 +3747,7 @@ static __attribute__((noinline)) bool wr_claim(struct tt_hal* hal, int self) {
         hal->wr_rival = self;
         hal->wr_streak = 0;
     }
-    if (++hal->wr_streak < hal->wr_move_after) {
+    if (hal->wr_streak < hal->wr_move_after) {
         hal->wr_others++;
         return false;
     }
@@ -3784,10 +3787,24 @@ static inline bool wr_use(struct tt_Context* node) {
 #endif
     const int self = wr_self();
     if (__builtin_expect(hal->wr_owner == self, 1)) {
-        hal->wr_streak = 0;
         return true;
     }
     return wr_claim(hal, self);
+}
+
+// A datagram this thread's tt_receive() waited for and read from the data socket (by the ring, taken, or by
+// recvfrom() from read_fd): the owner's breaks the run, the rival's adds to it. Nothing read, or a datagram of the
+// well-known socket, counts for neither. Serialised as wr_use() is: one thread in tt_receive() at a time.
+static inline void wr_count(struct tt_hal* hal, int32_t ret, bool taken, int read_fd) {
+    if (ret <= 0 || !(taken || read_fd == hal->data_sock)) {
+        return;
+    }
+    const int self = wr_self();
+    if (hal->wr_owner == self) {
+        hal->wr_streak = 0;
+    } else if (hal->wr_rival == self && hal->wr_streak < UINT32_MAX) {
+        hal->wr_streak++;
+    }
 }
 
 // The next free submission entry, cleared; NULL when the ring is full of entries the kernel has not taken (a wait
@@ -4577,6 +4594,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     // (tt_try_receive()) takes in batches.
 #if TT_HAL_WAIT_RING
     int32_t ret = taken ? wr_take(node, buf, ip, port) : rx_read_one(node, read_fd, buf, len, ip, port);
+    wr_count(&node->hal, ret, taken, read_fd);
 #else
     int32_t ret = rx_read_one(node, read_fd, buf, len, ip, port);
 #endif

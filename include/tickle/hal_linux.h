@@ -209,8 +209,9 @@ static inline void tt_thread_yield(void) {
 #ifndef tt_RX_URING_WAIT
 #define tt_RX_URING_WAIT 1
 #endif
-// The ring moves to a thread that waited this many times in a row while another owned it; each move doubles the run
-// the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring"). 2, the shortest run that is still a
+// The ring moves to a thread whose waits read this many data-socket datagrams in a row while the owner read none (each
+// counted after its read since 2026-10-29; waits until then, which an idle owner's wait reset); each move doubles the
+// run the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring"). 2, the shortest run that is still a
 // run, since 2026-10-24: the doubling, not this first run, is what bounds how often the ring moves, and the first move
 // is the expected one - rmw's poll thread waits first and then hands the role to the executor for good. 64 until then
 // left the executor's first 64 waits on the epoll path (RESULTS KH2: the first ~20 measured round trips of every
@@ -481,8 +482,8 @@ struct tt_hal {
     // until wr_owner (a thread id, 0 before the first wait) enables it. wr_now: this tt_receive() waits on it.
     // wr_armed: the members a request is in flight for; wr_recv: the recvmsg's generation in flight (0: none), into
     // wr_recv_buf/wr_recv_len; wr_took: what the last wait's recvmsg returned. wr_rival/wr_streak: the thread waiting
-    // in a row while another owns the ring, and how often - at wr_move_after the ring moves to it (wr_moves), and the
-    // next move waits twice as long.
+    // while another owns the ring, and how many data-socket datagrams its waits read since the owner's last one - at
+    // wr_move_after its next wait moves the ring to it (wr_moves), and the next move needs twice the run.
     int wr_fd_plus1;
     int wr_owner;
     bool wr_now;
