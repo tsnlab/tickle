@@ -221,6 +221,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A large repair an ACKNACK naming nothing passed is freed** (C7; RESULTS `C7SL`). The resend order frees
+  a repair's slot when an ACKNACK it reads passes the unit, but an ACKNACK naming nothing was answered without the order
+  and still moved the reader's watermark, so those slots stayed live until reused (15 in the unit test). Each reader now
+  keeps the watermark of the last ACKNACK the order read, and the next one frees what lies between.
 - **A writer attaches only to a segment discovery vouches for** (2026-10-29; [DESIGN.md](DESIGN.md) section 10).
   Network namespaces share `/dev/shm` and can share an address, so two lo-only namespaces named the same segment and
   cross-delivered (forced: 20/20 rounds on main, 0/20 fixed, `shm_netns_collision.sh`). The segment's incarnation
