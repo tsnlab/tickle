@@ -1,0 +1,79 @@
+# r7_diag.patch - C11 diagnostic (2026-10-30), never production: applied on top of r4_trace.patch to a copy of main.
+# CLOCK_REALTIME events (to line up with tv_phases.txt), small-sample resends (s), reader arrivals (W), copies below the
+# watermark (L) and eviction advances (B); the harness builds wifi_link_node with -DR4_TRACE under SMALL_TRACE=1.
+# Read by r7_diag_read.py.
+--- a/src/tickle.c	2026-10-30 00:27:21.551973307 +0900
++++ b/src/tickle.c	2026-10-30 00:32:12.737332817 +0900
+@@ -41,7 +41,7 @@
+ static char r4_reason = '?';
+ static uint64_t r4_now(void) {
+     struct timespec ts;
+-    clock_gettime(CLOCK_MONOTONIC, &ts);
++    clock_gettime(CLOCK_REALTIME, &ts);
+     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+ }
+ static void r4t(char k, uint32_t a, uint32_t b) {
+@@ -17423,6 +17423,7 @@
+     // ahead of it.
+     if (seq_delta(seq_no, proxy->ack_seq_no) < 0) {
+         RSTAT_INC(late_below_ack);
++        R4T('L', seq_no, node->rx_targeted);
+         return true; // old relative to the ack watermark, but NOT reliable evidence of "already
+                      // delivered" once jump_ack_baseline() has ever fired for this proxy - see this
+                      // function's own doc comment for the real regression this specific case caused
+@@ -17431,6 +17432,7 @@
+     }
+ 
+     RSTAT_ON_ARRIVAL(proxy, seq_no);
++    R4T('W', seq_no, node->rx_targeted);
+     if (node->rx_targeted) {
+         uint64_t now = tt_get_ns();
+         note_repair_arrival(proxy, seq_no, now);
+@@ -22139,6 +22141,7 @@
+         RSTAT_INC(retransmit_tx_fail);
+     } else {
+         RSTAT_INC(retransmitted);
++        R4T('s', missing_seq_no, cache_entry->retry);
+         pub->retransmitted++;
+         if (cache_entry->retry < UINT8_MAX) {
+             cache_entry->retry++; // how often this one was resent, for resend_suppressed()
+@@ -22617,6 +22620,7 @@
+         return;
+     }
+     uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
++    R4T('B', proxy->ack_seq_no, first_available_seq_no);
+     proxy->sub->gap_evicted += skipped - received_in_first(proxy, skipped);
+ #ifdef tt_RELIABLE_STATS
+     {
+--- a/examples/perf_hil/experiments/wifi_burst_loss_netns.sh	2026-10-29 20:04:09.000000000 +0900
++++ b/examples/perf_hil/experiments/wifi_burst_loss_netns.sh	2026-10-30 00:32:24.436575325 +0900
+@@ -209,7 +209,10 @@
+ # --- build: both binaries from this tree, as hybrid_send_netns.sh builds its bench ----------------------------------
+ CORE=("$REPO/src/tickle.c" "$REPO/src/encoding.c" "$REPO/src/log.c" "$REPO/src/hal_linux.c")
+ export TMPDIR=$HOME/tmp_build
+-if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -I"$REPO/include" -I"$REPO/src" \
++SMALL_DEFS=()
++[ "${SMALL_TRACE:-0}" = 1 ] && SMALL_DEFS=(-DR4_TRACE) # C11 diagnostic tree only
++# shellcheck disable=SC2068
++if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${SMALL_DEFS[@]} -I"$REPO/include" -I"$REPO/src" \
+     -I"$REPO/examples/perf_hil/tickle/common" -o "$WORK/node" "$HERE/wifi_link_node.c" "${CORE[@]}" -lpthread -lm \
+     >"$WORK/build.log" 2>&1; then
+     say "VOID  wifi_link_node did not build"
+@@ -396,13 +399,17 @@
+         wait "$echo_pid"
+         NODE_ENV=$node_env
+     else
++        local node_env_s=${NODE_ENV:-}
++        [ "${SMALL_TRACE:-0}" = 1 ] && NODE_ENV="$node_env_s R4_TRACE_FILE=$RUN_DIR/echo.trace"
+         inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/owd_us.txt" \
+             "${common[@]}" >"$RUN_DIR/echo.log" 2>&1 &
+         local echo_pid=$!
+         sleep 1
+         [ "$arm" = tv ] && { tv_cycle & TV_PID=$!; }
++        [ "${SMALL_TRACE:-0}" = 1 ] && NODE_ENV="$node_env_s R4_TRACE_FILE=$RUN_DIR/ping.trace"
+         inns 0 "$WORK/node" ping -c 1 -d "$DUR" -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/rtt_us.txt" \
+             "${common[@]}" >"$RUN_DIR/ping.log" 2>&1
++        NODE_ENV=$node_env_s
+         sleep 1
+         touch "$stop"
+         wait "$echo_pid"
