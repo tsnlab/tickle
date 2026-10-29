@@ -1693,6 +1693,104 @@ static void test_a_repair_arriving_first_is_not_a_writer_still_sending(void) {
     EXPECT_TRUE(srtt >= 2 * tt_MILLISECOND); // a request, a lost repair, a retry and its repair: at least the path
 }
 
+// srtt_after_a_repair_overtook_the_watermark()'s sample on a WIFI reader (repair_timing) whose retry interval is long -
+// a path estimate of 60 ms, as a reader's grows behind a queued Wi-Fi path (RESULTS `R4K`: 37 ms at the p50) - over a
+// path of 10 ms each way. Units 100 and 200 lost, and the first repair of 100 too. Answers the sample's latency and
+// fills `copies` with the duplicates the reader got.
+static uint64_t latency_after_a_repair_overtook_the_watermark(uint64_t* copies) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    receiver.repair_timing = true;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return 0;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    proxy->recovery_srtt_ns = 60 * tt_MILLISECOND;
+    proxy->recovery_rttvar_ns = 5 * tt_MILLISECOND;
+    // And a repair transit of 30 ms (a queued path's, as the retry estimate): the reader's answers to the writer's
+    // HEARTBEAT chase leave a unit out for 50 ms after it was asked for, as on its way (repair_in_flight_ns()).
+    proxy->transit_srtt_ns = 30 * tt_MILLISECOND;
+    proxy->transit_rttvar_ns = 5 * tt_MILLISECOND;
+    proxy->transit_min_ns = 20 * tt_MILLISECOND;
+    sim_reverse_delay = 10 * tt_MILLISECOND;
+    sim_unicast_delay = 10 * tt_MILLISECOND;
+    test_mock_nonblocking_room = -1; // the sample goes out whole at once
+    sample_len = ONE_MB;
+    sim_unit_drops[0].index = 100;
+    sim_unit_drops[0].copies = 2;
+    sim_unit_drops[1].index = 200;
+    sim_unit_drops[1].copies = 1;
+    uint64_t duplicates = receiver.large.duplicate;
+    uint64_t published = test_mock_now;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2, tt_SECOND));
+    sim_settle(2, 2 * tt_SECOND);
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_EQ_U32(0, sim_unit_drops[0].copies); // the treatment applied: both copies of 100 lost
+    EXPECT_EQ_U32(0, sim_unit_drops[1].copies);
+    *copies = receiver.large.duplicate - duplicates;
+    return delivered_count == 2 ? delivered_at[1] - published : 0;
+}
+
+static void test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once(void) {
+    // 2026-10-30 (C11, maybe_reveal_lost_repairs()): 200's repair, sent after 100's, arrives and 100 is still missing,
+    // so 100's repair is lost on a path that keeps order; the reader asks again then, and the writer, shown that a
+    // later resend got through, resends 100 at once: two round trips of 20 ms (the requests for 100 and 200 answered
+    // together, then 200's repair revealing 100's lost) - 40 ms. Without it the reader waits out the transit window
+    // its answers to the writer's HEARTBEAT chase leave 100 out for, or its 60 ms estimate: 83 ms (the parent,
+    // 2026-10-30). Mutant (mutants_large_sample.py, "no reveal"): over 50 ms.
+    uint64_t copies = 0;
+    uint64_t took = latency_after_a_repair_overtook_the_watermark(&copies);
+    printf("test_large_sample: a WIFI reader whose repair of the watermark was lost, a later one arriving - sample in "
+           "%.2f ms over a 10 ms path (60 ms retry estimate), %llu duplicates\n",
+           (double)took / 1e6, (unsigned long long)copies);
+    EXPECT_TRUE(took > 0 && took <= 50 * tt_MILLISECOND);
+    EXPECT_EQ_U64(0, copies); // asking sooner sent nothing twice: the writer resent 100 once more, as it had to
+}
+
+static void test_reveals_are_paced_by_the_least_transit(void) {
+    // The reveal asks again on a repair's arrival, and repairs arrive in runs: one ACKNACK each would be one per
+    // repair. At most one per least repair transit (nothing it caused can have come back sooner). 4 x 1 MiB at 10% loss
+    // over a 10 ms path each way, a WIFI reader: every sample delivered, and the reader's datagrams - its ACKNACKs -
+    // counted. Mutant (mutants_large_sample.py, "reveal unpaced"): one ACKNACK per revealing repair, over the bound.
+    // Unicast originals, so they share the repairs' 10 ms and the path keeps the writer's order, as one netem band
+    // does.
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    receiver.repair_timing = true;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    sim_reverse_delay = 10 * tt_MILLISECOND;
+    sim_unicast_delay = 10 * tt_MILLISECOND;
+    test_mock_nonblocking_room = -1;
+    sample_len = ONE_MB;
+    sim_loss_per_mille = 100;
+    uint64_t reader_sent = sim_sent[RECEIVER_ID];
+    uint32_t resent = pub.retransmitted;
+    enum { PACED_SAMPLES = 4 };
+    for (int i = 0; i < PACED_SAMPLES; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        sim_settle(i + 2, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(PACED_SAMPLES + 1, delivered_count);
+    uint64_t acks = sim_sent[RECEIVER_ID] - reader_sent;
+    printf("test_large_sample: %d x 1 MiB at 10%% loss over a 10 ms path, WIFI reader - %llu reader datagrams, %u "
+           "resent, %llu duplicates\n",
+           PACED_SAMPLES, (unsigned long long)acks, pub.retransmitted - resent,
+           (unsigned long long)receiver.large.duplicate);
+    EXPECT_TRUE(acks < 400);
+}
+
 // A writer that reads requests while it sends - repairs queued behind the rest of its sample - on a path of `delay`:
 // `samples` 4 MB samples at 5% loss through 8 datagrams of send buffer. Answers the copies the reader got twice.
 static uint64_t answering_writer_duplicates(int samples, uint64_t delay) {
@@ -3514,6 +3612,8 @@ int main(void) {
     test_wifi_repair_timing_keeps_the_default_rule_for_a_large_writer();
     test_a_quiet_paths_round_trip_is_still_timed();
     test_a_repair_arriving_first_is_not_a_writer_still_sending();
+    test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once();
+    test_reveals_are_paced_by_the_least_transit();
     test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     test_two_readers_are_not_resent_repairs_on_their_way();
     test_a_heartbeat_takes_the_path_of_its_data();

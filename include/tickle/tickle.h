@@ -3759,6 +3759,9 @@ struct tt_WriterProxy {
     // at the path's interval - so that the first tick after the send asks at once - but asks no oftener than the
     // interval over every recovery.
     uint64_t retry_sent_ns;
+    // When this reader last asked this writer again because a repair showed another lost by order (2026-10-30, WIFI's
+    // repair_timing only; maybe_reveal_lost_repairs(), tickle.c): no oftener than the least repair transit.
+    uint64_t reveal_ns;
 #endif
     // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
     // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can

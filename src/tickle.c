@@ -16294,6 +16294,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // mock clock starts again at each run, and a proxy table reused across them read the last run's retry as
             // still to come, so a test's result depended on the tests before it (2026-10-26).
             proxy->retry_sent_ns = 0;
+            proxy->reveal_ns = 0;
             proxy->large_arrival_ns = 0;
             proxy->repair_arrival_ns = 0;
             proxy->original_arrival_ns = 0;
@@ -17347,6 +17348,35 @@ static void take_first_contact_baseline(const struct tt_Subscriber* sub, struct 
     proxy->reorder_cursor = seq_no;
 }
 
+#if tt_LARGE_SAMPLES
+// A repair from a writer of large samples was just recorded above the watermark, on a repair_timing link (WIFI's): ask
+// again at once, rather than on the retry timer, for what is still missing (2026-10-30, C11, RESULTS `R4`). A path
+// keeps a sender's order, and the writer answers a request lowest unit first, so the watermark - missing, below this
+// unit and asked for before it - had its repair go before this one, and that repair is lost; or the writer held it as
+// still on its way, and this ACKNACK, which leaves the unit just recorded out, shows it the hold is over (its resend
+// order, DESIGN.md section 4: a resend goes again once the reader received something sent after it). The writer, not
+// this reader, decides what each named unit costs: a request for a repair still on its way is held, as any is. Traced
+// at ge10b4 (r4_trace_read.py, 299 samples of 1 MiB): the reader asked again for a lost repair on its timer (37 ms at
+// the p50) 24 ms (p50) after a later repair had shown it lost.
+//
+// Not oftener than the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns): sooner, nothing
+// this ACKNACK caused can have come back, and the repairs that keep arriving would otherwise each send one. Not before
+// a transit was timed at all, and only while the retry timer runs (a gap is open). No wire change, no estimate touched.
+static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    if (!node->repair_timing || proxy->large_arrival_ns == 0 || proxy->transit_min_ns == 0 ||
+        !proxy->acknack_scheduled) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    if (proxy->reveal_ns != 0 && now - proxy->reveal_ns < proxy->transit_min_ns) {
+        return;
+    }
+    proxy->reveal_ns = now;
+    RSTAT_INC(acknack_reveal);
+    send_acknack(node, proxy);
+}
+#endif
+
 static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port) {
@@ -17395,6 +17425,9 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     }
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
+#if tt_LARGE_SAMPLES
+    bool revealing = false; // a repair recorded above the watermark (maybe_reveal_lost_repairs())
+#endif
     if (seq_no == proxy->ack_seq_no) {
         end_watermark_probe(node, proxy, seq_no);
         // Before the advance, not after: bit j is "received(ack_seq_no + j)" and ack_seq_no is
@@ -17415,6 +17448,9 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         uint32_t offset = seq_no - proxy->ack_seq_no;
         if (offset < proxy_window_bits(proxy)) {
             is_new = record_out_of_order_arrival(proxy, offset, &new_gap);
+#if tt_LARGE_SAMPLES
+            revealing = node->rx_targeted;
+#endif
             // After, not before, and this is the half that differs from the in-order case: the gap
             // report above is computed against the highest bit set so far, so absorbing the span
             // first would hide the real gap below this arrival and the reader would never ask for
@@ -17465,6 +17501,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         RSTAT_INC(acknack_new_gap);
         send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
     }
+#if tt_LARGE_SAMPLES
+    if (revealing && is_new && retry_already_armed) {
+        maybe_reveal_lost_repairs(node, proxy);
+    }
+#endif
     return is_new;
 }
 
