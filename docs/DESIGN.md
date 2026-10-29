@@ -972,7 +972,7 @@ FreeRTOS, where `-Dtt_SEGMENT_ENABLED=1` puts it between the contexts of one ima
 
 | rule | detail |
 |---|---|
-| one per receiving context | `/dev/shm/tickle-seg-<ip>-<port>-<context id>`, written by every same-host peer |
+| one per receiving context | `/dev/shm/tickle-seg-<ip>-<data port>` (unique per network stack; the context id it carried until 2026-10-29 added nothing), written by every same-host peer |
 | the header is the authority | magic, `tt_SEGMENT_VERSION` (6), owner, `incarnation`, geometry, `features`; any mismatch: UDP, counted |
 | discovery vouches for it | the name is unique per network stack, not across namespaces sharing `/dev/shm` (two lo-only namespaces are both 127.0.0.1; `shm_netns_collision.sh`, 2026-10-29: forced, 20/20 rounds cross-delivered on 4a7a4beb, 0/20 with this check, and the non-colliding control on shm in 20/20). `incarnation` is the owner's `entity_id_base`, so a writer attaches only if an entity id the peer announced from that port lies within `tt_SEGMENT_VOUCH_SPAN` (2^20) above it; else `WRONG_OWNER`, or `UNVOUCHED` until the announce arrives (`segment_vouched()`) |
 | slots | power of two, 16 B header (`length`, sender, `seq_span`, `sequence`) + payload; claim by CAS, publish `index + 1` with release, free with `index + slots`; no wrap straddle |

@@ -54,11 +54,24 @@ MUTANTS = [
         "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode) && segment_owner_gone(file_fd)) {",
         "    if (fstat(file_fd, &info) == 0 && S_ISREG(info.st_mode)) {",
     ),
+    # 2026-10-29: the name is "<ip>-<port>"; the sweep takes that and the "<ip>-<port>-<id>" of the builds before.
+    (
+        "the sweep taking a name of this build",
+        "src/hal_linux.c",
+        "        if (*rest != '-') {\n            break;\n        }",
+        "        if (*rest != '-') {\n            return 0;\n        }",
+    ),
+    (
+        "the sweep taking a name of the builds before",
+        "src/hal_linux.c",
+        "    for (int fields = 0; fields < 2; fields++) {",
+        "    for (int fields = 0; fields < 1; fields++) {",
+    ),
     # 2026-10-23: a revalidation keeps the mapping when the name still holds the same, owned file.
     (
         "a revalidation keeping a mapping the name still holds",
         "src/tickle.c",
-        "    if (!segment_still_ours(entry, ip, port, context_id) ||\n",
+        "    if (!segment_still_ours(entry, ip, port) ||\n",
         "    if (true ||\n",
     ),
     (

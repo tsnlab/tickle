@@ -295,34 +295,36 @@ static struct tt_SegmentHeader valid_header(void) {
 }
 
 // The name is built from what discovery already knows, and its whole job is to be different for
-// peers that are different. The two namespaces case is the one it exists for: same context id,
-// different address, and the registry keys on the address for the same reason.
+// peers that are different within one network stack, where a data socket's (address, port) is
+// unique (2026-10-29: the context id it also carried separated nothing more). Across namespaces
+// with one address it is NOT different, which is what segment_vouched() is for
+// (tests/test_segment_vouch.c).
 static void test_segment_name_separates_peers_that_differ(void) {
     char a[SEG_NAME_MAX];
     char b[SEG_NAME_MAX];
 
-    EXPECT_TRUE(segment_name(a, sizeof(a), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+    EXPECT_TRUE(segment_name(a, sizeof(a), OWNER_IP, OWNER_PORT) > 0);
+    EXPECT_EQ_INT(0, strcmp(a, TT_SEGMENT_DIR "tickle-seg-10.77.0.2-8282")); // the whole name: nothing else in it
 
-    // Same id, different address - two network namespaces on one host.
-    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP + 1, OWNER_PORT, OWNER_ID) > 0);
+    // Different address.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP + 1, OWNER_PORT) > 0);
     EXPECT_TRUE(strcmp(a, b) != 0);
 
-    // Same address and id, different port.
-    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT + 1, OWNER_ID) > 0);
-    EXPECT_TRUE(strcmp(a, b) != 0);
-
-    // Same address and port, different id - two contexts in one namespace.
-    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT, OWNER_ID + 1) > 0);
+    // Same address, different port - two contexts in one namespace.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT + 1) > 0);
     EXPECT_TRUE(strcmp(a, b) != 0);
 
     // And the same peer twice is the same name, or a reader could never find a writer at all.
-    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT) > 0);
     EXPECT_EQ_INT(0, strcmp(a, b));
 
     // A buffer too small is refused rather than truncated: a truncated name is a name two different
     // peers could share, which is the one outcome the naming exists to prevent.
     char tiny[8];
-    EXPECT_TRUE(segment_name(tiny, sizeof(tiny), OWNER_IP, OWNER_PORT, OWNER_ID) < 0);
+    EXPECT_TRUE(segment_name(tiny, sizeof(tiny), OWNER_IP, OWNER_PORT) < 0);
+    // The longest name, with its bell's suffix, fits the path length every user of it sizes buffers by.
+    EXPECT_TRUE(segment_name(a, sizeof(a), 0xFFFFFFFFU, 65535) > 0);
+    EXPECT_TRUE(strlen(a) + strlen(".bell") < (size_t)tt_SEGMENT_PATH_LENGTH);
 }
 
 // What the name cannot see, and therefore what the header is for.
@@ -1317,9 +1319,9 @@ static void test_destroy_takes_the_segment_with_it(void) {
     EXPECT_TRUE(peer_segment(&owner, PEER_CONTEXT_ID, PEER_IP, PEER_PORT) != NULL);
 
     char path[tt_SEGMENT_PATH_LENGTH];
-    EXPECT_TRUE(segment_name(path, sizeof(path), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+    EXPECT_TRUE(segment_name(path, sizeof(path), OWNER_IP, OWNER_PORT) > 0);
     char peer_path[tt_SEGMENT_PATH_LENGTH];
-    EXPECT_TRUE(segment_name(peer_path, sizeof(peer_path), PEER_IP, PEER_PORT, PEER_CONTEXT_ID) > 0);
+    EXPECT_TRUE(segment_name(peer_path, sizeof(peer_path), PEER_IP, PEER_PORT) > 0);
 
     // Control: the segment is there under exactly this name before the destroy. An attach is how
     // the question is asked, because that is how a peer asks it.

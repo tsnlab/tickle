@@ -4976,26 +4976,26 @@ static bool segment_owner_gone(int segment_fd) {
     return flock(segment_fd, LOCK_SH | LOCK_NB) == 0;
 }
 
-// What follows "tickle-seg-<ip>-" in a segment's or doorbell's name: "<port>-<id>", then nothing (a segment) or
-// ".bell" (its doorbell). 0 for anything else.
+// What follows "tickle-seg-<ip>-" in a segment's or doorbell's name: "<port>", or "<port>-<id>" as builds before
+// 2026-10-29 named it (their leftovers are swept too), then nothing (a segment) or ".bell" (its doorbell). 0 for
+// anything else.
 #define SWEPT_SEGMENT 1
 #define SWEPT_BELL 2
 static int segment_name_kind(const char* rest) {
-    int fields = 0;
-    while (fields < 2) {
+    for (int fields = 0; fields < 2; fields++) {
         if (*rest < '0' || *rest > '9') {
             return 0;
         }
         while (*rest >= '0' && *rest <= '9') {
             rest++;
         }
-        fields++;
-        if (fields == 1) {
-            if (*rest != '-') {
-                return 0;
-            }
-            rest++;
+        if (*rest != '-') {
+            break;
         }
+        if (fields == 1) {
+            return 0; // a third field: not a name any build made
+        }
+        rest++;
     }
     if (*rest == '\0') {
         return SWEPT_SEGMENT;
@@ -5047,7 +5047,7 @@ static void sweep_one(const char* found, int kind) {
     (void)close(file_fd);
 }
 
-// The files dead contexts at this context's address left behind: every "<dir>tickle-seg-<ip>-<port>-<id>" nobody owns
+// The files dead contexts at this context's address left behind: every "<dir>tickle-seg-<ip>-<port>" nobody owns
 // (segment_owner_gone()), with its ".bell", and every bell whose segment is gone. Run when this context builds its own
 // segment, so a host that keeps starting same-host contexts keeps its /dev/shm clean.
 //
@@ -5059,7 +5059,7 @@ static void sweep_one(const char* found, int kind) {
 //
 // Why it is safe. A live owner holds its flock() for as long as it maps its segment, so its file is never taken for an
 // orphan, and an orphan never becomes owned again: an owner locks only the file it has just created with O_EXCL. What
-// is left is a context creating at the very same name - the dead one's address, port AND id - between the inode check
+// is left is a context creating at the very same name - the dead one's address and port - between the inode check
 // and the unlink here; it would lose its name and be reached over UDP until it next rebuilds its segment. Leaving the
 // files is unbounded; that instant is not. A file that is not ours to remove (another user's, in sticky /dev/shm) is
 // left where it is.
@@ -5069,15 +5069,8 @@ static void sweep_orphaned_segments(const char* path) {
         return;
     }
     const char* base = slash + 1;
-    const char* id_dash = strrchr(base, '-');
-    if (id_dash == NULL || id_dash == base) {
-        return;
-    }
-    const char* port_dash = id_dash - 1;
-    while (port_dash > base && *port_dash != '-') {
-        port_dash--;
-    }
-    if (port_dash <= base) {
+    const char* port_dash = strrchr(base, '-');
+    if (port_dash == NULL || port_dash == base) {
         return;
     }
     char dir[tt_SEGMENT_PATH_LENGTH];

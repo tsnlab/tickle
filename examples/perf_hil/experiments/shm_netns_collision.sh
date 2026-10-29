@@ -49,8 +49,10 @@ NS_B=shmcol-b-$$
 cleanup() { # the one EXIT trap
     sudo -n ip netns del "$NS_A" 2> /dev/null
     sudo -n ip netns del "$NS_B" 2> /dev/null
-    # Only the files this run's subscribers and publishers can have made: by exact name, never by glob.
+    # Only the files this run's subscribers can have made: by exact name, never by glob - the name since 2026-10-29,
+    # and the one a BASE before it formed (with the context id).
     for ip in 127.0.0.1 127.0.0.2; do
+        rm -f "/dev/shm/tickle-seg-$ip-$PORT" "/dev/shm/tickle-seg-$ip-$PORT.bell"
         rm -f "/dev/shm/tickle-seg-$ip-$PORT-$SUB_ID" "/dev/shm/tickle-seg-$ip-$PORT-$SUB_ID.bell"
     done
     say "=== shm_netns_collision ended"

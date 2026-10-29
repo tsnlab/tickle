@@ -2141,11 +2141,14 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 // called once stage 1 landed, and it is gone rather than kept, since two functions answering one
 // question is how the answers come to differ. With the segment compiled out every datagram is udp
 // and shm is zero, which is still stage 0's own assertion about the seam being wired.
-// The name a reader computes for a peer's segment: (address, port, context id), every field from
-// ordinary discovery (struct tt_Peer), so no new discovery mechanism and no wire change. Unique within
-// one network stack, where the data socket's (address, port) is; NOT across network namespaces, which
-// share /dev/shm and can share an address (two lo-only namespaces are both 127.0.0.1) - so an attach
-// is checked against what discovery heard (segment_vouched()), not trusted to the name.
+// The name a reader computes for a peer's segment: (address, data port), both from ordinary discovery
+// (struct tt_Peer), so no new discovery mechanism and no wire change. Unique within one network stack:
+// the data socket is bound to that address with a port the stack chose and no SO_REUSEADDR (tt_bind(),
+// hal_linux.c and hal_freertos.c), so no two contexts of one stack hold one (address, port) - and a
+// context id beside it (in the name until 2026-10-29) separated nothing more. NOT unique across network
+// namespaces, which share /dev/shm and can share an address (two lo-only namespaces are both
+// 127.0.0.1) - so an attach is checked against what discovery heard (segment_vouched()), not trusted to
+// the name. The header still echoes the owner's context id, and a reader still checks it.
 //
 // Returns the length written, or a negative value if it would not fit - never a truncated name,
 // because a truncated name is a name two different peers could share.
@@ -2155,20 +2158,20 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 #ifndef TT_SEGMENT_DIR
 #define TT_SEGMENT_DIR "/dev/shm/"
 #endif
-static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
+static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port) {
     // Each octet as an unsigned int: uint32_t is unsigned long on RV32 (FreeRTOS), where %u would not match it.
-    int written = snprintf(buf, size, TT_SEGMENT_DIR "tickle-seg-%u.%u.%u.%u-%u-%u", (unsigned)((ip >> 24) & MASK_8BIT),
+    int written = snprintf(buf, size, TT_SEGMENT_DIR "tickle-seg-%u.%u.%u.%u-%u", (unsigned)((ip >> 24) & MASK_8BIT),
                            (unsigned)((ip >> 16) & MASK_8BIT), (unsigned)((ip >> BITS_IN_1BYTE) & MASK_8BIT),
-                           (unsigned)(ip & MASK_8BIT), port, context_id);
+                           (unsigned)(ip & MASK_8BIT), (unsigned)port);
     return written > 0 && (size_t)written < size ? written : -1;
 }
 
 #if tt_SEGMENT_ENABLED && tt_SEGMENT_BELL_FIFO
 // The doorbell FIFO's name: the segment's plus a suffix, so a writer that can name the segment can name its bell and
 // the two cannot drift apart (tt_segment_bell_create(), hal.h). Same contract as segment_name(): never truncated.
-static int32_t bell_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
+static int32_t bell_name(char* buf, size_t size, uint32_t ip, uint16_t port) {
     char segment[tt_SEGMENT_PATH_LENGTH];
-    if (segment_name(segment, sizeof(segment), ip, port, context_id) < 0) {
+    if (segment_name(segment, sizeof(segment), ip, port) < 0) {
         return -1;
     }
     int written = snprintf(buf, size, "%s.bell", segment);
@@ -2859,7 +2862,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
                                                      uint16_t port);
 
 // Whether discovery vouches for `incarnation` as the segment of peer `context_id` at `port`: the name alone does not
-// say, because network namespaces share /dev/shm and two of them can hold the same (address, port, context id) - two
+// say, because network namespaces share /dev/shm and two of them can hold the same (address, port) - two
 // lo-only namespaces are both 127.0.0.1 - and a reader that attached to the other one's ring cross-delivered
 // (struct tt_SegmentHeader). What discovery told us came over UDP, through this namespace's own stack, so it is about
 // this namespace's peer: its entity ids are its entity_id_base, which the owner writes as the incarnation, plus a
@@ -3004,9 +3007,9 @@ static struct tt_SegmentHeader* segment_attach_vouched(const struct tt_Context* 
 // which counts the reason as before. Only the "yes" is new, and it was the commonest answer by far: a re-attach per
 // revalidation cost a 1 Hz reliable server 9 attaches a run instead of 5 and +1.95% kernel instructions per sample on
 // the rig (munmap of 768 KiB, the bell closed and reopened, and the ring faulted in again).
-static bool segment_still_ours(const struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port, uint8_t context_id) {
+static bool segment_still_ours(const struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
     char path[tt_SEGMENT_PATH_LENGTH];
-    if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
+    if (segment_name(path, sizeof(path), ip, port) < 0) {
         return false;
     }
     uintptr_t identity = 0;
@@ -3024,7 +3027,7 @@ static bool segment_answer_stands(struct tt_Context* node, struct tt_SegmentPeer
     }
     // Still vouched for, too: a mapping attached before an announce superseded what vouched for it is attached again,
     // and the attach asks again (segment_vouched()).
-    if (!segment_still_ours(entry, ip, port, context_id) ||
+    if (!segment_still_ours(entry, ip, port) ||
         segment_vouched(node, context_id, port, entry->incarnation) != tt_SEGMENT_ATTACHED) {
         return false;
     }
@@ -3100,7 +3103,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     }
 
     char path[tt_SEGMENT_PATH_LENGTH];
-    if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
+    if (segment_name(path, sizeof(path), ip, port) < 0) {
         note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
         remember_absent(entry, ip, port);
         return NULL;
@@ -3137,7 +3140,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     }
 #if tt_SEGMENT_BELL_FIFO
     char bell[tt_SEGMENT_PATH_LENGTH];
-    if (bell_name(bell, sizeof(bell), ip, port, context_id) >= 0) {
+    if (bell_name(bell, sizeof(bell), ip, port) >= 0) {
         int32_t bell_fd = tt_segment_bell_open(bell);
         entry->bell_fd_plus1 = bell_fd >= 0 ? bell_fd + 1 : 0; // none: this peer is rung over UDP
     }
@@ -3155,7 +3158,7 @@ static void create_own_segment(struct tt_Context* node) {
     tt_own_address(node, &own_ip, &own_port);
 
     char path[tt_SEGMENT_PATH_LENGTH];
-    if (segment_name(path, sizeof(path), own_ip, own_port, node->id) < 0) {
+    if (segment_name(path, sizeof(path), own_ip, own_port) < 0) {
         return;
     }
     const uint32_t slots = own_slots(node);
@@ -3198,7 +3201,7 @@ static void create_own_segment(struct tt_Context* node) {
     // 2026-10-07 (2,323 of 59,759 rings over UDP). A writer cannot find the bell without the segment anyway: it only
     // looks for it after the magic. Without a bell, peers ring over UDP.
     char bell[tt_SEGMENT_PATH_LENGTH];
-    if (bell_name(bell, sizeof(bell), own_ip, own_port, node->id) >= 0) {
+    if (bell_name(bell, sizeof(bell), own_ip, own_port) >= 0) {
         (void)tt_segment_bell_create(node, bell);
     }
 #endif
@@ -3331,7 +3334,7 @@ static void segment_recheck_sweep(struct tt_Context* node, uint64_t now) {
 static void release_own_bell(struct tt_Context* node, const struct tt_SegmentHeader* own) {
 #if tt_SEGMENT_BELL_FIFO
     char bell[tt_SEGMENT_PATH_LENGTH];
-    if (bell_name(bell, sizeof(bell), own->owner_ip, own->owner_port, own->owner_context_id) >= 0) {
+    if (bell_name(bell, sizeof(bell), own->owner_ip, own->owner_port) >= 0) {
         tt_segment_bell_destroy(node, bell);
     }
 #else
@@ -3357,8 +3360,7 @@ static void release_segments(struct tt_Context* node) {
     struct tt_SegmentHeader* own = node->own_segment;
     node->own_segment = NULL;
     char path[tt_SEGMENT_PATH_LENGTH];
-    bool named =
-        own != NULL && segment_name(path, sizeof(path), own->owner_ip, own->owner_port, own->owner_context_id) >= 0;
+    bool named = own != NULL && segment_name(path, sizeof(path), own->owner_ip, own->owner_port) >= 0;
 
     // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are
     // still being read by them. Only this context's own segment is this context's to remove - and it
@@ -3410,9 +3412,8 @@ static void release_own_segment(struct tt_Context* node) {
     }
     node->own_segment = NULL;
     char path[tt_SEGMENT_PATH_LENGTH];
-    // From the header, not from node->id: move_id() can renumber a live context on an id collision,
-    // and the file on disk still carries the id it was created under.
-    const bool named = segment_name(path, sizeof(path), own->owner_ip, own->owner_port, own->owner_context_id) >= 0;
+    // From the header, as the name was formed when the file was created.
+    const bool named = segment_name(path, sizeof(path), own->owner_ip, own->owner_port) >= 0;
     // Any entry aliasing this region is cleared, found BY IDENTITY rather than at index node->id. A
     // context delivering to itself has its own id pointing at its own region - but move_id() can
     // change node->id while that entry stays where it was, so indexing by the current id would find
@@ -4077,7 +4078,7 @@ struct tx_destination {
     uint32_t ip;
     uint16_t port;
     // Which peer this destination is, or tt_CONTEXT_ID_INVALID for a broadcast. The segment's name
-    // is computed from (address, port, context id), so a destination with no single peer has no
+    // is computed from (address, port), so a destination with no single peer has no
     // name to compute and can only go over UDP - which is why announces and summaries never leave
     // the interface however well the module is working.
     uint8_t context_id;

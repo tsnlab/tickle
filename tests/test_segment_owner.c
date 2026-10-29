@@ -92,7 +92,7 @@ static void hear_owner(struct tt_Context* writer, uint32_t incarnation) {
 }
 
 static void owner_path(char* path, size_t size) {
-    (void)segment_name(path, size, OWNER_IP, owner_port, OWNER_ID);
+    (void)segment_name(path, size, OWNER_IP, owner_port);
 }
 
 // An owner in a child process: it builds its segment through core, says whether it has one, and waits to be killed.
@@ -139,7 +139,7 @@ static void remove_owner_files(void) {
     (void)unlink(path);
 #if tt_SEGMENT_BELL_FIFO
     char bell[tt_SEGMENT_PATH_LENGTH];
-    (void)bell_name(bell, sizeof(bell), OWNER_IP, owner_port, OWNER_ID);
+    (void)bell_name(bell, sizeof(bell), OWNER_IP, owner_port);
     (void)unlink(bell);
 #endif
 }
@@ -367,7 +367,7 @@ static void test_ownership_is_the_mapping(void) {
     }
 #if tt_SEGMENT_BELL_FIFO
     char bell[tt_SEGMENT_PATH_LENGTH];
-    (void)bell_name(bell, sizeof(bell), OWNER_IP, owner_port, OWNER_ID);
+    (void)bell_name(bell, sizeof(bell), OWNER_IP, owner_port);
     tt_segment_bell_destroy(&owner, bell);
 #endif
     remove_owner_files();
@@ -432,12 +432,12 @@ static bool owner_file_exists(uint32_t ip, uint16_t port, bool bell) {
     char path[tt_SEGMENT_PATH_LENGTH];
     if (bell) {
 #if tt_SEGMENT_BELL_FIFO
-        (void)bell_name(path, sizeof(path), ip, port, OWNER_ID);
+        (void)bell_name(path, sizeof(path), ip, port);
 #else
         return false;
 #endif
     } else {
-        (void)segment_name(path, sizeof(path), ip, port, OWNER_ID);
+        (void)segment_name(path, sizeof(path), ip, port);
     }
     struct stat info;
     return lstat(path, &info) == 0;
@@ -487,6 +487,26 @@ static void test_dead_owners_files_are_swept(void) {
     EXPECT_TRUE(owner_file_exists(here, dead_port, true));
 #endif
 
+    // A leftover of a build before 2026-10-29, which named a segment "<ip>-<port>-<id>": nobody holds it, so it goes
+    // too. And a name no build made (a third number) stays: the sweep removes only what it can tell is a segment.
+    char legacy[tt_SEGMENT_PATH_LENGTH + 8];
+    char stranger[tt_SEGMENT_PATH_LENGTH + 16];
+    char here_name[tt_SEGMENT_PATH_LENGTH];
+    (void)segment_name(here_name, sizeof(here_name), here, (uint16_t)(owner_port + 4U));
+    (void)snprintf(legacy, sizeof(legacy), "%s-%u", here_name, (unsigned)OWNER_ID);
+    (void)snprintf(stranger, sizeof(stranger), "%s-%u-1", here_name, (unsigned)OWNER_ID);
+    int legacy_fd = open(legacy, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    int stranger_fd = open(stranger, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    EXPECT_TRUE(legacy_fd >= 0 && stranger_fd >= 0);
+    if (legacy_fd >= 0) {
+        (void)close(legacy_fd);
+    }
+    if (stranger_fd >= 0) {
+        (void)close(stranger_fd);
+    }
+    struct stat seen;
+    EXPECT_TRUE(lstat(legacy, &seen) == 0); // the control: there before the sweep
+
     struct tt_Context sweeper;
     init_context(&sweeper, OWNER_ID, 5U);
     sweeper.hal.own_port = sweeper_port;
@@ -498,6 +518,9 @@ static void test_dead_owners_files_are_swept(void) {
     EXPECT_TRUE(owner_file_exists(here, live_port, false));      // a live owner's, kept
     EXPECT_TRUE(owner_file_exists(elsewhere, dead_port, false)); // another address's orphan, kept
     EXPECT_TRUE(owner_file_exists(here, sweeper_port, false));   // and the sweeper's own, built
+    EXPECT_TRUE(lstat(legacy, &seen) != 0);                      // the old-format orphan, gone
+    EXPECT_TRUE(lstat(stranger, &seen) == 0);                    // a name no build made, kept
+    (void)unlink(stranger);
     if (live > 0) {
         kill_owner(live);
     }

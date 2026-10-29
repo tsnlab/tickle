@@ -229,20 +229,19 @@ struct tt_Node {
 enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT };
 
 // A shared-memory segment's own header, validated by a reader after it attaches (SHM_PLAN.md stage
-// 1). The name a reader computes - (peer address, peer port, peer context id), all from ordinary
-// discovery - is unique within one network stack, where the data socket's (address, port) is. It is
-// NOT unique across network namespaces, which share /dev/shm and can hold the same address: two lo-only
-// namespaces both have 127.0.0.1, and a context in each at the same port and context id names the same
-// file, so a reader in one attached to the other's ring and cross-delivered (20 of 20 rounds when forced,
-// examples/perf_hil/experiments/shm_netns_collision.sh, 2026-10-29). So the header is checked against
-// what discovery told this reader over UDP, which is per namespace: `incarnation` is the owner's
-// tt_Context.entity_id_base, and an entity id the peer announced must lie within tt_SEGMENT_VOUCH_SPAN
-// above it (segment_vouched(), tickle.c). A segment no entity of the peer vouches for is refused, and
-// the peer is reached over UDP.
+// 1). The name a reader computes - (peer address, peer data port), both from ordinary discovery - is
+// unique within one network stack, where the data socket's (address, port) is. It is NOT unique across
+// network namespaces, which share /dev/shm and can hold the same address: two lo-only namespaces both
+// have 127.0.0.1, and a context in each at the same port names the same file, so a reader in one attached to the
+// other's ring and cross-delivered (20 of 20 rounds when forced, examples/perf_hil/experiments/shm_netns_collision.sh,
+// 2026-10-29). So the header is checked against what discovery told this reader over UDP, which is per namespace:
+// `incarnation` is the owner's tt_Context.entity_id_base, and an entity id the peer announced must lie within
+// tt_SEGMENT_VOUCH_SPAN above it (segment_vouched(), tickle.c). A segment no entity of the peer vouches for is refused,
+// and the peer is reached over UDP.
 //
-// What the name cannot see: a context id is re-handed once its holder dies, so a segment left by a
-// dead context legitimately carries the name a new reader computes, and the triple has nothing in
-// it that tells one incarnation from the next. Attaching to that segment would not fail - it would
+// What the name cannot see: a port is re-handed once its holder dies, so a segment left by a dead
+// context legitimately carries the name a new reader computes, and the name has nothing in it that
+// tells one incarnation from the next. Attaching to that segment would not fail - it would
 // read a dead peer's records as the live peer's. The header turns that into a detected mismatch and
 // a fall back to UDP, which is the same move the wire already makes with its version check, in the
 // one place a wire check cannot reach.
@@ -282,7 +281,8 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 #ifndef tt_SEGMENT_CACHE_LINE
 #define tt_SEGMENT_CACHE_LINE 64
 #endif
-// Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
+// Longer than any segment path this build forms ("/dev/shm/tickle-seg-255.255.255.255-65535", ".bell" and a NUL), and
+// than a large-message region's ("/dev/shm/tickle-large-255.255.255.255-65535-255-ffffffff" and a NUL).
 #define tt_SEGMENT_PATH_LENGTH 64
 
 // tt_SegmentHeader.features: what the owner takes beyond the ring protocol. A bit nobody sets is 0 in every segment a
@@ -1941,7 +1941,7 @@ struct tt_Context {
     // one flag for seven causes reports whichever is hit first and hides the rest for the life of the node.
     uint16_t whole_refusals_logged;
     // Which peers share this host, indexed by remote context id. Only a peer at our own address can
-    // ever open the file we create - the name is built from (ip, port, context id) - so the segment
+    // ever open the file we create - the name is built from (ip, port) - so the segment
     // needs to exist exactly while at least one such peer does. Discovery reports both edges of that:
     // an announce says one appeared, and forget_peers_from_source() that one has gone. That symmetry
     // is the whole reason the segment can be built on demand rather than at bind.
