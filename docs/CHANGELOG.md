@@ -218,6 +218,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A reader first heard after the 8th publish gets the samples the writer still holds** (C8; RESULTS `C8`). The match
+  HEARTBEAT counted down per publish whether or not the reader had acknowledged, so such a reader took the next sample
+  as its start. The last match HEARTBEAT now stays until the reader's ack passes the match point.
+- **The wait ring follows the thread that reads the data** (C12; RESULTS `C12`). The owner's idle waits reset the
+  streak that moves the ring, so an executor that read every datagram never got it; the streak now counts datagrams
+  read from the data socket. KH2 ping tap -> receive p50 15.45 -> 12.37 us.
 - **A RELIABLE Subscriber without a reorder buffer no longer goes silent on a stream it cannot record** (2026-10-29;
   RESULTS `B4F`). A datagram it placed or dropped past its writer's watermark without recording it now counts as
   announced and arms the ACKNACK retry, as a declined DATA does. Before, nothing asked for the gap while the writer's
