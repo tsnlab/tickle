@@ -3019,6 +3019,10 @@ struct tt_PeerAck {
     // resend, which holds the repair timeout (large_resend_due()).
     uint32_t repair_progress_serial;
     uint32_t repair_progress_at;
+    // The watermark of this reader's last ACKNACK the resend order read (repair_seen_valid: one was read). An ACKNACK
+    // naming nothing is answered without the order, so a later one's prev_ack can lie past repairs nobody freed.
+    uint32_t repair_seen_ack;
+    bool repair_seen_valid;
 #endif
 };
 

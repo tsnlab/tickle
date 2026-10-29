@@ -6212,6 +6212,8 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].repair_rack_serial = 0;
             pub->peer_acks[i].repair_rack_rtt_ns = 0;
             pub->peer_acks[i].repair_min_rtt_ns = 0;
+            pub->peer_acks[i].repair_seen_valid = false; // no ACKNACK of its read by the resend order yet
+            pub->peer_acks[i].repair_seen_ack = 0;
 #endif
 #if tt_HYBRID_TRANSPORT
             pub->peer_watch[i].nack_high = 0;
@@ -11967,6 +11969,31 @@ static void large_order_times(const struct tt_PeerAck* ack, struct large_order* 
     }
 }
 
+// Received too: what the ACKNACKs between this reader's last one read here and prev_ack passed. Those named nothing
+// and were answered without the order (process_acknack()), so a repair they passed is freed now - untimed, as when
+// it arrived is not known. Before, its slot stayed live until another unit took it, and repairs_live did not
+// return to 0 between samples (C7: 9 slots a sample on a slow reader).
+static void large_order_free_unseen(struct tt_Context* node, const struct tt_Publisher* pub,
+                                    const struct tt_Peer* target, struct tt_PeerAck* ack, uint32_t prev_ack,
+                                    uint32_t seq_no, struct large_order* order) {
+    if (ack == NULL) {
+        return;
+    }
+    uint32_t unseen =
+        ack->repair_seen_valid && seq_delta(prev_ack, ack->repair_seen_ack) > 0 ? prev_ack - ack->repair_seen_ack : 0U;
+    unseen = unseen < tt_LARGE_REPAIR_SLOTS ? unseen : tt_LARGE_REPAIR_SLOTS;
+    for (uint32_t unit = prev_ack - unseen; unit != prev_ack; unit++) {
+        struct tt_LargeRepair* slot = large_repair_slot(node, unit);
+        if (large_repair_is(slot, pub, unit, target->context_id)) {
+            large_order_show(order, slot->serial);
+            RSTAT_LRO_DONE(slot->seq_no);
+            large_repair_free(node, slot);
+        }
+    }
+    ack->repair_seen_ack = seq_no;
+    ack->repair_seen_valid = true;
+}
+
 // Reads one ACKNACK from `target`'s Subscriber `reader_entity_id` to `pub` for the resend order, before its requests
 // are answered. Received, for certain: every unit below its seq_no, the watermark - those it passed since the reader's
 // last ACKNACK (from `prev_ack`), and the first send of the sample just below it. A unit the request leaves out between
@@ -11983,6 +12010,7 @@ static void large_order_begin(struct tt_Context* node, struct tt_Publisher* pub,
     }
     order->active = true;
     struct tt_PeerAck* ack = find_peer_ack(pub, target->context_id, reader_entity_id);
+    large_order_free_unseen(node, pub, target, ack, prev_ack, seq_no, order);
     uint32_t now = (uint32_t)(tt_get_ns() >> LARGE_REPAIR_SHIFT);
     uint32_t passed = seq_delta(seq_no, prev_ack) > 0 ? seq_no - prev_ack : 0;
     if (passed > tt_LARGE_REPAIR_SLOTS) {
