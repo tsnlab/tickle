@@ -13,6 +13,11 @@
 // The receiver then echoes the datagram's 16 bytes to the sender from a second socket, and the sender records the round
 // trip on its own clock: a second instrument (it carries the same receive-side difference plus noise both ways), used
 // only to check that the first is not an artefact of the stamp.
+// Echo socket (rx's optional last argument, added 2026-10-29 for C12-D1): `second` (the default, every arm before it)
+// echoes from a socket of its own, as above; `same` echoes from the socket the receiver then waits on, as TickLE's
+// pong answers from data_sock, the socket its ring waits on. The question it answers: does a send from the waited
+// socket slow the next wake and return (c12d1_read.py)? Both print echo=<mode> in RXREADY and RXRESULT, so an arm
+// reports the treatment it got.
 //
 // Styles (one per run; the driver rotates them per rep):
 //   recvfrom     a blocking recvfrom() on the socket (Fast DDS's wait). Run twice per rep as two arms, recvfrom and
@@ -59,7 +64,7 @@
 // (--prereg prints them, --selftest checks them), written before the first run.
 //
 // Build: cc -O2 -o rwx recv_wake_xhost.c
-// Run:   rwx rx <style> <port> <rounds> <warmup> <cpu> <echo_ip> <echo_port> <samples_file>
+// Run:   rwx rx <style> <port> <rounds> <warmup> <cpu> <echo_ip> <echo_port> <samples_file> [second|same]
 //        rwx tx <dst_ip> <port> <rounds> <warmup> <cpu> <gap_us> <own_port>
 //        rwx probe
 // The tx side sends warmup + rounds datagrams, each after the previous one's echo (or a 50 ms timeout) and a gap of
@@ -937,7 +942,7 @@ static enum take_result take_one(struct tally* tally, struct receiver* rcv, int 
     return TAKE_ON;
 }
 
-static int report_rx(struct tally* tally, const struct receiver* rcv, const char* samples_path) {
+static int report_rx(struct tally* tally, const struct receiver* rcv, const char* samples_path, const char* echo_mode) {
     const enum style style = rcv->style;
     uint64_t cpu_ns = tally->counting ? clock_ns(cpu_clock) - tally->cpu_start : 0;
     FILE* out = fopen(samples_path, "w");
@@ -957,17 +962,18 @@ static int report_rx(struct tally* tally, const struct receiver* rcv, const char
     uint64_t* sorted = tally->samples;
     qsort(sorted, (size_t)kept, sizeof(sorted[0]), compare_u64);
     printf("RXRESULT style=%s n=%ld expected=%ld missing=%ld bad_stamps=%ld duplicates=%ld foreign=%ld hellos=%ld "
-           "rearms=%ld p10_ns=%llu p50_ns=%llu p99_ns=%llu cpu_ns_per=%llu drain_reads=%ld drain_found=%ld\n",
+           "rearms=%ld p10_ns=%llu p50_ns=%llu p99_ns=%llu cpu_ns_per=%llu drain_reads=%ld drain_found=%ld echo=%s\n",
            style_names[style], kept, tally->rounds, missing, tally->bad_stamps, tally->duplicates, tally->foreign,
            tally->hellos, rcv->rearms, kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_10) : 0ULL,
            kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_50) : 0ULL,
            kept > 0 ? (unsigned long long)pct(sorted, kept, PCT_99) : 0ULL,
-           kept > 0 ? (unsigned long long)(cpu_ns / (uint64_t)kept) : 0ULL, rcv->drain_reads, rcv->drain_found);
+           kept > 0 ? (unsigned long long)(cpu_ns / (uint64_t)kept) : 0ULL, rcv->drain_reads, rcv->drain_found,
+           echo_mode);
     return 0;
 }
 
 static int run_rx(enum style style, int port, long rounds, long warmup, int cpu, const char* echo_ip, int echo_port,
-                  const char* samples_path) {
+                  const char* samples_path, int echo_same) {
     pin(cpu);
     struct receiver rcv;
     const char* why = "";
@@ -975,7 +981,9 @@ static int run_rx(enum style style, int port, long rounds, long warmup, int cpu,
         printf("REFUSED %s %s: %s\n", style_names[style], why, strerror(errno));
         return EXIT_REFUSED;
     }
-    int echo_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    // same: the socket the receive waits on (O_NONBLOCK for prod*: a datagram send does not block anyway)
+    int echo_fd = echo_same ? rcv.socket_fd : socket(AF_INET, SOCK_DGRAM, 0);
+    const char* echo_mode = echo_same ? "same" : "second";
     struct sockaddr_in echo_addr;
     memset(&echo_addr, 0, sizeof(echo_addr));
     echo_addr.sin_family = AF_INET;
@@ -993,7 +1001,8 @@ static int run_rx(enum style style, int port, long rounds, long warmup, int cpu,
     if (tally.samples == NULL || tally.seen == NULL) {
         return 1;
     }
-    printf("RXREADY style=%s port=%d rounds=%ld warmup=%ld cpu=%d\n", style_names[style], port, rounds, warmup, cpu);
+    printf("RXREADY style=%s port=%d rounds=%ld warmup=%ld cpu=%d echo=%s\n", style_names[style], port, rounds, warmup,
+           cpu, echo_mode);
     fflush(stdout);
     enum take_result result = TAKE_ON;
     while (result == TAKE_ON) {
@@ -1002,7 +1011,7 @@ static int run_rx(enum style style, int port, long rounds, long warmup, int cpu,
     if (result == TAKE_FAILED) {
         return 1;
     }
-    return report_rx(&tally, &rcv, samples_path);
+    return report_rx(&tally, &rcv, samples_path, echo_mode);
 }
 
 // Sends one datagram and waits for its echo. The round trip in ns, or 0 when no echo came within the timeout.
@@ -1103,14 +1112,24 @@ static long whole(const char* text, long max) {
 
 // argv positions: <mode> then the mode's arguments, in the order of the usage line.
 enum { ARG_MODE = 1, ARG_A, ARG_B, ARG_C, ARG_D, ARG_E, ARG_F, ARG_G, ARG_H, ARGC_RX };
+enum { ARG_ECHO = ARGC_RX }; // rx's optional last argument
 enum { ARGC_TX = ARG_H };
 
 int main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[ARG_MODE], "probe") == 0) {
         return run_probe();
     }
-    if (argc == ARGC_RX &&
-        strcmp(argv[ARG_MODE], "rx") == 0) { // rx style port rounds warmup cpu echo_ip echo_port file
+    if ((argc == ARGC_RX || argc == ARGC_RX + 1) &&
+        strcmp(argv[ARG_MODE], "rx") == 0) { // rx style port rounds warmup cpu echo_ip echo_port file [echo]
+        int echo_same = 0;
+        if (argc == ARGC_RX + 1) {
+            if (strcmp(argv[ARG_ECHO], "same") == 0) {
+                echo_same = 1;
+            } else if (strcmp(argv[ARG_ECHO], "second") != 0) {
+                fprintf(stderr, "unknown echo socket %s (second or same)\n", argv[ARG_ECHO]);
+                return EXIT_USAGE;
+            }
+        }
         int style = parse_style(argv[ARG_A]);
         if (style < 0) {
             fprintf(stderr, "unknown style %s\n", argv[ARG_A]);
@@ -1121,7 +1140,8 @@ int main(int argc, char** argv) {
             return EXIT_USAGE;
         }
         return run_rx((enum style)style, (int)whole(argv[ARG_B], MAX_PORT), rounds, whole(argv[ARG_D], MAX_ROUNDS),
-                      (int)whole(argv[ARG_E], MAX_CPU), argv[ARG_F], (int)whole(argv[ARG_G], MAX_PORT), argv[ARG_H]);
+                      (int)whole(argv[ARG_E], MAX_CPU), argv[ARG_F], (int)whole(argv[ARG_G], MAX_PORT), argv[ARG_H],
+                      echo_same);
     }
     if (argc == ARGC_TX && strcmp(argv[ARG_MODE], "tx") == 0) { // tx dst_ip port rounds warmup cpu gap_us own_port
         long rounds = whole(argv[ARG_C], MAX_ROUNDS);
@@ -1132,9 +1152,10 @@ int main(int argc, char** argv) {
                       (int)whole(argv[ARG_E], MAX_CPU), whole(argv[ARG_F], MAX_GAP_US),
                       (int)whole(argv[ARG_G], MAX_PORT));
     }
-    fprintf(stderr,
-            "usage: %s probe | rcv <style> <port> <rounds> <warmup> <cpu> <echo_ip> <echo_port> <samples> | "
-            "tx <dst_ip> <port> <rounds> <warmup> <cpu> <gap_us> <own_port>\n",
-            argv[0]);
+    fprintf(
+        stderr,
+        "usage: %s probe | rx <style> <port> <rounds> <warmup> <cpu> <echo_ip> <echo_port> <samples> [second|same] | "
+        "tx <dst_ip> <port> <rounds> <warmup> <cpu> <gap_us> <own_port>\n",
+        argv[0]);
     return EXIT_USAGE;
 }

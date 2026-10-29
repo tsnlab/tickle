@@ -39,6 +39,12 @@
 #   trip) = ~7.6 s plus ~4 s of ssh = ~12 s; 10 arms x 5 reps = 50 runs = ~10 min; total ~12 min, analyse an overrun
 #   at 18 min. (Plus the wait for the lock: RIG_LOCK_WAIT, default 1800 s.)
 #
+# Echo socket (2026-10-29, C12-D1): an arm may be <style>@same or <style>@second - the receiver echoes from the socket it
+# waits on, or from a second socket (recv_wake_xhost.c's header). A bare <style> is the old arm (second socket, and no
+# argument is passed, so the old command line is unchanged). The receiver's RXRESULT must name the echo mode the arm
+# asked for, or the run is VOID. READER (default recv_wake_xhost_read.py) names the reader in this directory that the
+# script checks (--prereg, --selftest) and runs at the end; c12d1_queue.sh sets c12d1_read.py.
+#
 # PC_PREFLIGHT=1 (no rig, no lock, no sha check): "sender" and "receiver" are two private network namespaces joined by
 # a veth named eth0 in each (192.168.10.3 and .2); every host command runs in its namespace as this user; the binary is
 # compiled here (nice) from `git show SHA:...` (SHA defaults to HEAD). The PC's numbers say the harness works, not what
@@ -66,7 +72,11 @@ ARMS=${ARMS:-"recvfrom recvfrom_aa recvmsg epoll3 uring uring_dt uring_ms uring_
 case "$REPS$ROUNDS$WARMUP$GAP_US$RX_CPU${TX_CPU:-0}$PORT$ECHO_PORT" in
     *[!0-9]*) echo "REPS ROUNDS WARMUP GAP_US RX_CPU TX_CPU PORT ECHO_PORT are whole numbers" >&2; exit 64 ;;
 esac
+READER=${READER:-recv_wake_xhost_read.py}
+case "$READER" in */* | "" | *[!A-Za-z0-9_.]*) echo "READER is a file name in $X" >&2; exit 64 ;; esac
+[ -f "$X/$READER" ] || { echo "READER $X/$READER does not exist" >&2; exit 64; }
 for a in $ARMS; do
+    case "$a" in *@same | *@second) a=${a%@*} ;; esac
     case "$a" in recvfrom | recvfrom_aa | recvmsg | epoll3 | uring | uring_dt | uring_ms | uring_ms_dt | prod | prod_dt | prod_dt_msg) ;;
         *) echo "unknown arm '$a'" >&2; exit 64 ;; esac
 done
@@ -173,8 +183,8 @@ fi
 say "=== recv_wake_xhost, $(date -Is): SHA $SHA (source md5 $SRC_MD5), $REPS reps x $ROUNDS rounds (+$WARMUP warm-up)," \
     "gap $GAP_US us, rx cpu $RX_CPU, tx cpu $TX_CPU, arms: $ARMS, pc preflight $PC_PREFLIGHT" \
     "(sender $SENDER, receiver $RECEIVER), out $OUT ==="
-python3 "$X/recv_wake_xhost_read.py" --prereg >"$R/prereg.txt" || { say "REFUSED: the reader does not load"; exit 1; }
-python3 "$X/recv_wake_xhost_read.py" --selftest >"$R/selftest.txt" 2>&1 ||
+python3 "$X/$READER" --prereg >"$R/prereg.txt" || { say "REFUSED: the reader does not load"; exit 1; }
+python3 "$X/$READER" --selftest >"$R/selftest.txt" 2>&1 ||
     { say "REFUSED: the reader's selftest fails ($R/selftest.txt)"; exit 1; }
 say "reader selftest: $(tail -1 "$R/selftest.txt")"
 link_unshaped || exit 1
@@ -205,8 +215,8 @@ TX_IP=$(sh_ "$SENDER" "ip -4 -o addr show dev eth0" </dev/null | awk '{print $4}
 case "$RX_IP$TX_IP" in *[!0-9.]* | "") say "REFUSED: no eth0 address (receiver '$RX_IP', sender '$TX_IP')"; exit 1 ;; esac
 say "eth0: receiver $RX_IP, sender $TX_IP"
 sh_ "$RECEIVER" "$BIN probe" </dev/null 2>&1 | tee "$R/probe.txt" | sed 's/^/probe: /' | tee -a "$SUM"
-printf 'sha=%s\nsrc_md5=%s\nreps=%s\nrounds=%s\nwarmup=%s\ngap_us=%s\nrx_cpu=%s\ntx_cpu=%s\narms=%s\npc_preflight=%s\n' \
-    "$SHA" "$SRC_MD5" "$REPS" "$ROUNDS" "$WARMUP" "$GAP_US" "$RX_CPU" "$TX_CPU" "$ARMS" "$PC_PREFLIGHT" >"$R/meta.txt"
+printf 'sha=%s\nsrc_md5=%s\nreps=%s\nrounds=%s\nwarmup=%s\ngap_us=%s\nrx_cpu=%s\ntx_cpu=%s\narms=%s\npc_preflight=%s\nreader=%s\n' \
+    "$SHA" "$SRC_MD5" "$REPS" "$ROUNDS" "$WARMUP" "$GAP_US" "$RX_CPU" "$TX_CPU" "$ARMS" "$PC_PREFLIGHT" "$READER" >"$R/meta.txt"
 
 # The receiver, detached on its host; its PID written by itself just before exec (never found by a pattern).
 # shellcheck disable=SC2016 # expanded on the host
@@ -214,10 +224,11 @@ LAUNCH='rm -f '"$RD"'/rx.pid; setsid nohup bash -c "echo \$\$ > '"$RD"'/rx.pid; 
 for i in $(seq 1 50); do [ -s '"$RD"'/rx.pid ] && break; sleep 0.1; done'
 
 run_one() { # rep arm
-    local rep=$1 arm=$2 stem status=ok rxrc state i
+    local rep=$1 arm=$2 stem status=ok rxrc state i style=$2 echo_arg=""
+    case "$arm" in *@same | *@second) style=${arm%@*} echo_arg=${arm##*@} ;; esac
     stem="r${rep}_${arm}"
     rx_stop
-    sh_ "$RECEIVER" "set -- $arm $PORT $ROUNDS $WARMUP $RX_CPU $TX_IP $ECHO_PORT $RD/rx.samples; rm -f $RD/rx.samples; $LAUNCH" </dev/null >/dev/null
+    sh_ "$RECEIVER" "set -- $style $PORT $ROUNDS $WARMUP $RX_CPU $TX_IP $ECHO_PORT $RD/rx.samples $echo_arg; rm -f $RD/rx.samples; $LAUNCH" </dev/null >/dev/null
     # Up: RXREADY in its log; refused: REFUSED there; anything else within 10 s is a failure to start.
     state=none
     for i in $(seq 1 50); do
@@ -241,7 +252,12 @@ run_one() { # rep arm
     fetch_ "$RECEIVER" "$RD/rx.samples" "$R/${stem}.samples"
     if [ "$status" = ok ]; then
         rxrc=$(grep -m1 '^RXRESULT ' "$R/${stem}_rx.log")
-        case "$rxrc" in "RXRESULT style=$arm "*) ;; *) status="VOID:no_rxresult_for_$arm" ;; esac
+        # A bare arm keeps the old check (a binary from before the echo mode prints no echo=); an @ arm must report it.
+        if [ -z "$echo_arg" ]; then
+            case "$rxrc" in "RXRESULT style=$style "*) ;; *) status="VOID:no_rxresult_for_$arm" ;; esac
+        else
+            case "$rxrc" in "RXRESULT style=$style "*" echo=$echo_arg") ;; *) status="VOID:no_rxresult_for_$arm" ;; esac
+        fi
         grep -q '^TXRESULT status=ok ' "$R/${stem}_tx.log" || status="VOID:no_txresult"
     fi
     echo "RUN rep=$rep arm=$arm stem=$stem status=$status" >>"$R/index.txt"
@@ -257,7 +273,7 @@ for rep in $(seq 1 "$REPS"); do
     done
     link_unshaped || { say "the link was shaped during rep $rep - stopping"; exit 1; }
 done
-python3 "$X/recv_wake_xhost_read.py" "$OUT" >"$OUT.verdict.txt" 2>&1
+python3 "$X/$READER" "$OUT" >"$OUT.verdict.txt" 2>&1
 rc=$?
 tee -a "$SUM" <"$OUT.verdict.txt"
 say "RWX_DONE reader_rc=$rc $(date -Is)"
