@@ -66,7 +66,13 @@
 #   (checked every 120 s; gives up at QUIET_DEADLINE, default 06:30 local, VOID). Trace ~4 min; A/B: 8 cells x REPS reps
 #   x ~50 s, the trees at once: ~40 min at REPS=6. Reading < 1 min.
 #
-# Usage: [TREES_DIR=~/c11_trees] [OUTB=~/rig_results_safe/c11] [TAG=c11ab] [REPS=6] [SKIP_TRACE=0] c11_reveal_ab.sh
+# AMENDED 2026-10-30 04:1x, AFTER the first run (c11ab: O FIXED R4, NO WORSE 8 rows on resends/duplicates) and BEFORE
+# the second; no rule or threshold moved. The second run (TAG=c11o2) puts O2 (d92618cb: the reveal names only the units
+# the arrival shows lost) in the O slot (O_TREE), the same M and A trees, SKIP_TRACE=1; the quiet gate as before (the
+# C7SL marker is there; load1 < 4 and no PC_QUIET still checked). Each tree's commit is read from its .tree_sha (the trees are
+# archives with no .git, so wifi_repair_ab.sh logs empty SHAs) and logged; a tree without one is VOID.
+#
+# Usage: [TREES_DIR=~/c11_trees] [O_TREE=$TREES_DIR/O] [OUTB=~/rig_results_safe/c11] [TAG=c11ab] [REPS=6] [SKIP_TRACE=0] c11_reveal_ab.sh
 #   Ends with "=== c11_reveal_ab ended" in $OUTB/$TAG.driver.log, whatever happened; the reading is $OUTB/$TAG.read.txt.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +80,7 @@ TREES_DIR=${TREES_DIR:-$HOME/c11_trees}
 OUTB=${OUTB:-$HOME/rig_results_safe/c11}
 TAG=${TAG:-c11ab}
 REPS=${REPS:-6}
+O_TREE=${O_TREE:-$TREES_DIR/O}
 MARKER_FILE=${MARKER_FILE:-$HOME/rig_results_safe/c7sl_queue.log}
 QUIET_DEADLINE=${QUIET_DEADLINE:-$(date -d '06:30' +%s)}
 mkdir -p "$OUTB" || exit 1
@@ -88,7 +95,12 @@ trap on_exit EXIT
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
 log "start: trees $TREES_DIR (M A O MT OT MD), REPS=$REPS, out $OUTB/$TAG*"
 for t in M A O MT OT MD; do
-    [ -x "$TREES_DIR/$t/examples/perf_hil/experiments/wifi_burst_loss_netns.sh" ] || { log "VOID: no tree $t"; exit 2; }
+    d=$TREES_DIR/$t
+    [ "$t" = O ] && d=$O_TREE
+    [ "${SKIP_TRACE:-0}" = 1 ] && case $t in MT | OT | MD) continue ;; esac
+    [ -x "$d/examples/perf_hil/experiments/wifi_burst_loss_netns.sh" ] || { log "VOID: no tree $t"; exit 2; }
+    [ -s "$d/.tree_sha" ] || { log "VOID: tree $t ($d) has no .tree_sha"; exit 2; }
+    log "tree $t: $d commit $(cat "$d/.tree_sha")"
 done
 
 quiet() {
@@ -130,8 +142,8 @@ if [ "${SKIP_TRACE:-0}" != 1 ]; then
 fi
 
 ab() { # ab CELLS ARMS
-    env "${common_env[@]}" TREES="M=$TREES_DIR/M A=$TREES_DIR/A O=$TREES_DIR/O" TAG=$TAG BASE_OUT=$OUTB REPS=$REPS \
-        CELLS="$1" ARMS="$2" "$TREES_DIR/O/examples/perf_hil/experiments/wifi_repair_ab.sh" >>"$LOG" 2>&1
+    env "${common_env[@]}" TREES="M=$TREES_DIR/M A=$TREES_DIR/A O=$O_TREE" TAG=$TAG BASE_OUT=$OUTB REPS=$REPS \
+        CELLS="$1" ARMS="$2" "$O_TREE/examples/perf_hil/experiments/wifi_repair_ab.sh" >>"$LOG" 2>&1
 }
 log "phase AB 1: rel_large ctl ge5b2 ge5b4 ge10b4 tv"
 ab rel_large "ctl ge5b2 ge5b4 ge10b4 tv"
