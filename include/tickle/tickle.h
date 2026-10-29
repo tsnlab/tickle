@@ -233,7 +233,7 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // discovery - is unique within one network stack, where the data socket's (address, port) is. It is
 // NOT unique across network namespaces, which share /dev/shm and can hold the same address: two lo-only
 // namespaces both have 127.0.0.1, and a context in each at the same port and context id names the same
-// file, so a reader in one attached to the other's ring and cross-delivered (13 of 20 rounds when forced,
+// file, so a reader in one attached to the other's ring and cross-delivered (20 of 20 rounds when forced,
 // examples/perf_hil/experiments/shm_netns_collision.sh, 2026-10-29). So the header is checked against
 // what discovery told this reader over UDP, which is per namespace: `incarnation` is the owner's
 // tt_Context.entity_id_base, and an entity id the peer announced must lie within tt_SEGMENT_VOUCH_SPAN
