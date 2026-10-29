@@ -1932,6 +1932,50 @@ static void repairing_writer_scenario(void) {
     EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
 }
 
+static void test_repairs_passed_by_an_acknack_naming_nothing_are_freed(void) {
+    // A reader's last ACKNACK of a sample names nothing - it has every unit - and process_acknack() answers it without
+    // the resend order, which frees a pending repair's slot only when an ACKNACK it reads passes the unit. The next
+    // ACKNACK it reads starts from that last watermark, so the repairs between were never freed: their slots stayed
+    // live until another unit took them, and repairs_live, whose 0 is the order's "nothing pending" fast path, did not
+    // return to 0 between samples (C7, found with the slow reader of resent_through_a_queue(): 9 slots of every
+    // sample). Here: three 1 MiB samples at a true 30 Hz to a reader taking 20 us a datagram with 400 waiting, each
+    // sample's end dropped at its socket and repaired; once all are delivered, no slot may still hold a unit of the
+    // first two. Control: their units were resent at all.
+    enum { SAMPLES = 3 };
+    init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_reader_service_ns = 20 * tt_MICROSECOND;
+    sim_reader_capacity = 400;
+    sample_len = ONE_MB;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    uint32_t before = pub.retransmitted;
+    uint32_t last_first = 0;
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < SAMPLES; i++) {
+        last_first = pub.seq_no + 1U;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        uint64_t next = t0 + ((uint64_t)(i + 1) * tt_SECOND / 30U);
+        while (sim_next_due() <= next && sim_step()) { // the clock never passes the next publish
+        }
+        test_mock_now = test_mock_now < next ? next : test_mock_now;
+    }
+    sim_settle(SAMPLES + 1, tt_SECOND);
+    uint32_t stale = 0;
+    for (uint32_t i = 0; i < tt_LARGE_REPAIR_SLOTS; i++) {
+        const struct tt_LargeRepair* slot = &sender.large.repairs[i];
+        stale += slot->context_id != tt_CONTEXT_ID_INVALID && seq_delta(slot->seq_no, last_first) < 0 ? 1U : 0U;
+    }
+    printf(
+        "test_large_sample: %d x 1 MiB to a reader taking 20 us a datagram, 400 waiting - %u resent, %u repair slots "
+        "of the delivered samples before the last still live, %u live in all\n",
+        SAMPLES, pub.retransmitted - before, stale, sender.large.repairs_live);
+    EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+    EXPECT_TRUE(pub.retransmitted - before >= (uint32_t)SAMPLES); // the treatment: every sample was repaired
+    EXPECT_EQ_U32(0, stale);
+}
+
 static void test_a_repairing_writer_is_not_warned_about(void) {
     // A writer whose repairs of a large sample keep arriving is answering, though the gap stays open: the slow reader's
     // socket drops most of each repair burst again, and the gap takes many retry intervals to close. A retry within
@@ -3475,6 +3519,7 @@ int main(void) {
     test_a_heartbeat_takes_the_path_of_its_data();
     test_a_slow_readers_repairs_are_measured();
     test_a_repairing_writer_is_not_warned_about();
+    test_repairs_passed_by_an_acknack_naming_nothing_are_freed();
     test_a_queued_path_does_not_storm();
     test_a_whole_sample_lost_does_not_storm();
 #ifdef tt_LARGE_REPAIR_SLOTS
