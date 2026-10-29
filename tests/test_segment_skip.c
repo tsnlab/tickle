@@ -213,6 +213,8 @@ static void rig_up(bool reliable, uint16_t a_depth, int b_depth) {
     sender->tx_size = sizeof(sender->tx_buffer);
     sender->hal.own_ip = PEER_IP;
     sender->hal.own_port = PEER_PORT;
+    segment_vouch_note(sender, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
     init_topic(&rig.topic, "skip_topic");
     init_pub(&rig.pub_a, TOPIC_A_ID, reliable);
     init_pub(&rig.pub_b, TOPIC_B_ID, false);

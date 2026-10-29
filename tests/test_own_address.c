@@ -144,7 +144,9 @@ static void test_a_same_host_peer_on_the_default_config_gets_shared_memory(void)
     EXPECT_EQ_U32(1, (uint32_t)owner.segments_created);
     EXPECT_TRUE(owner.own_segment != NULL);
 
-    // And the peer, sending to the owner at the address it heard the owner from, finds the file the owner built.
+    // And the peer, which has heard the owner's announce (its first entity is its base: segment_vouched()), sending to
+    // the owner at the address it heard the owner from, finds the file the owner built.
+    segment_vouch_note(&peer, OWNER_ID, owner.entity_id_base, owner_port);
     struct tt_SegmentHeader* attached = peer_segment(&peer, OWNER_ID, owner_ip, owner_port);
     EXPECT_TRUE(attached != NULL);
     if (attached != NULL) {

@@ -133,6 +133,8 @@ static void setup_with(struct arm* arm, enum mode mode, bool attach) {
     node->tx_size = sizeof(node->tx_buffer);
     node->hal.own_ip = SENDER_IP;
     node->hal.own_port = SENDER_PORT;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT);                      // discovery has heard the owner (segment_vouched())
     node->summary_skip_armed = mode == TWO_COPY ? 1 : 0; // with no summary riding: the staging path's own bytes
 
     arm->topic.name = "slot_topic";

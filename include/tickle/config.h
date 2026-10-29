@@ -781,6 +781,17 @@
 #define tt_SEGMENT_ATTACH_RETRY_NS tt_CONTEXT_UPDATE_INTERVAL // nanosecond
 #endif
 
+// How far past a segment's incarnation an entity id of its owner may lie and still vouch for it (segment_vouched(),
+// tickle.c). The incarnation is the owner's tt_Context.entity_id_base and each entity it announces is that base plus a
+// count of the entities it has created, so a peer discovery heard from is the segment's owner only if one of its entity
+// ids is within this many of the header's incarnation, modulo 2^32. A segment under the same name in ANOTHER network
+// namespace (same address, port and context id; /dev/shm is shared) was drawn from another launch's clock and passes
+// with probability tt_SEGMENT_VOUCH_SPAN / 2^32, about 2.4e-4 at this default. A legitimate owner fails only if every
+// entity it still announces came after its first tt_SEGMENT_VOUCH_SPAN creations; it is then reached over UDP.
+#ifndef tt_SEGMENT_VOUCH_SPAN
+#define tt_SEGMENT_VOUCH_SPAN (1UL << 20)
+#endif
+
 // How long an attached segment is written before the peer asks the name again. This is not paranoia about the mapping
 // going bad: an owner killed between one datagram and the next leaves its region mapped and unchanged, incarnation
 // included, so re-reading the header can never reveal it. Re-attaching by name can - the file is either gone or has

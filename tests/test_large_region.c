@@ -267,6 +267,8 @@ static void rig_up(enum rig_subs subs, uint32_t chunks, uint32_t max_cdr) {
     sender.tx_size = sizeof(sender.tx_buffer);
     sender.hal.own_ip = SENDER_IP;
     sender.hal.own_port = SENDER_PORT;
+    segment_vouch_note(&sender, OWNER_ID, owner.entity_id_base,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
     EXPECT_EQ_INT((int)tt_RET_OK,
                   (int)tt_Context_set_large_buffers(&sender, test_acquire, test_release, &sender_alloc));
     memset(&sender_topic, 0, sizeof(sender_topic));

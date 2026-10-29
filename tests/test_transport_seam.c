@@ -578,6 +578,7 @@ static void test_a_datagram_crosses_a_segment(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP; // different from the reader's, so "whose address is this" is a real question
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(&reader, &own_ip, &own_port);
@@ -664,6 +665,7 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
     init_node_topic_pub(&udp_node, &udp_topic, &udp_pub);
     udp_node.hal.own_ip = PEER_IP;
     udp_node.hal.own_port = PEER_PORT;
+    segment_vouch_note(&udp_node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         udp_pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -701,6 +703,7 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
     init_node_topic_pub(&shm_node, &shm_topic, &shm_pub);
     shm_node.hal.own_ip = PEER_IP;
     shm_node.hal.own_port = PEER_PORT;
+    segment_vouch_note(&shm_node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         shm_pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -908,6 +911,7 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     init_node_topic_pub(&node, &topic, &pub);
     node.hal.own_ip = PEER_IP;
     node.hal.own_port = PEER_PORT;
+    segment_vouch_note(&node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     // No segment exists at the owner's address, which is every peer on another host.
     const int sends = 64; // with no summary tick between them, so one ask must cover them all
@@ -984,6 +988,7 @@ static void test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwr
     node.id = 1;
     node.hal.own_ip = PEER_IP;
     node.hal.own_port = PEER_PORT;
+    segment_vouch_note(&node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
     segment_recheck_sweep(&node, test_mock_now);
@@ -1041,6 +1046,7 @@ static void test_a_context_in_unzeroed_memory_attaches_a_same_host_peer(void) {
     node.id = 1;
     node.hal.own_ip = PEER_IP;
     node.hal.own_port = PEER_PORT;
+    segment_vouch_note(&node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     for (int i = 0; i < 8; i++) {
         EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == owner.own_segment);
@@ -1091,6 +1097,7 @@ static void test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory(voi
     node->id = 1;
     node->hal.own_ip = PEER_IP;
     node->hal.own_port = PEER_PORT;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     (void)peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT);
     segment_recheck_sweep(node, test_mock_now);
     segment_recheck_sweep(node, test_mock_now + tt_SEGMENT_ATTACH_RETRY_NS);
@@ -1177,6 +1184,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     struct tt_Header header;
     memset(&header, 0, sizeof(header));
@@ -1305,6 +1313,7 @@ static void test_destroy_takes_the_segment_with_it(void) {
     other.hal.own_ip = PEER_IP;
     other.hal.own_port = PEER_PORT;
     create_own_segment(&other);
+    segment_vouch_note(&owner, PEER_CONTEXT_ID, OWNER_INCARNATION + 1U, PEER_PORT); // the owner has heard the other
     EXPECT_TRUE(peer_segment(&owner, PEER_CONTEXT_ID, PEER_IP, PEER_PORT) != NULL);
 
     char path[tt_SEGMENT_PATH_LENGTH];
@@ -1379,6 +1388,7 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     struct tt_SegmentHeader* old_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_TRUE(old_mapping != NULL);
     EXPECT_TRUE(segment_write(old_mapping, "orphan", 7, NULL, 0, PEER_IP, PEER_PORT, 1));
@@ -1406,6 +1416,9 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     EXPECT_EQ_U32(0, reborn.own_segment->write_index);
     EXPECT_EQ_U32(0, reborn.own_segment->read_index);
     EXPECT_EQ_U32(OWNER_INCARNATION + 99U, reborn.own_segment->incarnation);
+    // And the writer hears the successor's announce, which supersedes its predecessor's (process_announce()).
+    segment_vouch_forget(&writer, OWNER_ID);
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION + 99U, OWNER_PORT);
 
     // The writer's cached mapping is still the dead one, and this is the assertion the first version
     // of this test got wrong. It expected the incarnation check to catch it - but that check reads
@@ -1471,6 +1484,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     struct tt_Header header;
     memset(&header, 0, sizeof(header));
@@ -1527,6 +1541,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     init_node_topic_pub(&patient, &patient_topic, &patient_pub);
     patient.hal.own_ip = PEER_IP;
     patient.hal.own_port = PEER_PORT;
+    segment_vouch_note(&patient, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     for (uint32_t i = 0; i < sends; i++) {
         test_mock_now += 1000000ULL; // the same millisecond a send, so the two arms differ only in the reader
@@ -1571,6 +1586,7 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     init_node_topic_pub(&ahead, &ahead_topic, &ahead_pub);
     ahead.hal.own_ip = PEER_IP;
     ahead.hal.own_port = PEER_PORT;
+    segment_vouch_note(&ahead, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     // Long enough in mock time to cross the dead-reader threshold many times over. The reader here
     // is permanently behind but never stops, so it must never be given up on however long the run.
@@ -1711,6 +1727,7 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     struct tt_Header header;
     memset(&header, 0, sizeof(header));
@@ -1832,6 +1849,7 @@ static void test_a_called_off_sleep_keeps_its_generation_once(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     struct tt_Header header;
     memset(&header, 0, sizeof(header));
@@ -1915,6 +1933,7 @@ static void test_a_batch_is_rung_for_once_after_its_last_record(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     struct tt_Header header;
     memset(&header, 0, sizeof(header));
@@ -2011,6 +2030,7 @@ static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     g_late_writer = &writer;
     g_late_owner_id = OWNER_ID;
     g_late_owner_ip = OWNER_IP;
@@ -2079,6 +2099,7 @@ static void test_a_socket_that_never_empties_does_not_starve_the_ring(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     g_late_writer = &writer;
     g_late_owner_id = OWNER_ID;
     g_late_owner_ip = OWNER_IP;
@@ -2142,6 +2163,7 @@ static void test_a_drain_that_empties_soon_does_not_look_at_the_ring(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
+    segment_vouch_note(&writer, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     g_late_writer = &writer;
     g_late_owner_id = OWNER_ID;
     g_late_owner_ip = OWNER_IP;
@@ -2837,6 +2859,7 @@ static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
     init_node_topic_pub(&sender, &topic, &pub);
     sender.hal.own_ip = PEER_IP;
     sender.hal.own_port = PEER_PORT;
+    segment_vouch_note(&sender, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -2910,6 +2933,7 @@ static void test_the_limit_reads_only_the_peers_it_was_given(void) {
     init_node_topic_pub(&sender, &topic, &pub);
     sender.hal.own_ip = PEER_IP;
     sender.hal.own_port = PEER_PORT;
+    segment_vouch_note(&sender, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard the owner
 
     // Exactly one, as the retransmit path has.
     struct tt_Peer target;

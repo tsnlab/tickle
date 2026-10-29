@@ -46,6 +46,7 @@
 #define OWNER_ID 7
 #define OWNER_IP 0x0a4d0002U
 #define OWNER_PORT 8282
+#define OWNER_INCARNATION 0x12345678U
 #define WRITER_ID 2
 #define WRITER_IP 0x0a000002U
 #define WRITER_PORT 7000
@@ -73,6 +74,7 @@ static void writer_with(struct tt_Context* node, const struct tt_InitOptions* op
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
     node->hal.own_ip = ip;
     node->hal.own_port = WRITER_PORT;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION, OWNER_PORT); // discovery has heard make_owner()'s owner
 }
 
 static int asks(void) {
@@ -85,7 +87,7 @@ static void make_owner(struct tt_Context* owner, const struct tt_InitOptions* op
     owner->opts = *opts;
     node_init_locks(owner);
     owner->id = OWNER_ID;
-    owner->entity_id_base = 0x12345678U;
+    owner->entity_id_base = OWNER_INCARNATION;
     owner->hal.own_ip = OWNER_IP;
     owner->hal.own_port = OWNER_PORT;
     create_own_segment(owner);

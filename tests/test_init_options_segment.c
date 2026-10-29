@@ -127,6 +127,8 @@ static void whitebox(struct tt_Context* node, const struct tt_InitOptions* opts,
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
     node->hal.own_ip = ip;
     node->hal.own_port = port;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
 }
 
 static void drain_pass(struct tt_Context* node) {

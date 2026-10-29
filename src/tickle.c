@@ -2142,9 +2142,10 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 // question is how the answers come to differ. With the segment compiled out every datagram is udp
 // and shm is zero, which is still stage 0's own assertion about the seam being wired.
 // The name a reader computes for a peer's segment: (address, port, context id), every field from
-// ordinary discovery (struct tt_Peer), so no new discovery mechanism and no wire change. The
-// address is what makes it unique where the context id alone is not - two network namespaces share
-// /dev/shm but never an address, which is the same reason registry_path() keys on it.
+// ordinary discovery (struct tt_Peer), so no new discovery mechanism and no wire change. Unique within
+// one network stack, where the data socket's (address, port) is; NOT across network namespaces, which
+// share /dev/shm and can share an address (two lo-only namespaces are both 127.0.0.1) - so an attach
+// is checked against what discovery heard (segment_vouched()), not trusted to the name.
 //
 // Returns the length written, or a negative value if it would not fit - never a truncated name,
 // because a truncated name is a name two different peers could share.
@@ -2857,6 +2858,53 @@ static struct tt_SegmentHeader* attach_peer_segment(const char* path, uint32_t i
 static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, uint8_t context_id, uint32_t ip,
                                                      uint16_t port);
 
+// Whether discovery vouches for `incarnation` as the segment of peer `context_id` at `port`: the name alone does not
+// say, because network namespaces share /dev/shm and two of them can hold the same (address, port, context id) - two
+// lo-only namespaces are both 127.0.0.1 - and a reader that attached to the other one's ring cross-delivered
+// (struct tt_SegmentHeader). What discovery told us came over UDP, through this namespace's own stack, so it is about
+// this namespace's peer: its entity ids are its entity_id_base, which the owner writes as the incarnation, plus a
+// count of the entities it has created. The earliest it announced (tt_Context.segment_vouch_entity) is the owner's
+// only if it lies within tt_SEGMENT_VOUCH_SPAN above the incarnation, the subtraction modulo 2^32 so a base near the
+// top of the range whose ids wrapped past 0 still fits.
+//
+// UNVOUCHED when no announce of this peer from this port has been heard since the last superseded it: the attach is
+// refused as a "no", asked again after segment.attach_retry_ns or at the peer's next announce (note_same_host_peer()),
+// so a legitimate peer gets shared memory once discovery has heard it and a stranger never does. Ourselves need no
+// discovery: our own segment carries our own base, exactly.
+static enum tt_SegmentAttach segment_vouched(const struct tt_Context* node, uint8_t context_id, uint16_t port,
+                                             uint32_t incarnation) {
+    if (context_id == node->id) {
+        uint32_t own_ip = 0;
+        uint16_t own_port = 0;
+        tt_own_address(node, &own_ip, &own_port);
+        if (port == own_port) {
+            return incarnation == node->entity_id_base ? tt_SEGMENT_ATTACHED : tt_SEGMENT_WRONG_OWNER;
+        }
+    }
+    if (port == 0 || node->segment_vouch_port[context_id] != port) {
+        return tt_SEGMENT_UNVOUCHED;
+    }
+    const uint32_t offset = node->segment_vouch_entity[context_id] - incarnation;
+    return offset < (uint32_t)tt_SEGMENT_VOUCH_SPAN ? tt_SEGMENT_ATTACHED : tt_SEGMENT_WRONG_OWNER;
+}
+
+// An entity `context_id` announced from `port` (decode_update_entities()): kept if it is the first heard from that port
+// since the last superseding announce, or earlier than the one kept - by signed difference, so the earliest modulo
+// 2^32 of ids that wrapped past 0 (one launch's ids span far less than 2^31).
+static void segment_vouch_note(struct tt_Context* node, uint8_t context_id, uint32_t entity_id, uint16_t port) {
+    if (node->segment_vouch_port[context_id] != port ||
+        (int32_t)(entity_id - node->segment_vouch_entity[context_id]) < 0) {
+        node->segment_vouch_entity[context_id] = entity_id;
+        node->segment_vouch_port[context_id] = port;
+    }
+}
+
+// What vouched for `context_id`'s segment was its last announce's, and a new one supersedes it (process_announce()):
+// nothing vouches until an entity of the new list is noted.
+static void segment_vouch_forget(struct tt_Context* node, uint8_t context_id) {
+    node->segment_vouch_port[context_id] = 0;
+}
+
 // A peer's mapping, attached or revalidated as it falls due (peer_segment_resolve()) - except while a publisher of ours
 // holds a claimed slot in it (tt_Publisher_claim()): an application is writing into that slot, so the mapping is not
 // unmapped under it, and the revalidation waits until the claims are resolved. A different peer behind the id meanwhile
@@ -2933,6 +2981,22 @@ static struct tt_SegmentHeader* segment_attach_fenced(struct tt_Context* node, c
     return NULL;
 }
 
+// A mapping just attached for peer `context_id` at `port`, kept only if discovery vouches for it (segment_vouched()):
+// NULL, detached, with *verdict saying why, otherwise.
+static struct tt_SegmentHeader* segment_attach_vouched(const struct tt_Context* node, uint8_t context_id, uint16_t port,
+                                                       struct tt_SegmentHeader* header, size_t bytes,
+                                                       enum tt_SegmentAttach* verdict) {
+    if (header == NULL) {
+        return NULL;
+    }
+    *verdict = segment_vouched(node, context_id, port, header->incarnation);
+    if (*verdict != tt_SEGMENT_ATTACHED) {
+        tt_segment_detach(header, bytes);
+        return NULL;
+    }
+    return header;
+}
+
 // A revalidation's question, asked without remapping (2026-10-23): is the region under the peer's name still the one
 // `entry` maps, and does its owner live? The three answers a re-attach used to find are all a "no" here - the file gone
 // (ABSENT), replaced by a successor's (another identity: create unlinks first, so a successor always has a new file),
@@ -2958,7 +3022,10 @@ static bool segment_answer_stands(struct tt_Context* node, struct tt_SegmentPeer
     if (!entry->recheck_due) {
         return true;
     }
-    if (!segment_still_ours(entry, ip, port, context_id)) {
+    // Still vouched for, too: a mapping attached before an announce superseded what vouched for it is attached again,
+    // and the attach asks again (segment_vouched()).
+    if (!segment_still_ours(entry, ip, port, context_id) ||
+        segment_vouched(node, context_id, port, entry->incarnation) != tt_SEGMENT_ATTACHED) {
         return false;
     }
     entry->recheck_due = false;
@@ -3042,6 +3109,8 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     enum tt_SegmentAttach verdict = tt_SEGMENT_ABSENT;
     uintptr_t identity = 0;
     struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &identity, &verdict);
+    // Before the fence, which writes into the ring: a ring no entity of this peer vouches for is not written at all.
+    header = segment_attach_vouched(node, context_id, port, header, bytes, &verdict);
     header = segment_attach_fenced(node, entry, header, bytes, ip, port, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
@@ -3108,7 +3177,10 @@ static void create_own_segment(struct tt_Context* node) {
     header->owner_ip = own_ip;
     header->owner_port = own_port;
     header->owner_context_id = node->id;
-    header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_wall_ns();
+    // The base itself, 0 included: a reader vouches for it with this context's announced entity ids, which are this
+    // base plus a count (segment_vouched()). A fresh clock reading for a base of 0 - what this did until 2026-10-29 -
+    // would match none of them, and every peer would refuse this segment for the life of the context.
+    header->incarnation = node->entity_id_base;
     header->slots = slots;
     header->slot_bytes = own_slot_bytes(node);
     header->write_index = 0;
@@ -7987,6 +8059,9 @@ static void reset_node_state(struct tt_Context* node) {
     // that never attach anything (stage 1 / S1's "on but unused" cost). The hazard above is closed as before - no
     // entry is read until it has been zeroed - only lazily.
     memset(node->segment_peer_live, 0, sizeof(node->segment_peer_live));
+    // Nothing vouches for any segment until discovery has heard its owner (segment_vouched()).
+    memset(node->segment_vouch_port, 0, sizeof(node->segment_vouch_port));
+    memset(node->segment_vouch_entity, 0, sizeof(node->segment_vouch_entity));
     node->own_segment = NULL;
     node->whole_refusals_logged = 0;
     // The same reasoning one step further, and with more riding on it than on a counter: with the
@@ -19102,6 +19177,10 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         uint32_t endpoint_id = rd32(header, update_entity->endpoint_id);
         uint32_t remote_entity_id = rd32(header, update_entity->entity_id); // Phase 2
         uint16_t remote_tracking_words = rd16(header, update_entity->tracking_words);
+#if tt_SEGMENT_ENABLED
+        // Before anything below can send to this peer, and so attach to its segment.
+        segment_vouch_note(node, header->source, remote_entity_id, sender_port);
+#endif
 
         uint64_t deadline_duration_ns = rd64(header, update_entity->deadline_duration_ns);
         uint64_t liveliness_lease_duration_ns = rd64(header, update_entity->liveliness_lease_duration_ns);
@@ -19315,6 +19394,9 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
         forget_peers_from_source(node, source, /*preserve_ack=*/true);
         forget_discovered_entities_from_source(node, source);
+#if tt_SEGMENT_ENABLED
+        segment_vouch_forget(node, source);
+#endif
         node->update_part_generation[source] = generation;
         node->update_part_count[source] = frag_count;
         update_parts_clear(node, source);

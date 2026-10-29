@@ -126,6 +126,8 @@ static void setup(struct arm* arm) {
     node->tx_size = sizeof(node->tx_buffer);
     node->hal.own_ip = SENDER_IP;
     node->hal.own_port = SENDER_PORT;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
 
     arm->topic.name = "claim_topic";
     arm->topic.data_size = sizeof(struct sample);

@@ -103,6 +103,8 @@ static void init_sender(struct tt_Context* node, struct tt_TypeSupport* topic, s
     node->tx_size = sizeof(node->tx_buffer);
     node->hal.own_ip = PEER_IP;
     node->hal.own_port = PEER_PORT;
+    segment_vouch_note(node, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
 
     memset(topic, 0, sizeof(*topic));
     topic->name = "span_topic";

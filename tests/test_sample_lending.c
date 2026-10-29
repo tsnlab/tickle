@@ -261,6 +261,8 @@ static void rig_up(bool with_ring, uint16_t depth) {
     sender->tx_size = sizeof(sender->tx_buffer);
     sender->hal.own_ip = PEER_IP;
     sender->hal.own_port = PEER_PORT;
+    segment_vouch_note(sender, OWNER_ID, rig.owner.entity_id_base,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
     init_topic(&rig.topic, "lend_topic");
     struct tt_Publisher* pub = &rig.pub;
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
@@ -373,6 +375,7 @@ static void test_a_held_slot_blocks_no_ring(void) {
     rig.pub.peers[1].context_id = OWNER2_ID;
     rig.pub.peers[1].ip = OWNER2_IP;
     rig.pub.peers[1].port = OWNER_PORT;
+    segment_vouch_note(&rig.sender, OWNER2_ID, rig.owner2.entity_id_base, OWNER_PORT); // discovery has heard it
     EXPECT_TRUE(peer_segment(&rig.sender, OWNER2_ID, OWNER2_IP, OWNER_PORT) != NULL);
     cb.mode = KEEP_FIRST;
     publish(300);

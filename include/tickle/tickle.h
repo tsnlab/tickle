@@ -230,8 +230,15 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 
 // A shared-memory segment's own header, validated by a reader after it attaches (SHM_PLAN.md stage
 // 1). The name a reader computes - (peer address, peer port, peer context id), all from ordinary
-// discovery - is enough to be unique across network namespaces, because the address is exactly what
-// separates them. It is NOT enough to be certain, and this header is the difference.
+// discovery - is unique within one network stack, where the data socket's (address, port) is. It is
+// NOT unique across network namespaces, which share /dev/shm and can hold the same address: two lo-only
+// namespaces both have 127.0.0.1, and a context in each at the same port and context id names the same
+// file, so a reader in one attached to the other's ring and cross-delivered (13 of 20 rounds when forced,
+// examples/perf_hil/experiments/shm_netns_collision.sh, 2026-10-29). So the header is checked against
+// what discovery told this reader over UDP, which is per namespace: `incarnation` is the owner's
+// tt_Context.entity_id_base, and an entity id the peer announced must lie within tt_SEGMENT_VOUCH_SPAN
+// above it (segment_vouched(), tickle.c). A segment no entity of the peer vouches for is refused, and
+// the peer is reached over UDP.
 //
 // What the name cannot see: a context id is re-handed once its holder dies, so a segment left by a
 // dead context legitimately carries the name a new reader computes, and the triple has nothing in
@@ -240,9 +247,8 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // a fall back to UDP, which is the same move the wire already makes with its version check, in the
 // one place a wire check cannot reach.
 //
-// `incarnation` is drawn per launch from the same clock as tt_Context.entity_id_base. It is not
-// derivable by the peer, so it travels here rather than on the wire: stage 0's claim is that the
-// wire is untouched, and the address already distinguishes what a wire token would.
+// `incarnation` is tt_Context.entity_id_base itself, drawn per launch. The wire carries no copy of it,
+// but every entity id discovery announces is derived from it, which is what the check above compares.
 #define tt_SEGMENT_MAGIC 0x544b5347U // "TKSG", checked before anything else in the mapping is read
 // 2 since 2026-09-29: the header gained reader_waiting. A context built against version 1 reads the
 // ring correctly and never sets the flag, so its peers would publish to a sleeping owner and never
@@ -303,7 +309,7 @@ struct tt_SegmentHeader {
     uint16_t owner_port;
     uint8_t owner_context_id;
     uint8_t reserved2;
-    uint32_t incarnation; // per launch: distinguishes a re-handed context id from its predecessor
+    uint32_t incarnation; // the owner's entity_id_base: tells a predecessor, or another namespace, from the peer
 
     // The ring: many writers - every peer that wants to reach the owner - and one reader, the owner
     // itself. (This comment said "single writer, single reader" until 2026-09-29; that was the
@@ -406,6 +412,10 @@ enum tt_SegmentAttach {
     tt_SEGMENT_WRONG_OWNER, // header's triple is not the peer we computed the name for: a collision
     tt_SEGMENT_STALE,       // right owner, different incarnation: the peer we knew has been replaced
     tt_SEGMENT_ORPHANED,    // a file no live context owns: left by a dead one, a ring nobody drains
+    // Present and well-formed, but discovery has not heard an entity of this peer from this port yet, so nothing
+    // vouches for the incarnation (segment_vouched(), tickle.c). Asked again later. An entity id that does not fit the
+    // incarnation is WRONG_OWNER instead: another namespace's segment under the same name.
+    tt_SEGMENT_UNVOUCHED,
     tt_SEGMENT_ATTACH_COUNT
 };
 
@@ -1918,6 +1928,12 @@ struct tt_Context {
     // mincore()). One byte per id rather than a bitmap: two threads setting up two different ids then write two
     // different bytes, never one shared word.
     uint8_t segment_peer_live[tt_MAX_CONTEXT_IDS];
+    // Per remote context id, what discovery vouches for about its segment (segment_vouched(), tickle.c): the earliest
+    // entity id its latest announce listed (earliest modulo 2^32, by signed difference) and the data port the announce
+    // came from, 0 when none has been heard since the last announce superseded it. Discovery came over UDP, so it is
+    // this namespace's peer; a segment whose incarnation these do not fit is another namespace's under the same name.
+    uint32_t segment_vouch_entity[tt_MAX_CONTEXT_IDS];
+    uint16_t segment_vouch_port[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
     // One bit per tt_WholeRefusal cause, so the reason a whole-record send was refused is stated once per
     // cause rather than per sample. Added 2026-10-03 after four rig campaigns inferred it from throughput,

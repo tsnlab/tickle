@@ -58,8 +58,8 @@ MUTANTS = [
     (
         "a revalidation keeping a mapping the name still holds",
         "src/tickle.c",
-        "    if (!segment_still_ours(entry, ip, port, context_id)) {\n        return false;",
-        "    if (true) {\n        return false;",
+        "    if (!segment_still_ours(entry, ip, port, context_id) ||\n",
+        "    if (true ||\n",
     ),
     (
         "a kept mapping being the file attached",

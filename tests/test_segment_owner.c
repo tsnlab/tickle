@@ -84,6 +84,13 @@ static void init_context(struct tt_Context* node, uint8_t id, uint32_t incarnati
     node->hal.own_port = owner_port;
 }
 
+// `writer` has heard an announce of the owner whose incarnation (pid) is `incarnation`: what lets it attach to that
+// owner's segment (segment_vouched()). A successor's announce supersedes its predecessor's (process_announce()).
+static void hear_owner(struct tt_Context* writer, uint32_t incarnation) {
+    segment_vouch_forget(writer, OWNER_ID);
+    segment_vouch_note(writer, OWNER_ID, incarnation, owner_port);
+}
+
 static void owner_path(char* path, size_t size) {
     (void)segment_name(path, size, OWNER_IP, owner_port, OWNER_ID);
 }
@@ -191,6 +198,7 @@ static void test_a_dead_owners_segment_is_never_written(void) {
     // Live: attached, and to this owner. Its creating descriptor was closed inside tt_segment_create() long before.
     struct tt_Context attached_before;
     init_context(&attached_before, WRITER_ID, 1U);
+    hear_owner(&attached_before, (uint32_t)first);
     struct tt_SegmentHeader* mapping = peer_segment(&attached_before, OWNER_ID, OWNER_IP, owner_port);
     EXPECT_TRUE(mapping != NULL);
     EXPECT_EQ_U32((uint32_t)first, mapping != NULL ? mapping->incarnation : 0U);
@@ -206,6 +214,7 @@ static void test_a_dead_owners_segment_is_never_written(void) {
     // A writer asking now does not attach: the datagram goes over UDP (peer_segment() NULL is the unattached path).
     struct tt_Context fresh;
     init_context(&fresh, WRITER_ID, 2U);
+    hear_owner(&fresh, (uint32_t)first); // the corpse is vouched for: ownership alone must refuse it
     EXPECT_TRUE(peer_segment(&fresh, OWNER_ID, OWNER_IP, owner_port) == NULL);
     EXPECT_EQ_U32(1, fresh.segment_attach[tt_SEGMENT_ORPHANED]);
     EXPECT_EQ_U32(0, fresh.segment_attach[tt_SEGMENT_ATTACHED]);
@@ -220,6 +229,8 @@ static void test_a_dead_owners_segment_is_never_written(void) {
     pid_t second = spawn_owner();
     EXPECT_TRUE(second > 0);
     if (second > 0) {
+        hear_owner(&fresh, (uint32_t)second);
+        hear_owner(&attached_before, (uint32_t)second);
         struct tt_SegmentHeader* found = send_until_changed(&fresh, NULL, 4U);
         EXPECT_TRUE(found != NULL);
         EXPECT_EQ_U32((uint32_t)second, found != NULL ? found->incarnation : 0U);
@@ -266,6 +277,7 @@ static void test_a_revalidation_keeps_a_live_owners_mapping(void) {
     }
     struct tt_Context writer;
     init_context(&writer, WRITER_ID, 1U);
+    hear_owner(&writer, (uint32_t)first);
     struct tt_SegmentHeader* mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, owner_port);
     EXPECT_TRUE(mapping != NULL);
     const uint32_t attached = attach_attempts(&writer);
@@ -289,6 +301,7 @@ static void test_a_revalidation_keeps_a_live_owners_mapping(void) {
     pid_t second = spawn_owner();
     EXPECT_TRUE(second > 0);
     if (second > 0) {
+        hear_owner(&writer, (uint32_t)second);
         bool was_due = false;
         struct tt_SegmentHeader* now = revalidate(&writer, &was_due);
         EXPECT_TRUE(was_due);

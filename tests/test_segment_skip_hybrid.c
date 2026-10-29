@@ -148,6 +148,8 @@ static void rig_up(uint16_t depth) {
     sender->tx_size = sizeof(sender->tx_buffer);
     sender->hal.own_ip = PEER_IP;
     sender->hal.own_port = PEER_PORT;
+    segment_vouch_note(sender, OWNER_ID, OWNER_INCARNATION,
+                       OWNER_PORT); // discovery has heard the owner (segment_vouched())
     init_topic(&rig.topic, "hybrid_skip_topic");
     struct tt_Publisher* pub = &rig.pub;
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
