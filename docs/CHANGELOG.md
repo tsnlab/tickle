@@ -13,6 +13,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed (breaking)
 
+- **Same-host segments are named `tickle-seg-<ip>-<port>`, without the context id** ([DESIGN.md](DESIGN.md)
+  section 10). The data socket's address and port are unique per network stack already. A host running this build
+  beside an older one finds no segment between the two, and they talk over UDP.
 - **QoS at creation, rmw-shaped** (QoS plan, 2026-10-18; [DESIGN.md](DESIGN.md) section 9). Endpoints are created with
   `tt_Node_create_publisher/_subscriber/_client/_server(node, ep, type, name, qos, options, storage, size)`:
   `struct tt_QosProfile` (one struct per policy, TickLE's extensions inside), `tt_*Options` for what is not QoS, and the
@@ -218,6 +221,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A writer attaches only to a segment discovery vouches for** (2026-10-29; [DESIGN.md](DESIGN.md) section 10).
+  Network namespaces share `/dev/shm` and can share an address, so two lo-only namespaces named the same segment and
+  cross-delivered (forced: 20/20 rounds on main, 0/20 fixed, `shm_netns_collision.sh`). The segment's incarnation
+  (the owner's `entity_id_base`) must fit an entity id its announce carried over UDP; otherwise the writer uses UDP.
 - **A reader first heard after the 8th publish gets the samples the writer still holds** (C8; RESULTS `C8`). The match
   HEARTBEAT counted down per publish whether or not the reader had acknowledged, so such a reader took the next sample
   as its start. The last match HEARTBEAT now stays until the reader's ack passes the match point.
