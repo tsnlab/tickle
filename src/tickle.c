@@ -13341,6 +13341,15 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
     if (!large_resend_due(node, pub, seq_no, target, node->large.acknack_order)) {
         return LARGE_RESEND_SENT; // its last resend is not yet shown lost: on its way, or the reader asks again
     }
+#if tt_ACKNACK_ROOM
+    if (node->large.room_limited) { // C7 wire experiment: one of the room the reader advertised
+        if (node->large.room_budget == 0) {
+            return LARGE_RESEND_SENT; // the reader's next ACKNACK asks again
+        }
+        node->large.room_budget--;
+        node->large.room_sent++;
+    }
+#endif
     uint32_t length = large_length(index, record->cdr_len);
     uint8_t framing[LARGE_FRAMING_MAX];
     uint32_t skip = 0;
@@ -16494,6 +16503,28 @@ struct acknack_skip {
     int high_bit;
 };
 
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+// The kernel's size (truesize) of one 1,472-byte UDP datagram - a large unit's repair - in a receive buffer: 2,304
+// bytes, measured on this PC with SO_MEMINFO over 1, 10 and 100 queued (lo, 2026-10-30).
+#define ACKNACK_ROOM_DATAGRAM_BYTES 2304U
+
+// C7 wire experiment (config.h tt_ACKNACK_ROOM): what an ACKNACK advertises in its reserved field - the repairs the
+// data socket can still take (tt_rx_room_bytes() in datagrams of a repair's size), less `in_flight` it asked for
+// earlier and has not yet received, plus 1; 0 when the HAL cannot say (no limit). At most 65,535.
+static uint16_t acknack_room(struct tt_Context* node, uint32_t in_flight) {
+    uint32_t bytes = tt_rx_room_bytes(node);
+    if (bytes == UINT32_MAX) {
+        return 0;
+    }
+    uint32_t room = bytes / ACKNACK_ROOM_DATAGRAM_BYTES;
+    room = room > in_flight ? room - in_flight : 0U;
+    node->large.room_adverts++;
+    node->large.room_zero += room == 0 ? 1U : 0U;
+    node->large.room_sum += room;
+    return room >= UINT16_MAX ? (uint16_t)UINT16_MAX : (uint16_t)(room + 1U);
+}
+#endif
+
 // Requests (ACKNACK "please resend" bits) only positions low_bit..high_bit relative to ack_seq_no,
 // further masked to what's still missing in received_bitmap, less the skip_count runs in skips
 // (answer_ack_request() leaves out repairs still on their way). send_acknack() below is the usual
@@ -16552,11 +16583,20 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     acknack_header->reserved = 0;
     int first_named = -1;
     int last_named = -1;
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+    uint32_t left_out = 0; // missing units left out as repairs on their way (skips): they will take room too
+#endif
     for (uint16_t word = 0; word < wire_words; word++) {
         uint64_t request = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+        const uint64_t missing = request;
+#endif
         for (int skip = 0; skip < skip_count; skip++) {
             request &= ~bitmap_range_in_word(word, skips[skip].low_bit, skips[skip].high_bit);
         }
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+        left_out += (uint32_t)__builtin_popcountll(missing & ~request);
+#endif
         acknack_header->bitmap[word] = request;
         if (request != 0) {
             int base = word * tt_RELIABLE_BITMAP_WORD_BITS;
@@ -16565,6 +16605,9 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
         }
     }
     bool names_watermark = first_named == 0;
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+    acknack_header->reserved = acknack_room(node, left_out);
+#endif
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
     acknack_header->entity_id = proxy->entity_id;
@@ -22249,6 +22292,15 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
             word &= word - 1; // clear the lowest set bit
             uint32_t missing_seq_no = seq_no + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx;
             any_gone |= retransmit_one_sample(node, pub, cache, depth, missing_seq_no, target);
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+            if (node->large.room_limited && node->large.room_budget == 0) {
+                // C7 wire experiment: the reader's advertised room is spent; the rest of its requests wait for its
+                // next ACKNACK (and the room that one shows), lowest first as always.
+                node->large.room_cut += (word != 0 || word_idx + 1U < words) ? 1U : 0U;
+                word_idx = words;
+                break;
+            }
+#endif
         }
     }
 
@@ -22522,6 +22574,9 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     uint32_t seq_no = rd32(header, acknack_header->seq_no);
     uint32_t entity_id = rd32(header, acknack_header->entity_id);
     uint32_t sender_entity_id = rd32(header, acknack_header->sender_entity_id);
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+    const uint16_t room_code = rd16(header, acknack_header->reserved); // acknack_room(): 0 none, else room + 1
+#endif
     if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
         answer_discovery_request(node, header->source, sender_ip, sender_port);
         return true;
@@ -22632,11 +22687,19 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
             large_order_begin(node, pub, &target, sender_entity_id, prev_ack, seq_no, bitmap, bitmap_words,
                               &large_order);
             node->large.acknack_order = &large_order;
+#if tt_ACKNACK_ROOM
+            // C7 wire experiment: this answer's large-unit repairs, at most the room the reader advertised.
+            node->large.room_limited = room_code != 0;
+            node->large.room_budget = room_code != 0 ? room_code - 1U : 0U;
+#endif
         }
 #endif
         retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);
 #if tt_LARGE_SAMPLES
         node->large.acknack_order = NULL;
+#if tt_ACKNACK_ROOM
+        node->large.room_limited = false;
+#endif
 #endif
     }
 
@@ -28379,6 +28442,12 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->large.send_waits, (unsigned long)node->large.encoded_by_range,
                 (unsigned long)node->large.encode_failed, (unsigned long)node->large.send_writable,
                 (unsigned long)node->large.discovery_replies_skipped, (unsigned long)node->large.resend_held);
+#if tt_ACKNACK_ROOM
+    TT_LOG_INFO("Node %u room: adverts=%lu zero=%lu sum=%lu cut=%lu sent=%lu", node->id,
+                (unsigned long)node->large.room_adverts, (unsigned long)node->large.room_zero,
+                (unsigned long)node->large.room_sum, (unsigned long)node->large.room_cut,
+                (unsigned long)node->large.room_sent);
+#endif
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #if tt_LARGE_SHM
     TT_LOG_INFO("Node %u large_ref: sent=%lu received=%lu refused=%lu dropped=%lu region_full=%lu", node->id,

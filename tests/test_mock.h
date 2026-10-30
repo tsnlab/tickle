@@ -124,6 +124,8 @@ int test_mock_tx_writable_arms = 0;
 bool test_mock_receive_reports_writable = false; // the next tt_receive() reports the socket writable, as a wait would
 uint32_t test_mock_receiver_drops = 0; // tt_rx_receiver_drops(): datagrams the "receiver" lost, a count that grows
 uint32_t test_mock_drain_bytes = 0;    // the datagram length core last asked tt_rx_drain_start() to drain
+// tt_rx_room_bytes() (C7 wire experiment): NULL answers UINT32_MAX (unknown) for every context; a sim sets its own.
+uint32_t (*test_mock_rx_room_hook)(const struct tt_Context* node) = NULL;
 #else
 extern uint64_t test_mock_now;
 extern uint64_t test_mock_cpu_ns;
@@ -164,6 +166,7 @@ extern void (*test_mock_try_receive_hook)(void);
 extern int test_mock_try_receive_calls;
 extern uint32_t test_mock_receiver_drops;
 extern uint32_t test_mock_drain_bytes;
+extern uint32_t (*test_mock_rx_room_hook)(const struct tt_Context* node);
 extern int32_t test_mock_nonblocking_room;
 extern int test_mock_nonblocking_calls;
 extern bool test_mock_tx_writable_supported;
@@ -217,6 +220,7 @@ static inline void test_mock_reset(void) {
     test_mock_nonblocking_calls = 0;
     test_mock_receiver_drops = 0;
     test_mock_drain_bytes = 0;
+    test_mock_rx_room_hook = NULL;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -591,6 +595,12 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     test_mock_drain_bytes = datagram_bytes;
     return false;
 }
+
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+uint32_t tt_rx_room_bytes(const struct tt_Context* node) {
+    return test_mock_rx_room_hook != NULL ? test_mock_rx_room_hook(node) : UINT32_MAX;
+}
+#endif
 
 // The receiver drops a test says the HAL counted (test_mock_receiver_drops, every context alike).
 uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {

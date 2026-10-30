@@ -528,6 +528,7 @@ struct sim_datagram {
     uint8_t from;
     uint32_t to_ip; // 0: broadcast (test_mock_send_hook_ip)
     uint32_t len;
+    bool original; // sent by a publish (sim_publishing): a first send, not a repair or a timer's
     uint8_t bytes[SIM_DATAGRAM_MAX];
 };
 static struct sim_datagram* sim_queue;
@@ -579,6 +580,10 @@ static uint64_t sim_reader_service_ns;
 static uint32_t sim_reader_capacity;
 static uint64_t sim_reader_free_ns;
 static uint64_t sim_socket_drops;
+// Of sim_socket_drops, those of datagrams a publish sent (struct sim_datagram.original): the rest are repairs and
+// control traffic dropped at the socket.
+static uint64_t sim_socket_drops_original;
+static bool sim_publishing;
 // With a second reader: the writer's broadcast is lost to the first reader alone, never to reader_b.
 static bool sim_loss_first_reader_only;
 // The first send of every sim_whole_loss_every-th sample sim_publish() publishes (by its seed; 0: none) goes nowhere,
@@ -663,6 +668,7 @@ static void sim_capture(const void* buf, size_t len) {
     d->from = sim_acting;
     d->to_ip = test_mock_send_hook_ip;
     d->len = (uint32_t)len;
+    d->original = sim_publishing;
     memcpy(d->bytes, buf, len);
     sim_tail++;
     sim_sent[sim_acting]++;
@@ -693,6 +699,7 @@ static void sim_deliver(struct sim_datagram* d) {
     if (sim_reader_service_ns != 0 && d->from == SENDER_ID) {
         if (sim_late_tail - sim_late_head >= sim_reader_capacity) {
             sim_socket_drops++;
+            sim_socket_drops_original += d->original ? 1U : 0U;
             return;
         }
         uint64_t start = sim_reader_free_ns > test_mock_now ? sim_reader_free_ns : test_mock_now;
@@ -873,7 +880,26 @@ static bool sim_step(void) {
     return true;
 }
 
+#if tt_ACKNACK_ROOM
+// tt_rx_room_bytes() for the sim's reader (C7 wire experiment): a slow one's socket's free places (sim_deliver()), each
+// at the kernel size of a repair datagram, as hal_linux.c reads SO_MEMINFO; a fast one's empty default socket; unknown
+// for any other context.
+static uint32_t sim_rx_room(const struct tt_Context* node) {
+    if (node != &receiver) {
+        return UINT32_MAX;
+    }
+    if (sim_reader_service_ns == 0) {
+        return 2U * tt_SOCKET_BUFFER_SIZE; // a reader that keeps up: its socket empty, as the kernel doubles it
+    }
+    uint32_t queued = sim_late_tail - sim_late_head;
+    return queued < sim_reader_capacity ? (sim_reader_capacity - queued) * 2304U : 0U;
+}
+#endif
+
 static void sim_start(uint32_t loss_per_mille) {
+#if tt_ACKNACK_ROOM
+    test_mock_rx_room_hook = sim_rx_room;
+#endif
     if (sim_queue == NULL) {
         sim_queue = (struct sim_datagram*)calloc(SIM_QUEUE, sizeof(struct sim_datagram));
     }
@@ -904,6 +930,7 @@ static void sim_start(uint32_t loss_per_mille) {
     sim_reader_capacity = 0;
     sim_reader_free_ns = 0;
     sim_socket_drops = 0;
+    sim_socket_drops_original = 0;
     sim_loss_first_reader_only = false;
     sim_whole_loss_every = 0;
     sim_whole_lost = 0;
@@ -930,7 +957,9 @@ static tt_ret_t sim_publish(uint8_t seed, uint64_t budget) {
     }
     sim_whole_losing = sim_whole_loss_every != 0 && seed % sim_whole_loss_every == 0;
     sim_whole_lost += sim_whole_losing ? 1U : 0U;
+    sim_publishing = true;
     tt_ret_t result = tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len);
+    sim_publishing = false;
     sim_whole_losing = false;
     uint64_t since = test_mock_now;
     while (result == tt_RET_WOULD_BLOCK && test_mock_now - since < budget) {
@@ -939,7 +968,9 @@ static tt_ret_t sim_publish(uint8_t seed, uint64_t budget) {
             test_mock_now += tt_MILLISECOND;
         }
         sim_acting = SENDER_ID;
+        sim_publishing = true;
         result = tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len);
+        sim_publishing = false;
     }
     sim_drain();
     return result;

@@ -93,6 +93,9 @@
 #   LOAD: the PC is shared; before each rep the harness waits (at most 120 s) for the 1-minute load to fall to 4, and a
 #     rep that starts above 4 is VOID for this phase (stricter than nproc/2 above).
 #
+#   SLOW_W (C7, 2026-10-29): the treatment arm's spin, default 25000 us. SLOW_SUB_EXTRA: more reader arguments for the
+#     slow phase, e.g. "-S 262144" (large_sample_bench.c
+#     -S, the socket buffer asked): on an idle PC a reader spinning 25 ms with the default buffer dropped nothing.
 # Usage: TREES="P=/tree [F=/tree ...]" [PHASE=both] [REPS=3] [DUR=30] [OUT=dir] large_repair_followups_netns.sh
 #   Each tree holds this harness, wifi_burst_loss_netns.sh, wifi_link_node.c, large_sample_bench.c, src/ include/ and
 #   examples/perf_hil/tickle/common/ (a git archive or a worktree). OUT defaults to
@@ -141,9 +144,9 @@ if [ "${READ_ONLY:-0}" != 1 ]; then
                 job "$label" "$dir" keepall "$rep" ARMS="ctl ge5b4" CELLS="rel_large" LARGE_PUB_ARGS="-A"
             fi
             if [ "$PHASE" = slow ] || [ "$PHASE" = all ] || [ "$PHASE" = order ]; then
-                for w in 0 25000; do
+                for w in 0 "${SLOW_W:-25000}"; do
                     job "$label" "$dir" "slow_w$w" "$rep" ARMS="ctl" CELLS="rel_large" LARGE_HZ=30 BANDS=1 \
-                        NETEM_BASE="limit 100000 delay 100us rate 1gbit" LARGE_SUB_ARGS="-w $w"
+                        NETEM_BASE="limit 100000 delay 100us rate 1gbit" LARGE_SUB_ARGS="-w $w ${SLOW_SUB_EXTRA:-}"
                 done
             fi
             if [ "$PHASE" = slow ]; then
@@ -208,7 +211,7 @@ if phase in ("slow", "all", "order"):
     print("--- slow: per tree and W, pooled over usable reps: resent, reader missing units, socket drops, resends per "
           "missing unit (limit 1.25), duplicates / resent (limit 20%), delivered")
     for tree in trees:
-        for w in ("0", "25000"):
+        for w in ("0", os.environ.get("SLOW_W", "25000")):
             ok = []
             for run in runs(out / tree / f"slow_w{w}"):
                 r = read_run(run)

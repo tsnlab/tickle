@@ -660,6 +660,19 @@ struct tt_LargeState {
     uint32_t repair_serial;
     uint32_t repairs_live;
     uint64_t resend_held;
+#if tt_ACKNACK_ROOM
+    // C7 wire experiment (config.h tt_ACKNACK_ROOM). Writer: room_limited while an ACKNACK advertising room is
+    // answered, room_budget the large-unit repairs it may still be sent; room_cut counts answers cut short by it,
+    // room_sent the repairs sent under a limit. Reader: room_adverts its ACKNACKs that advertised room, room_zero those
+    // whose room was 0, room_sum the room they advertised (its mean is room_sum / room_adverts).
+    bool room_limited;
+    uint32_t room_budget;
+    uint64_t room_cut;
+    uint64_t room_sent;
+    uint64_t room_adverts;
+    uint64_t room_zero;
+    uint64_t room_sum;
+#endif
 };
 #endif
 

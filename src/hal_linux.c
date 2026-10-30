@@ -446,6 +446,23 @@ uint32_t tt_hal_rx_socket_drops(const struct tt_Context* node) {
     return socket_drops(node->hal.sock) + socket_drops(node->hal.data_sock);
 }
 
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+uint32_t tt_rx_room_bytes(const struct tt_Context* node) {
+    int sock = node->hal.data_sock;
+    uint32_t info[SK_MEMINFO_VARS];
+    socklen_t length = sizeof(info);
+    memset(info, 0, sizeof(info));
+    // NOLINTNEXTLINE(misc-include-cleaner) - SO_MEMINFO: as in socket_drops()
+    if (sock < 0 || getsockopt(sock, SOL_SOCKET, SO_MEMINFO, (void*)info, &length) < 0 ||
+        length < (socklen_t)(sizeof(uint32_t) * (SK_MEMINFO_RCVBUF + 1))) {
+        return UINT32_MAX;
+    }
+    uint32_t rcvbuf = info[SK_MEMINFO_RCVBUF];
+    uint32_t used = info[SK_MEMINFO_RMEM_ALLOC];
+    return rcvbuf > used ? rcvbuf - used : 0U;
+}
+#endif
+
 uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {
 #if tt_RX_DRAIN
     return tt_hal_rx_socket_drops(node) + (uint32_t)node->hal.drain_truncated;

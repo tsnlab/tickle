@@ -327,6 +327,11 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes);
 // say. Not path loss: a receiver that fell behind. Core reads it to keep such drops out of the loss the hybrid
 // transport's control law sees (tickle.c, "Receiver drops are not path loss").
 uint32_t tt_rx_receiver_drops(const struct tt_Context* node);
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+// C7 wire experiment (config.h tt_ACKNACK_ROOM): the bytes the data socket - where repairs addressed to this context
+// arrive - can still take, in the kernel's accounting (SO_MEMINFO rcvbuf - rmem_alloc); UINT32_MAX when unknown.
+uint32_t tt_rx_room_bytes(const struct tt_Context* node);
+#endif
 #define tt_HAL_RECEIVER_DROPS 1 // a tree with tt_rx_receiver_drops() (a harness built against older trees asks)
 
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a

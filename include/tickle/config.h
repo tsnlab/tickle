@@ -382,6 +382,14 @@
 #ifndef tt_LARGE_SAMPLES
 #define tt_LARGE_SAMPLES 0
 #endif
+// C7 wire experiment (2026-10-30, branch c7-wire-room, NOT for landing): a reader advertises its receive room in its
+// ACKNACK's reserved 16 bits - free bytes of its data socket (SO_MEMINFO rcvbuf - rmem_alloc) in datagrams of a large
+// unit's kernel size, less the repairs it asked for that are still on their way, plus 1 (0: no advertisement, what
+// every other build sends) - and a writer answers at most that many large-unit repairs per ACKNACK. 0 is main's
+// behaviour on both sides; with large samples off nothing of it is compiled.
+#ifndef tt_ACKNACK_ROOM
+#define tt_ACKNACK_ROOM 1
+#endif
 // 8192 bits with large samples (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so the window
 // is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control datagram.
 // 4096 otherwise, as before stage 2: every window-sized array - on the stack of the ACKNACK path, in a caller's

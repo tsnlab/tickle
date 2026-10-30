@@ -50,7 +50,9 @@
 //
 // -P wifi (wifi_burst_loss_netns.sh, 2026-10-23): the context is created with tt_Context_create_with() and one link of
 // -b's broadcast and profile WIFI, the -F/-X/-C settings in its net options, instead of tt_Context_create() and
-// _tt_CONFIG; without -P nothing changes.
+// _tt_CONFIG; without -P nothing changes. -S BYTES (C7, 2026-10-29) asks the sockets for that buffer the same way
+// (tt_Context_create_with(), the -F/-X/-C settings carried over), and caps the receive drain at as much: a reader that
+// holds less than a sample.
 
 #ifndef tt_MAX_BUFFER_LENGTH
 #define tt_MAX_BUFFER_LENGTH 65507 // rmw_tickle's datagram: tt_MAX_SAMPLE_LENGTH 65507, and large samples above it
@@ -425,6 +427,7 @@ struct options {
     double halve_after_s;   // -H: the rate halves after this many seconds; 0: never
     uint32_t region_chunks; // -B: step B's shared region for the publisher, 0 for none (fragments through the ring)
     bool wifi;              // -P wifi: one link of profile WIFI (see the header)
+    uint32_t socket_buffer; // -S BYTES: SO_RCVBUF/SO_SNDBUF asked (tt_SocketOptions.buffer_size); 0: the default
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
@@ -445,10 +448,11 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
                               false,
                               0.0,
                               0,
-                              false};
+                              false,
+                              0};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:D:P:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:D:P:S:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -502,6 +506,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             opts->cap_off = true;
             break;
 #endif
+        case 'S':
+            opts->socket_buffer = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
+            break;
         case 'w':
             decode_spin_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
             break;
@@ -898,14 +905,21 @@ int main(int argc, char** argv) {
 
     static struct tt_Context node;
     bool created = false;
-    if (opts.wifi) {
+    if (opts.wifi || opts.socket_buffer != 0) {
         struct tt_InitOptions init;
         memset(&init, 0, sizeof(init));
         init.net.broadcast = opts.broadcast;
-        init.net.links[0].broadcast = opts.broadcast;
-        init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
-        init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
-        init.net.link_count = 1;
+        if (opts.wifi) {
+            init.net.links[0].broadcast = opts.broadcast;
+            init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
+            init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
+            init.net.link_count = 1;
+        }
+        init.socket.buffer_size = opts.socket_buffer;
+        // and the receive drain no larger (tt_RX_DRAIN builds): its default grows to megabytes in user space, and a
+        // reader whose socket holds less than a sample then still drops nothing (C7 netns, 2026-10-29)
+        init.socket.drain_bytes = opts.socket_buffer;
+        init.socket.drain_bytes_max = opts.socket_buffer;
         init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
         init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;
         init.net.reassembly_cap_off = _tt_CONFIG.reassembly_cap_off;
