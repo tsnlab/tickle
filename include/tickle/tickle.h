@@ -630,9 +630,14 @@ struct tt_LargeState {
     // Counters, on the rx line: direct_reads, reads aimed; direct_runs, runs taken in place; direct_missed, aimed reads
     // that were something else (put back together in the receive buffer); direct_cancelled, runs read in place whose
     // assembly was freed before core took them (dropped: a RELIABLE writer sends them again).
+    // direct_taking: the buffer of the assembly a run read in place lies in, while core takes that run - its units are
+    // read from there until the last; an assembly freed meanwhile (a jump of the watermark gives it up, say) leaves its
+    // buffer to the run's end, direct_taking_freed, which gives it back (tickle.c large_direct_taken()).
     uint8_t* direct_dest;
     const uint8_t* direct_split;
     uint8_t* direct_parked;
+    uint8_t* direct_taking;
+    bool direct_taking_freed;
     const struct tt_LargeAssembly* direct;
     uint32_t direct_bytes;
     uint32_t direct_busy;

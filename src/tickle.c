@@ -20542,6 +20542,16 @@ static void large_direct_release_parked(struct tt_Context* node) {
     }
 }
 
+// A run read in place has been taken: the buffer it lay in goes back now if its assembly was freed meanwhile.
+static void large_direct_taken(struct tt_Context* node) {
+    uint8_t* buffer = node->large.direct_taking;
+    node->large.direct_taking = NULL;
+    if (node->large.direct_taking_freed) {
+        node->large.direct_taking_freed = false;
+        large_give_back(node, buffer);
+    }
+}
+
 // After a run (units index .. index + run_count - 1 of `count`) was handed to the assemblies: the hint for the next
 // read. `in_place`: this run was read in place.
 static void large_direct_aim(struct tt_Context* node, struct tt_Header* header, const struct tt_FragRunLHeader* run,
@@ -20609,7 +20619,13 @@ static void large_assembly_free(struct tt_Context* node, struct tt_LargeAssembly
         // The polling thread may be reading into it right now: it gives it back after (large_direct_release_parked()).
         __atomic_store_n(&node->large.direct_parked, buffer, __ATOMIC_RELAXED);
     } else if (!large_lent(node, buffer)) {
-        large_give_back(node, buffer);
+        if (buffer == node->large.direct_taking) {
+            // A run read in place into it is being taken, and the units after this one are read from here (the drain
+            // a unit ran gave this assembly up, say): it goes back once the run is (large_direct_taken()).
+            node->large.direct_taking_freed = true;
+        } else {
+            large_give_back(node, buffer);
+        }
     }
 #else
     if (!large_lent(node, buffer)) {
@@ -25068,6 +25084,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
             node->large.direct_cancelled++;
             return true;
         }
+        node->large.direct_taking = node->large.direct->buffer; // the payload's own: the hint was made into it
         node->large.direct_runs++;
     }
     node->large.placed = NULL;
@@ -25080,6 +25097,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     if (index != 0 &&
         large_run_batched(node, header, entity_id, seq_no, index, count, run_count, payload, sender_ip, sender_port)) {
 #if LARGE_DIRECT
+        large_direct_taken(node);
         large_direct_aim(node, header, run, index, count, run_count, in_place);
 #endif
         return true;
@@ -25103,6 +25121,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         payload += fragment.length;
     }
 #if LARGE_DIRECT
+    large_direct_taken(node);
     large_direct_aim(node, header, run, index, count, run_count, in_place);
 #endif
     return true;

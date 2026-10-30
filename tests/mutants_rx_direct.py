@@ -197,6 +197,27 @@ MUTANTS = [
         CORE,
     ),
     (
+        "free: the run source given back while the run is still read from it",
+        "src/tickle.c",
+        "        if (buffer == node->large.direct_taking) {",
+        "        if (buffer == node->large.direct_taking && false) {",
+        CORE,
+    ),
+    (
+        "free: the run source never named (direct_taking not set for a run read in place)",
+        "src/tickle.c",
+        "        node->large.direct_taking = node->large.direct->buffer;",
+        "        (void)0;",
+        CORE,
+    ),
+    (
+        "free: the run source freed during its run never given back",
+        "src/tickle.c",
+        "    if (node->large.direct_taking_freed) {",
+        "    if (false) {",
+        CORE,
+    ),
+    (
         "batch: a run across the watermark taken as a span",
         "src/tickle.c",
         "    if (seq_delta(first->seq_no, proxy->ack_seq_no) < 0) {\n        return false;\n    }\n"
