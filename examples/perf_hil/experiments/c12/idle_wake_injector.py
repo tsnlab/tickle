@@ -25,7 +25,7 @@ LEAD "none" is the control arm: everything above runs (the capture is read, the 
 sent, so the only difference between arms is the datagram.
 
 Output (stdout): "SEND <realtime_ns> target=<ns> late_us=<n> dport=<p>" per datagram, then always one line
-  INJECT_END lead_ms=<x> pings=<n> sent=<n> dport=<p> period_us=<n> late_p50_us=<n> late_max_us=<n> reason=<why>
+  INJECT_END lead_ms=<x> pings=<n> sent=<n> missed=<n> dport=<p> period_us=<n> late_p50_us=<n> late_max_us=<n> reason=<why>
 Exits by itself: DEADLINE_S after start, or IDLE_EXIT_S after the last ping once one was seen.
 
 Usage: idle_wake_injector.py PCAP CLIENT_IP SERVER_IP LEAD_MS|none [DEADLINE_S=45] [IDLE_EXIT_S=3]
@@ -113,7 +113,7 @@ def main(argv):
     sock.bind((argv[2], SRC_PORT))
     tail = PcapTail(pcap)
     t_start = time.time_ns()
-    pings, sent, dport, last_v, last_tap, next_send = 0, 0, None, 0, None, None
+    pings, sent, missed, dport, last_v, last_tap, next_send = 0, 0, 0, None, 0, None, None
     intervals, lates = [], []
     reason = "deadline"
     while True:
@@ -138,6 +138,9 @@ def main(argv):
             pings += 1
             period = sorted(intervals)[len(intervals) // 2] if len(intervals) >= 3 else DEFAULT_PERIOD_NS
             next_send = t + period - lead_ns if lead_ns is not None else None
+            if next_send is not None and next_send < time.time_ns():
+                missed += 1  # seen too late to send ahead of the next ping: nothing is sent rather than a late one
+                next_send = None
         now = time.time_ns()
         if next_send is not None and dport is not None:
             wait = next_send - now
@@ -155,7 +158,7 @@ def main(argv):
         time.sleep(0.002)
     lates.sort()
     period = sorted(intervals)[len(intervals) // 2] if intervals else 0
-    print(f"INJECT_END lead_ms={lead_s} pings={pings} sent={sent} dport={dport} period_us={period // 1000} "
+    print(f"INJECT_END lead_ms={lead_s} pings={pings} sent={sent} missed={missed} dport={dport} period_us={period // 1000} "
           f"late_p50_us={lates[len(lates) // 2] if lates else 'na'} late_max_us={lates[-1] if lates else 'na'} "
           f"reason={reason} pid={os.getpid()}", flush=True)
     return 0

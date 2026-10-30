@@ -451,10 +451,15 @@ cap_start() { # $1 file stem. Each run writes its own file, owned by ci (-Z ci),
     # -U writes each packet as it comes: without it the first copy of a capture was a 40,960-byte prefix of the
     # file tcpdump went on to finish, because the copy is taken while tcpdump still holds a buffer.
     CAP_FILE=/tmp/rmwx_cap_$1_$(date +%s).pcap
+    # INJECT_ARMS: the injector reads the ping host's capture as it grows, and without --immediate-mode libpcap hands
+    # tcpdump its packets in blocks up to 1 s late (the first injection run sent 11 datagrams for 100 pings). The ping
+    # host's capture only, in every arm alike; the pong host's capture, which the reading is taken from, is unchanged.
+    local imm=""
     for h in "$CLIENT" "$SERVER"; do
         role=ping; [ "$h" = "$SERVER" ] && role=pong
-        say "  capture stem=$1 role=$role t0_ns=$(sh_ "$h" "date +%s%N")"
-        sh_ "$h" "sudo -n tcpdump -U -Z ci -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w $CAP_FILE udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
+        imm=""; [ "$INJECT_ARMS" != - ] && [ "$role" = ping ] && imm="--immediate-mode"
+        say "  capture stem=$1 role=$role t0_ns=$(sh_ "$h" "date +%s%N")${imm:+ $imm}"
+        sh_ "$h" "sudo -n tcpdump -U $imm -Z ci -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w $CAP_FILE udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
     done
     sleep 1
 }
