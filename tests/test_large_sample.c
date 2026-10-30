@@ -759,8 +759,10 @@ static void sim_deliver_now(struct sim_datagram* d) {
     }
 }
 
-// Everything in flight, and whatever it provokes, until the link is empty.
+// Everything in flight, and whatever it provokes, until the link is empty. Each delivery makes its recipient the acting
+// node; the caller's is restored after, so what the caller sends next is still its own.
 static void sim_drain(void) {
+    uint8_t acting = sim_acting;
     if (sim_reverse) {
         // One burst, newest first: what was queued when the drain began, delivered backwards.
         uint32_t end = sim_tail;
@@ -774,12 +776,26 @@ static void sim_drain(void) {
         sim_head++;
         sim_deliver(d);
     }
+    sim_acting = acting;
+}
+
+// The sim's own name for a node, which sim_sent[], sim_dropped[] and the routing use: its id at creation. Not
+// node->id, which the core changes when the context moves its id (tt_CONTEXT_ID_CLAIM, move_id()).
+static uint8_t sim_node(const struct tt_Context* node) {
+    if (node == &receiver) {
+        return RECEIVER_ID;
+    }
+    if (node == &reader_b) {
+        return READER_B_ID;
+    }
+    EXPECT_TRUE(node == &sender);
+    return SENDER_ID;
 }
 
 static void sim_run_due(struct tt_Context* node) {
     bool has_next = false;
     uint64_t next = 0;
-    sim_acting = node->id;
+    sim_acting = sim_node(node);
     while (run_due_entry(node, test_mock_now, &has_next, &next)) {
     }
     sim_drain();
