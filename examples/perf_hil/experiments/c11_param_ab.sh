@@ -13,7 +13,8 @@
 # PRE-REGISTERED (written 2026-10-30 before the first run; c11_param_read.py applies every rule in code):
 #   Trees (archives with .tree_sha, TREES_DIR, default ~/c11p_trees): M = main 75495519; A = the same commit again (the
 #   A/A control); F = the parameter commit with no TT_REPAIR_REVEAL (OFF: the profile's default); O = the same commit
-#   with .node_env TT_REPAIR_REVEAL=all_missing (both benches read it, repair_reveal_env.h). All four at once
+#   with .node_env TT_REPAIR_REVEAL=all_missing (both benches read it, repair_reveal_from_env(); amended after the run:
+#   that code moved from a header into each bench, behaviour unchanged). All four at once
 #   (wifi_repair_ab.sh), PROFILE=wifi, NODE_ENV=TT_UDP_OFFLOAD=0, LARGE_RSTATS=1, REPS each (default 6): rel_large at
 #   ctl ge5b2 ge5b4 ge10b4 tv, then rel_small at ctl ge5b4 tv (the small node, wifi_link_node, now carries the reveal).
 #   VOID: the harness's own VOID rules; a rel_large cell of any tree with fewer than 4 unloaded reps.

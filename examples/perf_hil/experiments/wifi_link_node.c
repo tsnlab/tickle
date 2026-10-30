@@ -51,7 +51,6 @@
 #include <tickle/tickle.h>
 #ifdef tt_RELIABLE_STATS
 #include "reliable_stats_print.h"
-#include "repair_reveal_env.h"
 #endif
 
 #define HEADER_BYTES 16U // send_ns (8), seq (4), reserved (4)
@@ -293,6 +292,34 @@ static bool create_subscriber(const struct tt_TypeSupport* topic, tt_SUBSCRIBER_
                                      bytes) == tt_RET_OK;
 }
 
+// The reveal re-ask (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal", 2026-10-30) from the environment, so
+// that a harness's NODE_ENV picks it per tree: TT_REPAIR_REVEAL=off|revealed|all_missing, unset or empty = the
+// profile's (0). Anything else stops the bench: an arm must not run a treatment it did not name. The context's resolved
+// value is printed as a "REVEAL:" line, so an arm reports the treatment it ran.
+static uint8_t repair_reveal_from_env(void) {
+    const char* value = getenv("TT_REPAIR_REVEAL");
+    if (value == NULL || value[0] == '\0') {
+        return (uint8_t)tt_REPAIR_REVEAL_DEFAULT;
+    }
+    if (strcmp(value, "off") == 0) {
+        return (uint8_t)tt_REPAIR_REVEAL_OFF;
+    }
+    if (strcmp(value, "revealed") == 0) {
+        return (uint8_t)tt_REPAIR_REVEAL_REVEALED;
+    }
+    if (strcmp(value, "all_missing") == 0) {
+        return (uint8_t)tt_REPAIR_REVEAL_ALL_MISSING;
+    }
+    fprintf(stderr, "TT_REPAIR_REVEAL=%s: expected off, revealed or all_missing\n", value);
+    exit(2);
+}
+
+static void print_repair_reveal(const struct tt_Context* node) {
+    const char* value = getenv("TT_REPAIR_REVEAL");
+    printf("REVEAL: repair_reveal=%u pace_ns=%u env=%s\n", (unsigned)node->repair_reveal,
+           (unsigned)node->repair_reveal_pace_ns, value != NULL ? value : "-");
+}
+
 static bool create_context(void) {
     struct tt_InitOptions init;
     memset(&init, 0, sizeof(init));
@@ -300,7 +327,7 @@ static bool create_context(void) {
     init.net.context_id = opts.context_id;
     init.net.links[0].broadcast = opts.broadcast;
     init.net.links[0].profile = opts.wifi ? tt_LINK_PROFILE_WIFI : tt_LINK_PROFILE_ETHERNET;
-    init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL (repair_reveal_env.h)
+    init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
     init.net.link_count = 1;
     tt_ret_t created = tt_Context_create_with(&ctx, &init);
     if (created != tt_RET_OK) {
