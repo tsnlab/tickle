@@ -93,6 +93,9 @@ POLL_SLEEPS=${POLL_SLEEPS:-}
 # receive syscall's return, and the handoff to the thread that sends the reply. Collected into $OUT.bpf/<stem>.txt.
 # "off" rows are the control for bpftrace's own cost (on - off RTT, block mode).
 BPF_ARMS=${BPF_ARMS:-off}
+# BPF_SCRIPT (2026-10-31, c12/idle_wake_bpf_rig.sh): the bpftrace script of the "on" arm, called the same way (pong tgid,
+# eth0 IRQ) and checked by the same "# pong_rx_split" first line. Unset: pong_rx_split.bt, as before.
+BPF_SCRIPT=${BPF_SCRIPT:-$REPO/examples/perf_hil/experiments/pong_rx_split.bt}
 # EXEC_POLL_ARMS="off on" (2026-09-26, Dev's d2c1e36f): rmw_tickle's executor-driven receive, switched by
 # RMW_TICKLE_EXECUTOR_POLL=0|1 on both ping and pong (the same binaries in both arms). Each rmw_tickle row asserts
 # the ping's own shutdown line "rmw_tickle: executor_poll=<0|1>" matches its arm; the vendors run in the off arm
@@ -343,10 +346,10 @@ if [ "$INJECT_ARMS" != - ]; then
 fi
 BPF_IRQ=""
 case " $BPF_ARMS " in *" on "*)
-    scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" "ci@$SERVER:/tmp/rmwx_pong_rx_split.bt"
+    scp -q -i "$K" -o BatchMode=yes "$BPF_SCRIPT" "ci@$SERVER:/tmp/rmwx_pong_rx_split.bt"
     BPF_IRQ=$(sh_ "$SERVER" "awk -F: '/eth0/ {gsub(/ /, \"\", \$1); print \$1}' /proc/interrupts")
     [ -n "$BPF_IRQ" ] || { say "bpftrace: no eth0 IRQ found on the pong host - not running"; exit 1; }
-    say "--- bpftrace arm: pong_rx_split.bt md5 $(md5sum "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" | cut -c1-12), eth0 IRQ $BPF_IRQ ---" ;;
+    say "--- bpftrace arm: $(basename "$BPF_SCRIPT") md5 $(md5sum "$BPF_SCRIPT" | cut -c1-12), eth0 IRQ $BPF_IRQ ---" ;;
 esac
 case " $SYSSTAMP_ARMS " in *" on "*)
     for h in "$CLIENT" "$SERVER"; do
