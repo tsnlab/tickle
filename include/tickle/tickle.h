@@ -672,6 +672,13 @@ struct tt_LargeState {
     uint64_t room_adverts;
     uint64_t room_zero;
     uint64_t room_sum;
+    // Variant 4 (C7 round 5): GRANTs a writer sent; a reader's GRANTs received, requests trimmed by one, GRANTs that
+    // matched no remembered request, and ACKNACKs a GRANT sent at once.
+    uint64_t grants_sent;
+    uint64_t grants_received;
+    uint64_t grant_trims;
+    uint64_t grant_stale;
+    uint64_t grant_asks;
 #endif
 };
 #endif
@@ -4891,6 +4898,9 @@ struct tt_SingleHeader {
 // the one place the numbers live.
 #define tt_SUBMESSAGE_TYPE_FRAG_RUN_L 14
 #define tt_SUBMESSAGE_TYPE_FRAG_RUN 15
+// C7 round 5 (experiment, config.h tt_ACKNACK_ROOM_GRANT 2, NOT for landing): a writer's word that it cut its answer
+// to a reader's ACKNACK for room - struct tt_GrantHeader. Every other build skips it as an unknown type.
+#define tt_SUBMESSAGE_TYPE_GRANT 16
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -5170,6 +5180,16 @@ static inline uint32_t tt_sample_cache_bytes(uint32_t cdr_len) {
         (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader)) + 3U; // + alignment
     return ((cdr_len + 3U) & ~3U) + (datagrams * record_overhead) + (uint32_t)tt_FRAG_FIRST_SHORTFALL;
 }
+
+// tt_SUBMESSAGE_TYPE_GRANT's body, writer to reader, unicast: the writer answered the ACKNACK whose lowest named unit
+// was first_seq_no below cut_seq_no only - every named unit from cut_seq_no up was cut for room and not sent.
+// endpoint_id and entity_id name the writer as a HEARTBEAT does.
+struct tt_GrantHeader {
+    uint32_t endpoint_id;
+    uint32_t entity_id;
+    uint32_t first_seq_no;
+    uint32_t cut_seq_no;
+} __attribute__((packed));
 
 struct tt_AckNackHeader {
     uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/

@@ -397,12 +397,25 @@
 #ifndef tt_ACKNACK_ROOM_READER_CAP
 #define tt_ACKNACK_ROOM_READER_CAP 0
 #endif
-// Variant 3 (round 4, 2026-10-30): a coherent grant. The reader still names everything missing (variant 1), but
-// remembers as in flight only the lowest named units up to the room it advertised - what the writer, answering lowest
-// first up to that room, sends - so the units the writer cut are asked again in its next ACKNACK; and units in flight
-// take at most half its free room, so a socket with room never advertises 0. 0 is variant 1.
+// Variant 3 (round 4, 2026-10-30), tt_ACKNACK_ROOM_GRANT 1: an inferred grant. The reader still names everything
+// missing (variant 1), but remembers as in flight only the lowest named units up to the room it advertised - what the
+// writer, answering lowest first up to that room, would send - so the cut units are asked again in its next ACKNACK;
+// and units in flight take at most half its free room, so a socket with room never advertises 0.
+// Variant 4 (round 5, 2026-10-31), tt_ACKNACK_ROOM_GRANT 2: an echoed grant. A writer that cuts an answer for room says
+// where (tt_SUBMESSAGE_TYPE_GRANT); the reader trims that request to below the cut and, with room, asks for the cut
+// units at once; with no GRANT it holds its requests as variant 1 does. The half-room floor as variant 3.
+// 0 is variant 1.
 #ifndef tt_ACKNACK_ROOM_GRANT
-#define tt_ACKNACK_ROOM_GRANT 1
+#define tt_ACKNACK_ROOM_GRANT 2
+#endif
+// The half-room floor of variants 3 and 4 (1: on).
+#ifndef tt_ACKNACK_ROOM_FLOOR
+#define tt_ACKNACK_ROOM_FLOOR 1
+#endif
+// Variant 4: a GRANT also sends the reader's next ACKNACK at once when its socket has room (1), or leaves it to the
+// reader's usual triggers (0). Off: the sim showed no difference (2026-10-31 smoke).
+#ifndef tt_ACKNACK_GRANT_ASK
+#define tt_ACKNACK_GRANT_ASK 0
 #endif
 // 8192 bits with large samples (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so the window
 // is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control datagram.

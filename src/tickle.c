@@ -16517,8 +16517,8 @@ static uint16_t acknack_room(struct tt_Context* node, uint32_t in_flight) {
         return 0;
     }
     uint32_t room = bytes / ACKNACK_ROOM_DATAGRAM_BYTES;
-#if tt_ACKNACK_ROOM_GRANT
-    // Variant 3: what is in flight takes at most half the free room - a socket with room never advertises 0.
+#if tt_ACKNACK_ROOM_GRANT >= 1 && tt_ACKNACK_ROOM_FLOOR
+    // Variants 3 and 4: what is in flight takes at most half the free room - a socket with room never advertises 0.
     const uint32_t half = room / 2U;
     room = room > in_flight ? room - in_flight : 0U;
     room = room > half ? room : half;
@@ -16608,7 +16608,7 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     // sends.
     uint32_t name_left = room_code == 0 ? UINT32_MAX : room_code > 1U ? room_code - 1U : 1U;
 #endif
-#if tt_ACKNACK_ROOM_GRANT
+#if tt_ACKNACK_ROOM_GRANT == 1
     // Variant 3: the writer grants the lowest named units up to the room (large_resend(), lowest first), so the
     // reader remembers as requested - in flight, skipped by repairs_in_flight() - only that prefix, up to granted_last;
     // what lies above it was cut, and its next ACKNACK names it again.
@@ -16633,7 +16633,7 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
         }
         name_left -= (uint32_t)__builtin_popcountll(request);
 #endif
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 1
         if (grant_left != UINT32_MAX && grant_left != 0 && request != 0) {
             uint32_t named = (uint32_t)__builtin_popcountll(request);
             if (named >= grant_left) {
@@ -16685,11 +16685,14 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     }
     // Only a request that names the watermark itself can time its recovery: a narrow request for a
     // newly opened gap further ahead (low_bit > 0) does not ask for ack_seq_no at all.
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT >= 1
     if (room_code == 1U) { // no room: nothing is granted, nothing goes in flight - the next ACKNACK asks it all again
         first_named = -1;
         names_watermark = false;
-    } else if (granted_last >= 0) {
+    }
+#endif
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 1
+    if (room_code != 1U && granted_last >= 0) {
         last_named = granted_last; // the cut units above it are not in flight
     }
 #endif
@@ -22330,6 +22333,40 @@ static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* 
 // without touching find_resendable_cache_entry() at all, keeping this O(word-count + set-bit-
 // count) rather than a flat O(tt_RELIABLE_BITMAP_BITS) scan - the same "stay O(word-count)" care
 // tt_RELIABLE_BITMAP_WORDS's own doc comment calls for.
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+static void flush_pending_broadcast(struct tt_Context* node);
+// Variant 4 (C7 round 5): the writer's answer to an ACKNACK it cut for room says where it cut - a GRANT submessage
+// (tt_GrantHeader), unicast to the reader after the repairs it did send. Every named unit
+// below cut_seq_no was resent or is still on its way (a pending resend, or the first send); every named unit from
+// cut_seq_no up was not sent. first_seq_no is the ACKNACK's lowest named unit, which the reader remembered its request
+// by (note_requested()).
+static void send_grant(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_Peer* target,
+                       uint32_t first_seq_no, uint32_t cut_seq_no) {
+    flush_pending_broadcast(node);
+    uint32_t old_tx_tail = node->tx_tail;
+    // To the reader's well-known port, not its data port: the GRANT lands in the other socket and takes none of the
+    // room it answers (the repairs' socket); a reader handles it whichever socket it came in by.
+    struct tt_Peer to = *target;
+    to.port = net_port(node);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_GRANT, target->context_id);
+    struct tt_GrantHeader* grant = submessage_header != NULL ? encode(node, sizeof(struct tt_GrantHeader)) : NULL;
+    if (grant == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    const struct tt_Endpoint* endpoint = (const struct tt_Endpoint*)pub;
+    grant->endpoint_id = endpoint->id;
+    grant->entity_id = endpoint->entity_id;
+    grant->first_seq_no = first_seq_no;
+    grant->cut_seq_no = cut_seq_no;
+    if (!end_encode(node, submessage_header, true, &to, 1)) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    node->large.grants_sent++;
+}
+#endif
+
 static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publisher* pub,
                                         struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no,
                                         const uint64_t* bitmap, uint16_t words, const struct tt_Peer* target) {
@@ -22342,6 +22379,13 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
     large_note_acknack(node); // a descriptor is resent once per ACKNACK (large_resend())
 #endif
     const uint8_t outer_class = tx_class_enter(node, tt_TX_CLASS_REPAIR); // what follows is resent ("Traffic classes")
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+    bool grant_named = false;
+    bool grant_walked = false;
+    bool grant_cut = false;
+    uint32_t grant_first = 0;
+    uint32_t grant_cut_seq = 0;
+#endif
     // Phase 2 - `words` is whatever the requester actually sent (validated by the caller), and the
     // inner loop walks set bits only, so a window widened to tt_RELIABLE_BITMAP_MAX_BITS costs
     // nothing here unless the gaps really are that spread out: O(words + set bits), never
@@ -22352,8 +22396,25 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
             uint32_t bit_idx = (uint32_t)__builtin_ctzll(word);
             word &= word - 1; // clear the lowest set bit
             uint32_t missing_seq_no = seq_no + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx;
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+            if (!grant_named) {
+                grant_named = true;
+                grant_first = missing_seq_no;
+            }
+            if (node->large.room_limited && node->large.room_budget == 0) {
+                // Variant 4: the room is spent - this unit and every named one above it are cut, and the reader is
+                // told so (send_grant()). With no room advertised at all nothing is sent and no GRANT goes: the reader
+                // knows that answer is empty (it holds nothing of that request in flight).
+                grant_cut = grant_walked;
+                grant_cut_seq = missing_seq_no;
+                node->large.room_cut++;
+                word_idx = words;
+                break;
+            }
+            grant_walked = true;
+#endif
             any_gone |= retransmit_one_sample(node, pub, cache, depth, missing_seq_no, target);
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT != 2
             if (node->large.room_limited && node->large.room_budget == 0) {
                 // C7 wire experiment: the reader's advertised room is spent; the rest of its requests wait for its
                 // next ACKNACK (and the room that one shows), lowest first as always.
@@ -22377,6 +22438,11 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
         encode_and_send_heartbeat(node, pub, reliable_cache_first_resendable_seq_no(pub, cache, depth), target, 1,
                                   tt_HEARTBEAT_FLAG_FINAL);
     }
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+    if (grant_cut) {
+        send_grant(node, pub, target, grant_first, grant_cut_seq);
+    }
+#endif
     tx_class_leave(node, outer_class);
 }
 
@@ -23014,6 +23080,73 @@ static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* p
     RSTAT_INC(ack_request_answered);
     send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);
 }
+
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+struct grant_ctx {
+    uint8_t source;
+    uint32_t entity_id;
+    uint32_t first_seq_no;
+    uint32_t cut_seq_no;
+};
+
+// Variant 4 (C7 round 5): a writer says where it cut its answer to one of this reader's requests (send_grant()). The
+// request it answered - the latest remembered one starting at first_seq_no and reaching the cut - holds in flight only
+// what lies below the cut, so repairs_in_flight() no longer skips the cut units, and the reader's next ACKNACK names
+// them. With tt_ACKNACK_GRANT_ASK (off) the cut units are asked again at once when the socket has room.
+static void apply_grant(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    const struct grant_ctx* ctx = (const struct grant_ctx*)ctx_ptr;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (!sub->reliable) {
+        return;
+    }
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->source, ctx->entity_id);
+    if (proxy == NULL) {
+        return;
+    }
+    struct tt_RepairRequest* match = NULL;
+    for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
+        struct tt_RepairRequest* request = &proxy->requests[slot];
+        if (request->sent_ns != 0 && request->first_seq_no == ctx->first_seq_no &&
+            seq_delta(request->last_seq_no, ctx->cut_seq_no) >= 0 &&
+            (match == NULL || request->sent_ns > match->sent_ns)) {
+            match = request;
+        }
+    }
+    if (match == NULL) {
+        node->large.grant_stale++;
+        return;
+    }
+    if (ctx->cut_seq_no == match->first_seq_no) {
+        match->sent_ns = 0; // nothing of it was sent
+    } else {
+        match->last_seq_no = ctx->cut_seq_no - 1U;
+    }
+    node->large.grant_trims++;
+    int high_bit = highest_relevant_bit(proxy);
+    uint32_t bytes = tt_rx_room_bytes(node);
+    if (!tt_ACKNACK_GRANT_ASK || high_bit < 0 || (bytes != UINT32_MAX && bytes / ACKNACK_ROOM_DATAGRAM_BYTES == 0)) {
+        return; // no room yet: the retry timer asks, as before
+    }
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    int skip_count = repairs_in_flight(node, proxy, high_bit, tt_get_ns(), skips);
+    if (names_any_open(proxy, high_bit, skips, skip_count)) {
+        node->large.grant_asks++;
+        send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);
+    }
+}
+
+static void process_grant(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                          uint32_t tail) {
+    struct tt_GrantHeader* grant = decode(node, buffer, &head, tail, sizeof(struct tt_GrantHeader));
+    if (grant == NULL) {
+        return;
+    }
+    node->large.grants_received++;
+    struct grant_ctx ctx = {header->source, rd32(header, grant->entity_id), rd32(header, grant->first_seq_no),
+                            rd32(header, grant->cut_seq_no)};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rd32(header, grant->endpoint_id), apply_grant, &ctx);
+}
+#endif
 
 // QoS roadmap #5 (RELIABILITY) follow-up - process_submessage()'s own new HEARTBEAT case. See
 // struct tt_HeartbeatHeader's own doc comment (tickle.h) for what this is; matches process_data()/
@@ -25488,6 +25621,12 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         if (submessage_header->type == tt_SUBMESSAGE_TYPE_LARGE_REF) {
             process_large_ref_submessage(node, header, buffer, head, body_tail, sender_ip, sender_port, self_sent,
                                          transport);
+            return true;
+        }
+#endif
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT == 2
+        if (submessage_header->type == tt_SUBMESSAGE_TYPE_GRANT) {
+            process_grant(node, header, buffer, head, body_tail);
             return true;
         }
 #endif
@@ -28508,6 +28647,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->large.room_adverts, (unsigned long)node->large.room_zero,
                 (unsigned long)node->large.room_sum, (unsigned long)node->large.room_cut,
                 (unsigned long)node->large.room_sent);
+    TT_LOG_INFO("Node %u grant: sent=%lu received=%lu trims=%lu stale=%lu asks=%lu", node->id,
+                (unsigned long)node->large.grants_sent, (unsigned long)node->large.grants_received,
+                (unsigned long)node->large.grant_trims, (unsigned long)node->large.grant_stale,
+                (unsigned long)node->large.grant_asks);
 #endif
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #if tt_LARGE_SHM

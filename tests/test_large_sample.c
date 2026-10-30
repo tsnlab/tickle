@@ -696,6 +696,14 @@ static bool sim_writer_sending(void) {
 static void sim_deliver_now(struct sim_datagram* d);
 
 static void sim_deliver(struct sim_datagram* d) {
+#if tt_ACKNACK_ROOM && defined(tt_SUBMESSAGE_TYPE_GRANT)
+    const uint8_t* grant_body = NULL;
+    if (sim_reader_service_ns != 0 && d->from == SENDER_ID &&
+        datagram_type(d->bytes, &grant_body) == tt_SUBMESSAGE_TYPE_GRANT) {
+        sim_deliver_now(d); // to the reader's other socket (send_grant()): not through the slow one
+        return;
+    }
+#endif
     if (sim_reader_service_ns != 0 && d->from == SENDER_ID) {
         if (sim_late_tail - sim_late_head >= sim_reader_capacity) {
             sim_socket_drops++;
