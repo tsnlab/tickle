@@ -23,12 +23,12 @@ finish() {
 trap finish EXIT
 mkdir -p "$results"
 
-# Waits (at most 3 h) until PC_QUIET is gone and the 1-minute load is below 4.
+# Waits (at most QUIET_WAIT_S, default 3 h) until PC_QUIET is gone and the 1-minute load is below 4.
 wait_quiet() {
-    local deadline=$((SECONDS + 10800))
+    local deadline=$((SECONDS + ${QUIET_WAIT_S:-10800}))
     while [ -e "$quiet" ] || awk '{exit !($1 >= 4)}' /proc/loadavg; do
         if [ "$SECONDS" -ge "$deadline" ]; then
-            echo "wait_quiet: gave up after 3 h (PC_QUIET $([ -e "$quiet" ] && echo present || echo absent)," \
+            echo "wait_quiet: gave up after ${QUIET_WAIT_S:-10800} s (PC_QUIET $([ -e "$quiet" ] && echo present || echo absent)," \
                 "load $(cut -d' ' -f1 /proc/loadavg))"
             return 1
         fi
