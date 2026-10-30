@@ -683,23 +683,25 @@ static void test_wifi_repair_timing(void) {
     destroy();
 }
 
-// The readers' re-ask on a repair above the watermark (tt_LinkOptions.repair_reveal, 2026-10-30): OFF on every profile,
-// WIFI's included; an explicit mode wins; the context takes the most any link asks, and the longest pace any link sets
-// (0 = the least repair transit). What it does is test_reliable_pubsub's and test_large_sample's.
+// The readers' re-ask on a repair above the watermark (tt_LinkOptions.repair_reveal, 2026-10-30): ALL_MISSING on WIFI
+// (2026-10-31), OFF on every other profile; an explicit mode wins; the context takes the most any link asks, and the
+// longest pace any link sets (0 = the least repair transit). What it does is test_reliable_pubsub's and
+// test_large_sample's.
 static void test_repair_reveal_link_option(void) {
     static const uint8_t profiles[] = {tt_LINK_PROFILE_ETHERNET, tt_LINK_PROFILE_T1S, tt_LINK_PROFILE_TSN,
                                        tt_LINK_PROFILE_WIFI};
     for (size_t i = 0; i < sizeof(profiles); i++) {
         struct tt_InitOptions opts = one_link(profiles[i]);
+        uint32_t expected = profiles[i] == tt_LINK_PROFILE_WIFI ? tt_REPAIR_REVEAL_ALL_MISSING : tt_REPAIR_REVEAL_OFF;
         create(&opts, -1);
-        EXPECT_EQ_U32(tt_REPAIR_REVEAL_OFF, node.opts.net.links[0].repair_reveal);
-        EXPECT_EQ_U32(tt_REPAIR_REVEAL_OFF, node.repair_reveal);
+        EXPECT_EQ_U32(expected, node.opts.net.links[0].repair_reveal);
+        EXPECT_EQ_U32(expected, node.repair_reveal);
         EXPECT_EQ_U32(0, node.repair_reveal_pace_ns);
         destroy();
-        opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING;
+        opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_REVEALED;
         opts.net.links[0].repair_reveal_pace_ns = 3 * tt_MILLISECOND;
         create(&opts, -1);
-        EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.repair_reveal);
+        EXPECT_EQ_U32(tt_REPAIR_REVEAL_REVEALED, node.repair_reveal);
         EXPECT_EQ_U32(3 * tt_MILLISECOND, node.repair_reveal_pace_ns);
         destroy();
     }
@@ -711,6 +713,7 @@ static void test_repair_reveal_link_option(void) {
                                                  .repair_reveal_pace_ns = 5 * tt_MILLISECOND};
     opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = "10.0.1.255",
                                                  .profile = tt_LINK_PROFILE_WIFI,
+                                                 .repair_reveal = tt_REPAIR_REVEAL_OFF,
                                                  .repair_reveal_pace_ns = 2 * tt_MILLISECOND};
     opts.net.link_count = 2;
     create(&opts, -1);
@@ -720,6 +723,13 @@ static void test_repair_reveal_link_option(void) {
     opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_DEFAULT;
     opts.net.links[1].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING;
     create(&opts, -1);
+    EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.repair_reveal);
+    destroy();
+    // Both left to their profiles: WIFI's ALL_MISSING is the context's, the Ethernet link's readers included.
+    opts.net.links[1].repair_reveal = tt_REPAIR_REVEAL_DEFAULT;
+    create(&opts, -1);
+    EXPECT_EQ_U32(tt_REPAIR_REVEAL_OFF, node.opts.net.links[0].repair_reveal);
+    EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.opts.net.links[1].repair_reveal);
     EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.repair_reveal);
     destroy();
     memset(&opts, 0, sizeof(opts)); // no link options: none

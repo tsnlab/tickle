@@ -62,7 +62,7 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT` (1). A
   kernel that refuses it (seccomp, Linux < 6.1) leaves the epoll path, said once.
 - **Repair reveal** (C11; [DESIGN.md](DESIGN.md) section 2, "Repair reveal"): `tt_LinkOptions.repair_reveal`
-  (`tt_REPAIR_REVEAL_*`: 0 = the profile's, OFF on every profile; REVEALED; ALL_MISSING) and `repair_reveal_pace_ns`.
+  (`tt_REPAIR_REVEAL_*`: 0 = the profile's, OFF on every profile at first, ALL_MISSING on WIFI since; REVEALED; ALL_MISSING) and `repair_reveal_pace_ns`.
   When a repair arrives above the watermark, a reader can ask again at once for what the arrival shows lost, or for
   everything missing, instead of waiting for its retry timer. Any sample size. OFF is the previous behaviour, wire- and
   time-identical (`tests/wire_identity_repair_reveal.sh`). Measured in RESULTS `RVL`.
@@ -160,6 +160,10 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **WIFI asks again for every missing unit when a repair reveals a loss** (C11, the user's call of 2026-10-31;
+  [DESIGN.md](DESIGN.md) "Repair reveal"): a WIFI link's `repair_reveal` left 0 is now ALL_MISSING (was OFF). Wi-Fi R4
+  (1 MiB, ge10b4) p50 111.6 -> 56.1 ms for 15-35% more resends and 3-9x duplicates. Every other profile stays OFF; a
+  context with a WIFI link re-asks on all its links unless the WIFI link sets it OFF.
 - **zenoh-pico is re-measured as a fourth, reference column of the core campaign** (the user, 2026-10-28; [RESULTS.md](RESULTS.md)
   `ZF`). zenoh-pico is pinned to release 1.10.2 (`fdfc065e`); BEST_EFFORT over UDP, RELIABLE over TCP, the same cells and
   rotated order as the scored columns (`d5b75bc1`, `1998d6fc`). Its TCP session drops at max rate and under loss; the

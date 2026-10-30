@@ -1026,10 +1026,11 @@ static void resolve_link_repair_timing(struct tt_LinkOptions* link) {
     if (link->repair_timing == tt_SWITCH_DEFAULT) {
         link->repair_timing = link->profile == tt_LINK_PROFILE_WIFI ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;
     }
-    // repair_reveal left 0: OFF on every profile, WIFI's included (docs/DESIGN.md "Repair reveal": a latency bought
-    // with resends, which is the application's trade to make).
+    // repair_reveal left 0: ALL_MISSING for WIFI, OFF on every other profile (docs/DESIGN.md "Repair reveal": on Wi-Fi
+    // the latency is worth the resends and duplicates, the user's call of 2026-10-31).
     if (link->repair_reveal == tt_REPAIR_REVEAL_DEFAULT) {
-        link->repair_reveal = (uint8_t)tt_REPAIR_REVEAL_OFF;
+        link->repair_reveal = link->profile == tt_LINK_PROFILE_WIFI ? (uint8_t)tt_REPAIR_REVEAL_ALL_MISSING
+                                                                    : (uint8_t)tt_REPAIR_REVEAL_OFF;
     }
 }
 

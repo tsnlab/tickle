@@ -903,7 +903,7 @@ struct tt_HybridState {
 // A RELIABLE reader's re-ask when a repair arrives above its watermark while a gap is open
 // (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"). On a path that keeps the writer's order, such a
 // repair shows that every repair the writer sent before it, and that has not arrived, is lost.
-#define tt_REPAIR_REVEAL_DEFAULT 0U     // the profile's: OFF on every profile
+#define tt_REPAIR_REVEAL_DEFAULT 0U     // the profile's: ALL_MISSING on WIFI, OFF on the others
 #define tt_REPAIR_REVEAL_OFF 1U         // ask again on the retry timer and the HEARTBEAT chase only, as before
 #define tt_REPAIR_REVEAL_REVEALED 2U    // ask again at once for the units the arrival shows lost, and nothing else
 #define tt_REPAIR_REVEAL_ALL_MISSING 3U // ask again at once for everything missing, repairs still on their way included
@@ -978,9 +978,9 @@ struct tt_LinkOptions {
     // is.
     uint8_t repair_timing;
     // What a RELIABLE reader does when a repair lands above its watermark while a gap is open (tt_REPAIR_REVEAL_*;
-    // 0 = the profile's: OFF on every profile; docs/DESIGN.md "Repair reveal"). Any sample size. REVEALED and
-    // ALL_MISSING ask the writer again at once instead of waiting for the retry timer: lower latency under loss, more
-    // resends and duplicates (ALL_MISSING the most). Context: the most any link asks.
+    // 0 = the profile's: ALL_MISSING on WIFI, OFF on the others; docs/DESIGN.md "Repair reveal"). Any sample size.
+    // REVEALED and ALL_MISSING ask the writer again at once instead of waiting for the retry timer: lower latency under
+    // loss, more resends and duplicates (ALL_MISSING the most). Context: the most any link asks.
     uint8_t repair_reveal;
     // The least time between two such re-asks to one writer, in ns; 0 = the least repair transit the reader has timed
     // from that writer. At most UINT32_MAX. Context: the longest any link sets.

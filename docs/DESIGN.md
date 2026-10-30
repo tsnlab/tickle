@@ -259,9 +259,12 @@ of ~0.1-0.2 ms; folded as they were they collapsed the reader's retry estimate f
 0 with the floor). The cost is latency, which the user accepted: main's short samples made it ask sooner (`tv` median
 rep p50 74.3 against 68.5 ms). 4 B in existing padding, no wire change. RESULTS `RLC`, `RLF`.
 
-**Repair reveal** (`repair_reveal`, `repair_reveal_pace_ns`, C11, 2026-10-30). TL;DR: OFF by default on every profile.
-Set ALL_MISSING on a lossy link (Wi-Fi) carrying large RELIABLE samples whose latency matters more than ~15-35% more
-resends. Leave OFF elsewhere: on small samples it bought no latency.
+**Repair reveal** (`repair_reveal`, `repair_reveal_pace_ns`, C11, 2026-10-30). TL;DR: ALL_MISSING by default on WIFI
+(the user's call, 2026-10-31), OFF on every other profile. On Wi-Fi it halves large RELIABLE samples' p50 for ~15-35%
+more resends; that cost is an accepted trade, not a NO WORSE regression. Set OFF on a Wi-Fi link whose datagrams cost
+more than latency, or that carries only small samples (no latency gain there). A context takes the most any link asks,
+so an Ethernet link sharing a context with a WIFI link re-asks too; to keep it OFF, set the WIFI link OFF or use two
+contexts.
 
 When a repair arrives above the watermark while a gap is open, a reader can ask again at once instead of on its retry
 timer. On a path that keeps the writer's order, every unit asked for before that repair and still missing had its
@@ -269,9 +272,9 @@ repair sent first, so that repair is lost. Any sample size, any profile.
 
 | mode | asks again for | when to set it |
 |---|---|---|
-| OFF (default) | nothing: the retry timer and the HEARTBEAT chase only | wired links; any link where datagrams cost more than latency (T1S, a shared medium) |
+| OFF (default but WIFI) | nothing: the retry timer and the HEARTBEAT chase only | wired links; any link where datagrams cost more than latency (T1S, a shared medium) |
 | REVEALED | only the units the arrival proves lost | a lossy link where copies are costly: few extra copies, a lower p50 at moderate loss (ge5b2, `tv`), but not at ge10b4 |
-| ALL_MISSING | everything missing, repairs still on their way included | a lossy link (Wi-Fi) carrying large RELIABLE samples where the p50/p99 matters. Costs resends and duplicates |
+| ALL_MISSING (WIFI default) | everything missing, repairs still on their way included | a lossy link (Wi-Fi) carrying large RELIABLE samples where the p50/p99 matters. Costs resends and duplicates |
 
 `repair_reveal_pace_ns`: the least time between two reveals to one writer. The default 0 is the least repair transit the
 reader has timed. Nothing can come back sooner, and without a pace a run of arriving repairs sends one ACKNACK each
