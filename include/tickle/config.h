@@ -391,9 +391,11 @@
 #define tt_ACKNACK_ROOM 1
 #endif
 // Variant 2 (2026-10-30, after round 3's sim read WORSE with path loss): the reader also names no more than that room
-// in the ACKNACK, lowest first. 0 is variant 1 (only the writer cuts).
+// in the ACKNACK, lowest first. 0 is variant 1 (only the writer cuts), the default again: variant 2's sim read WORSE in
+// 17 cells (a writer takes a unit an ACKNACK leaves out as arrived - tt_PeerAck left_out - so naming less than is
+// missing draws duplicate answers), and test_large_sample does not finish with it.
 #ifndef tt_ACKNACK_ROOM_READER_CAP
-#define tt_ACKNACK_ROOM_READER_CAP 1
+#define tt_ACKNACK_ROOM_READER_CAP 0
 #endif
 // 8192 bits with large samples (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so the window
 // is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control datagram.
