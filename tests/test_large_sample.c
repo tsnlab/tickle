@@ -338,6 +338,17 @@ static void init_bare_node(struct tt_Context* node, uint8_t id) {
 enum pair_mode { BEST_EFFORT, RELIABLE_KEEP_LAST, RELIABLE_KEEP_ALL };
 
 static bool pair_up; // init_pair() made the two contexts and teardown_pair() has not yet destroyed them
+// A test that makes a context move its id on purpose says so; in any other a move means the sim fed a context a packet
+// under its own id from another address - a datagram attributed to the wrong node - and teardown_pair() fails it.
+static bool id_move_provoked;
+
+static void expect_id_kept(const char* name, const struct tt_Context* node, uint8_t id) {
+    if (node->id != id && !id_move_provoked) {
+        fprintf(stderr, "FAIL %s moved from context id %u to %u: something fed it a packet under its own id\n", name,
+                (unsigned)id, (unsigned)node->id);
+        test_failures++;
+    }
+}
 
 // Destroys both contexts as a user would, then checks that every large buffer either one acquired was released: an
 // assembly still being put together and a sample a Publisher still holds go back at the context's destruction
@@ -347,6 +358,12 @@ static void teardown_pair(void) {
         return;
     }
     pair_up = false;
+    expect_id_kept("sender", &sender, SENDER_ID);
+    expect_id_kept("receiver", &receiver, RECEIVER_ID);
+    if (second_reader) {
+        expect_id_kept("second reader", &reader_b, READER_B_ID);
+    }
+    id_move_provoked = false;
     test_mock_send_hook = NULL; // the farewell announces go nowhere: no test reads them
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&sender));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&receiver));
@@ -621,6 +638,14 @@ static bool sim_unit_drop(const uint8_t* bytes) {
 }
 
 static void sim_capture(const void* buf, size_t len) {
+    // sim_sent[], sim_dropped[] and the routing in sim_deliver_now() know the three nodes by their ids at creation. An
+    // acting id outside them is a harness defect, named here rather than written past the arrays.
+    if (sim_acting >= sizeof(sim_sent) / sizeof(sim_sent[0])) {
+        fprintf(stderr, "FAIL sim_capture: acting node id %u is outside sim_sent[%zu]; the datagram is not sent\n",
+                (unsigned)sim_acting, sizeof(sim_sent) / sizeof(sim_sent[0]));
+        test_failures++;
+        return;
+    }
     if (len > SIM_DATAGRAM_MAX) {
         sim_oversize++;
         return;
@@ -779,13 +804,34 @@ static uint64_t sim_next_due(void) {
     return next;
 }
 
+// A run whose clock stops while its steps go on - something rescheduling itself at once, each run provoking the next -
+// would loop for ever. Past this many steps at one clock reading the simulation fails and stops stepping until the
+// next sim_start(), so every loop over sim_step() ends.
+#define SIM_SAME_CLOCK_STEPS 10000U
+static uint64_t sim_clock_last;
+static uint32_t sim_clock_steps;
+static bool sim_clock_stuck;
+
 static bool sim_step(void) {
+    if (sim_clock_stuck) {
+        return false;
+    }
     uint64_t next = sim_next_due();
     if (next == UINT64_MAX) {
         return false;
     }
     if (next > test_mock_now) {
         test_mock_now = next;
+    }
+    if (test_mock_now != sim_clock_last) {
+        sim_clock_last = test_mock_now;
+        sim_clock_steps = 0;
+    } else if (++sim_clock_steps >= SIM_SAME_CLOCK_STEPS) {
+        fprintf(stderr, "FAIL sim_step: %u steps at clock %llu ns without it moving; the simulation stops\n",
+                sim_clock_steps, (unsigned long long)test_mock_now);
+        test_failures++;
+        sim_clock_stuck = true;
+        return false;
     }
     if (sim_room_per_step != 0) {
         test_mock_nonblocking_room = (int32_t)sim_room_per_step; // the socket drained since the last step
@@ -847,6 +893,9 @@ static void sim_start(uint32_t loss_per_mille) {
     sim_whole_lost = 0;
     sim_whole_losing = false;
     sim_late_head = sim_late_tail = 0;
+    sim_clock_last = 0;
+    sim_clock_steps = 0;
+    sim_clock_stuck = false;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
 }
@@ -2103,6 +2152,40 @@ static void repairing_writer_scenario(void) {
     queue_start_ns = 0;
     EXPECT_TRUE(drops > 0);
     EXPECT_EQ_INT(SAMPLES + 1, delivered_count);
+}
+
+// A context's id is not fixed: a packet under its id from another address makes it move to a free one (config.h,
+// tt_CONTEXT_ID_CLAIM). The sim must still know it as the same node - its sends counted under it and routed to the
+// readers, never into sim_sent[] at the new id or back to itself as if from a reader, which made it collide with
+// itself, move again, and loop for ever at one clock reading (found 2026-10-31 under an experiment that provoked a
+// move).
+static void test_a_context_that_moves_its_id_is_the_same_node_to_the_sim(void) {
+#if tt_CONTEXT_ID_CLAIM
+    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    id_move_provoked = true;
+    sim_acting = SENDER_ID;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_TRUE(sim_tail != sim_head);
+    struct sim_datagram foreign = sim_queue[sim_head % SIM_QUEUE];
+    sim_head = sim_tail; // the reader heard none of it
+    // The sender's own datagram, arriving from the reader's address: another context holds the sender's id.
+    process_packet(&sender, foreign.bytes, 0, foreign.len, RECEIVER_IP, PORT, tt_TRANSPORT_UDP);
+    uint8_t moved_to = sender.id;
+    EXPECT_TRUE(moved_to != SENDER_ID); // else nothing below is tested
+    uint64_t before = sim_sent[SENDER_ID];
+    int failures_before = test_failures;
+    uint64_t since = test_mock_now;
+    uint32_t steps = 0;
+    while (test_mock_now - since < tt_SECOND && sim_step()) {
+        steps++;
+    }
+    printf("test_large_sample: the sender moved from id %u to %u; %u steps, %llu sent under it, sender id now %u\n",
+           SENDER_ID, moved_to, steps, (unsigned long long)(sim_sent[SENDER_ID] - before), sender.id);
+    EXPECT_EQ_INT(failures_before, test_failures); // no harness failure on the way
+    EXPECT_TRUE(sim_sent[SENDER_ID] > before);     // its announce under the new id counted as the sender's
+    EXPECT_EQ_U32(moved_to, sender.id);            // moved once: nothing of its own came back to it
+#endif
 }
 
 static void test_repairs_passed_by_an_acknack_naming_nothing_are_freed(void) {
@@ -3696,6 +3779,7 @@ int main(void) {
     test_a_slow_readers_repairs_are_measured();
     test_a_repairing_writer_is_not_warned_about();
     test_repairs_passed_by_an_acknack_naming_nothing_are_freed();
+    test_a_context_that_moves_its_id_is_the_same_node_to_the_sim();
     test_a_queued_path_does_not_storm();
     test_a_whole_sample_lost_does_not_storm();
 #ifdef tt_LARGE_REPAIR_SLOTS
