@@ -61,6 +61,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   that waits and moved to a thread that keeps the poll role; other threads wait with epoll as before. A context option
   (`tt_InitOptions.socket.rx_uring_wait`) and `TT_RX_URING_WAIT`; its default is the build's `tt_RX_URING_WAIT` (1). A
   kernel that refuses it (seccomp, Linux < 6.1) leaves the epoll path, said once.
+- **Repair reveal** (C11; [DESIGN.md](DESIGN.md) section 2, "Repair reveal"): `tt_LinkOptions.repair_reveal`
+  (`tt_REPAIR_REVEAL_*`: 0 = the profile's, OFF on every profile; REVEALED; ALL_MISSING) and `repair_reveal_pace_ns`.
+  When a repair arrives above the watermark, a reader can ask again at once for what the arrival shows lost, or for
+  everything missing, instead of waiting for its retry timer. Any sample size. OFF is the previous behaviour, wire- and
+  time-identical (`tests/wire_identity_repair_reveal.sh`). Measured in RESULTS `RVL`.
 - **Wi-Fi repair timing** (network-profiles phase 3, local values; [DESIGN.md](DESIGN.md) section 2):
   `tt_LinkOptions.repair_timing` (0 = the profile's: WIFI on, the rest off). A reliable reader's first recovery is timed
   even past the back-off, and after it only one its first request answered. Without it the WB Wi-Fi arms never timed a

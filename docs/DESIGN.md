@@ -183,6 +183,7 @@ interval does not change per profile (each context's summary carries its own tim
 | `announce_repeats` | none; **WIFI 3** | none | none | context: the most |
 | `discovery.miss_threshold` (context's, where 0 or default) | 3; **WIFI 6** | 3 | 3 | context: WIFI's if any link is WIFI |
 | `repair_timing` | off; **WIFI on** | off | off | context: on if any link is |
+| `repair_reveal` / `repair_reveal_pace_ns` | OFF / 0 (least transit) | OFF / 0 | OFF / 0 | context: the most / the longest any link sets |
 
 Only the unicast threshold is per link: the send path already resolves each destination to its link. Everything else
 is one value for the context, because a datagram is encoded once for all the links it goes to and a sample is cut once
@@ -257,6 +258,43 @@ ACKNACK naming a missing unit to a targeted copy's arrival). A probe whose repai
 of ~0.1-0.2 ms; folded as they were they collapsed the reader's retry estimate for the rep (22 of 840 PC reps on main,
 0 with the floor). The cost is latency, which the user accepted: main's short samples made it ask sooner (`tv` median
 rep p50 74.3 against 68.5 ms). 4 B in existing padding, no wire change. RESULTS `RLC`, `RLF`.
+
+**Repair reveal** (`repair_reveal`, `repair_reveal_pace_ns`, C11, 2026-10-30). TL;DR: OFF by default on every profile.
+Set ALL_MISSING on a lossy link (Wi-Fi) carrying large RELIABLE samples whose latency matters more than ~15-35% more
+resends. Leave OFF elsewhere: on small samples it bought no latency.
+
+When a repair arrives above the watermark while a gap is open, a reader can ask again at once instead of on its retry
+timer. On a path that keeps the writer's order, every unit asked for before that repair and still missing had its
+repair sent first, so that repair is lost. Any sample size, any profile.
+
+| mode | asks again for | when to set it |
+|---|---|---|
+| OFF (default) | nothing: the retry timer and the HEARTBEAT chase only | wired links; any link where datagrams cost more than latency (T1S, a shared medium) |
+| REVEALED | only the units the arrival proves lost | a lossy link where copies are costly: few extra copies, a lower p50 at moderate loss (ge5b2, `tv`), but not at ge10b4 |
+| ALL_MISSING | everything missing, repairs still on their way included | a lossy link (Wi-Fi) carrying large RELIABLE samples where the p50/p99 matters. Costs resends and duplicates |
+
+`repair_reveal_pace_ns`: the least time between two reveals to one writer. The default 0 is the least repair transit the
+reader has timed. Nothing can come back sooner, and without a pace a run of arriving repairs sends one ACKNACK each
+(test_large_sample: 326 reader datagrams against 584 unpaced, 4 x 1 MiB at 10%).
+
+Measured on the PC netns Wi-Fi emulator (PROFILE=wifi, 1 MiB RELIABLE at 5 Hz, 6 reps a cell, against main with an
+A/A control; RESULTS `RVL`, run `c11p`):
+
+- **ALL_MISSING:** fixes R4 at ge10b4, one-way p50 111.6 -> 56.1 ms (limit 74.2) and p99 498 -> 259 ms. Under `tv`,
+  p50 66 -> 52 ms and p99 539 -> 396 ms. Delivery stays 100% and CPU is equal. The prototype measured the same
+  (56.5 ms).
+  - The cost: 15-34% more resends and 3-9x the duplicates (962-2,969 a rep against 134-703). The writer's RACK time
+    rule resends repairs that were still in flight.
+  - On 100-byte samples at 100 Hz: 12-14 reveals a rep, and no latency gain (ge5b4 p99 69.9 against 72.4 ms, A/A
+    65.7). Resends rose at ge5b4 (418 against 327 a rep); `tv` was unchanged.
+- **REVEALED** (prototype run `c11o2`): ge10b4 p50 116.0 ms, not fixed. ge5b2 p50 76.6 -> 55.6 ms and `tv` 68.7 ->
+  55.1. Duplicates stay near main's; 3 arms are above the noise band (ge5b2 244 against 152 a rep).
+- **OFF** sends what the parent sent, byte for byte and to the nanosecond, in a lossy sim, large and small
+  (`tests/wire_identity_repair_reveal.sh`). In netns it sat within the A/A spread (4 rows off the floor against A's 3).
+
+A small-sample writer has no resend order, so ALL_MISSING's extra requests on small samples are all resent.
+Unit tests: `test_a_small_reader_reveals_as_its_mode_says` (test_reliable_pubsub), `test_a_reveal_names_only_what_it_reveals`
+and `test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once` (test_large_sample). Code: `maybe_reveal_lost_repairs()`.
 
 **Send pacing** (`tt_LinkOptions.pacing_rate`, `pacing_burst`; network-profiles phase 0 item F, 2026-10-22). A paced
 link averages at most `pacing_rate` bits per second on the wire (IP, UDP and Ethernet framing counted, a datagram's
