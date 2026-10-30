@@ -22,7 +22,9 @@
 // run, put back together and the hint backed off; a unit landed another way inside the hinted stretch withdraws the
 // hint (else the next aimed read writes over it); no hint over a landed unit, after the last run, for a reverse-endian
 // writer, or with TT_RX_DIRECT=0; an assembly freed while a read may be writing into it is parked until the read is
-// over, and a run read in place for it is dropped, not copied from a buffer that went back. tests/mutants_rx_direct.py
+// over, and a run read in place for it is dropped, not copied from a buffer that went back; an assembly freed while a
+// run read in place into it is being taken (a unit of the run jumps the watermark and the drain gives the assembly up)
+// keeps its buffer until the run's last unit has been read from it. tests/mutants_rx_direct.py
 // removes each condition and requires this binary to fail.
 //
 // Built as rmw_tickle builds core: a 65507-byte datagram, large samples.
@@ -77,14 +79,32 @@ static void* rx_acquire(void* user, uint32_t bytes) {
     return buffer;
 }
 
+// A buffer given back is poisoned and held, not freed at once: a core that still reads from it reads 0xDD - a torn
+// unit the tests see - rather than memory that went back, which the benches' malloc'd buffers turn into a SIGSEGV.
+#define RELEASED_MAX 64
+static uint8_t* released_buffers[RELEASED_MAX];
+static uint32_t released_count;
+
+static void free_released(void) {
+    for (uint32_t i = 0; i < released_count; i++) {
+        free(released_buffers[i]);
+        released_buffers[i] = NULL;
+    }
+    released_count = 0;
+}
+
 static void rx_release(void* user, void* buffer) {
     (void)user;
     for (int i = 0; i < LIVE_MAX; i++) {
         if (live_buffers[i] == buffer) {
             live_buffers[i] = NULL;
+            memset(buffer, 0xDD, live_sizes[i]);
         }
     }
-    free(buffer);
+    if (released_count == RELEASED_MAX) {
+        free_released();
+    }
+    released_buffers[released_count++] = (uint8_t*)buffer;
 }
 
 static bool is_live(const uint8_t* buffer) {
@@ -196,6 +216,7 @@ static void capture_hook(const void* buf, size_t len) {
 // A RELIABLE Subscriber tracks `words` 64-bit words per writer (in `tracking`), and has no reorder buffer.
 static void init_pair_window(bool reliable, uint16_t words) {
     test_mock_reset();
+    free_released();
     for (int i = 0; i < LIVE_MAX; i++) {
         if (live_buffers[i] != NULL) {
             free(live_buffers[i]);
@@ -626,6 +647,31 @@ static void test_batch_run_past_the_window(void) {
     EXPECT_EQ_U64(1, receiver.large.abandoned);
 }
 
+// The same, the run read in place: its first units land in the assembly it was read into, the next one jumps the
+// watermark and the drain gives that assembly up - and the units after it are still read from there, now for the
+// assembly claimed in its place. Its buffer must not go back before the run is taken: a buffer given back is poisoned
+// here, so a unit copied from it lands as 0xDD (on main, 2026-10-31: the C7 slow reader's SIGSEGV in large_place(),
+// the source of the memcpy unmapped).
+static void test_run_in_place_outlives_its_assembly(void) {
+    init_pair_window(true, 1);
+    feed(run_bytes, build_run(0, 2));
+    feed(run_bytes, build_run(58, 5)); // offsets 56-60 from the watermark at 2: a span, units 2-57 missing
+    expect_hint(63, 5);
+    struct tt_LargeAssembly* first = the_assembly();
+    uint8_t* first_buffer = first != NULL ? first->buffer : NULL;
+    EXPECT_TRUE(feed_aimed(run_bytes, build_run(63, 5))); // offsets 61-65: unit 66 is past the window
+    EXPECT_EQ_U64(1, receiver.large.abandoned);
+    struct tt_LargeAssembly* second = the_assembly();
+    EXPECT_TRUE(second != NULL && second->buffer != first_buffer);
+    EXPECT_TRUE(!is_live(first_buffer)); // given back once the run was taken
+    if (second == NULL) {
+        return;
+    }
+    EXPECT_TRUE(large_has_landed(second, 67));
+    EXPECT_TRUE(memcmp(second->buffer + tt_LARGE_CDR_OFFSET + large_offset(67), datagrams[67] + unit_payload_at[67],
+                       LARGE_CONT_PAYLOAD) == 0);
+}
+
 // A best-effort Subscriber beside the RELIABLE one: every run a unit at a time, so both get the sample.
 static void test_batch_not_with_a_best_effort_subscriber(void) {
     init_pair(true);
@@ -708,9 +754,11 @@ int main(void) {
     test_run_for_a_freed_assembly_is_dropped();
     test_batch_run_across_the_watermark();
     test_batch_run_past_the_window();
+    test_run_in_place_outlives_its_assembly();
     test_batch_not_with_a_best_effort_subscriber();
     test_batch_not_with_a_best_effort_assembly();
     test_batch_needs_the_assembly();
+    free_released();
     if (test_result() != 0) {
         return 1;
     }
