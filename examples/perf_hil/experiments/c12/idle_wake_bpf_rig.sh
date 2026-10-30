@@ -8,6 +8,7 @@
 # then examples/perf_hil/rig_lock.sh (hil, RIG_LOCK_WAIT=36000), all inside this detached process.
 # Usage: setsid nohup env SHA=<sha on origin> TS=$TS examples/perf_hil/experiments/c12/idle_wake_bpf_rig.sh \
 #          > ~/rig_results_safe/c12iwb_$TS.log 2>&1 < /dev/null &
+# BT=pong_rx_lean_split.bt chooses the lean probe set (step 5b).
 # ESTIMATE: build ~2 min + REPS (4) x 4 rows x ~60 s = ~18 min. Last line always "IDLE_WAKE_BPF_END rc=<n>".
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -36,7 +37,7 @@ fi
 echo "rig lock held ($(date -Is))"
 o=$SAFE/c12iwb_${SHA:0:8}_$TS.txt
 SHA=$SHA ROTATE=1 WAITS=block REPS=${REPS:-4} MSGS=bench QOSES=best_effort TICKLE_VARIANTS=libc VARIANT_VENDORS=rmw_cyclonedds_cpp \
-    SYSSTAMP_ARMS=off BPF_ARMS=on BPF_SCRIPT=$HERE/pong_rx_ring_split.bt CAPTURE=1 INJECT_ARMS="none 50" OUT=$o \
+    SYSSTAMP_ARMS=off BPF_ARMS=on BPF_SCRIPT=$HERE/${BT:-pong_rx_ring_split.bt} CAPTURE=1 INJECT_ARMS="none 50" OUT=$o \
     "$EXP/rmw_crosshost_rtt.sh" >"$o.launch.log" 2>&1
 echo "  rc=$? rows ok: $(grep -c ' | ok | ' "$o" 2>/dev/null) of $(grep -c ' inject=' "$o" 2>/dev/null) ($(date -Is))"
 R=$SAFE/c12iwb_$TS.reading.txt

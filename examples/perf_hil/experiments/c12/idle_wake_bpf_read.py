@@ -22,6 +22,9 @@ READING (diagnostic, decides nothing on its own; pre-registered so it cannot be 
   are where the idle cost sits. If the idle-exit share or depth differs between TickLE's arms and not CycloneDDS's,
   the cost is the cpu's idle state, not TickLE's code. Fewer than 100 bursts in an arm: NOT READ.
 
+With pong_rx_lean_split.bt lines (lean=1) the segments are rd->wk, wk->sw, sw->rx and total = data_ready -> receive
+return, and the same rule applies.
+
 Usage: idle_wake_bpf_read.py <OUT file>
 """
 import collections
@@ -36,6 +39,11 @@ MIN_BURSTS = 100
 
 def segs(r):
     g = {k: int(v) for k, v in r.items()}
+    if g.get("lean"):  # pong_rx_lean_split.bt: anchored at data_ready, no NAPI or idle points
+        if min(g["wk"], g["sw"], g["rx"]) <= 0 or g["wtid"] != g["rxtid"]:
+            return None
+        return {"rd->wk": g["wk"], "wk->sw": g["sw"] - g["wk"], "sw->rx": g["rx"] - g["sw"], "total": g["rx"],
+                "_idle": (False, 0, 0), "_khz": 0}
     if min(g["enq"], g["rd"], g["wk"], g["sw"], g["rx"]) <= 0 or g["wtid"] != g["rxtid"]:
         return None
     return {"irq2napi": g["irq2napi"], "napi->enq": g["enq"], "enq->rd": g["rd"] - g["enq"], "rd->wk": g["wk"] - g["rd"],
@@ -44,6 +52,7 @@ def segs(r):
 
 
 def main():
+    global SEGS
     out = Path(sys.argv[1])
     groups = collections.defaultdict(list)
     for path in sorted(out.with_suffix(out.suffix + ".bpf").glob("*.txt")):
@@ -55,6 +64,8 @@ def main():
                 s = segs(dict(kv.split("=") for kv in line[2:].split()))
                 if s:
                     groups[(m.group(1), m.group(3))].append(s)
+    if groups and "napi->enq" not in next(iter(groups.values()))[0]:
+        SEGS = ("rd->wk", "wk->sw", "sw->rx", "total")  # lean lines: total is data_ready -> receive return
     med = {}
     for key in sorted(groups):
         rows = groups[key]

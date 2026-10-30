@@ -1,0 +1,34 @@
+#!/usr/bin/env bpftrace
+// C12 idle wake, step 5b (2026-10-31): pong_rx_ring_split.bt with only the probes the receive's own path needs. Its first
+// run (c12iwb_..._20261031-074731) doubled the receive (~33 us against ~14) and turned CycloneDDS's arm difference from
+// +0.5 to +3.0 us: the system-wide cpu_idle, cpu_frequency, raw sys_enter and NAPI probes fire inside the very idle
+// exit being measured. Here no probe fires on an idle cpu or on another process's syscalls:
+//   rd   the anchor: a socket's data_ready (kprobe sock_def_readable), the first in a burst
+//   wk   a thread of this process that has received before is woken (sched_waking, filtered to those threads)
+//   sw   it is switched in            rx   its receive returns: io_uring_enter (ret >= 0) or recvmsg/recvfrom (ret > 0)
+//   send its reply (send* entry from this process): the burst ends, one line per reply. A burst with no reply within
+//        2 ms (an injected datagram) is replaced by the next data_ready.
+//   bpftrace pong_rx_lean_split.bt <pong tgid> <eth0 irq (unused, for the harness's call)>
+BEGIN { @st = 0; printf("# pong_rx_split lean v1 tgid %d irq %d\n", $1, $2); }
+kprobe:sock_def_readable {
+    if (@st == 0 || nsecs - @t0 > 2000000) {
+        @t0 = nsecs; @st = 1; @wk = 0; @wtid = 0; @sw = 0; @rx = 0; @rxtid = 0;
+    }
+}
+tracepoint:sched:sched_waking /@st == 1 && @wk == 0 && @rtids[args->pid]/ { @wk = nsecs - @t0; @wtid = args->pid; }
+tracepoint:sched:sched_switch /@st == 1 && @wtid != 0 && args->next_pid == @wtid && @sw == 0/ { @sw = nsecs - @t0; }
+tracepoint:syscalls:sys_exit_io_uring_enter /pid == $1 && args->ret >= 0/ {
+    @rtids[tid] = 1;
+    if (@st == 1 && @rx == 0 && @sw != 0) { @rx = nsecs - @t0; @rxtid = tid; }
+}
+tracepoint:syscalls:sys_exit_recvmsg,tracepoint:syscalls:sys_exit_recvfrom /pid == $1 && args->ret > 0/ {
+    @rtids[tid] = 1;
+    if (@st == 1 && @rx == 0 && @sw != 0) { @rx = nsecs - @t0; @rxtid = tid; }
+}
+tracepoint:syscalls:sys_enter_sendto,tracepoint:syscalls:sys_enter_sendmsg,tracepoint:syscalls:sys_enter_sendmmsg
+/pid == $1 && @st == 1 && @rx != 0/ {
+    printf("S lean=1 irq2napi=0 enq=0 rd=0 wk=%d sw=%d rx=%d rxtid=%d wtid=%d send=%d\n", @wk, @sw, @rx, @rxtid, @wtid,
+           nsecs - @t0);
+    @st = 0;
+}
+END { clear(@rtids); clear(@t0); clear(@st); clear(@wk); clear(@wtid); clear(@sw); clear(@rx); clear(@rxtid); }
