@@ -118,6 +118,24 @@ done
 # thread from 1 s after launch (start-up excluded) to the ping's start, and that window's length on the Pi's clock.
 # Unset, the pong idles 4 s exactly as before and the row has no idle fields.
 IDLE_S=${IDLE_S:-}
+# INJECT_ARMS="none 1 50" (2026-10-31, c12/idle_wake_rig.sh): per row, c12/idle_wake_injector.py runs on the ping host and
+# sends one empty UDP datagram to the pong's data socket LEAD ms before each predicted ping ("none": the same injector,
+# predicting and sending nothing - the control). It reads the ping host's capture, so it needs CAPTURE=1. Each row gets
+# inject=<arm> and the injector's INJECT_END fields; a row whose injector printed no INJECT_END, or whose sent count
+# contradicts its arm (none with any send, a lead with fewer than 50), is VOID(inject ...). Whether the datagram reached
+# and woke the pong's receiving thread is read on the pong side (c12/idle_wake_read.py). Arms rotate per rep with
+# ROTATE=1. Unset ("-"): no injector runs and every stem and row is as before.
+INJECT_ARMS=${INJECT_ARMS:--}
+# VARIANT_VENDORS (2026-10-31): the vendor rmws appended after the rmw_tickle@<variant> list when TICKLE_VARIANTS is set.
+# Unset, both, exactly as before.
+VARIANT_VENDORS=${VARIANT_VENDORS-rmw_fastrtps_cpp rmw_cyclonedds_cpp}
+if [ "$INJECT_ARMS" != - ] && [ "${CAPTURE:-0}" != 1 ]; then
+    echo "REFUSED: INJECT_ARMS needs CAPTURE=1 (the injector predicts the pings from the ping host's capture)" >&2
+    exit 64
+fi
+for a in $INJECT_ARMS; do
+    case "$a" in - | none | [0-9] | [0-9][0-9] | [0-9].[0-9]) ;; *) echo "INJECT_ARMS takes none or a lead in ms, not '$a'" >&2; exit 64 ;; esac
+done
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -182,7 +200,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST (rotated per rep: ${ROTATE:-0}), qoses: $QOSES ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, inject arms: $INJECT_ARMS, rmws: $RMW_LIST (rotated per rep: ${ROTATE:-0}), qoses: $QOSES ==="
 say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (every rmw_tickle, TickLE typesupport, interface and pingpong unit; empty: the plain build)"
 say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the ping and the pong; 1 only with RMW_LIST=rmw_tickle)"
 
@@ -318,6 +336,11 @@ for h in "$CLIENT" "$SERVER"; do
     say "--- binaries on $h: $ident ---"
     case "$ident" in *-links-*) say "an application binary links an rmw implementation directly - not running"; exit 1 ;; esac
 done
+if [ "$INJECT_ARMS" != - ]; then
+    scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/idle_wake_injector.py" "ci@$CLIENT:/tmp/c12_idle_wake_injector.py" \
+        || { say "injector copy FAILED - not running"; exit 1; }
+    say "--- idle-wake injector: c12/idle_wake_injector.py md5 $(md5sum "$REPO/examples/perf_hil/experiments/c12/idle_wake_injector.py" | cut -c1-12), arms: $INJECT_ARMS ---"
+fi
 BPF_IRQ=""
 case " $BPF_ARMS " in *" on "*)
     scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" "ci@$SERVER:/tmp/rmwx_pong_rx_split.bt"
@@ -468,7 +491,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     esac
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}${INJSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -541,8 +564,32 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
     # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
     # Under perf stat (INSN_COUNT=1) the chain is timeout -> time -> perf (taskset exec'd) -> ping_node: one level deeper.
+    if [ -n "$INJSTEM" ]; then
+        # The injector's client and server addresses on the test link, read from the hosts rather than assumed.
+        local cip sip
+        cip=$(sh_ "$CLIENT" "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1 | head -1")
+        sip=$(sh_ "$SERVER" "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1 | head -1")
+        sh_ "$CLIENT" "rm -f /tmp/c12_inj.log; setsid nohup taskset -c 0 python3 /tmp/c12_idle_wake_injector.py $CAP_FILE $cip $sip $INJ 45 3 > /tmp/c12_inj.log 2>&1 < /dev/null &"
+    fi
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^WARMUP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
+    local injvoid=""
+    if [ -n "$INJSTEM" ]; then
+        # The injector ends by itself 3 s after the last ping (45 s at most); its INJECT_END line is always printed.
+        mkdir -p "$OUT.inject"
+        sh_ "$CLIENT" "for i in \$(seq 1 60); do grep -q '^INJECT_END' /tmp/c12_inj.log && break; sleep 0.25; done; cat /tmp/c12_inj.log" >"$OUT.inject/$stem.txt" 2>&1 || true
+        local ie isent
+        ie=$(grep -m1 '^INJECT_END' "$OUT.inject/$stem.txt" | cut -d' ' -f2-)
+        isent=$(echo "$ie" | grep -oE 'sent=[0-9]+' | cut -d= -f2)
+        res="$res inject=$INJ ${ie:-inject_end=missing}"
+        if [ -z "$ie" ]; then
+            injvoid="VOID(inject: no INJECT_END)"
+        elif [ "$INJ" = none ] && [ "${isent:-1}" != 0 ]; then
+            injvoid="VOID(inject: none arm sent $isent)"
+        elif [ "$INJ" != none ] && [ "${isent:-0}" -lt 50 ]; then
+            injvoid="VOID(inject: lead $INJ sent only ${isent:-0})"
+        fi
+    fi
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
         mkdir -p "$OUT.bpf"
@@ -610,7 +657,7 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     fi
     case "$rmw" in rmw_tickle*)
         sleep 1; mkdir -p "$OUT.dumps"
-        scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_dump.txt" "$OUT.dumps/${rmw}_${msg}_${qos}_rep${rep}.txt" 2>/dev/null \
+        scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_dump.txt" "$OUT.dumps/${rmw}_${msg}_${qos}_rep${rep}${INJSTEM}.txt" 2>/dev/null \
             || say "  (no dump from $rmw rep$rep)" ;;
     esac
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
@@ -651,7 +698,8 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     esac
     # Gate v2 A2: a counted row without both counts is VOID - "could not look" is never "no work".
     if [ -n "$insn_void" ] && [ "$verdict" = ok ]; then verdict=$insn_void; fi
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    if [ -n "$injvoid" ] && [ "$verdict" = ok ]; then verdict=$injvoid; fi
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${INJSTEM:+ inject=$INJ}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -678,7 +726,7 @@ for rep in $(seq 1 "$REPS"); do
             RMWS="$RMW_LIST"
             if [ -n "$TICKLE_VARIANTS" ]; then
                 RMWS=""; for v in $TICKLE_VARIANTS; do RMWS="$RMWS rmw_tickle@$v"; done
-                RMWS="$RMWS rmw_fastrtps_cpp rmw_cyclonedds_cpp"
+                RMWS="$RMWS $VARIANT_VENDORS"
             fi
             # ROTATE=1 (2026-10-21): the rmw order rotates by one each repetition, so no rmw always runs first after a
             # build or always follows the same one. Unset, the order is RMW_LIST's in every repetition, as before.
@@ -697,9 +745,17 @@ for rep in $(seq 1 "$REPS"); do
                     BPFSTEM=""; [ "$BPF" = on ] && BPFSTEM="_bpf"
                     for EP in $EXEC_POLL_ARMS; do
                       EPSTEM=""; [ "$EP" != - ] && EPSTEM="_ep$EP"
-                      for rmw in $RMWS; do
-                        case "$EP:$rmw" in on:rmw_tickle*) ;; on:*) continue ;; esac
-                        one "$rmw" "$msg" "$qos" "$rep"
+                      INJS="$INJECT_ARMS"
+                      if [ "${ROTATE:-0}" = 1 ]; then
+                          read -r -a irot <<<"$INJECT_ARMS"
+                          INJS=""; for i in $(seq 0 $((${#irot[@]} - 1))); do INJS="$INJS ${irot[$(((i + rep - 1) % ${#irot[@]}))]}"; done
+                      fi
+                      for INJ in $INJS; do
+                        INJSTEM=""; [ "$INJ" != - ] && INJSTEM="_inj$INJ"
+                        for rmw in $RMWS; do
+                          case "$EP:$rmw" in on:rmw_tickle*) ;; on:*) continue ;; esac
+                          one "$rmw" "$msg" "$qos" "$rep"
+                        done
                       done
                     done
                   done
