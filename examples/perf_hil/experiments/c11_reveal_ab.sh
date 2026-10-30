@@ -142,7 +142,7 @@ if [ "${SKIP_TRACE:-0}" != 1 ]; then
 fi
 
 ab() { # ab CELLS ARMS
-    env "${common_env[@]}" TREES="M=$TREES_DIR/M A=$TREES_DIR/A O=$O_TREE" TAG=$TAG BASE_OUT=$OUTB REPS=$REPS \
+    env "${common_env[@]}" TREES="M=$TREES_DIR/M A=$TREES_DIR/A O=$O_TREE" TAG="$TAG" BASE_OUT="$OUTB" REPS="$REPS" \
         CELLS="$1" ARMS="$2" "$O_TREE/examples/perf_hil/experiments/wifi_repair_ab.sh" >>"$LOG" 2>&1
 }
 log "phase AB 1: rel_large ctl ge5b2 ge5b4 ge10b4 tv"

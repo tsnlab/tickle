@@ -1978,6 +1978,12 @@ static uint8_t link_announce_repeats(const struct tt_LinkOptions* link) {
     return link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE ? link->announce_repeats : 0U;
 }
 
+// A link's repair reveal folded into the context's: the most any link asks, and the longest pace any link sets.
+static void link_reveal_fold(const struct tt_LinkOptions* link, uint8_t* reveal, uint64_t* pace) {
+    *reveal = link->repair_reveal > *reveal ? link->repair_reveal : *reveal;
+    *pace = link->repair_reveal_pace_ns > *pace ? link->repair_reveal_pace_ns : *pace;
+}
+
 static void link_profiles_apply(struct tt_Context* node) {
     struct tt_NetOptions* net = &node->opts.net;
     uint32_t control = (uint32_t)tt_CONTROL_MAX_LENGTH;
@@ -2004,8 +2010,7 @@ static void link_profiles_apply(struct tt_Context* node) {
             copies = copies || link_takes_summary_copies(link, &node->links[i]);
             repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;
             repair_timing = repair_timing || link->repair_timing == tt_SWITCH_ON;
-            reveal = link->repair_reveal > reveal ? link->repair_reveal : reveal;
-            reveal_pace = link->repair_reveal_pace_ns > reveal_pace ? link->repair_reveal_pace_ns : reveal_pace;
+            link_reveal_fold(link, &reveal, &reveal_pace);
         }
         link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);

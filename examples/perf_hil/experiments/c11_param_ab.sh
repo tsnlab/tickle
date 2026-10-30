@@ -85,7 +85,7 @@ log "quiet: load $(cut -d' ' -f1-3 /proc/loadavg)"
 
 ab() { # ab CELLS ARMS
     env PROFILE=wifi NODE_ENV=TT_UDP_OFFLOAD=0 LARGE_RSTATS=1 \
-        TREES="M=$TREES_DIR/M A=$TREES_DIR/A F=$TREES_DIR/F O=$TREES_DIR/O" TAG=$TAG BASE_OUT=$OUTB REPS=$REPS \
+        TREES="M=$TREES_DIR/M A=$TREES_DIR/A F=$TREES_DIR/F O=$TREES_DIR/O" TAG="$TAG" BASE_OUT="$OUTB" REPS="$REPS" \
         CELLS="$1" ARMS="$2" "$TREES_DIR/O/examples/perf_hil/experiments/wifi_repair_ab.sh" >>"$LOG" 2>&1
 }
 log "phase AB 1: rel_large ctl ge5b2 ge5b4 ge10b4 tv"

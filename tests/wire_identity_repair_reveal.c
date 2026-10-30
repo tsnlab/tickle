@@ -21,10 +21,6 @@
 #include "test_large_sample.c"      // NOLINT(bugprone-suspicious-include) -- the sim is that test's
 #undef main
 
-#ifndef SMALL_LOSS_PER_MILLE
-#define SMALL_LOSS_PER_MILLE 100U
-#endif
-
 static FILE* wire_out;
 
 // One record: time (8 B), the sender's context (1 B), destination ip (4 B), length (4 B), the bytes.
@@ -71,7 +67,7 @@ static void wire_scenario(const char* path, bool large) {
     }
     sim_reverse_delay = 10 * tt_MILLISECOND;
     sim_unicast_delay = 10 * tt_MILLISECOND;
-    sim_loss_per_mille = large ? 100U : SMALL_LOSS_PER_MILLE;
+    sim_loss_per_mille = 100;
     test_mock_nonblocking_room = -1;
     if (large) {
         sample_len = ONE_MB;
@@ -82,12 +78,12 @@ static void wire_scenario(const char* path, bool large) {
     } else {
         uint64_t start = test_mock_now;
         for (int i = 0; i < 200; i++) {
-            (void)sim_publish((uint8_t)(2 + (i % 200)), tt_SECOND);
-            run_until(start + (uint64_t)(i + 1) * 2 * tt_MILLISECOND);
+            (void)sim_publish((uint8_t)(2 + i), tt_SECOND);
+            run_until(start + ((uint64_t)(i + 1) * 2 * tt_MILLISECOND));
         }
     }
     sim_loss_per_mille = 0;
-    uint64_t quiet_by = test_mock_now + 2 * tt_SECOND; // the last repairs, acknowledgements and chases
+    uint64_t quiet_by = test_mock_now + (2 * tt_SECOND); // the last repairs, acknowledgements and chases
     while (test_mock_now < quiet_by && sim_step()) {
     }
     printf("wire_identity_repair_reveal: %s - %d delivered, writer %llu datagrams, reader %llu, %u resent\n", path,

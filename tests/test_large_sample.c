@@ -1789,8 +1789,8 @@ static const struct tt_RepairRequest* reveal_at_b5(uint8_t mode, uint32_t* base_
     proxy->reveal_ns = 0;
     proxy->acknack_scheduled = true;
     memset(proxy->requests, 0, sizeof(proxy->requests));
-    proxy->requests[0] = (struct tt_RepairRequest) {now - 5 * tt_MILLISECOND, base, base + 5U};
-    proxy->requests[1] = (struct tt_RepairRequest) {now - 2 * tt_MILLISECOND, base + 7U, base + 7U};
+    proxy->requests[0] = (struct tt_RepairRequest) {now - (5 * tt_MILLISECOND), base, base + 5U};
+    proxy->requests[1] = (struct tt_RepairRequest) {now - (2 * tt_MILLISECOND), base + 7U, base + 7U};
     proxy->request_next = 2;
     uint32_t queued = sim_tail;
     sim_acting = RECEIVER_ID;
