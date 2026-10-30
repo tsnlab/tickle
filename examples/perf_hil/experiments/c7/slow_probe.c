@@ -15,23 +15,6 @@ static void probe_trace(int trace, uint64_t t0) {
         printf("T %.3f ms acks+%llu resent+%llu drops+%llu queue %u delivered %d\n", (double)(test_mock_now - t0) / 1e6,
                (unsigned long long)(sim_sent[RECEIVER_ID] - last_a), (unsigned long long)(pub.retransmitted - last_r),
                (unsigned long long)(sim_socket_drops - last_d), sim_late_tail - sim_late_head, delivered_count - 1);
-#ifdef PROBE_WINDOW
-        printf("  W %u tokens %u srtt %u live %u window_held %llu\n", pub.peer_acks[0].repair_window,
-               pub.peer_acks[0].repair_tokens, pub.peer_acks[0].repair_srtt_ns, sender.large.repairs_live,
-               (unsigned long long)sender.large.window_held);
-        if (trace > 1) {
-            printf("  ack_seq_no %u:", pub.peer_acks[0].ack_seq_no);
-            int shown = 0;
-            for (uint32_t i = 0; i < tt_LARGE_REPAIR_SLOTS && shown < 12; i++) {
-                const struct tt_LargeRepair* slot = &sender.large.repairs[i];
-                if (slot->context_id != tt_CONTEXT_ID_INVALID) {
-                    printf(" %u(r%u lo%u)", slot->seq_no, slot->resends, slot->left_out);
-                    shown++;
-                }
-            }
-            printf("\n");
-        }
-#endif
         last_r = pub.retransmitted;
         last_d = sim_socket_drops;
         last_a = sim_sent[RECEIVER_ID];
@@ -97,8 +80,10 @@ static void run(int samples, uint64_t service_ns, uint32_t capacity, uint32_t lo
            (double)lat_max / 1e6, (double)(test_mock_now - t0) / 1e6);
     printf("X orig_drops %llu path_lost %llu", (unsigned long long)sim_socket_drops_original,
            (unsigned long long)sim_dropped[SENDER_ID]);
-#ifdef PROBE_WINDOW
-    printf(" window_held %llu W %u", (unsigned long long)sender.large.window_held, pub.peer_acks[0].repair_window);
+#if tt_ACKNACK_ROOM
+    printf(" room_cut %llu room_sent %llu adverts %llu zero %llu sum %llu", (unsigned long long)sender.large.room_cut,
+           (unsigned long long)sender.large.room_sent, (unsigned long long)receiver.large.room_adverts,
+           (unsigned long long)receiver.large.room_zero, (unsigned long long)receiver.large.room_sum);
 #endif
     printf("\n");
 }

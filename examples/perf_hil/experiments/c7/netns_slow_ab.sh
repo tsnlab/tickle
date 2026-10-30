@@ -7,6 +7,7 @@
 # 73e7a38c), F = HEAD_REF (default HEAD), rep by rep in alternation, each from a git archive of its commit.
 #
 # PRE-REGISTERED (written before the first run, 2026-10-29):
+#   (Round 3, 2026-10-30: BASE defaults to main 75495519; ROUND=3 reads with netns_read_r3.py.)
 #   VOID per rep as the harness says (no RESULT line; W = 0 with a socket drop or a resend; W = 25000 with no socket
 #     drop; tc drops; load above nproc/2 at the rep's start).
 #   CONTROL the change cannot touch: W = 0. Both trees resend 0 there (else the reading is VOID: the window must not
@@ -27,7 +28,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
 stamp=$(date +%Y%m%d-%H%M%S)
-base=${BASE:-73e7a38c}
+base=${BASE:-75495519}
 head=${HEAD_REF:-HEAD}
 trees=${TREES_DIR:-/home/semih/tmp_build/c7/trees_$stamp}
 out=${OUT:-$HOME/rig_results_safe/large_repair/c7_slow_$stamp}
@@ -75,7 +76,12 @@ elif per["F"] <= 0.75 * per["P"]:
 else:
     print("NOT SHOWN")
 EOF
-# Round 2's reading (C7 design section 7; PHASE=order runs the slow cell and the amp path-loss cells), in code.
+# Round 2's reading (C7 design section 7; PHASE=order runs the slow cell and the amp path-loss cells), in code; round 3
+# (ROUND=3, the wire experiment) reads with netns_read_r3.py instead.
 if [ "${PHASE:-slow}" = order ]; then
-    SLOW_W="${SLOW_W:-25000}" python3 "$here/netns_read.py" "$out" | tee -a "$out/summary.txt"
+    if [ "${ROUND:-2}" = 3 ]; then
+        SLOW_W="${SLOW_W:-25000}" python3 "$here/netns_read_r3.py" "$out" | tee -a "$out/summary.txt"
+    else
+        SLOW_W="${SLOW_W:-25000}" python3 "$here/netns_read.py" "$out" | tee -a "$out/summary.txt"
+    fi
 fi
