@@ -16517,7 +16517,14 @@ static uint16_t acknack_room(struct tt_Context* node, uint32_t in_flight) {
         return 0;
     }
     uint32_t room = bytes / ACKNACK_ROOM_DATAGRAM_BYTES;
+#if tt_ACKNACK_ROOM_GRANT
+    // Variant 3: what is in flight takes at most half the free room - a socket with room never advertises 0.
+    const uint32_t half = room / 2U;
     room = room > in_flight ? room - in_flight : 0U;
+    room = room > half ? room : half;
+#else
+    room = room > in_flight ? room - in_flight : 0U;
+#endif
     node->large.room_adverts++;
     node->large.room_zero += room == 0 ? 1U : 0U;
     node->large.room_sum += room;
@@ -16601,6 +16608,13 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     // sends.
     uint32_t name_left = room_code == 0 ? UINT32_MAX : room_code > 1U ? room_code - 1U : 1U;
 #endif
+#if tt_ACKNACK_ROOM_GRANT
+    // Variant 3: the writer grants the lowest named units up to the room (large_resend(), lowest first), so the
+    // reader remembers as requested - in flight, skipped by repairs_in_flight() - only that prefix, up to granted_last;
+    // what lies above it was cut, and its next ACKNACK names it again.
+    uint32_t grant_left = room_code == 0 ? UINT32_MAX : room_code - 1U;
+    int granted_last = -1;
+#endif
 #endif
     for (uint16_t word = 0; word < wire_words; word++) {
         uint64_t request = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
@@ -16618,6 +16632,21 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
             request = kept;
         }
         name_left -= (uint32_t)__builtin_popcountll(request);
+#endif
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT
+        if (grant_left != UINT32_MAX && grant_left != 0 && request != 0) {
+            uint32_t named = (uint32_t)__builtin_popcountll(request);
+            if (named >= grant_left) {
+                uint64_t rest = request;
+                for (uint32_t i = 1; i < grant_left; i++) {
+                    rest &= rest - 1U;
+                }
+                granted_last = (word * tt_RELIABLE_BITMAP_WORD_BITS) + __builtin_ctzll(rest);
+                grant_left = 0;
+            } else {
+                grant_left -= named;
+            }
+        }
 #endif
         acknack_header->bitmap[word] = request;
         if (request != 0) {
@@ -16656,6 +16685,14 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     }
     // Only a request that names the watermark itself can time its recovery: a narrow request for a
     // newly opened gap further ahead (low_bit > 0) does not ask for ack_seq_no at all.
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_GRANT
+    if (room_code == 1U) { // no room: nothing is granted, nothing goes in flight - the next ACKNACK asks it all again
+        first_named = -1;
+        names_watermark = false;
+    } else if (granted_last >= 0) {
+        last_named = granted_last; // the cut units above it are not in flight
+    }
+#endif
     if (names_watermark) {
         note_watermark_requested(proxy, tt_get_ns());
     }
