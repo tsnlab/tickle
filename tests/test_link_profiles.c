@@ -683,6 +683,51 @@ static void test_wifi_repair_timing(void) {
     destroy();
 }
 
+// The readers' re-ask on a repair above the watermark (tt_LinkOptions.repair_reveal, 2026-10-30): OFF on every profile,
+// WIFI's included; an explicit mode wins; the context takes the most any link asks, and the longest pace any link sets
+// (0 = the least repair transit). What it does is test_reliable_pubsub's and test_large_sample's.
+static void test_repair_reveal_link_option(void) {
+    static const uint8_t profiles[] = {tt_LINK_PROFILE_ETHERNET, tt_LINK_PROFILE_T1S, tt_LINK_PROFILE_TSN,
+                                       tt_LINK_PROFILE_WIFI};
+    for (size_t i = 0; i < sizeof(profiles); i++) {
+        struct tt_InitOptions opts = one_link(profiles[i]);
+        create(&opts, -1);
+        EXPECT_EQ_U32(tt_REPAIR_REVEAL_OFF, node.opts.net.links[0].repair_reveal);
+        EXPECT_EQ_U32(tt_REPAIR_REVEAL_OFF, node.repair_reveal);
+        EXPECT_EQ_U32(0, node.repair_reveal_pace_ns);
+        destroy();
+        opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING;
+        opts.net.links[0].repair_reveal_pace_ns = 3 * tt_MILLISECOND;
+        create(&opts, -1);
+        EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.repair_reveal);
+        EXPECT_EQ_U32(3 * tt_MILLISECOND, node.repair_reveal_pace_ns);
+        destroy();
+    }
+    // Two links: the most any asks, either order; the longest pace.
+    struct tt_InitOptions opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.net.links[0] = (struct tt_LinkOptions) {.broadcast = "10.0.0.255",
+                                                 .repair_reveal = tt_REPAIR_REVEAL_REVEALED,
+                                                 .repair_reveal_pace_ns = 5 * tt_MILLISECOND};
+    opts.net.links[1] = (struct tt_LinkOptions) {.broadcast = "10.0.1.255",
+                                                 .profile = tt_LINK_PROFILE_WIFI,
+                                                 .repair_reveal_pace_ns = 2 * tt_MILLISECOND};
+    opts.net.link_count = 2;
+    create(&opts, -1);
+    EXPECT_EQ_U32(tt_REPAIR_REVEAL_REVEALED, node.repair_reveal);
+    EXPECT_EQ_U32(5 * tt_MILLISECOND, node.repair_reveal_pace_ns);
+    destroy();
+    opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_DEFAULT;
+    opts.net.links[1].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING;
+    create(&opts, -1);
+    EXPECT_EQ_U32(tt_REPAIR_REVEAL_ALL_MISSING, node.repair_reveal);
+    destroy();
+    memset(&opts, 0, sizeof(opts)); // no link options: none
+    create(&opts, -1);
+    EXPECT_TRUE(node.repair_reveal < tt_REPAIR_REVEAL_REVEALED);
+    destroy();
+}
+
 // The unicast copies: what went to which address, and the copy's bytes.
 static int copy_count;
 static uint32_t copy_ips[32];
@@ -945,6 +990,16 @@ static void test_validation(void) {
     expect_created(&opts, tt_RET_OK, "repair_timing tt_SWITCH_OFF");
     opts.net.links[0].repair_timing = tt_SWITCH_OFF + 1U;
     expect_created(&opts, tt_RET_INVALID_ARGUMENT, "repair_timing past tt_SWITCH_OFF");
+    opts.net.links[0].repair_timing = tt_SWITCH_DEFAULT;
+    opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING;
+    expect_created(&opts, tt_RET_OK, "repair_reveal tt_REPAIR_REVEAL_ALL_MISSING");
+    opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "repair_reveal past tt_REPAIR_REVEAL_ALL_MISSING");
+    opts.net.links[0].repair_reveal = tt_REPAIR_REVEAL_DEFAULT;
+    opts.net.links[0].repair_reveal_pace_ns = UINT32_MAX;
+    expect_created(&opts, tt_RET_OK, "repair_reveal_pace_ns UINT32_MAX");
+    opts.net.links[0].repair_reveal_pace_ns = (uint64_t)UINT32_MAX + 1U;
+    expect_created(&opts, tt_RET_INVALID_ARGUMENT, "repair_reveal_pace_ns above UINT32_MAX");
 
     opts = one_link(0);
     opts.net.links[0].announce_repeats = tt_ANNOUNCE_REPEATS_MAX;
@@ -1012,6 +1067,7 @@ int main(void) {
     test_tick_idle_heartbeat_and_mode_set_the_context();
     test_wifi_discovery_values();
     test_wifi_repair_timing();
+    test_repair_reveal_link_option();
     test_wifi_summary_copies();
     test_wifi_announce_repeats();
     test_validation();

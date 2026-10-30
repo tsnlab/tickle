@@ -1026,6 +1026,11 @@ static void resolve_link_repair_timing(struct tt_LinkOptions* link) {
     if (link->repair_timing == tt_SWITCH_DEFAULT) {
         link->repair_timing = link->profile == tt_LINK_PROFILE_WIFI ? (uint8_t)tt_SWITCH_ON : (uint8_t)tt_SWITCH_OFF;
     }
+    // repair_reveal left 0: OFF on every profile, WIFI's included (docs/DESIGN.md "Repair reveal": a latency bought
+    // with resends, which is the application's trade to make).
+    if (link->repair_reveal == tt_REPAIR_REVEAL_DEFAULT) {
+        link->repair_reveal = (uint8_t)tt_REPAIR_REVEAL_OFF;
+    }
 }
 
 // The context's miss threshold where it left it at 0 or the default: WIFI's when any link is WIFI - the silence the
@@ -1261,6 +1266,12 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     }
     if (link->repair_timing > tt_SWITCH_OFF) {
         return reject_option("net.links[].repair_timing", "is not a tt_SWITCH_* value");
+    }
+    if (link->repair_reveal > tt_REPAIR_REVEAL_ALL_MISSING) {
+        return reject_option("net.links[].repair_reveal", "is not a tt_REPAIR_REVEAL_* value");
+    }
+    if (link->repair_reveal_pace_ns > UINT32_MAX) {
+        return reject_option("net.links[].repair_reveal_pace_ns", "is above UINT32_MAX ns");
     }
     if (link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE && link->announce_repeats > tt_ANNOUNCE_REPEATS_MAX) {
         return reject_option("net.links[].announce_repeats", "is above tt_ANNOUNCE_REPEATS_MAX");
@@ -1976,6 +1987,8 @@ static void link_profiles_apply(struct tt_Context* node) {
     bool pacing = false;
     bool copies = false;
     bool repair_timing = false;
+    uint8_t reveal = 0;
+    uint64_t reveal_pace = 0;
     uint8_t repeats = 0;
     for (uint8_t i = 0; i < link_count(node); i++) {
         uint32_t mtu = LINK_ETHERNET_MTU;
@@ -1991,6 +2004,8 @@ static void link_profiles_apply(struct tt_Context* node) {
             copies = copies || link_takes_summary_copies(link, &node->links[i]);
             repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;
             repair_timing = repair_timing || link->repair_timing == tt_SWITCH_ON;
+            reveal = link->repair_reveal > reveal ? link->repair_reveal : reveal;
+            reveal_pace = link->repair_reveal_pace_ns > reveal_pace ? link->repair_reveal_pace_ns : reveal_pace;
         }
         link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);
@@ -2001,6 +2016,8 @@ static void link_profiles_apply(struct tt_Context* node) {
     node->pacing = pacing;
     node->summary_copies = copies;
     node->repair_timing = repair_timing;
+    node->repair_reveal = reveal;
+    node->repair_reveal_pace_ns = (uint32_t)reveal_pace;
     node->announce_repeats = repeats;
     node->batch_default = batch;
     node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
@@ -7820,13 +7837,13 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 static bool server_cache_live(struct tt_Server* server, int slot, uint64_t now);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
-#if tt_LARGE_SAMPLES
 struct acknack_skip;
+#if tt_LARGE_SAMPLES
 static int repairs_in_flight(const struct tt_Context* node, const struct tt_WriterProxy* proxy, int high_bit,
                              uint64_t now, struct acknack_skip* skips);
+#endif
 static bool names_any_open(const struct tt_WriterProxy* proxy, int high_bit, const struct acknack_skip* skips,
                            int skip_count);
-#endif
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 static uint64_t reliable_retry_configured(const struct tt_Context* node);
@@ -7920,6 +7937,8 @@ static void node_init_locks(struct tt_Context* node) {
     memset(node->pacers, 0, sizeof(node->pacers));
     node->summary_copies = false; // nor a WIFI link's discovery (link_profiles_apply())
     node->repair_timing = false;  // nor its readers' retry estimate
+    node->repair_reveal = 0;      // nor their re-ask on a repair above the watermark
+    node->repair_reveal_pace_ns = 0;
     node->announce_repeats = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
@@ -7976,6 +7995,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
     node->summary_copies = false; // until link_profiles_apply() says which links take copies and repeats
     node->repair_timing = false;
+    node->repair_reveal = 0;
+    node->repair_reveal_pace_ns = 0;
     node->announce_repeats = 0;
     node->announce_repeats_left = 0;
     node->announce_repeat_gap_ns = 0;
@@ -16287,6 +16308,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
             proxy->probe_busy = false;
+            proxy->reveal_ns = 0;
 #if tt_LARGE_SAMPLES
             proxy->sending_srtt_ns = 0;
             proxy->sending_rttvar_ns = 0;
@@ -16294,7 +16316,6 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // mock clock starts again at each run, and a proxy table reused across them read the last run's retry as
             // still to come, so a test's result depended on the tests before it (2026-10-26).
             proxy->retry_sent_ns = 0;
-            proxy->reveal_ns = 0;
             proxy->large_arrival_ns = 0;
             proxy->repair_arrival_ns = 0;
             proxy->original_arrival_ns = 0;
@@ -17354,34 +17375,39 @@ static void take_first_contact_baseline(const struct tt_Subscriber* sub, struct 
     proxy->reorder_cursor = seq_no;
 }
 
-#if tt_LARGE_SAMPLES
-// A repair from a writer of large samples was just recorded above the watermark, on a repair_timing link (WIFI's): ask
-// again at once, rather than on the retry timer, for what is still missing (2026-10-30, C11, RESULTS `R4`). A path
-// keeps a sender's order, and the writer answers a request lowest unit first, so the watermark - missing, below this
-// unit and asked for before it - had its repair go before this one, and that repair is lost; or the writer held it as
-// still on its way, and this ACKNACK, which leaves the unit just recorded out, shows it the hold is over (its resend
-// order, DESIGN.md section 4: a resend goes again once the reader received something sent after it). The writer, not
-// this reader, decides what each named unit costs: a request for a repair still on its way is held, as any is. Traced
-// at ge10b4 (r4_trace_read.py, 299 samples of 1 MiB): the reader asked again for a lost repair on its timer (37 ms at
-// the p50) 24 ms (p50) after a later repair had shown it lost.
+// A repair was just recorded above the watermark while a gap is open, and the context's links ask for a reveal
+// (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"; 2026-10-30, C11, RESULTS `R4`): ask again at once,
+// rather than on the retry timer, for what the arrival shows lost. A path keeps a sender's order, and the writer
+// answers a request lowest unit first, so a unit missing below this one and asked for before it had its repair go
+// before this one, and that repair is lost. Traced at ge10b4 (r4_trace_read.py, 299 samples of 1 MiB): the reader asked
+// again for a lost repair on its timer (37 ms at the p50) 24 ms (p50) after a later repair had shown it lost. Any
+// sample size: the order argument is about datagrams, a small sample's or a large one's unit alike.
 //
-// It names only what the arrival reveals (O2, 2026-10-30): a unit below the one just recorded whose requests all went
-// no later than the oldest request naming that one - so its repair, if it went, went before the arrived one. What a
-// later request named, or anything above the arrived unit, a request within the repair transit time is still waiting
-// on: left out, as answer_ack_request() leaves it out (repairs_in_flight()). Named whole (O, d80877cf), the reveal
-// asked again for repairs still queued on the path; the writer's RACK time rule released them early (617-1,367 releases
-// a rep against 43-87) and the reader got 909-2,474 duplicates a rep against main's 171-446 (C11 A/B, ge5b2-ge10b4).
+// REVEALED names only what the arrival reveals: a unit below the one just recorded whose requests all went no later
+// than the oldest request naming that one - so its repair, if it went, went before the arrived one. What a later
+// request named, or anything above the arrived unit, a request within the repair transit time is still waiting on: left
+// out, as answer_ack_request() leaves it out (repairs_in_flight()). ALL_MISSING names everything missing, repairs still
+// on their way included: on the PC's queued Wi-Fi path the writer's RACK time rule then resent such repairs early -
+// R4's p50 113 -> 56.5 ms, at 13-18% more resends and 909-2,474 duplicates a rep against main's 171-446 (C11 A/B,
+// ge5b2-ge10b4). REVEALED kept the duplicates near main's and did not move R4's p50 at ge10b4 (RESULTS `R4`).
 //
-// Not oftener than the least repair transit this reader has timed (tt_WriterProxy.transit_min_ns): sooner, nothing
-// this ACKNACK caused can have come back, and the repairs that keep arriving would otherwise each send one. Not before
-// a transit was timed at all, and only while the retry timer runs (a gap is open). No wire change, no estimate touched.
+// Not oftener than tt_Context.repair_reveal_pace_ns, or (0) the least repair transit this reader has timed
+// (tt_WriterProxy.transit_min_ns): sooner, nothing this ACKNACK caused can have come back, and the repairs that keep
+// arriving would otherwise each send one. Not before a transit was timed at all, and only while the retry timer runs
+// (a gap is open). No wire change, no estimate touched.
 static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
-    if (!node->repair_timing || proxy->large_arrival_ns == 0 || proxy->transit_min_ns == 0 ||
-        !proxy->acknack_scheduled) {
+    if (proxy->transit_min_ns == 0 || !proxy->acknack_scheduled) {
         return;
     }
     uint64_t now = tt_get_ns();
-    if (proxy->reveal_ns != 0 && now - proxy->reveal_ns < proxy->transit_min_ns) {
+    uint64_t pace = node->repair_reveal_pace_ns != 0 ? node->repair_reveal_pace_ns : proxy->transit_min_ns;
+    if (proxy->reveal_ns != 0 && now - proxy->reveal_ns < pace) {
+        return;
+    }
+    if (node->repair_reveal == tt_REPAIR_REVEAL_ALL_MISSING) {
+        proxy->reveal_ns = now;
+        RSTAT_INC(acknack_reveal);
+        send_acknack(node, proxy);
         return;
     }
     uint64_t arrived_asked = oldest_request_naming(proxy, seq_no);
@@ -17424,7 +17450,6 @@ static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterP
     RSTAT_INC(acknack_reveal);
     send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);
 }
-#endif
 
 static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
@@ -17474,9 +17499,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     }
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
-#if tt_LARGE_SAMPLES
     bool revealing = false; // a repair recorded above the watermark (maybe_reveal_lost_repairs())
-#endif
     if (seq_no == proxy->ack_seq_no) {
         end_watermark_probe(node, proxy, seq_no);
         // Before the advance, not after: bit j is "received(ack_seq_no + j)" and ack_seq_no is
@@ -17497,9 +17520,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         uint32_t offset = seq_no - proxy->ack_seq_no;
         if (offset < proxy_window_bits(proxy)) {
             is_new = record_out_of_order_arrival(proxy, offset, &new_gap);
-#if tt_LARGE_SAMPLES
             revealing = node->rx_targeted;
-#endif
             // After, not before, and this is the half that differs from the in-order case: the gap
             // report above is computed against the highest bit set so far, so absorbing the span
             // first would hide the real gap below this arrival and the reader would never ask for
@@ -17550,11 +17571,9 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         RSTAT_INC(acknack_new_gap);
         send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
     }
-#if tt_LARGE_SAMPLES
-    if (revealing && is_new && retry_already_armed) {
+    if (node->repair_reveal >= tt_REPAIR_REVEAL_REVEALED && revealing && is_new && retry_already_armed) {
         maybe_reveal_lost_repairs(node, proxy, seq_no);
     }
-#endif
     return is_new;
 }
 

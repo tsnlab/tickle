@@ -900,6 +900,13 @@ struct tt_HybridState {
 #define tt_LINK_T1S_PACING_PCT 75U // a T1S link's pacing rate, in percent of its link_rate
 #define tt_PACING_BURST_FRAMES 4U  // a paced link's default burst, in frames of its MTU
 #define tt_PACING_BURST_MIN 1538U  // pacing_burst's least: one full 1500-byte frame on the wire (+ 38 framing)
+// A RELIABLE reader's re-ask when a repair arrives above its watermark while a gap is open
+// (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"). On a path that keeps the writer's order, such a
+// repair shows that every repair the writer sent before it, and that has not arrived, is lost.
+#define tt_REPAIR_REVEAL_DEFAULT 0U     // the profile's: OFF on every profile
+#define tt_REPAIR_REVEAL_OFF 1U         // ask again on the retry timer and the HEARTBEAT chase only, as before
+#define tt_REPAIR_REVEAL_REVEALED 2U    // ask again at once for the units the arrival shows lost, and nothing else
+#define tt_REPAIR_REVEAL_ALL_MISSING 3U // ask again at once for everything missing, repairs still on their way included
 
 // One link a context talks on (the successor of struct _tt_Link's settings; see that struct in config.h).
 //
@@ -970,6 +977,14 @@ struct tt_LinkOptions {
     // retry spans that retry's wait, and timed it lengthens the interval for every later gap. Context: on if any link
     // is.
     uint8_t repair_timing;
+    // What a RELIABLE reader does when a repair lands above its watermark while a gap is open (tt_REPAIR_REVEAL_*;
+    // 0 = the profile's: OFF on every profile; docs/DESIGN.md "Repair reveal"). Any sample size. REVEALED and
+    // ALL_MISSING ask the writer again at once instead of waiting for the retry timer: lower latency under loss, more
+    // resends and duplicates (ALL_MISSING the most). Context: the most any link asks.
+    uint8_t repair_reveal;
+    // The least time between two such re-asks to one writer, in ns; 0 = the least repair transit the reader has timed
+    // from that writer. At most UINT32_MAX. Context: the longest any link sets.
+    uint64_t repair_reveal_pace_ns;
 };
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
@@ -2193,6 +2208,11 @@ struct tt_Context {
     // The reliable readers' retry estimate on a lossy link (tt_LinkOptions.repair_timing, 2026-10-23), set by
     // link_profiles_apply(); off on a hand-built context. After every other field, as peer_silence_ns is.
     bool repair_timing;
+    // The reliable readers' re-ask on a repair above the watermark (tt_LinkOptions.repair_reveal, 2026-10-30), set by
+    // link_profiles_apply(): tt_REPAIR_REVEAL_*, 0 or OFF = none (a hand-built context's). And its pace, 0 = each
+    // writer proxy's least repair transit.
+    uint8_t repair_reveal;
+    uint32_t repair_reveal_pace_ns;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -3759,10 +3779,10 @@ struct tt_WriterProxy {
     // at the path's interval - so that the first tick after the send asks at once - but asks no oftener than the
     // interval over every recovery.
     uint64_t retry_sent_ns;
-    // When this reader last asked this writer again because a repair showed another lost by order (2026-10-30, WIFI's
-    // repair_timing only; maybe_reveal_lost_repairs(), tickle.c): no oftener than the least repair transit.
-    uint64_t reveal_ns;
 #endif
+    // When this reader last asked this writer again because a repair showed another lost by order (2026-10-30,
+    // tt_LinkOptions.repair_reveal; maybe_reveal_lost_repairs(), tickle.c): paced by tt_Context.repair_reveal_pace_ns.
+    uint64_t reveal_ns;
     // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
     // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can
     // be read, and tested, whether or not it is steering the timer. 0/0 = no sample yet.

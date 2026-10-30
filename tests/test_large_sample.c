@@ -1693,14 +1693,15 @@ static void test_a_repair_arriving_first_is_not_a_writer_still_sending(void) {
     EXPECT_TRUE(srtt >= 2 * tt_MILLISECOND); // a request, a lost repair, a retry and its repair: at least the path
 }
 
-// srtt_after_a_repair_overtook_the_watermark()'s sample on a WIFI reader (repair_timing) whose retry interval is long -
-// a path estimate of 60 ms, as a reader's grows behind a queued Wi-Fi path (RESULTS `R4K`: 37 ms at the p50) - over a
-// path of 10 ms each way. Units 100 and 200 lost, and the first repair of 100 too. Answers the sample's latency and
-// fills `copies` with the duplicates the reader got.
-static uint64_t latency_after_a_repair_overtook_the_watermark(uint64_t* copies) {
+// srtt_after_a_repair_overtook_the_watermark()'s sample on a WIFI reader (repair_timing, and repair_reveal `mode`)
+// whose retry interval is long - a path estimate of 60 ms, as a reader's grows behind a queued Wi-Fi path (RESULTS
+// `R4K`: 37 ms at the p50) - over a path of 10 ms each way. Units 100 and 200 lost, and the first repair of 100 too.
+// Answers the sample's latency and fills `copies` with the duplicates the reader got.
+static uint64_t latency_after_a_repair_overtook_the_watermark(uint8_t mode, uint64_t* copies) {
     init_pair(1000, RELIABLE_KEEP_LAST);
     sim_start(0);
     receiver.repair_timing = true;
+    receiver.repair_reveal = mode;
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
     sim_settle(1, tt_SECOND);
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
@@ -1738,27 +1739,31 @@ static uint64_t latency_after_a_repair_overtook_the_watermark(uint64_t* copies) 
 
 static void test_a_repair_shown_lost_by_a_later_one_is_asked_for_at_once(void) {
     // 2026-10-30 (C11, maybe_reveal_lost_repairs()): 200's repair, sent after 100's, arrives and 100 is still missing,
-    // so 100's repair is lost on a path that keeps order; the reader asks again then, and the writer, shown that a
-    // later resend got through, resends 100 at once: two round trips of 20 ms (the requests for 100 and 200 answered
-    // together, then 200's repair revealing 100's lost) - 40 ms. Without it the reader waits out the transit window
-    // its answers to the writer's HEARTBEAT chase leave 100 out for, or its 60 ms estimate: 83 ms (the parent,
-    // 2026-10-30). Mutant (mutants_large_sample.py, "no reveal"): over 50 ms.
-    uint64_t copies = 0;
-    uint64_t took = latency_after_a_repair_overtook_the_watermark(&copies);
-    printf("test_large_sample: a WIFI reader whose repair of the watermark was lost, a later one arriving - sample in "
-           "%.2f ms over a 10 ms path (60 ms retry estimate), %llu duplicates\n",
-           (double)took / 1e6, (unsigned long long)copies);
-    EXPECT_TRUE(took > 0 && took <= 50 * tt_MILLISECOND);
-    EXPECT_EQ_U64(0, copies); // asking sooner sent nothing twice: the writer resent 100 once more, as it had to
+    // so 100's repair is lost on a path that keeps order; with repair_reveal REVEALED or ALL_MISSING the reader asks
+    // again then, and the writer, shown that a later resend got through, resends 100 at once: two round trips of 20 ms
+    // (the requests for 100 and 200 answered together, then 200's repair revealing 100's lost) - 40 ms. OFF (the
+    // default) waits out the transit window its answers to the writer's HEARTBEAT chase leave 100 out for, or its 60 ms
+    // estimate: 83 ms, the parent's (2026-10-30). Mutant (mutants_large_sample.py, "no reveal"): over 50 ms.
+    static const uint8_t modes[] = {tt_REPAIR_REVEAL_OFF, tt_REPAIR_REVEAL_REVEALED, tt_REPAIR_REVEAL_ALL_MISSING};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        uint64_t copies = 0;
+        uint64_t took = latency_after_a_repair_overtook_the_watermark(modes[i], &copies);
+        printf(
+            "test_large_sample: a WIFI reader (repair_reveal %u) whose repair of the watermark was lost, a later one "
+            "arriving - sample in %.2f ms over a 10 ms path (60 ms retry estimate), %llu duplicates\n",
+            (unsigned)modes[i], (double)took / 1e6, (unsigned long long)copies);
+        if (modes[i] == tt_REPAIR_REVEAL_OFF) {
+            EXPECT_TRUE(took > 80 * tt_MILLISECOND);
+        } else {
+            EXPECT_TRUE(took > 0 && took <= 50 * tt_MILLISECOND);
+        }
+        EXPECT_EQ_U64(0, copies); // asking sooner sent nothing twice: the writer resent 100 once more, as it had to
+    }
 }
 
-static void test_a_reveal_names_only_what_it_reveals(void) {
-    // O2 (C11, maybe_reveal_lost_repairs()): the watermark B and B+3 were asked for 5 ms ago together with B+5, whose
-    // repair just arrived; B+7 was asked for 2 ms ago, inside the 24 ms repair transit window. B+5's repair went after
-    // any repair of B or B+3 - they are lost - but B+7's may still be on its way. The reveal names B and B+3 and leaves
-    // B+7 out. Named whole (O, d80877cf), it named B+7 too, and on the PC's queued Wi-Fi path the writer's RACK time
-    // rule then resent such repairs early: duplicates 909-2,474 a rep against 171-446. Mutant (mutants_large_sample.py,
-    // "reveal names everything").
+// The state test_a_reveal_names_only_what_it_reveals() reads, a reveal at B+5 in `mode`: answers the request it sent
+// (proxy->requests[2]), or NULL if it sent none.
+static const struct tt_RepairRequest* reveal_at_b5(uint8_t mode, uint32_t* base_out) {
     init_pair(1000, RELIABLE_KEEP_LAST);
     sim_start(0);
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
@@ -1766,9 +1771,10 @@ static void test_a_reveal_names_only_what_it_reveals(void) {
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
     EXPECT_TRUE(proxy != NULL);
     if (proxy == NULL) {
-        return;
+        return NULL;
     }
     receiver.repair_timing = true;
+    receiver.repair_reveal = mode;
     test_mock_now += tt_SECOND;
     uint64_t now = test_mock_now;
     uint32_t base = proxy->ack_seq_no;
@@ -1789,16 +1795,35 @@ static void test_a_reveal_names_only_what_it_reveals(void) {
     uint32_t queued = sim_tail;
     sim_acting = RECEIVER_ID;
     maybe_reveal_lost_repairs(&receiver, proxy, base + 5U);
-    EXPECT_EQ_U32(queued + 1U, sim_tail); // one ACKNACK went
-    sim_head = sim_tail;                  // nothing of it is delivered
+    bool sent = sim_tail == queued + 1U; // one ACKNACK went
+    sim_head = sim_tail;                 // nothing of it is delivered
     proxy->acknack_scheduled = false;
+    *base_out = base;
     // What it named, as the reader remembers its own requests (note_requested(): the first and last unit named).
-    const struct tt_RepairRequest* named = &proxy->requests[2];
-    printf("test_large_sample: a reveal at B+5 named B+%u..B+%u (B and B+3 revealed lost, B+7 on its way)\n",
-           named->first_seq_no - base, named->last_seq_no - base);
-    EXPECT_EQ_U64(test_mock_now, named->sent_ns);
-    EXPECT_EQ_U32(base, named->first_seq_no);
-    EXPECT_EQ_U32(base + 3U, named->last_seq_no);
+    return sent ? &proxy->requests[2] : NULL;
+}
+
+static void test_a_reveal_names_only_what_it_reveals(void) {
+    // O2 (C11, maybe_reveal_lost_repairs()): the watermark B and B+3 were asked for 5 ms ago together with B+5, whose
+    // repair just arrived; B+7 was asked for 2 ms ago, inside the 24 ms repair transit window. B+5's repair went after
+    // any repair of B or B+3 - they are lost - but B+7's may still be on its way. REVEALED names B and B+3 and leaves
+    // B+7 out; ALL_MISSING (O, d80877cf) names B+7 too, and on the PC's queued Wi-Fi path the writer's RACK time rule
+    // then resent such repairs early: duplicates 909-2,474 a rep against 171-446. Mutants (mutants_large_sample.py,
+    // "reveal names everything", "ALL_MISSING named as REVEALED").
+    static const uint8_t modes[] = {tt_REPAIR_REVEAL_REVEALED, tt_REPAIR_REVEAL_ALL_MISSING};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        uint32_t base = 0;
+        const struct tt_RepairRequest* named = reveal_at_b5(modes[i], &base);
+        EXPECT_TRUE(named != NULL);
+        if (named == NULL) {
+            continue;
+        }
+        printf("test_large_sample: a reveal (mode %u) at B+5 named B+%u..B+%u\n", (unsigned)modes[i],
+               named->first_seq_no - base, named->last_seq_no - base);
+        EXPECT_EQ_U64(test_mock_now, named->sent_ns);
+        EXPECT_EQ_U32(base, named->first_seq_no);
+        EXPECT_EQ_U32(base + (modes[i] == tt_REPAIR_REVEAL_REVEALED ? 3U : 7U), named->last_seq_no);
+    }
 }
 
 static void test_reveals_are_paced_by_the_least_transit(void) {
@@ -1811,6 +1836,7 @@ static void test_reveals_are_paced_by_the_least_transit(void) {
     init_pair_with(1000, RELIABLE_KEEP_LAST, PAIR_UNICAST, NULL);
     sim_start(0);
     receiver.repair_timing = true;
+    receiver.repair_reveal = tt_REPAIR_REVEAL_ALL_MISSING; // the mode that names the most
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
     sim_settle(1, tt_SECOND);
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);

@@ -2035,6 +2035,94 @@ static void test_wifi_repair_timing_times_the_first_recovery_and_then_karns(void
     }
 }
 
+// The reveal re-ask on small samples (tt_LinkOptions.repair_reveal, maybe_reveal_lost_repairs(), 2026-10-30): one
+// scenario, each mode on a fresh proxy. 1 arrived; 2..7 lost, and 8's arrival asks for them at once (1 ms); 9 lost, and
+// 10's arrival asks for it while the timer runs (3 ms); a 20 ms repair transit window, a least transit of 1 ms. At 6 ms
+// the repair of 5 arrives: it went after any repair of 2..4, which were asked for with it, so those are lost; 6, 7 and
+// 9 may still be on their way.
+//   OFF (and a link left at the profile's 0): nothing is asked at 6 ms - the parent's behaviour (2026-10-30).
+//   REVEALED: one ACKNACK naming 2..4 (6, 7 and 9 skipped).
+//   ALL_MISSING: one ACKNACK naming 2..9, every unit still missing.
+//   REVEALED with a pace of 10 ms, 5 ms after the last reveal: nothing; at the default pace (the 1 ms least transit):
+//   it goes.
+// Mutants (mutants_link_profiles.py, "reveal"): the mode ignored at the call site; ALL_MISSING named as REVEALED; the
+// pace parameter ignored.
+enum { REVEAL_ARM_OFF, REVEAL_ARM_DEFAULT, REVEAL_ARM_REVEALED, REVEAL_ARM_ALL, REVEAL_ARM_PACED, REVEAL_ARM_UNPACED };
+static void test_a_small_reader_reveals_as_its_mode_says(void) {
+    static const uint8_t modes[] = {tt_REPAIR_REVEAL_OFF,         tt_REPAIR_REVEAL_DEFAULT,  tt_REPAIR_REVEAL_REVEALED,
+                                    tt_REPAIR_REVEAL_ALL_MISSING, tt_REPAIR_REVEAL_REVEALED, tt_REPAIR_REVEAL_REVEALED};
+    for (int arm = 0; arm < (int)(sizeof(modes) / sizeof(modes[0])); arm++) {
+        test_mock_reset();
+        struct tt_Context node;
+        struct tt_TypeSupport topic;
+        struct tt_Subscriber sub;
+        init_node_and_topic(&node, &topic);
+        init_subscriber_registered_on_node(&sub, &node, &topic);
+        node.repair_reveal = modes[arm];
+        node.repair_reveal_pace_ns = arm == REVEAL_ARM_PACED ? (uint32_t)(10 * tt_MILLISECOND) : 0U;
+        struct tt_Header header;
+        init_header(&header);
+        uint32_t tail = write_data(&node, 1, 100, 1);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+        EXPECT_TRUE(proxy != NULL);
+        if (proxy == NULL) {
+            return;
+        }
+        proxy->transit_min_ns = (uint32_t)tt_MILLISECOND;
+        proxy->transit_srtt_ns = (uint32_t)(20 * tt_MILLISECOND);
+        proxy->transit_rttvar_ns = (uint32_t)tt_MILLISECOND;
+        test_mock_now = tt_MILLISECOND;
+        tail = write_data(&node, 8, 800, 8); // 2..7 asked for at once
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        test_mock_now = 3 * tt_MILLISECOND;
+        tail = write_data(&node, 10, 1000, 10); // 9 asked for while the timer runs
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        EXPECT_TRUE(proxy->acknack_scheduled);
+        uint8_t asked = proxy->request_next;
+        EXPECT_EQ_U32(
+            9, proxy->requests[(asked + tt_RELIABLE_REQUEST_HISTORY - 1) % tt_RELIABLE_REQUEST_HISTORY].first_seq_no);
+        if (arm == REVEAL_ARM_PACED || arm == REVEAL_ARM_UNPACED) {
+            proxy->reveal_ns = 1 * tt_MILLISECOND; // a reveal 5 ms before the arrival
+        }
+        test_mock_now = 6 * tt_MILLISECOND;
+        tail = write_data(&node, 5, 500, 5);
+        node.rx_targeted = true; // a repair
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        node.rx_targeted = false;
+        bool sent = proxy->request_next != asked;
+        const struct tt_RepairRequest* named = &proxy->requests[asked % tt_RELIABLE_REQUEST_HISTORY];
+        printf("test_reliable_pubsub: small reveal arm %d (mode %u) - %s", arm, (unsigned)modes[arm],
+               sent ? "asked " : "asked nothing\n");
+        if (sent) {
+            printf("%u..%u at %llu ms\n", named->first_seq_no, named->last_seq_no,
+                   (unsigned long long)(named->sent_ns / tt_MILLISECOND));
+        }
+        switch (arm) {
+        case REVEAL_ARM_OFF:
+        case REVEAL_ARM_DEFAULT:
+        case REVEAL_ARM_PACED:
+            EXPECT_TRUE(!sent);
+            break;
+        case REVEAL_ARM_ALL:
+            EXPECT_TRUE(sent);
+            EXPECT_EQ_U32(2, named->first_seq_no);
+            EXPECT_EQ_U32(9, named->last_seq_no);
+            break;
+        default: // REVEALED, at the default pace or none
+            EXPECT_TRUE(sent);
+            EXPECT_EQ_U32(2, named->first_seq_no);
+            EXPECT_EQ_U32(4, named->last_seq_no);
+            break;
+        }
+        if (sent) {
+            EXPECT_EQ_U64(6 * tt_MILLISECOND, named->sent_ns);
+            EXPECT_EQ_U64(6 * tt_MILLISECOND, proxy->reveal_ns);
+        }
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+    }
+}
+
 // Karn's ambiguity. The requested sample can come back as the retransmission its ACKNACK caused, or as
 // the original, which was only late - on the rig, microseconds after the request. Timing the original
 // put 12.6 us into the estimate under 20 ms of injected delay. Only a copy addressed to this node (a
@@ -5333,6 +5421,7 @@ int main(void) {
     test_recovery_probe_times_from_the_first_request();
     test_a_backed_off_recovery_is_not_timed();
     test_wifi_repair_timing_times_the_first_recovery_and_then_karns();
+    test_a_small_reader_reveals_as_its_mode_says();
     test_no_recovery_is_folded_faster_than_the_least_repair_transit();
     test_recovery_probe_ignores_a_late_original();
     test_recovery_probe_only_times_the_watermark();
