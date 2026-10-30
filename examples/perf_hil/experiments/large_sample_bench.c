@@ -77,6 +77,7 @@
 // so a copy of this file built elsewhere (hybrid_first_n_pc.sh) compiles without the header beside it.
 #if defined(tt_RELIABLE_STATS) && __has_include("../tickle/common/reliable_stats_print.h")
 #include "../tickle/common/reliable_stats_print.h"
+#include "repair_reveal_env.h"
 #define BENCH_RSTATS(role) print_reliable_stats(role)
 #else
 #define BENCH_RSTATS(role) ((void)(role))
@@ -876,6 +877,7 @@ int main(int argc, char** argv) {
         init.net.broadcast = opts.broadcast;
         init.net.links[0].broadcast = opts.broadcast;
         init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
+        init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL (repair_reveal_env.h)
         init.net.link_count = 1;
         init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
         init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;
@@ -891,6 +893,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "cannot create the context\n");
         return 1;
     }
+    print_repair_reveal(&node);
     int result = opts.publisher ? run_publisher(&node, &opts) : run_subscriber(&node, &opts);
     BENCH_RSTATS(opts.publisher ? "pub" : "sub");
     tt_Context_destroy(&node);

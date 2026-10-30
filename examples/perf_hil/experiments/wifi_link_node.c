@@ -51,6 +51,7 @@
 #include <tickle/tickle.h>
 #ifdef tt_RELIABLE_STATS
 #include "reliable_stats_print.h"
+#include "repair_reveal_env.h"
 #endif
 
 #define HEADER_BYTES 16U // send_ns (8), seq (4), reserved (4)
@@ -299,12 +300,14 @@ static bool create_context(void) {
     init.net.context_id = opts.context_id;
     init.net.links[0].broadcast = opts.broadcast;
     init.net.links[0].profile = opts.wifi ? tt_LINK_PROFILE_WIFI : tt_LINK_PROFILE_ETHERNET;
+    init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL (repair_reveal_env.h)
     init.net.link_count = 1;
     tt_ret_t created = tt_Context_create_with(&ctx, &init);
     if (created != tt_RET_OK) {
         fprintf(stderr, "tt_Context_create_with: %d\n", (int)created);
         return false;
     }
+    print_repair_reveal(&ctx);
     return tt_Context_set_discovery(&ctx, &discovery, on_discovery, NULL) == tt_RET_OK;
 }
 

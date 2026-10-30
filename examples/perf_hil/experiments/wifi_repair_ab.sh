@@ -45,8 +45,13 @@ for t in $TREES; do
     label=${t%%=*}
     dir=${t#*=}
     labels+=("$label")
-    echo "tree $label: $dir at $(git -C "$dir" rev-parse --short HEAD) dirty $(git -C "$dir" status --porcelain -- src | wc -l)" >>"$AB"
-    PROFILE=${PROFILE:-wifi} REPS=${REPS:-4} OUT="$BASE_OUT/${TAG}_$label" NODE_ENV=${NODE_ENV:-TT_UDP_OFFLOAD=0} \
+    # A tree may carry its own node environment (.node_env, one line, added 2026-10-30 for the repair_reveal arms:
+    # TT_REPAIR_REVEAL=...), appended to NODE_ENV for that tree alone and logged.
+    tree_env=""
+    [ -s "$dir/.node_env" ] && tree_env=" $(head -1 "$dir/.node_env")"
+    echo "tree $label: $dir at $(git -C "$dir" rev-parse --short HEAD) dirty $(git -C "$dir" status --porcelain -- src | wc -l)" \
+        "node_env '${NODE_ENV:-TT_UDP_OFFLOAD=0}$tree_env'" >>"$AB"
+    PROFILE=${PROFILE:-wifi} REPS=${REPS:-4} OUT="$BASE_OUT/${TAG}_$label" NODE_ENV="${NODE_ENV:-TT_UDP_OFFLOAD=0}$tree_env" \
         LARGE_RSTATS=${LARGE_RSTATS:-1} "$dir/examples/perf_hil/experiments/wifi_burst_loss_netns.sh" \
         >"$BASE_OUT/${TAG}_$label.log" 2>&1 &
     pids+=($!)
