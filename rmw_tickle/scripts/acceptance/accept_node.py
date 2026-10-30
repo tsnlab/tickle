@@ -54,6 +54,15 @@ def spin_for(node, seconds, executor=None):
             executor.spin_once(timeout_sec=0.05)
 
 
+def topic_types(node, name):
+    """The distinct types the graph shows on topic NAME, from every endpoint this node has discovered."""
+    types = set()
+    for topic, names in node.get_topic_names_and_types():
+        if topic == name:
+            types.update(names)
+    return types
+
+
 def main():
     role, seconds = sys.argv[1], float(sys.argv[2])
     arg = sys.argv[3] if len(sys.argv) > 3 else ''
@@ -219,17 +228,35 @@ def main():
             node.create_subscription(Int32, '/accept_itype', lambda m: None, 10,
                                      event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype,
                                                                                 incompatible_qos=on_iqos))
-        spin_for(node, seconds)
         # The mismatch as the graph shows it, independently of any event: how many distinct types the topic carries.
         # 2 means both endpoints were discovered with their own types, so an rmw that raised nothing saw the mismatch
         # and has no event for it - which is what rmw_cyclonedds_cpp on jazzy does (type=0/0 qos=0/0 in CI run
         # 40057372247, while itypeneg's control delivered 50 samples), and lyrical's raises INCOMPATIBLE_QOS for.
-        graph_types = set()
-        for topic, types in node.get_topic_names_and_types():
-            if topic == '/accept_itype':
-                graph_types.update(types)
-        print('RESULT: role=%s incompatible_type_events=%d incompatible_qos_events=%d graph_types=%d'
-              % (role, counts['n'], counts['qos'], len(graph_types)), flush=True)
+        #
+        # Read DURING the window, while both processes are certainly up, and reported as the most types seen at once.
+        # It was read once, after the window, until 2026-10-31: the two processes end within milliseconds of each
+        # other, the first to end destroys its endpoint, and the other then read a graph that had already lost it.
+        # CI runs 40495418656, 40714327876 and 40853490814 (jazzy) each have one side at graph_types=2 and the other
+        # at 1 - discovery had worked - and that end-of-window race voided the control. graph_types_end is that old
+        # reading, kept so a log still shows it; graph_both_at_ms is when this side first saw both types (-1: never).
+        start = time.monotonic()
+        end = start + seconds
+        next_read = start
+        graph_types = 0
+        both_at_ms = -1
+        while time.monotonic() < end and rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.05)
+            now = time.monotonic()
+            if now >= next_read:
+                next_read = now + 0.2
+                n = len(topic_types(node, '/accept_itype'))
+                graph_types = max(graph_types, n)
+                if n >= 2 and both_at_ms < 0:
+                    both_at_ms = int((now - start) * 1000)
+        print('RESULT: role=%s incompatible_type_events=%d incompatible_qos_events=%d graph_types=%d '
+              'graph_types_end=%d graph_both_at_ms=%d'
+              % (role, counts['n'], counts['qos'], graph_types, len(topic_types(node, '/accept_itype')), both_at_ms),
+              flush=True)
     elif role == 'intropeer':
         # The endpoint the introspecting node will read. It must be in another PROCESS (here, another namespace), or
         # the reader goes through get_topic_endpoint_info_by_topic()'s local branch, where the QoS is the real profile

@@ -133,6 +133,7 @@ run_in() {
 }
 result() { grep -h '^RESULT:' "$1" 2>/dev/null | tail -1; }
 field() { result "$1" | grep -oE "$2=[0-9]+" | cut -d= -f2; }
+sfield() { result "$1" | grep -oE "$2=-?[0-9]+" | cut -d= -f2; } # a field that may be negative (-1: never)
 declare -A VERDICT
 # ran LOG MIN: the helper process in LOG ended with a RESULT line and sent at least MIN - otherwise the test did not
 # test anything, and says ERROR instead of FAIL.
@@ -417,24 +418,33 @@ t_itype() {
         echo "ERROR(a node did not finish)"
         return
     fi
-    local tp ts qp qs
+    local tp ts qp qs gp gs graph
     tp=$(field "$d/itype_pub.log" incompatible_type_events)
     ts=$(field "$d/itype_sub.log" incompatible_type_events)
     qp=$(field "$d/itype_pub.log" incompatible_qos_events)
     qs=$(field "$d/itype_sub.log" incompatible_qos_events)
+    # What each side's graph showed: the most types at once during the window (the reading the verdict uses), the
+    # reading after it (racy: the other side may already have left), and when both types first appeared, in ms.
+    gp=$(field "$d/itype_pub.log" graph_types)
+    gs=$(field "$d/itype_sub.log" graph_types)
+    graph="graph_types=${gp:-?}/${gs:-?}"
+    graph="$graph end=$(field "$d/itype_pub.log" graph_types_end)/$(field "$d/itype_sub.log" graph_types_end)"
+    graph="$graph both_at_ms=$(sfield "$d/itype_pub.log" graph_both_at_ms)/$(sfield "$d/itype_sub.log" graph_both_at_ms)"
     if [ "${tp:-0}" -ge 1 ] && [ "${ts:-0}" -ge 1 ]; then
         echo PASS
     elif [ "${qp:-0}" -ge 1 ] && [ "${qs:-0}" -ge 1 ]; then
         echo "PASS(via incompatible QoS, not type: qos=${qp:-0}/${qs:-0})"
     elif [ "$1" != rmw_tickle ] && [ $((${tp:-0} + ${ts:-0} + ${qp:-0} + ${qs:-0})) -eq 0 ] &&
-        [ "$(field "$d/itype_pub.log" graph_types)" = 2 ] && [ "$(field "$d/itype_sub.log" graph_types)" = 2 ]; then
+        [ "${gp:-0}" = 2 ] && [ "${gs:-0}" = 2 ]; then
         # The control only: both sides' graphs show the topic with its two types, so the mismatch was seen and this
         # rmw has no event for it at all (rmw_cyclonedds_cpp on jazzy, CI run 40057372247). The case then has no
         # positive control here; rmw_tickle's verdict stands on itypeneg, the arm where a counter that always fires
         # fails. For rmw_tickle the same reading is a FAIL - it is the rmw under test that must raise the event.
-        echo "NOT APPLICABLE(control_has_no_type_mismatch_event: type=0/0 qos=0/0 graph_types=2/2)"
+        echo "NOT APPLICABLE(control_has_no_type_mismatch_event: type=0/0 qos=0/0 $graph)"
     else
-        echo "FAIL(type=${tp:-0}/${ts:-0} qos=${qp:-0}/${qs:-0})"
+        # A graph below 2 on either side means that side never saw the other's endpoint during the window: the pair
+        # never met, and the zero counts say nothing - which is the VOID a control that did nothing must still give.
+        echo "FAIL(type=${tp:-0}/${ts:-0} qos=${qp:-0}/${qs:-0} $graph)"
     fi
 }
 t_takeseq() {
