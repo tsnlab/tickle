@@ -41,8 +41,14 @@ echo "=== C7 wire A/B $(date -Is) base=$base head=$head_ref steps='${STEPS:-sim 
 for step in ${STEPS:-sim netns}; do
     case $step in
     sim)
-        wait_quiet || exit
-        flock "$lock" env BASE="$base" WORK=/home/semih/tmp_build/c7_wire OUT="$sim_out" "$here/sweep.sh"
+        # SIM_NOLOCK=1 (the lead's call, 2026-10-30 round 4): the sim's clock is simulated, so it runs at nice 19 while
+        # the lock is held for hours by a rig chain, instead of queueing behind it.
+        if [ "${SIM_NOLOCK:-0}" = 1 ]; then
+            nice -n 19 env BASE="$base" WORK=/home/semih/tmp_build/c7_wire OUT="$sim_out" "$here/sweep.sh"
+        else
+            wait_quiet || exit
+            flock "$lock" env BASE="$base" WORK=/home/semih/tmp_build/c7_wire OUT="$sim_out" "$here/sweep.sh"
+        fi
         echo "sweep rc=$? at $(date -Is)"
         python3 "$here/sweep_read_r3.py" "$sim_out" | tee "$sim_out.read.txt"
         ;;
