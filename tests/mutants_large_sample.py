@@ -310,7 +310,7 @@ MUTANTS = [
         "test_reveals_are_paced_by_the_least_transit",
     ),
     (
-        "(reveal) REVEALED names everything (O, d80877cf)",
+        "(reveal) REVEALED names everything (the prototype O)",
         "    RSTAT_INC(acknack_reveal);\n    send_acknack_skipping(node, proxy, 0, high_bit, skips, skip_count);\n",
         "    RSTAT_INC(acknack_reveal);\n    send_acknack(node, proxy);\n",
         "test_a_reveal_names_only_what_it_reveals",

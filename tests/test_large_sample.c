@@ -1807,9 +1807,9 @@ static void test_a_reveal_names_only_what_it_reveals(void) {
     // O2 (C11, maybe_reveal_lost_repairs()): the watermark B and B+3 were asked for 5 ms ago together with B+5, whose
     // repair just arrived; B+7 was asked for 2 ms ago, inside the 24 ms repair transit window. B+5's repair went after
     // any repair of B or B+3 - they are lost - but B+7's may still be on its way. REVEALED names B and B+3 and leaves
-    // B+7 out; ALL_MISSING (O, d80877cf) names B+7 too, and on the PC's queued Wi-Fi path the writer's RACK time rule
-    // then resent such repairs early: duplicates 909-2,474 a rep against 171-446. Mutants (mutants_large_sample.py,
-    // "reveal names everything", "ALL_MISSING named as REVEALED").
+    // B+7 out; ALL_MISSING (the prototype O) names B+7 too, and on the PC's queued Wi-Fi path the writer's RACK time
+    // rule then resent such repairs early: duplicates 909-2,474 a rep against 171-446. Mutants
+    // (mutants_large_sample.py, "reveal names everything", "ALL_MISSING named as REVEALED").
     static const uint8_t modes[] = {tt_REPAIR_REVEAL_REVEALED, tt_REPAIR_REVEAL_ALL_MISSING};
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
         uint32_t base = 0;
