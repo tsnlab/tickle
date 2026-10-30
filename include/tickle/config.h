@@ -390,6 +390,11 @@
 #ifndef tt_ACKNACK_ROOM
 #define tt_ACKNACK_ROOM 1
 #endif
+// Variant 2 (2026-10-30, after round 3's sim read WORSE with path loss): the reader also names no more than that room
+// in the ACKNACK, lowest first. 0 is variant 1 (only the writer cuts).
+#ifndef tt_ACKNACK_ROOM_READER_CAP
+#define tt_ACKNACK_ROOM_READER_CAP 1
+#endif
 // 8192 bits with large samples (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so the window
 // is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control datagram.
 // 4096 otherwise, as before stage 2: every window-sized array - on the stack of the ACKNACK path, in a caller's

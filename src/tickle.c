@@ -16584,18 +16584,40 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
     int first_named = -1;
     int last_named = -1;
 #if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
-    uint32_t left_out = 0; // missing units left out as repairs on their way (skips): they will take room too
+    // Missing units left out as repairs on their way (skips): they will take room too.
+    uint32_t left_out = 0;
+    for (uint16_t word = 0; word < wire_words; word++) {
+        uint64_t missing = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
+        uint64_t named = missing;
+        for (int skip = 0; skip < skip_count; skip++) {
+            named &= ~bitmap_range_in_word(word, skips[skip].low_bit, skips[skip].high_bit);
+        }
+        left_out += (uint32_t)__builtin_popcountll(missing & ~named);
+    }
+    const uint16_t room_code = acknack_room(node, left_out);
+#if tt_ACKNACK_ROOM_READER_CAP
+    // Variant 2: name no more than the room, lowest first (at least one, so a request always goes), so that what this
+    // reader remembers as requested (note_requested(), a range repairs_in_flight() then skips) is what the writer
+    // sends.
+    uint32_t name_left = room_code == 0 ? UINT32_MAX : room_code > 1U ? room_code - 1U : 1U;
+#endif
 #endif
     for (uint16_t word = 0; word < wire_words; word++) {
         uint64_t request = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
-        const uint64_t missing = request;
-#endif
         for (int skip = 0; skip < skip_count; skip++) {
             request &= ~bitmap_range_in_word(word, skips[skip].low_bit, skips[skip].high_bit);
         }
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
-        left_out += (uint32_t)__builtin_popcountll(missing & ~request);
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_READER_CAP
+        if ((uint32_t)__builtin_popcountll(request) > name_left) {
+            uint64_t kept = 0;
+            for (uint32_t i = 0; i < name_left; i++) {
+                uint64_t lowest = request & (~request + 1U);
+                kept |= lowest;
+                request ^= lowest;
+            }
+            request = kept;
+        }
+        name_left -= (uint32_t)__builtin_popcountll(request);
 #endif
         acknack_header->bitmap[word] = request;
         if (request != 0) {
@@ -16605,8 +16627,10 @@ static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy
         }
     }
     bool names_watermark = first_named == 0;
-#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
-    acknack_header->reserved = acknack_room(node, left_out);
+#if tt_LARGE_SAMPLES && tt_ACKNACK_ROOM && tt_ACKNACK_ROOM_READER_CAP
+    acknack_header->reserved = room_code == 1U ? 2U : room_code; // the one unit it names, it lets the writer send
+#elif tt_LARGE_SAMPLES && tt_ACKNACK_ROOM
+    acknack_header->reserved = room_code;
 #endif
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
