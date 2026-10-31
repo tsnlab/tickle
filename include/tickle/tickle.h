@@ -523,11 +523,13 @@ struct tt_LargeRegionHeader {
 // sample is refused. readers: bit c set while context id c may read the chunk - by the writer before the descriptor
 // goes into c's ring, cleared by c (or by the writer when the descriptor was dropped, or when liveliness removes c).
 // Accessed with __atomic builtins, as the ring indices are.
+#define tt_LARGE_REGION_ENTRY_BYTES 64U // the region's header and each chunk entry
+#define tt_LARGE_MASK_WORD_BITS 64U     // bits in one word of a readers mask
 struct tt_LargeChunkEntry {
     uint32_t generation;
     uint32_t reserved;
-    uint64_t readers[tt_MAX_CONTEXT_IDS / 64];
-    uint8_t pad[64 - 8 - (tt_MAX_CONTEXT_IDS / 8)];
+    uint64_t readers[tt_MAX_CONTEXT_IDS / tt_LARGE_MASK_WORD_BITS];
+    uint8_t pad[tt_LARGE_REGION_ENTRY_BYTES - 8 - (tt_MAX_CONTEXT_IDS / 8)];
 };
 
 // The writer's private half (tt_Publisher.large_region).

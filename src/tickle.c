@@ -12223,8 +12223,8 @@ static void large_give_back(struct tt_Context* node, uint8_t* buffer) {
 
 // The region's header and each chunk entry: tt_LARGE_REGION_DATA_OFFSET counts them at this size. And the bits of one
 // word of a readers mask, or of the Publisher's hold.
-#define LARGE_REGION_ENTRY_BYTES 64U
-#define LARGE_MASK_WORD_BITS 64U
+#define LARGE_REGION_ENTRY_BYTES tt_LARGE_REGION_ENTRY_BYTES
+#define LARGE_MASK_WORD_BITS tt_LARGE_MASK_WORD_BITS
 static_assert(sizeof(struct tt_LargeRegionHeader) == LARGE_REGION_ENTRY_BYTES &&
                   sizeof(struct tt_LargeChunkEntry) == LARGE_REGION_ENTRY_BYTES,
               "the region's header and chunk entries are 64 bytes each: tt_LARGE_REGION_DATA_OFFSET counts them so");
