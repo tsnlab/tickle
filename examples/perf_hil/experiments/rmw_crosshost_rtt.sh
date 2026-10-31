@@ -169,6 +169,11 @@ variant_args() {
         # (TT_EXP_WAIT_FAR_NS, an experiment-only flag that exists only with PI_PATCH=c12/wait_far.patch).
         libc_noslack) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_RX_TIMER_SLACK_NS=0'" ;;
         libc_far) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_WAIT_FAR_NS=10000000000LL'" ;;
+        # libc_rb, libc_rb_csum, libc_rb_nogro (2026-10-31, c12/step3_rig.sh, with PI_PATCH=c12/step3.patch): the
+        # sockets' options read back with getsockopt() at bind and close (TT_EXP_C12_READBACK); _csum runs with
+        # TT_UDP_CSUM0=0 (env_for), _nogro never touches UDP_GRO (TT_EXP_NO_GRO_SETUP).
+        libc_rb | libc_rb_csum) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_C12_READBACK'" ;;
+        libc_rb_nogro) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_C12_READBACK -DTT_EXP_NO_GRO_SETUP'" ;;
         *) echo "" ;;
     esac
 }
@@ -229,7 +234,9 @@ env_for() {
     local base="${1%@*}" v="default"
     case "$1" in *@*) v="${1#*@}" ;; esac
     if [ "$base" = rmw_tickle ] && [ "$v" != default ]; then
-        echo "$(env_for rmw_tickle); set +u; source \$HOME/rmw_variants/$v/install/setup.bash; set -u"
+        local extra=""
+        [ "$v" = libc_rb_csum ] && extra="; export TT_UDP_CSUM0=0" # c12 step 3 (b): every checksum kept
+        echo "$(env_for rmw_tickle); set +u; source \$HOME/rmw_variants/$v/install/setup.bash; set -u$extra"
         return
     fi
     case "$base" in

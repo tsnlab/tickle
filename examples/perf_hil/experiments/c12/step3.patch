@@ -1,0 +1,67 @@
+diff --git a/src/hal_linux.c b/src/hal_linux.c
+index fad9b155..a6292179 100644
+--- a/src/hal_linux.c
++++ b/src/hal_linux.c
+@@ -878,6 +878,22 @@ static void gso_setup(struct tt_Context* node) {
+ }
+ #endif
+ 
++#ifdef TT_EXP_C12_READBACK // experiment only (c12/step3.patch): socket options read back with getsockopt()
++#define C12_UDP_GRO 104 // UDP_GRO, <linux/udp.h>, spelled out: this block is outside TT_HAL_UDP_GRO
++static int c12_gro_probe = -1; // the data socket's UDP_GRO read while gro_setup() had it on; -1: the probe never ran
++static int c12_sockopt(int fd, int level, int name) {
++    int value = -1;
++    socklen_t size = sizeof(value);
++    return getsockopt(fd, level, name, &value, &size) == 0 ? value : -2;
++}
++static void c12_readback(const struct tt_Context* node, const char* when) {
++    TT_LOG_INFO("c12 readback %s: gro_probe=%d data_gro=%d wk_gro=%d data_no_check=%d wk_no_check=%d", when, c12_gro_probe,
++                c12_sockopt(node->hal.data_sock, IPPROTO_UDP, C12_UDP_GRO), c12_sockopt(node->hal.sock, IPPROTO_UDP, C12_UDP_GRO),
++                c12_sockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK),
++                c12_sockopt(node->hal.sock, SOL_SOCKET, SO_NO_CHECK));
++}
++#endif
++
+ #if TT_HAL_UDP_GRO
+ #define TT_UDP_OFFLOAD_GRO 1U // struct tt_Context.udp_offload
+ 
+@@ -934,6 +950,9 @@ static void gro_setup(struct tt_Context* node) {
+     node->hal.gro_next = 0;
+     node->hal.gro_end = 0;
+     node->hal.gro_base = NULL;
++#ifdef TT_EXP_NO_GRO_SETUP // experiment only (c12/step3.patch): UDP_GRO never touched on either socket
++    return;
++#endif
+     if (!udp_offload_allowed(node)) {
+         return;
+     }
+@@ -942,6 +961,9 @@ static void gro_setup(struct tt_Context* node) {
+         (void)gro_option(node, 0);
+         return;
+     }
++#ifdef TT_EXP_C12_READBACK
++    c12_gro_probe = c12_sockopt(node->hal.data_sock, SOL_UDP, UDP_GRO);
++#endif
+     (void)gro_option(node, 0);
+     node->hal.gro_allowed = true;
+     node->udp_offload |= TT_UDP_OFFLOAD_GRO;
+@@ -1673,6 +1695,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
+ #if TT_HAL_UDP_GSO
+     gso_setup(node);
+ #endif
++#ifdef TT_EXP_C12_READBACK
++    c12_readback(node, "bind");
++#endif
+ #if TT_HAL_UDP_CSUM0
+     csum0_setup(node);
+ #endif
+@@ -1714,6 +1739,9 @@ static const char* drain_ring_name(uint8_t ring) {
+ #define RING_LINE_BYTES 160U   // and its ring* fields
+ 
+ void tt_close(struct tt_Context* node) {
++#ifdef TT_EXP_C12_READBACK
++    c12_readback(node, "close");
++#endif
+     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
+     // Runs read in place (direct_read()), on the same line: a rig arm's treatment check.
+     char direct[DIRECT_LINE_BYTES] = "";
