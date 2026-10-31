@@ -186,7 +186,8 @@ variant_args() {
         # libc (2026-10-21): the HAL's hot system calls through glibc instead of raw tt_sys6 (hal_linux.c), so that
         # sysstamp's LD_PRELOAD sees rmw_tickle's sends, receives and epoll_pwait2 as it sees the vendors'. The last
         # -DCMAKE_C_FLAGS wins over RMW_TICKLE_BUILD's, so the flags are repeated with the define added.
-        libc) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS'" ;;
+        # libc_rxthread (2026-10-31, c12/rxthread_rig.sh): the libc build, run with RMW_TICKLE_EXECUTOR_POLL=0 (env_for).
+        libc | libc_rxthread) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS'" ;;
         # ringoff, libc_ringoff (2026-10-22, rig_queue_rx_uring_wait.sh): the HAL's wait ring compiled off by default
         # (tt_RX_URING_WAIT 0: tt_receive() waits with epoll and reads with recvfrom()), the control of a build whose
         # default has it on.
@@ -265,6 +266,8 @@ env_for() {
         local extra=""
         [ "$v" = libc_rb_csum ] && extra="; export TT_UDP_CSUM0=0" # c12 step 3 (b): every checksum kept
         [ "$v" = libc_rb_nolazy ] && extra="; export TT_RX_LAZY_TIMER=0" # c12 step 4 (d): no deadline timerfd in the set
+        # c12 experiment (a): every receive on rmw_tickle's own poll thread, the executor waiting on wait_cond
+        [ "$v" = libc_rxthread ] && extra="; export RMW_TICKLE_EXECUTOR_POLL=0"
         echo "$(env_for rmw_tickle); set +u; source \$HOME/rmw_variants/$v/install/setup.bash; set -u$extra"
         return
     fi
