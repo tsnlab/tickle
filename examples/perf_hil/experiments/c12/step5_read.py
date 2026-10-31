@@ -18,8 +18,13 @@ READBACK, per row, all must hold, and ANY failure makes the run VOID (the coordi
   warmer:  (w) and (x): its WARMER_END line, iters >= WARM_MIN_FRAC of expected, its cpu = PONG_CPU for (w) and OTHER_CPU
            for (x); (a) and CycloneDDS: no warmer ran (no WARMER_END in the row).
 DECISION:
-  VOID          any readback failure; a cell with < 10 paired valid reps; CycloneDDS's none median outside 12.9 +- 1.0;
-                CycloneDDS's mean d above +1.0 us.
+  VOID          any readback failure; a cell with < 10 paired valid reps; CycloneDDS's mean d above +1.0 us.
+                AMENDED 2026-10-31 19:2x, before the run this reader decides (c12s5_..._191452 was stopped after its first
+                rep and is not read): the rule "CycloneDDS's none median within 12.9 +- 1.0" was dropped. 12.9 is the
+                UNPINNED level; pinned with all 13 of its threads to one core, the first rep's CycloneDDS none row read
+                16.63 us, so the check would void the run for the pinning itself, which this diagnostic imposes on purpose.
+                The control's own none - 50 difference (above +1.0: VOID) still guards the E rule, and its none median is
+                printed.
   CAUSE         E_w < +0.4 AND E_x - E_w >= 0.6 with non-overlapping CIs (E_x's CI low end above E_w's high end): keeping
                 the pong's core from idling removes TickLE's excess, and the same load elsewhere does not.
   NOT COLD CORE E_w >= +1.0.
@@ -44,7 +49,7 @@ ARMS = ("none", "50")
 PONG_CPU, OTHER_CPU = 2, 3
 WARM_MIN_FRAC = 0.9
 N_REPS, MIN_PAIRED = W.N_REPS, W.MIN_PAIRED
-CYC_NONE_US, CYC_NONE_TOL, CYC_D_MAX = 12.9, 1.0, 1.0
+CYC_D_MAX = 1.0
 CAUSE_E, CAUSE_GAP, NOT_E = 0.4, 0.6, 1.0
 
 
@@ -99,8 +104,6 @@ def decide(p, readback_failures):
     for k in ("a", "w", "x"):
         lines.append(f"E       {k:3s} {ce[k][0]:+.2f} us [{ce[k][1]:+.2f}, {ce[k][2]:+.2f}] n={len(e[k])}")
     lines.append(f"E_x - E_w {ce['x'][0] - ce['w'][0]:+.2f} us; cyclone none median {cnone:.2f}")
-    if abs(cnone - CYC_NONE_US) > CYC_NONE_TOL:
-        return f"VOID(control none arm {cnone:.2f} us, not {CYC_NONE_US} +- {CYC_NONE_TOL})", lines
     if cd["cyc"][0] > CYC_D_MAX:
         return f"VOID(control d50 {cd['cyc'][0]:+.2f} us > {CYC_D_MAX:+.1f})", lines
     if ce["w"][0] < CAUSE_E and ce["x"][0] - ce["w"][0] >= CAUSE_GAP and ce["x"][1] > ce["w"][2]:
@@ -122,7 +125,7 @@ def selftest():
         ({"a": ref, "w": arms(13.6, 13.2), "x": arms(13.8, 13.2), "cyc": cyc}, 0, "PARTIAL"),  # x falls too
         ({"a": ref, "w": arms(13.6, 13.2), "x": ref, "cyc": cyc}, 1, "VOID(1 rows failed"),
         ({"a": ref, "w": ref, "x": ref, "cyc": arms(12.9, 11.7)}, 0, "VOID(control d50"),
-        ({"a": ref, "w": ref, "x": ref, "cyc": arms(14.5, 14.0)}, 0, "VOID(control none"),
+        ({"a": ref, "w": ref, "x": ref, "cyc": arms(16.5, 16.0)}, 0, "NOT COLD CORE"),  # pinned level: no VOID
         ({"a": ref, "w": arms(13.6, 13.2, n=9), "x": ref, "cyc": cyc}, 0, "VOID(w: 9"),
     ]
     bad = 0
