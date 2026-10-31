@@ -101,6 +101,7 @@ static int (*real_epoll_pwait)(int, struct epoll_event*, int, int, const sigset_
 static int (*real_select)(int, fd_set*, fd_set*, fd_set*, struct timeval*); // NOLINT(misc-include-cleaner)
 static int (*real_pselect)(int, fd_set*, fd_set*, fd_set*, const struct timespec*, const sigset_t*);
 static int (*real_epoll_pwait2)(int, struct epoll_event*, int, const struct timespec*, const sigset_t*);
+// NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h>, via a glibc-private header
 static int (*real_timerfd_settime)(int, int, const struct itimerspec*, struct itimerspec*);
 
 static uint64_t now_ns(void) {
@@ -391,8 +392,9 @@ long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-
     int64_t wait_ns = -1;
     const unsigned long enter_ext_arg = 8UL; // IORING_ENTER_EXT_ARG
     if (((unsigned long)arg[3] & enter_ext_arg) != 0 && arg[4] != 0) {
-        const uint64_t* getevents = (const uint64_t*)arg[4]; // struct io_uring_getevents_arg: sigmask, sz+pad, ts
-        const int64_t* ts = (const int64_t*)(uintptr_t)getevents[2];
+        // struct io_uring_getevents_arg: sigmask, sz+pad, ts - syscall()'s arguments arrive as longs
+        const uint64_t* getevents = (const uint64_t*)arg[4];         // NOLINT(performance-no-int-to-ptr)
+        const int64_t* ts = (const int64_t*)(uintptr_t)getevents[2]; // NOLINT(performance-no-int-to-ptr)
         if (ts != NULL) {
             wait_ns = (ts[0] * (int64_t)NS_PER_SEC) + ts[1];
         }
@@ -400,7 +402,7 @@ long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-
     static _Thread_local unsigned slack_calls;
     int64_t slack_ns = -1;
     if (slack_calls < 4 || slack_calls % 16 == 0) {
-        slack_ns = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+        slack_ns = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0); // NOLINT(misc-include-cleaner) - <sys/prctl.h>
     }
     slack_calls++;
     uint64_t t_in = now_ns();
@@ -414,19 +416,20 @@ long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-
     return ret;
 }
 
-int timerfd_settime(int fd, int flags, const struct itimerspec* new_value, struct itimerspec* old_value) {
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc's own names are reserved ones
+int timerfd_settime(int timer_fd, int flags, const struct itimerspec* new_value, struct itimerspec* old_value) {
     if (real_timerfd_settime == NULL) {
-        return (int)syscall(SYS_timerfd_settime, fd, flags, new_value, old_value);
+        return (int)syscall(SYS_timerfd_settime, timer_fd, flags, new_value, old_value);
     }
     uint64_t t_in = now_ns();
-    int ret = real_timerfd_settime(fd, flags, new_value, old_value);
+    int ret = real_timerfd_settime(timer_fd, flags, new_value, old_value);
     struct record* rec = claim(CALL_TIMERFD_SETTIME, t_in, now_ns(), ret);
     if (rec != NULL && new_value != NULL) {
-        const int64_t at = ((int64_t)new_value->it_value.tv_sec * (int64_t)NS_PER_SEC) + new_value->it_value.tv_nsec;
-        const int64_t fl = flags;
-        memcpy(rec->head, &at, sizeof(at));
-        memcpy(rec->head + sizeof(at), &fl, sizeof(fl));
-        rec->len = (uint16_t)(sizeof(at) + sizeof(fl));
+        const int64_t armed = ((int64_t)new_value->it_value.tv_sec * (int64_t)NS_PER_SEC) + new_value->it_value.tv_nsec;
+        const int64_t how = flags;
+        memcpy(rec->head, &armed, sizeof(armed));
+        memcpy(rec->head + sizeof(armed), &how, sizeof(how));
+        rec->len = (uint16_t)(sizeof(armed) + sizeof(how));
     }
     return ret;
 }
