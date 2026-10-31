@@ -35,9 +35,11 @@
 
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 
 #define HEAD_BYTES 256 // 192 until 2026-10-20: a Fast DDS Bench datagram is 212 bytes, its send_ns past byte 192
 #define MAX_RECORDS 65536
@@ -61,10 +63,13 @@ enum call {
     // 2026-10-22: TickLE's wait ring (hal_linux.c wr_wait(): the wait and the read in one call), made through syscall()
     // in a TT_HAL_LIBC_CALLS build. Its datagram is in a buffer this layer does not see: the record has no payload.
     CALL_IO_URING_ENTER,
+    // 2026-10-31 (c12 step 2): the deadline timer of TickLE's wait set (hal_linux.c rx_timer_arm()). Head: the armed
+    // it_value in ns (int64 LE) and the flags (int64 LE).
+    CALL_TIMERFD_SETTIME,
 };
-static const char* const call_names[] = {"sendto",   "sendmsg", "sendmmsg",     "recvfrom",      "recvmsg",
-                                         "recvmmsg", "poll",    "ppoll",        "epoll_wait",    "epoll_pwait",
-                                         "select",   "pselect", "epoll_pwait2", "io_uring_enter"};
+static const char* const call_names[] = {"sendto",   "sendmsg", "sendmmsg",     "recvfrom",       "recvmsg",
+                                         "recvmmsg", "poll",    "ppoll",        "epoll_wait",     "epoll_pwait",
+                                         "select",   "pselect", "epoll_pwait2", "io_uring_enter", "timerfd_settime"};
 
 struct record {
     uint64_t t_in;
@@ -96,6 +101,7 @@ static int (*real_epoll_pwait)(int, struct epoll_event*, int, int, const sigset_
 static int (*real_select)(int, fd_set*, fd_set*, fd_set*, struct timeval*); // NOLINT(misc-include-cleaner)
 static int (*real_pselect)(int, fd_set*, fd_set*, fd_set*, const struct timespec*, const sigset_t*);
 static int (*real_epoll_pwait2)(int, struct epoll_event*, int, const struct timespec*, const sigset_t*);
+static int (*real_timerfd_settime)(int, int, const struct itimerspec*, struct itimerspec*);
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -378,9 +384,50 @@ long syscall(long number, ...) { // NOLINT(readability-inconsistent-declaration-
     if (number != SYS_io_uring_enter || records == NULL) {
         return real_syscall(number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
     }
+    // 2026-10-31 (c12 step 2): the record's head says what the wait was given and the thread's timer slack - two int64
+    // LE: the IORING_ENTER_EXT_ARG timeout in ns (-1: none, the wait has no timeout of its own), and the slack read
+    // with PR_GET_TIMERSLACK on the thread's first 4 calls and every 16th after (-1 when not read). Both are taken
+    // before the call, outside the interval the call's own times bound.
+    int64_t wait_ns = -1;
+    const unsigned long enter_ext_arg = 8UL; // IORING_ENTER_EXT_ARG
+    if (((unsigned long)arg[3] & enter_ext_arg) != 0 && arg[4] != 0) {
+        const uint64_t* getevents = (const uint64_t*)arg[4]; // struct io_uring_getevents_arg: sigmask, sz+pad, ts
+        const int64_t* ts = (const int64_t*)(uintptr_t)getevents[2];
+        if (ts != NULL) {
+            wait_ns = (ts[0] * (int64_t)NS_PER_SEC) + ts[1];
+        }
+    }
+    static _Thread_local unsigned slack_calls;
+    int64_t slack_ns = -1;
+    if (slack_calls < 4 || slack_calls % 16 == 0) {
+        slack_ns = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+    }
+    slack_calls++;
     uint64_t t_in = now_ns();
     long ret = real_syscall(number, arg[0], arg[1], arg[2], arg[3], arg[4], arg[5]);
-    (void)claim(CALL_IO_URING_ENTER, t_in, now_ns(), ret);
+    struct record* rec = claim(CALL_IO_URING_ENTER, t_in, now_ns(), ret);
+    if (rec != NULL) {
+        memcpy(rec->head, &wait_ns, sizeof(wait_ns));
+        memcpy(rec->head + sizeof(wait_ns), &slack_ns, sizeof(slack_ns));
+        rec->len = (uint16_t)(sizeof(wait_ns) + sizeof(slack_ns));
+    }
+    return ret;
+}
+
+int timerfd_settime(int fd, int flags, const struct itimerspec* new_value, struct itimerspec* old_value) {
+    if (real_timerfd_settime == NULL) {
+        return (int)syscall(SYS_timerfd_settime, fd, flags, new_value, old_value);
+    }
+    uint64_t t_in = now_ns();
+    int ret = real_timerfd_settime(fd, flags, new_value, old_value);
+    struct record* rec = claim(CALL_TIMERFD_SETTIME, t_in, now_ns(), ret);
+    if (rec != NULL && new_value != NULL) {
+        const int64_t at = ((int64_t)new_value->it_value.tv_sec * (int64_t)NS_PER_SEC) + new_value->it_value.tv_nsec;
+        const int64_t fl = flags;
+        memcpy(rec->head, &at, sizeof(at));
+        memcpy(rec->head + sizeof(at), &fl, sizeof(fl));
+        rec->len = (uint16_t)(sizeof(at) + sizeof(fl));
+    }
     return ret;
 }
 
@@ -399,6 +446,7 @@ __attribute__((constructor)) static void sysstamp_init(void) {
     RESOLVE(select);
     RESOLVE(pselect);
     RESOLVE(epoll_pwait2);
+    RESOLVE(timerfd_settime);
     void* mem =
         mmap(NULL, sizeof(struct record) * MAX_RECORDS, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem != MAP_FAILED) {

@@ -1,0 +1,17 @@
+diff --git a/src/hal_linux.c b/src/hal_linux.c
+index fad9b155..93c6a325 100644
+--- a/src/hal_linux.c
++++ b/src/hal_linux.c
+@@ -4362,6 +4362,12 @@ static __attribute__((noinline)) int rx_wait_lazy_run(struct tt_Context* node, u
+ // every wait uses the timer, +17..+19 user instructions a round trip on the PC and +25..+29 on the rig's Pi). The run
+ // ends at a fire (rx_timer_take(): a stale fire read costs the wait a read) and at a wait that ended without data.
+ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
++#ifdef TT_EXP_WAIT_FAR_NS // experiment only (c12/wait_far.patch): every timed wait waits this long, no deadline timer
++    if (timeout > 0) {
++        struct timespec far_ts = {(time_t)(TT_EXP_WAIT_FAR_NS / SEC_NS), (long)(TT_EXP_WAIT_FAR_NS % SEC_NS)};
++        return rx_wait(node, &far_ts, ready);
++    }
++#endif
+     struct tt_hal* hal = &node->hal;
+     const uint64_t until = hal->timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
+     // A long wait takes the timer too (TT_RX_TIMER_LONG_NS): with its timeout it would end up to 0.1-0.5% of it late,

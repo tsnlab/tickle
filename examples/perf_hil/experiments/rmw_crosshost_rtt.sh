@@ -164,6 +164,11 @@ variant_args() {
         # default has it on.
         ringoff) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -Dtt_RX_URING_WAIT=0'" ;;
         libc_ringoff) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -Dtt_RX_URING_WAIT=0'" ;;
+        # libc_noslack, libc_far (2026-10-31, c12/step2_rig.sh): the polling thread's timer slack left at the kernel's
+        # default (TT_RX_TIMER_SLACK_NS 0), and every timed wait made 10 s long with no deadline timer
+        # (TT_EXP_WAIT_FAR_NS, an experiment-only flag that exists only with PI_PATCH=c12/wait_far.patch).
+        libc_noslack) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_RX_TIMER_SLACK_NS=0'" ;;
+        libc_far) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_WAIT_FAR_NS=10000000000LL'" ;;
         *) echo "" ;;
     esac
 }
@@ -203,6 +208,16 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
+# PI_PATCH (2026-10-31, c12/step2_rig.sh): a patch from this checkout applied with `git apply` on both Pis right after the
+# checkout, before every build of the session (so every build, default and variants, is of the same patched tree). It
+# must only add code behind a flag that is off by default. The next run's checkout (git reset --hard) removes it. Unset:
+# nothing applied, as before.
+PI_PATCH=${PI_PATCH:-}
+PATCH_APPLY=":"
+if [ -n "$PI_PATCH" ]; then
+    [ -f "$PI_PATCH" ] || { echo "PI_PATCH $PI_PATCH: no such file" >&2; exit 64; }
+    PATCH_APPLY="git apply /tmp/rmwx_pi.patch || { echo \"PATCH FAILED on \$(hostname)\"; exit 1; }"
+fi
 say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, inject arms: $INJECT_ARMS, rmws: $RMW_LIST (rotated per rep: ${ROTATE:-0}), qoses: $QOSES ==="
 say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (every rmw_tickle, TickLE typesupport, interface and pingpong unit; empty: the plain build)"
 say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the ping and the pong; 1 only with RMW_LIST=rmw_tickle)"
@@ -254,6 +269,12 @@ if [ "${SKIP_BUILD:-0}" = 1 ]; then
     say "--- SKIP_BUILD: both rpis already at $SHA with binaries ---"
 else
 say "--- building rmw_tickle + rmw_perf_pingpong (Release) at $SHA on both rpis ---"
+if [ -n "$PI_PATCH" ]; then
+    for h in "$CLIENT" "$SERVER"; do
+        scp -q -i "$K" -o BatchMode=yes "$PI_PATCH" "ci@$h:/tmp/rmwx_pi.patch" || { say "PI_PATCH copy FAILED - not running"; exit 1; }
+    done
+    say "--- PI_PATCH $(basename "$PI_PATCH") md5 $(md5sum "$PI_PATCH" | cut -c1-12), applied after the checkout on both rpis ---"
+fi
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     # Three stages, in the order the rig's own provision_rmw_perf_ws.sh established (2026-09-26: a
@@ -264,6 +285,7 @@ for h in "$CLIENT" "$SERVER"; do
     # binding has measured the wrong thing in this repository before.
     sh_ "$h" "set -e
 cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
+$PATCH_APPLY
 # The TickLE typesupport generator's Python package, straight from this checkout rather than pip-installed:
 # the rig's system Python refuses pip (PEP 668), and an installed copy goes stale while the source moves
 # on - which has already made a regression check here test the wrong code.
