@@ -132,6 +132,15 @@ INJECT_ARMS=${INJECT_ARMS:--}
 # VARIANT_VENDORS (2026-10-31): the vendor rmws appended after the rmw_tickle@<variant> list when TICKLE_VARIANTS is set.
 # Unset, both, exactly as before.
 VARIANT_VENDORS=${VARIANT_VENDORS-rmw_fastrtps_cpp rmw_cyclonedds_cpp}
+# COUNT_RMWS / COUNT_REPS (2026-10-31, c12/step4_rig.sh): in reps 1..COUNT_REPS, each inject arm is run once more for every
+# rmw in COUNT_RMWS with counters on its receiving thread (stem suffix _cnt): perf stat -t of dTLB-load-misses,
+# L1-dcache-load-misses, instructions and cycles, and c12/migr.bt (sched_switch cpu changes, sched_migrate_task) under
+# sudo bpftrace, both for COUNT_S s from just before the ping. The thread: rmw_tickle's main thread (its receive and its
+# reply), CycloneDDS's task named exactly recvUC (else recv); every task's name is kept beside the counts. Unset: none.
+COUNT_RMWS=${COUNT_RMWS:-}
+COUNT_REPS=${COUNT_REPS:-0}
+COUNT_S=${COUNT_S:-14}
+CNTSTEM=""
 if [ "$INJECT_ARMS" != - ] && [ "${CAPTURE:-0}" != 1 ]; then
     echo "REFUSED: INJECT_ARMS needs CAPTURE=1 (the injector predicts the pings from the ping host's capture)" >&2
     exit 64
@@ -172,7 +181,7 @@ variant_args() {
         # libc_rb, libc_rb_csum, libc_rb_nogro (2026-10-31, c12/step3_rig.sh, with PI_PATCH=c12/step3.patch): the
         # sockets' options read back with getsockopt() at bind and close (TT_EXP_C12_READBACK); _csum runs with
         # TT_UDP_CSUM0=0 (env_for), _nogro never touches UDP_GRO (TT_EXP_NO_GRO_SETUP).
-        libc_rb | libc_rb_csum) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_C12_READBACK'" ;;
+        libc_rb | libc_rb_csum | libc_rb_nolazy) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_C12_READBACK'" ;;
         libc_rb_nogro) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_EXP_C12_READBACK -DTT_EXP_NO_GRO_SETUP'" ;;
         *) echo "" ;;
     esac
@@ -236,6 +245,7 @@ env_for() {
     if [ "$base" = rmw_tickle ] && [ "$v" != default ]; then
         local extra=""
         [ "$v" = libc_rb_csum ] && extra="; export TT_UDP_CSUM0=0" # c12 step 3 (b): every checksum kept
+        [ "$v" = libc_rb_nolazy ] && extra="; export TT_RX_LAZY_TIMER=0" # c12 step 4 (d): no deadline timerfd in the set
         echo "$(env_for rmw_tickle); set +u; source \$HOME/rmw_variants/$v/install/setup.bash; set -u$extra"
         return
     fi
@@ -368,6 +378,11 @@ for h in "$CLIENT" "$SERVER"; do
     say "--- binaries on $h: $ident ---"
     case "$ident" in *-links-*) say "an application binary links an rmw implementation directly - not running"; exit 1 ;; esac
 done
+if [ -n "$COUNT_RMWS" ]; then
+    scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/migr.bt" "ci@$SERVER:/tmp/c12_migr.bt" \
+        || { say "migr.bt copy FAILED - not running"; exit 1; }
+    say "--- counter rows: $COUNT_RMWS, reps 1..$COUNT_REPS, $COUNT_S s, migr.bt md5 $(md5sum "$REPO/examples/perf_hil/experiments/c12/migr.bt" | cut -c1-12) ---"
+fi
 if [ "$INJECT_ARMS" != - ]; then
     scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/idle_wake_injector.py" "ci@$CLIENT:/tmp/c12_idle_wake_injector.py" \
         || { say "injector copy FAILED - not running"; exit 1; }
@@ -528,7 +543,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     esac
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}${INJSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}${INJSTEM}${CNTSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -601,6 +616,14 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
     # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
     # Under perf stat (INSN_COUNT=1) the chain is timeout -> time -> perf (taskset exec'd) -> ping_node: one level deeper.
+    if [ -n "$CNTSTEM" ]; then
+        # Counter rows (COUNT_RMWS, header): the receiving thread chosen by exact task name, its counters started now.
+        sh_ "$SERVER" "rm -f /tmp/c12_cnt.*; cd /proc/$pongpid/task || exit 0; for t in *; do echo \"task \$t \$(cat \$t/comm)\"; done > /tmp/c12_cnt.tasks
+t=$pongpid; case '$rmw' in rmw_cyclonedds*) t=\$(awk '\$3 == \"recvUC\" {print \$2; exit}' /tmp/c12_cnt.tasks); [ -n \"\$t\" ] || t=\$(awk '\$3 == \"recv\" {print \$2; exit}' /tmp/c12_cnt.tasks);; esac
+echo \"counted \$t\" >> /tmp/c12_cnt.tasks
+setsid nohup perf stat -x, -e dTLB-load-misses,L1-dcache-load-misses,instructions,cycles -t \$t -o /tmp/c12_cnt.perf -- sleep $COUNT_S > /dev/null 2>&1 < /dev/null &
+setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /tmp/c12_cnt.migr 2>&1 < /dev/null &" || true
+    fi
     if [ -n "$INJSTEM" ]; then
         # The injector's client and server addresses on the test link, read from the hosts rather than assumed.
         local cip sip
@@ -610,6 +633,11 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     fi
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^WARMUP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
+    if [ -n "$CNTSTEM" ]; then
+        mkdir -p "$OUT.counters"
+        sh_ "$SERVER" "for i in \$(seq 1 40); do grep -q '^@\|^Attaching\|ERROR' /tmp/c12_cnt.migr 2>/dev/null && [ -s /tmp/c12_cnt.perf ] && grep -q cycles /tmp/c12_cnt.perf && grep -q '^@' /tmp/c12_cnt.migr && break; sleep 0.5; done; cat /tmp/c12_cnt.tasks; echo '--- perf'; cat /tmp/c12_cnt.perf; echo '--- migr'; cat /tmp/c12_cnt.migr" >"$OUT.counters/$stem.txt" 2>&1 || true
+        res="$res counters=$(grep -c ',cycles,' "$OUT.counters/$stem.txt" 2>/dev/null)"
+    fi
     local injvoid=""
     if [ -n "$INJSTEM" ]; then
         # The injector ends by itself 3 s after the last ping (45 s at most); its INJECT_END line is always printed.
@@ -736,7 +764,7 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     # Gate v2 A2: a counted row without both counts is VOID - "could not look" is never "no work".
     if [ -n "$insn_void" ] && [ "$verdict" = ok ]; then verdict=$insn_void; fi
     if [ -n "$injvoid" ] && [ "$verdict" = ok ]; then verdict=$injvoid; fi
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${INJSTEM:+ inject=$INJ}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${INJSTEM:+ inject=$INJ}${CNTSTEM:+ counted=1}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -794,6 +822,16 @@ for rep in $(seq 1 "$REPS"); do
                           one "$rmw" "$msg" "$qos" "$rep"
                         done
                       done
+                      if [ "$rep" -le "$COUNT_REPS" ]; then
+                        CNTSTEM="_cnt"
+                        for INJ in $INJS; do
+                          INJSTEM=""; [ "$INJ" != - ] && INJSTEM="_inj$INJ"
+                          for rmw in $RMWS; do
+                            case " $COUNT_RMWS " in *" $rmw "*) one "$rmw" "$msg" "$qos" "$rep" ;; esac
+                          done
+                        done
+                        CNTSTEM=""
+                      fi
                     done
                   done
                 done

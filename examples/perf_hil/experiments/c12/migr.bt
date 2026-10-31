@@ -1,0 +1,10 @@
+#!/usr/bpftrace
+// C12 step 4 counter rows (2026-10-31): was thread $1 switched in on a different cpu than the one it last switched out
+// on? One line of counts at exit. Run on the pong's Pi under sudo for the length of a row: bpftrace migr.bt <tid>
+BEGIN { printf("# c12 migr tid %d\n", $1); }
+tracepoint:sched:sched_switch /args->prev_pid == $1/ { @out = cpu; @has = 1; }
+tracepoint:sched:sched_switch /args->next_pid == $1 && @has/ {
+    if (cpu == @out) { @same = count(); } else { @moved = count(); }
+}
+tracepoint:sched:sched_migrate_task /args->pid == $1/ { @migrate = count(); }
+END { clear(@out); clear(@has); }
