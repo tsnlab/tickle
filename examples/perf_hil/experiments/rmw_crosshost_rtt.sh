@@ -138,6 +138,20 @@ VARIANT_VENDORS=${VARIANT_VENDORS-rmw_fastrtps_cpp rmw_cyclonedds_cpp}
 # sudo bpftrace, both for COUNT_S s from just before the ping. The thread: rmw_tickle's main thread (its receive and its
 # reply), CycloneDDS's task named exactly recvUC (else recv); every task's name is kept beside the counts. Unset: none.
 COUNT_RMWS=${COUNT_RMWS:-}
+# PONG_CPUS / WARM_ARMS (2026-10-31, c12/step5_rig.sh): PONG_CPUS replaces the pong's taskset list (default 1-3, as
+# before). WARM_ARMS="off same other": per row, c12/warmer.c (WARM_S s, 5 us of spinning every 10 ms) runs on the pong's
+# host pinned to WARM_CPU_SAME or WARM_CPU_OTHER, started just before the ping ("off": none); only rmws in WARM_RMWS get
+# the warmer arms, the others run "off" alone. Every warmer row keeps the warmer's WARMER_END line, and with WARM_ARMS
+# every row records each pong task's last cpu and the process's Cpus_allowed_list after the ping ($OUT.pin/). Unset
+# ("-"): no warmer, no pin record, stems as before.
+PONG_CPUS=${PONG_CPUS:-1-3}
+WARM_ARMS=${WARM_ARMS:--}
+WARM_RMWS=${WARM_RMWS:-}
+WARM_CPU_SAME=${WARM_CPU_SAME:-2}
+WARM_CPU_OTHER=${WARM_CPU_OTHER:-3}
+WARM_S=${WARM_S:-16}
+WARMSTEM=""
+WARM=off
 COUNT_REPS=${COUNT_REPS:-0}
 COUNT_S=${COUNT_S:-14}
 CNTSTEM=""
@@ -378,6 +392,14 @@ for h in "$CLIENT" "$SERVER"; do
     say "--- binaries on $h: $ident ---"
     case "$ident" in *-links-*) say "an application binary links an rmw implementation directly - not running"; exit 1 ;; esac
 done
+if [ "$WARM_ARMS" != - ]; then
+    if ! scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/warmer.c" "ci@$SERVER:/tmp/c12_warmer.c" ||
+        ! sh_ "$SERVER" "cc -O2 -o /tmp/c12_warmer /tmp/c12_warmer.c"; then
+        say "warmer build FAILED - not running"
+        exit 1
+    fi
+    say "--- warmer: c12/warmer.c md5 $(md5sum "$REPO/examples/perf_hil/experiments/c12/warmer.c" | cut -c1-12), arms $WARM_ARMS for $WARM_RMWS, same cpu $WARM_CPU_SAME, other cpu $WARM_CPU_OTHER, pong cpus $PONG_CPUS ---"
+fi
 if [ -n "$COUNT_RMWS" ]; then
     scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/migr.bt" "ci@$SERVER:/tmp/c12_migr.bt" \
         || { say "migr.bt copy FAILED - not running"; exit 1; }
@@ -543,7 +565,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     esac
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}${INJSTEM}${CNTSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}${INJSTEM}${CNTSTEM}${WARMSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -561,7 +583,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         pingpre=$(insn_prefix /tmp/rmwx_ping.insn)
         pongrm="rm -f /tmp/rmwx_pong.insn;" pingrm="rm -f /tmp/rmwx_ping.insn;"
     fi
-    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm $pongrm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $pongthreads $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm $pongrm nohup taskset -c $PONG_CPUS $pre $BIN/pong_node $flag $pongthreads $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     if [ "$INSN_COUNT" = 1 ]; then
         pongperf=$pongpid
         pongpid=$(sh_ "$SERVER" "$(remote_child_of_perf)
@@ -624,6 +646,11 @@ echo \"counted \$t\" >> /tmp/c12_cnt.tasks
 setsid nohup perf stat -x, -e dTLB-load-misses,L1-dcache-load-misses,instructions,cycles -t \$t -o /tmp/c12_cnt.perf -- sleep $COUNT_S > /dev/null 2>&1 < /dev/null &
 setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /tmp/c12_cnt.migr 2>&1 < /dev/null &" || true
     fi
+    if [ -n "$WARMSTEM" ] && [ "$WARM" != off ]; then
+        local wcpu=$WARM_CPU_SAME
+        [ "$WARM" = other ] && wcpu=$WARM_CPU_OTHER
+        sh_ "$SERVER" "rm -f /tmp/c12_warm.log; setsid nohup taskset -c $wcpu /tmp/c12_warmer $WARM_S > /tmp/c12_warm.log 2>&1 < /dev/null &" || true
+    fi
     if [ -n "$INJSTEM" ]; then
         # The injector's client and server addresses on the test link, read from the hosts rather than assumed.
         local cip sip
@@ -633,6 +660,15 @@ setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /t
     fi
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^WARMUP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
+    if [ -n "$WARMSTEM" ]; then
+        mkdir -p "$OUT.pin"
+        sh_ "$SERVER" "grep Cpus_allowed_list /proc/$pongpid/status; for t in /proc/$pongpid/task/*; do echo \"task \${t##*/} \$(cut -d')' -f2 \$t/stat | awk '{print \$37}') \$(cat \$t/comm)\"; done" >"$OUT.pin/$stem.txt" 2>&1 || true
+        res="$res warm=$WARM pin=$(grep -o 'Cpus_allowed_list:.*' "$OUT.pin/$stem.txt" | awk '{print $2}')"
+        if [ "$WARM" != off ]; then
+            sh_ "$SERVER" "for i in \$(seq 1 40); do grep -q '^WARMER_END' /tmp/c12_warm.log && break; sleep 0.25; done; cat /tmp/c12_warm.log" >"$OUT.pin/$stem.warmer.txt" 2>&1 || true
+            res="$res $(grep -m1 '^WARMER_END' "$OUT.pin/$stem.warmer.txt" || echo warmer_end=missing)"
+        fi
+    fi
     if [ -n "$CNTSTEM" ]; then
         mkdir -p "$OUT.counters"
         sh_ "$SERVER" "for i in \$(seq 1 40); do grep -q '^@\|^Attaching\|ERROR' /tmp/c12_cnt.migr 2>/dev/null && [ -s /tmp/c12_cnt.perf ] && grep -q cycles /tmp/c12_cnt.perf && grep -q '^@' /tmp/c12_cnt.migr && break; sleep 0.5; done; cat /tmp/c12_cnt.tasks; echo '--- perf'; cat /tmp/c12_cnt.perf; echo '--- migr'; cat /tmp/c12_cnt.migr" >"$OUT.counters/$stem.txt" 2>&1 || true
@@ -764,7 +800,7 @@ setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /t
     # Gate v2 A2: a counted row without both counts is VOID - "could not look" is never "no work".
     if [ -n "$insn_void" ] && [ "$verdict" = ok ]; then verdict=$insn_void; fi
     if [ -n "$injvoid" ] && [ "$verdict" = ok ]; then verdict=$injvoid; fi
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${INJSTEM:+ inject=$INJ}${CNTSTEM:+ counted=1}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${PONG_THREADS:+ pong_threads=$PONG_THREADS}${INJSTEM:+ inject=$INJ}${CNTSTEM:+ counted=1}${WARMSTEM:+ warm=$WARM}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -817,10 +853,22 @@ for rep in $(seq 1 "$REPS"); do
                       fi
                       for INJ in $INJS; do
                         INJSTEM=""; [ "$INJ" != - ] && INJSTEM="_inj$INJ"
-                        for rmw in $RMWS; do
-                          case "$EP:$rmw" in on:rmw_tickle*) ;; on:*) continue ;; esac
-                          one "$rmw" "$msg" "$qos" "$rep"
+                        WARMS="$WARM_ARMS"
+                        if [ "$WARM_ARMS" != - ] && [ "${ROTATE:-0}" = 1 ]; then
+                            read -r -a wrot <<<"$WARM_ARMS"
+                            WARMS=""; for i in $(seq 0 $((${#wrot[@]} - 1))); do WARMS="$WARMS ${wrot[$(((i + rep - 1) % ${#wrot[@]}))]}"; done
+                        fi
+                        for WARM in $WARMS; do
+                          WARMSTEM=""; [ "$WARM" != - ] && WARMSTEM="_warm$WARM"
+                          for rmw in $RMWS; do
+                            case "$EP:$rmw" in on:rmw_tickle*) ;; on:*) continue ;; esac
+                            if [ "$WARM" != - ] && [ "$WARM" != off ]; then
+                              case " $WARM_RMWS " in *" $rmw "*) ;; *) continue ;; esac
+                            fi
+                            one "$rmw" "$msg" "$qos" "$rep"
+                          done
                         done
+                        WARMSTEM=""; WARM=off
                       done
                       if [ "$rep" -le "$COUNT_REPS" ]; then
                         CNTSTEM="_cnt"
