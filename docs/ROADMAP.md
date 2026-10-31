@@ -84,6 +84,11 @@ The user's order (2026-09-29): wired, then Security, then wireless.
   day (RESULTS `EWB`, a per-unit back-off while the reader shows nothing; forced stall 2 of 20 against 14 of 20; rig PASS).
   **2026-10-27** (RESULTS `RLC`, `RLF`): the least-transit floor stops the reader's collapse on every link (0 of 840
   PC reps against 22 of 840). It costs Wi-Fi latency, which the user accepted; it landed after the rig check passed.
+  **2026-10-31** (RESULTS `C7W`): stopped, a documented limit. The slow reader's repair bursts are flow control: the
+  reader advertising its free socket room in the ACKNACK cuts lossless repair waste from 46-94% to 0.2% in the sim, but
+  four contracts in five rounds each left a cell WORSE (the closest, a writer GRANT naming its cut, one sample 11 ms
+  late in 77 cells, and 2 of 6 netns slow reps in duplicate storms). The wire rule is not met, so nothing landed; the
+  branch `c7-wire-room` is kept for the wireless stage, with the other parked wire changes (the user, 2026-10-31).
 
 ### Other open items
 
