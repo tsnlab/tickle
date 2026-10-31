@@ -212,8 +212,15 @@ start() {
 # code behind a flag only rmw_tickle's build sets (tt_CONTEXT_ID_CLAIM, tt_LOCAL_DELIVERY) is compiled out there, while
 # CI's cpp-linter lints the same files with rmw_tickle's database. The g8 host registry in hal_linux.c turned
 # 958e909e's Check all red on six findings this way (a short `fd`, a magic 0666) while check-gates said clean.
+#
+# And core's public headers on their own (2026-10-31): a push that changed include/tickle/tickle.h had CI lint it as its
+# main file and find two magic numbers in struct tt_LargeChunkEntry (9ad69e88 red) that every .c here includes but never
+# reports. hal_freertos.h is left out: it includes FreeRTOS.h, which rmw_tickle's database cannot find.
 c_files=(rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle/rmw_tickle/include/rmw_tickle_c/*.h
     src/tickle.c src/hal_linux.c src/encoding.c src/log.c)
+for h in include/tickle/*.h; do
+    [ "$h" = include/tickle/hal_freertos.h ] || c_files+=("$h")
+done
 mapfile -t cpp_files < <(git ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev '^(third_party|examples/perf_hil/fastdds)/')
 # Files whose own CMake requires C++20, so CI compiles them at 20 as well - exempt from the C++17
 # compile below. Keep in step with every `CMAKE_CXX_STANDARD 20` / `cxx_std_20` in the tree.
