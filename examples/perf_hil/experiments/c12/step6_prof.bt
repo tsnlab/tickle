@@ -1,0 +1,14 @@
+#!/usr/bpftrace
+// C12 step 6 (2026-10-31): cycle sampling of ONE thread, kernel and user, with the time of each sample, for attributing
+// the pong's tap -> receive-return window. bpftrace (root) resolves kernel symbols, which perf cannot for a non-root
+// user on the Pis (kptr_restrict 1). Every 10000 cycles a PMU interrupt (the period is fixed here, in the probe);
+// samples of thread $1 print:
+//   S <CLOCK_MONOTONIC ns> <ksym(pc)> <usym(pc)>
+//   <up to 6 kernel frames, one per line, from the sampled pc>   (none for a user-mode sample)
+// arm64 takes the PMU interrupt as a normal IRQ, so a sample in a region with interrupts off lands where they are turned
+// back on (an unlock or irq-restore helper); the frames under it name the function that held them off.
+//   bpftrace step6_prof.bt <tid>
+BEGIN { printf("# c12 prof tid %d period 10000\n", $1); }
+hardware:cycles:10000 /tid == $1/ {
+    printf("S %llu %s %s%s\n", nsecs, ksym(reg("pc")), usym(reg("pc")), kstack(perf, 6));
+}

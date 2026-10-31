@@ -145,6 +145,11 @@ COUNT_RMWS=${COUNT_RMWS:-}
 # every row records each pong task's last cpu and the process's Cpus_allowed_list after the ping ($OUT.pin/). Unset
 # ("-"): no warmer, no pin record, stems as before.
 PONG_CPUS=${PONG_CPUS:-1-3}
+# PROF=1 (2026-10-31, c12/step6_rig.sh): every row samples its receiving thread (rmw_tickle's main thread, CycloneDDS's
+# task named exactly recvUC, else recv; every task's name kept) with c12/step6_prof.bt under sudo bpftrace, cycles every
+# 10000, kernel and user symbols, for PROF_S s from just before the ping, into $OUT.prof/<stem>.txt. Unset: none.
+PROF=${PROF:-0}
+PROF_S=${PROF_S:-15}
 WARM_ARMS=${WARM_ARMS:--}
 WARM_RMWS=${WARM_RMWS:-}
 WARM_CPU_SAME=${WARM_CPU_SAME:-2}
@@ -400,6 +405,11 @@ if [ "$WARM_ARMS" != - ]; then
     fi
     say "--- warmer: c12/warmer.c md5 $(md5sum "$REPO/examples/perf_hil/experiments/c12/warmer.c" | cut -c1-12), arms $WARM_ARMS for $WARM_RMWS, same cpu $WARM_CPU_SAME, other cpu $WARM_CPU_OTHER, pong cpus $PONG_CPUS ---"
 fi
+if [ "$PROF" = 1 ]; then
+    scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/step6_prof.bt" "ci@$SERVER:/tmp/c12_profile.bt" \
+        || { say "step6_prof.bt copy FAILED - not running"; exit 1; }
+    say "--- profile rows: c12/step6_prof.bt md5 $(md5sum "$REPO/examples/perf_hil/experiments/c12/step6_prof.bt" | cut -c1-12), $PROF_S s per row ---"
+fi
 if [ -n "$COUNT_RMWS" ]; then
     scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/c12/migr.bt" "ci@$SERVER:/tmp/c12_migr.bt" \
         || { say "migr.bt copy FAILED - not running"; exit 1; }
@@ -646,6 +656,14 @@ echo \"counted \$t\" >> /tmp/c12_cnt.tasks
 setsid nohup perf stat -x, -e dTLB-load-misses,L1-dcache-load-misses,instructions,cycles -t \$t -o /tmp/c12_cnt.perf -- sleep $COUNT_S > /dev/null 2>&1 < /dev/null &
 setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /tmp/c12_cnt.migr 2>&1 < /dev/null &" || true
     fi
+    local profpid=""
+    if [ "$PROF" = 1 ]; then
+        profpid=$(sh_ "$SERVER" "rm -f /tmp/c12_prof.*; cd /proc/$pongpid/task || exit 0; for t in *; do echo \"task \$t \$(cat \$t/comm)\"; done > /tmp/c12_prof.tasks
+t=$pongpid; case '$rmw' in rmw_cyclonedds*) t=\$(awk '\$3 == \"recvUC\" {print \$2; exit}' /tmp/c12_prof.tasks); [ -n \"\$t\" ] || t=\$(awk '\$3 == \"recv\" {print \$2; exit}' /tmp/c12_prof.tasks);; esac
+echo \"profiled \$t\" >> /tmp/c12_prof.tasks
+setsid nohup timeout $PROF_S sudo -n bpftrace /tmp/c12_profile.bt \$t > /tmp/c12_prof.txt 2>&1 < /dev/null & echo \$!" || true)
+        sh_ "$SERVER" "for i in \$(seq 1 20); do grep -q '^# c12 prof' /tmp/c12_prof.txt 2>/dev/null && break; sleep 0.25; done" || true
+    fi
     if [ -n "$WARMSTEM" ] && [ "$WARM" != off ]; then
         local wcpu=$WARM_CPU_SAME
         [ "$WARM" = other ] && wcpu=$WARM_CPU_OTHER
@@ -660,6 +678,11 @@ setsid nohup timeout $((COUNT_S + 1)) sudo -n bpftrace /tmp/c12_migr.bt \$t > /t
     fi
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^WARMUP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
+    if [ "$PROF" = 1 ]; then
+        mkdir -p "$OUT.prof"
+        sh_ "$SERVER" "for i in \$(seq 1 60); do [ -d /proc/${profpid:-0} ] || break; sleep 0.5; done; cat /tmp/c12_prof.tasks; cat /tmp/c12_prof.txt" >"$OUT.prof/$stem.txt" 2>&1 || true
+        res="$res prof_samples=$(grep -c '^S ' "$OUT.prof/$stem.txt" 2>/dev/null)"
+    fi
     if [ -n "$WARMSTEM" ]; then
         mkdir -p "$OUT.pin"
         sh_ "$SERVER" "grep Cpus_allowed_list /proc/$pongpid/status; for t in /proc/$pongpid/task/*; do echo \"task \${t##*/} \$(cut -d')' -f2 \$t/stat | awk '{print \$37}') \$(cat \$t/comm)\"; done" >"$OUT.pin/$stem.txt" 2>&1 || true
