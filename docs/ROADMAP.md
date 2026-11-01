@@ -3,7 +3,8 @@
 **TL;DR**
 - **Done 2026-10-19:** QoS reshaped like rmw (DESIGN 9, RMW.md); KEEP_LAST rows and L4 latency re-scored by round trip.
 - **Now:** what is left of items 0 and 5a of the user's list of 2026-10-05.
-- **Parked until the user says go:** Security (SROS2 + MACsec), then wireless. Wire changes wait for the wireless stage.
+- **Release order (the user, 2026-11-01):** performance work done -> v2.1; wireless + wire changes; time-varying
+  networks -> v2.2; Security -> v3.0. Each stage starts on the user's go.
 
 Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git show 3c0c505b:<path>` (DESIGN.md section 16).
 
@@ -47,7 +48,8 @@ by default and warn on a mismatch; rmw_tickle keeps its environment variables.
 
 ### Wired work
 
-The user's order (2026-09-29): wired, then Security, then wireless.
+The user's order: wired first (2026-09-29); after it wireless, then Security (2026-11-01, replacing "Security, then
+wireless").
 
 - **Zero-copy slot loans**: a segment ring that skips held slots; off by default (the user, 2026-10-10).
 - **Large samples step B on the rig**: done 2026-10-20, every B2 rule PASS with a control that held (RESULTS `SB2`).
@@ -92,8 +94,9 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 
 ### Other open items
 
-- rmw receive return on the Pi +2.0 / +1.1 us behind CycloneDDS / FastDDS (RESULTS `KH2B`, 2026-10-24, after the ring's
-  first move at 2 waits; ~1.3-2.4 us in `KH2`, ~4-5 in `KH`); the rest is the ring's DEFER_TASKRUN path itself.
+- rmw receive return on the Pi +2.4 / +1.7 us idle and +0.7 / +1.2 us warm behind CycloneDDS / FastDDS (RESULTS
+  `KH2W`, 2026-11-01; `KH2B`'s +2.0 / +1.1 was the idle cell). The warm part is io_uring's deferred completion on one
+  thread waiting on many sources; fixed files and POLL_FIRST did not move it, so it is a documented limit.
   After ~100 ms idle the receive costs ~1.4 us more than CycloneDDS's (RESULTS `C12I`, 2026-10-31): a diffuse cold kernel
   path. The poll thread avoids it but its hand-off costs more (RTT +13 us), so it stays a documented limit.
   The poll-to-executor hand-off (~21 us) is gone: executor-driven receive, 3.3 us receive -> callback on the PC
@@ -111,14 +114,14 @@ The user's order (2026-09-29): wired, then Security, then wireless.
 
 ## Later (not to be started yet; the user, 2026-10-11)
 
-- **Time-varying networks**: test varying loss and delay (netem schedules), then tune the estimator (EWMA, windowed
-  loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
+- **Time-varying networks** (after wireless, before v2.2): test varying loss and delay (netem schedules), then tune
+  the estimator (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
 
 ## Parked (only on the user's explicit go)
 
-- **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27). Only g7 is done: refuse to start under
-  `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
-- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): after Security.
+- **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27), last, for v3.0 (the user, 2026-11-01).
+  Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
+- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): next after v2.1 (the user, 2026-11-01).
 - **Wire changes** (run header merge, FEC, range NACK): at the wireless stage (the user, 2026-10-15).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
   decided on the 32-Raspberry-Pi testbed once it is built (the user, 2026-10-16).
