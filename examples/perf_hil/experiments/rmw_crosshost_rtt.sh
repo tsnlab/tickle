@@ -188,6 +188,12 @@ variant_args() {
         # -DCMAKE_C_FLAGS wins over RMW_TICKLE_BUILD's, so the flags are repeated with the define added.
         # libc_rxthread (2026-10-31, c12/rxthread_rig.sh): the libc build, run with RMW_TICKLE_EXECUTOR_POLL=0 (env_for).
         libc | libc_rxthread) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS'" ;;
+        # libc_ringbase, libc_ringff, libc_ringpf (2026-11-01, c12/kh2b_rig.sh, with PI_PATCH=c12/kh2b.patch): the wait
+        # ring's recvmsg as on main, through a registered file, or issued poll-first (TT_RX_RING_FIXED_FILE,
+        # TT_RX_RING_POLL_FIRST).
+        libc_ringbase) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_RX_RING_FIXED_FILE=0 -DTT_RX_RING_POLL_FIRST=0'" ;;
+        libc_ringff) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_RX_RING_POLL_FIRST=0'" ;;
+        libc_ringpf) echo "'-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS -DTT_HAL_LIBC_CALLS -DTT_RX_RING_FIXED_FILE=0'" ;;
         # ringoff, libc_ringoff (2026-10-22, rig_queue_rx_uring_wait.sh): the HAL's wait ring compiled off by default
         # (tt_RX_URING_WAIT 0: tt_receive() waits with epoll and reads with recvfrom()), the control of a build whose
         # default has it on.

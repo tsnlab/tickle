@@ -1,0 +1,99 @@
+diff --git a/include/tickle/hal_linux.h b/include/tickle/hal_linux.h
+index fd69b996..db709f5a 100644
+--- a/include/tickle/hal_linux.h
++++ b/include/tickle/hal_linux.h
+@@ -209,6 +209,20 @@ static inline void tt_thread_yield(void) {
+ #ifndef tt_RX_URING_WAIT
+ #define tt_RX_URING_WAIT 1
+ #endif
++// The wait ring's recvmsg on the data socket through a registered file (IORING_REGISTER_FILES, IOSQE_FIXED_FILE): no
++// fget() when the request is issued and no fput() when it completes, which on the Pi was ~400 cycles inside the warm
++// receive's tap -> return (C12 step 6, fput). The owner registers it when it enables the ring (wr_enable()); a refusal
++// leaves the plain descriptor. 0: the plain descriptor always (the A/B control, ab/ring-fixed-file).
++#ifndef TT_RX_RING_FIXED_FILE
++#define TT_RX_RING_FIXED_FILE 1
++#endif
++// The wait ring's recvmsg issued with IORING_RECVSEND_POLL_FIRST: armed on the socket's poll at once, without the
++// read the kernel otherwise tries first and expects to fail - the wait ring arms it only when the socket was found
++// empty (tt_receive() reads what is queued before it waits). 0: the speculative read first (the A/B control,
++// ab/ring-poll-first).
++#ifndef TT_RX_RING_POLL_FIRST
++#define TT_RX_RING_POLL_FIRST 1
++#endif
+ // The ring moves to a thread whose waits read this many data-socket datagrams in a row while the owner read none (each
+ // counted after its read since 2026-10-29; waits until then, which an idle owner's wait reset); each move doubles the
+ // run the next one needs, up to TT_RX_RING_MOVE_MAX (hal_linux.c, "The wait ring"). 2, the shortest run that is still a
+@@ -486,6 +500,7 @@ struct tt_hal {
+     // wr_move_after its next wait moves the ring to it (wr_moves), and the next move needs twice the run.
+     int wr_fd_plus1;
+     int wr_owner;
++    bool wr_fixed; // the data socket is the ring's registered file 0 (TT_RX_RING_FIXED_FILE)
+     bool wr_now;
+     uint8_t wr_armed;
+     uint32_t wr_recv;
+diff --git a/src/hal_linux.c b/src/hal_linux.c
+index fad9b155..10103602 100644
+--- a/src/hal_linux.c
++++ b/src/hal_linux.c
+@@ -1711,7 +1711,7 @@ static const char* drain_ring_name(uint8_t ring) {
+ #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
+ #define GRO_LINE_BYTES 256U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
+ #define CSUM0_LINE_BYTES 160U  // and its csum0_* fields
+-#define RING_LINE_BYTES 160U   // and its ring* fields
++#define RING_LINE_BYTES 192U   // and its ring* fields
+ 
+ void tt_close(struct tt_Context* node) {
+     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
+@@ -1765,10 +1765,11 @@ void tt_close(struct tt_Context* node) {
+     }
+     (void)snprintf(
+         ring, sizeof(ring),
+-        " ring=%d ring_waits=%lu ring_reads=%lu ring_cancels=%lu ring_others=%lu ring_moves=%lu ring_stale=%lu",
++        " ring=%d ring_waits=%lu ring_reads=%lu ring_cancels=%lu ring_others=%lu ring_moves=%lu ring_stale=%lu"
++        " ring_fixed=%d ring_poll_first=%d",
+         ring_state, (unsigned long)node->hal.wr_waits, (unsigned long)node->hal.wr_reads,
+         (unsigned long)node->hal.wr_cancels, (unsigned long)node->hal.wr_others, (unsigned long)node->hal.wr_moves,
+-        (unsigned long)node->hal.wr_stale);
++        (unsigned long)node->hal.wr_stale, node->hal.wr_fixed ? 1 : 0, TT_RX_RING_POLL_FIRST);
+ #endif
+ #if tt_RX_DRAIN
+     drain_stop(node);
+@@ -3565,6 +3566,7 @@ static void wr_close(struct tt_hal* hal, int left) {
+     hal->wr_unsubmitted = 0;
+     hal->wr_rival = 0;
+     hal->wr_streak = 0;
++    hal->wr_fixed = false; // a registered file goes with its ring
+ }
+ 
+ // Said once per process, as uring_refused() says it for the readiness ring.
+@@ -3734,6 +3736,14 @@ static bool wr_enable(struct tt_hal* hal, int self) {
+     }
+     hal->wr_owner = self;
+     hal->wr_streak = 0;
++#if TT_RX_RING_FIXED_FILE
++    // The data socket as registered file 0 (TT_RX_RING_FIXED_FILE): by the owner, once the ring is enabled, as a
++    // SINGLE_ISSUER ring takes registrations from its submitter only. Refused (an old kernel, a limit): plain
++    // descriptor.
++    const int files[1] = {hal->data_sock};
++    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
++    hal->wr_fixed = syscall(__NR_io_uring_register, hal->wr_fd_plus1 - 1, IORING_REGISTER_FILES, files, 1) == 0;
++#endif
+     return true;
+ }
+ 
+@@ -3909,6 +3919,15 @@ static void wr_arm(struct tt_Context* node) {
+     if (sqe == NULL) {
+         return;
+     }
++#if TT_RX_RING_FIXED_FILE
++    if (hal->wr_fixed) {
++        sqe->fd = 0; // registered file 0: the data socket (wr_enable())
++        sqe->flags |= IOSQE_FIXED_FILE;
++    }
++#endif
++#if TT_RX_RING_POLL_FIRST
++    sqe->ioprio = IORING_RECVSEND_POLL_FIRST; // armed on the poll at once (TT_RX_RING_POLL_FIRST)
++#endif
+     hal->wr_iov.iov_base = hal->wr_buf; // the header itself is wr_setup()'s, made once
+     hal->wr_iov.iov_len = hal->wr_len;
+     hal->wr_msg.msg_namelen = sizeof(hal->wr_from); // the kernel writes back the length it gave
