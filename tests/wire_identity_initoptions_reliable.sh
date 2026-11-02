@@ -15,8 +15,10 @@
 #            HEARTBEAT period, max_srtt_multiple at 1, where the ceiling binds on any recovery sample) - each must FAIL, or the scenario does not reach that reader and its
 #            identity is not shown.
 #
-# Usage: tests/wire_identity_initoptions_reliable.sh [--regenerate] [PARENT]     PARENT defaults to 580a5ec8, the parent
-# of the group. Prints one line per check and exits non-zero if any check fails.
+# Usage: tests/wire_identity_initoptions_reliable.sh [--regenerate] [PARENT]     PARENT defaults to HEAD. The golden was
+# 580a5ec8's (the parent of the group) until 2026-11-03, when Karn's rule for the recovery estimate on every link
+# changed the scenario's retries on purpose and it was re-captured from that commit. Prints one line per check and
+# exits non-zero if any check fails.
 set -euo pipefail
 
 regenerate=0
@@ -25,7 +27,7 @@ if [ "${1:-}" = "--regenerate" ]; then
     shift
 fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PARENT=${1:-580a5ec8}
+PARENT=${1:-HEAD}
 GOLDEN="$ROOT/tests/wire_identity/reliable_parent.bin"
 CC=${CC:-gcc}
 SRC=test_wire_identity_reliable.c

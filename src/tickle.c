@@ -16951,8 +16951,16 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // the writer's large sample still arriving (tt_WriterProxy.probe_busy) measures the writer's send: it goes into the
 // sending estimate only, not the path's (2026-10-16).
 //
-// On a link with repair_timing (WIFI's, tt_LinkOptions.repair_timing, 2026-10-23) the path's estimate is timed by
-// repair_timing_times() instead; the sending estimate as above.
+// Except the seed: with no estimate yet the interval is retry_initial (1 ms), and on a path whose round trip is more
+// than tt_RELIABLE_RETRY of those every recovery reaches the back-off, so none was ever timed and the reader asked
+// every 1-8 ms for the whole run (time_varying_netns.sh smoke 2026-11-02, ETHERNET, netem 20 ms each way, 2% loss:
+// ~15 timer ACKNACKs per gap, 30% of samples copied after delivery, against 0.04% at 1 ms). The first recovery is
+// timed whatever its retries, and after it only a recovery its first request answered (Karn's rule): the path's
+// estimate is timed by repair_timing_times() on every link, as on WIFI since 2026-10-23. The seed alone, with the
+// plain rule after it, failed its A/B (ethernet_seed_ab.sh 2026-11-03, ETHERNET, 20 ms each way): a recovery with
+// retries, timed from its first request, lengthened the estimate until a doubly lost sample's second request came
+// after KEEP_LAST 10 had evicted it - 3 of 2,300 samples lost in every rep, round-trip p99 114 against 90 ms. The
+// sending estimate as above.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
 // The recovery `took` as the path's estimate takes it: never faster than the least repair transit this reader has timed
@@ -16979,7 +16987,7 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
         return;
     }
     bool plain = proxy->retry <= node->opts.reliable.retry;
-    bool path = __builtin_expect(node->repair_timing, 0) ? repair_timing_times(node, proxy) : plain;
+    bool path = repair_timing_times(node, proxy);
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (path && !proxy->probe_busy) {

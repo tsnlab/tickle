@@ -1842,12 +1842,14 @@ static void test_recovery_probe_times_from_the_first_request(void) {
                   retry_interval_for(&reliable_defaults, 0, COLD_G, proxy)); // srtt + 4 * rttvar
 }
 
-// A recovery the back-off reached is not timed (2026-10-15): from the first request it spans the doubled waits, and
-// folded in it would lengthen the interval the back-off doubles. Arms: the repair after tt_RELIABLE_RETRY retries (the
-// last at the plain interval) is timed, as it always was; the repair after one more (the first backed-off one) is not,
-// and only ends the probe.
+// A recovery with retries is not timed once there is an estimate (Karn's rule, on every link since 2026-11-03): from
+// the first request it spans the waits, and folded in it would lengthen the interval. Unless it is the seed
+// (2026-11-02): with no estimate the interval is retry_initial, and a path slower than its retries would never be
+// timed. Arms, the first two on an estimate already there (2 ms, 1 ms): the repair after tt_RELIABLE_RETRY retries
+// (the last at the plain interval) is not timed (before 2026-11-03 it was), nor the repair after one more (the first
+// backed-off one) - each only ends the probe; arm 2, that same backed-off repair with no estimate yet, seeds it.
 static void test_a_backed_off_recovery_is_not_timed(void) {
-    for (int arm = 0; arm < 2; arm++) {
+    for (int arm = 0; arm < 3; arm++) {
         test_mock_reset();
 
         struct tt_Context node;
@@ -1863,10 +1865,14 @@ static void test_a_backed_off_recovery_is_not_timed(void) {
         struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
         EXPECT_TRUE(proxy != NULL);
         proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+        uint32_t srtt = arm < 2 ? 2000000U : 0U;
+        uint32_t rttvar = arm < 2 ? 1000000U : 0U;
+        proxy->recovery_srtt_ns = srtt;
+        proxy->recovery_rttvar_ns = rttvar;
         test_mock_now = 1 * tt_MILLISECOND;
         tail = write_data(&node, 3, 300, 3); // 2 is missing: an immediate ACKNACK names it
         EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-        int retries = tt_RELIABLE_RETRY + arm;
+        int retries = tt_RELIABLE_RETRY + (arm != 0 ? 1 : 0);
         for (int i = 0; i < retries; i++) {
             test_mock_now += tt_MILLISECOND;
             tt_Context_unschedule(&node, acknack_retry, proxy);
@@ -1877,7 +1883,11 @@ static void test_a_backed_off_recovery_is_not_timed(void) {
         node.rx_targeted = true;
         EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
         node.rx_targeted = false;
-        EXPECT_EQ_U32(arm == 0 ? (uint32_t)(retries + 1) * 1000000U : 0U, proxy->recovery_srtt_ns);
+        if (arm == 2) {
+            rtt_estimate_fold(&srtt, &rttvar, (uint64_t)(retries + 1) * tt_MILLISECOND);
+        }
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
         EXPECT_EQ_U64(0, proxy->probe_ns); // the probe ends either way
         tt_Context_unschedule(&node, acknack_retry, proxy);
     }
@@ -1943,8 +1953,9 @@ static uint64_t recover_ambiguously(struct tt_Context* node, struct tt_Subscribe
 //   1. the seed is such a probe: 3 us, folded as its unit's own transit from the first request, 11.003 ms;
 //   2. the control: a recovery its first request answered (1 ms) is folded as it is - the floor never lifts an honest
 //      sample - and, being the least transit now, lowers the floor to 1 ms;
-//   3. (default rule) another ambiguous probe (3 us) after the seed is folded at the least transit (1 ms), not at its
-//      own unit's 11 ms. repair_timing times no retried recovery after the seed, and this one had a retry.
+//   3. another ambiguous probe (3 us) after the seed is not folded at all: it had a retry, and after the seed neither
+//      rule times one (Karn's rule on every link since 2026-11-03; before, the default rule folded it at the least
+//      transit, 1 ms).
 static void test_no_recovery_is_folded_faster_than_the_least_repair_transit(void) {
     for (int arm = 0; arm < 2; arm++) {
         test_mock_reset();
@@ -1977,23 +1988,20 @@ static void test_no_recovery_is_folded_faster_than_the_least_repair_transit(void
         EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
         EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
 
-        if (arm == 0) {
-            EXPECT_EQ_U64(3 * tt_MICROSECOND, recover_ambiguously(&node, &sub, &header, 7));
-            rtt_estimate_fold(&srtt, &rttvar, 1000000U); // at the least transit
-            EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
-            EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
-        }
+        EXPECT_EQ_U64(3 * tt_MICROSECOND, recover_ambiguously(&node, &sub, &header, 7));
+        EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns); // not folded
+        EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);
     }
 }
 
 // A WIFI link's readers time their recoveries by repair_timing_times() (tt_LinkOptions.repair_timing, 2026-10-23): the
-// first recovery whatever the back-off, after it only one its first request answered. Without it, the rule as before
-// (test_a_backed_off_recovery_is_not_timed). Each arm on a fresh proxy, gaps in order:
+// first recovery whatever the back-off, after it only one its first request answered. Without it the same rule
+// (2026-11-03; test_a_backed_off_recovery_is_not_timed). Each arm on a fresh proxy, gaps in order:
 //   arm 0, repair_timing: a recovery past the back-off (5 retries) seeds the estimate; then one with 1 retry is not
 //   timed;
 //          then one with none is.
-//   arm 1, the default: the same gaps - the first is not timed (srtt stays 0), the second is (1 retry is under the
-//          back-off), the third is.
+//   arm 1, the default: the same gaps, the same answers (2026-11-03; before 2026-11-02 the first was not timed and
+//          srtt stayed 0, and until 2026-11-03 the second was, 1 retry being under the back-off).
 //   arm 2, repair_timing, the writer's large sample still arriving at the first: it seeds nothing; the next, not busy
 //          and with 1 retry, seeds.
 static void test_wifi_repair_timing_times_the_first_recovery_and_then_karns(void) {
@@ -2018,13 +2026,13 @@ static void test_wifi_repair_timing_times_the_first_recovery_and_then_karns(void
         uint32_t srtt = 0;
         uint32_t rttvar = 0;
         uint64_t took = recover_after(&node, &sub, &header, 2, 5, arm == 2);
-        if (arm == 0) {
-            rtt_estimate_fold(&srtt, &rttvar, took); // the seed, past the back-off
+        if (arm != 2) {
+            rtt_estimate_fold(&srtt, &rttvar, took); // the seed, past the back-off, on either rule
         }
         EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
         took = recover_after(&node, &sub, &header, 4, 1, false);
-        if (arm != 0) {
-            rtt_estimate_fold(&srtt, &rttvar, took); // arm 1: under the back-off; arm 2: the seed
+        if (arm == 2) {
+            rtt_estimate_fold(&srtt, &rttvar, took); // the seed
         }
         EXPECT_EQ_U32(srtt, proxy->recovery_srtt_ns);
         EXPECT_EQ_U32(rttvar, proxy->recovery_rttvar_ns);

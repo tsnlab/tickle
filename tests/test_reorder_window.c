@@ -545,7 +545,10 @@ static void test_every_accepted_profile_survives_loss(void) {
 // test_several_writers_share_the_buffer()): the last match Heartbeat now asks for an ACKNACK and stays until the
 // reader's acknowledgement passes the match point, which moves the first rounds of every run; every rule held in every
 // row; the counts moved by -770..+35 DATA and -727..+34 ACKNACKs a run, 8 of 22 rows by more than 1% (4 writers at 5%
-// loss, no reorder buffer: 15,731 -> 14,961 DATA; with one: 8,740 -> 8,469 and overflow 259 -> 0).
+// loss, no reorder buffer: 15,731 -> 14,961 DATA; with one: 8,740 -> 8,469 and overflow 259 -> 0). Re-pinned
+// 2026-11-03 (Karn's rule for the recovery estimate on every link): rows with a reorder buffer moved by -3..+33 DATA
+// and -101..+467 ACKNACKs a run, every rule held; with none, nothing moved. In
+// test_several_writers_share_the_buffer() 3 writers at 20% loss: 10,268 -> 7,555 DATA, overflow 2,113 -> 0.
 static void test_a_window_sized_buffer_behaves_as_before(void) {
     const struct {
         uint16_t slots;
@@ -556,14 +559,14 @@ static void test_a_window_sized_buffer_behaves_as_before(void) {
         uint64_t acknacks;
         uint32_t overflow;
     } before[] = {
-        {256, 0, 50, SAMPLES, 2117, 118, 0},
-        {256, 0, 200, SAMPLES, 2516, 501, 0},
-        {255, 0, 200, SAMPLES, 2516, 501, 0},
-        {512, 0, 200, SAMPLES, 2516, 501, 0},
+        {256, 0, 50, SAMPLES, 2120, 120, 0},
+        {256, 0, 200, SAMPLES, 2528, 400, 0},
+        {255, 0, 200, SAMPLES, 2528, 400, 0},
+        {512, 0, 200, SAMPLES, 2528, 400, 0},
         {tt_QOS_REORDER_NONE, 0, 50, SAMPLES, 3814, 1622, 1604},
         {tt_QOS_REORDER_NONE, 0, 200, SAMPLES, 4902, 1856, 1841},
-        {4096, WIDE_WORDS, 50, 3U * SAMPLES, 6328, 325, 0},
-        {4096, WIDE_WORDS, 200, 3U * SAMPLES, 7520, 997, 0},
+        {4096, WIDE_WORDS, 50, 3U * SAMPLES, 6328, 326, 0},
+        {4096, WIDE_WORDS, 200, 3U * SAMPLES, 7553, 1464, 0},
     };
     for (size_t i = 0; i < sizeof(before) / sizeof(before[0]); i++) {
         struct run_result r =
@@ -614,8 +617,8 @@ static void test_several_writers_share_the_buffer(void) {
         uint64_t acknacks;
         uint32_t overflow;
     } after[] = {
-        {1, 50, 2117, 118, 0}, {1, 200, 2516, 501, 0},      {2, 50, 4230, 232, 0}, {2, 200, 5803, 1207, 571},
-        {3, 50, 6344, 344, 0}, {3, 200, 10268, 2953, 2113}, {4, 50, 8469, 464, 0}, {4, 200, 14025, 4426, 2988},
+        {1, 50, 2120, 120, 0}, {1, 200, 2528, 400, 0},  {2, 50, 4230, 234, 0}, {2, 200, 5028, 967, 0},
+        {3, 50, 6344, 344, 0}, {3, 200, 7555, 1564, 0}, {4, 50, 8468, 461, 0}, {4, 200, 10767, 2399, 524},
     };
     for (size_t i = 0; i < sizeof(after) / sizeof(after[0]); i++) {
         struct run_result r = sim_run_writers(after[i].writers, 0, 0, SAMPLES, after[i].loss, 10 * tt_SECOND);
