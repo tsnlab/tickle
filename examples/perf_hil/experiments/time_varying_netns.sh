@@ -59,7 +59,7 @@
 #   V2 (D, LD down step): the reader's repair wait (one-way delay minus the destination phase's static p50) p99, over
 #      samples sent from 2 s after the step to the next step, <= 1.5 x the static arm's own p99. A 2 s phase leaves no
 #      such samples: V2 is read at PHASE_S=10 and VOID at 2 (the first 2 s are printed as the transient). The step is
-#      timed from the START of the change (t_before; a change takes ~65 ms of tc calls, printed). LD's down step lands
+#      timed from the START of the change (t_before; a change took ~65 ms of tc calls before X0b, printed). LD's down step lands
 #      in the lossless l0, where nothing is repaired: V2 is N/A there (amended 2026-11-03 after T1, before any re-run).
 #   V3 (LB, LG, LD loss steps): deadline goodput (complete samples delivered within a deadline from their creation /
 #      offered; later counts as not delivered) of samples sent in the 2 s after each step >= 90% of the worst static
@@ -275,6 +275,21 @@ shape() {
         "${t[@]}" qdisc change dev wl0 parent 1:2 handle 20: netem $words || return 1
     fi
 }
+# change_all PHASE: every node's two netem qdiscs to PHASE at once - one `tc -batch` per namespace, the three in
+# parallel (X0b, 2026-11-03: the six separate tc calls took 62-72 ms a change, this ~15 ms; `sudo -n` allows only ip,
+# so tc runs under `ip netns exec`). Fails if any namespace's batch fails.
+change_all() {
+    local words k batch="$RUN_DIR/phase_batch.tc" pids=() rc=0
+    words=$(spec "$1") || return 1
+    printf 'qdisc change dev wl0 parent 1:1 handle 10: netem %s\nqdisc change dev wl0 parent 1:2 handle 20: netem %s\n' \
+        "$words" "$words" >"$batch" || return 1
+    for k in 0 1 2; do
+        sudo -n ip netns exec "${NS[$k]}" tc -batch "$batch" &
+        pids+=($!)
+    done
+    for k in "${pids[@]}"; do wait "$k" || rc=1; done
+    return $rc
+}
 # The tv arm's phase changer, a child of this shell (its PID from $!, killed by the trap if still running). Each change
 # is stamped before and after all three nodes' qdiscs changed; a failed change is logged as such (the reader voids it).
 tv_cycle() {
@@ -284,7 +299,7 @@ tv_cycle() {
         idx=$((idx + 1))
         before=$("$MONO")
         ok=1
-        for k in 0 1 2; do shape "${NS[$k]}" change "${TV_PHASES[$((idx % n))]}" || ok=0; done
+        change_all "${TV_PHASES[$((idx % n))]}" || ok=0
         after=$("$MONO")
         echo "PHASE idx=$idx key=${TV_PHASES[$((idx % n))]} t_before_ns=$before t_after_ns=$after ok=$ok" \
             >>"$RUN_DIR/phases.txt"
