@@ -84,7 +84,9 @@
 #     nproc/2 at a run's start voids its latency (V2), not its delivery.
 #
 # Usage: [REPS=1] [DUR=30] [FAMILIES="D J LB LG LD"] [PHASES_S="2 10"] [CELLS="be_small rel_small rel_large"]
-#        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [OUT=dir] time_varying_netns.sh
+#        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [NODE_PIN="cpu0 cpu1 cpu2"] [OUT=dir] time_varying_netns.sh
+#   NODE_PIN runs node k (ping/pub, echo/sub, idle) under taskset on the k-th CPU listed (X0a, the reorder source);
+#   each run's meta.txt records it.
 #   OUT defaults to ~/rig_results_safe/time_varying/<stamp>: raw logs per run under OUT/runs/<arm>-<cell>-<rep>/, the
 #   summary in OUT/summary.txt, which always ends with "=== time_varying_netns ended". READ_ONLY=1 re-reads an OUT.
 #   Needs `sudo -n ip` (tc runs under `ip netns exec`). ~45 s a run: the default set is 10 tv + 8 static arms x 3
@@ -302,8 +304,14 @@ counters() {
 inns() {
     local k=$1
     shift
+    local pin=()
+    if [ -n "${NODE_PIN:-}" ]; then # X0a: node k on the k-th CPU of NODE_PIN
+        local cpus
+        read -r -a cpus <<<"$NODE_PIN"
+        pin=(taskset -c "${cpus[$k]}")
+    fi
     # shellcheck disable=SC2086 # NODE_ENV is words on purpose
-    sudo -n ip netns exec "${NS[$k]}" env ${NODE_ENV:-} bash -c 'ulimit -v 2000000; exec "$@"' inns "$@"
+    sudo -n ip netns exec "${NS[$k]}" env ${NODE_ENV:-} bash -c 'ulimit -v 2000000; exec "$@"' inns "${pin[@]}" "$@"
 }
 
 run_one() { # run_one ARM CELL REP
@@ -330,7 +338,7 @@ run_one() { # run_one ARM CELL REP
         ;;
     esac
     echo "load=$(cut -d' ' -f1 /proc/loadavg) nproc=$(nproc) start=$(date -Is) tv=$tv phase_s=${PHASE_S:-0}" \
-        "phases='${TV_PHASES[*]}' spec0='$(spec "$SHAPE_PHASE")'" >"$RUN_DIR/meta.txt"
+        "phases='${TV_PHASES[*]}' spec0='$(spec "$SHAPE_PHASE")' node_pin='${NODE_PIN:-}'" >"$RUN_DIR/meta.txt"
     if ! topo "$run" >"$RUN_DIR/topo.log" 2>&1; then
         say "VOID  $run: no topology (see $RUN_DIR/topo.log)"
         return 1
