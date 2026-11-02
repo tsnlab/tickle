@@ -33,9 +33,12 @@
 // it also prints RSTATS lines (reliable_stats_print.h).
 //
 // Usage: wifi_link_node ping|echo|idle -c CONTEXT_ID -b BROADCAST -d SECONDS [-m be|rel] [-s BYTES] [-r HZ]
-//                       [-p ethernet|wifi] [-q STOP_FILE] [-l LATENCY_FILE]
+//                       [-p ethernet|wifi] [-q STOP_FILE] [-l LATENCY_FILE] [-t TRACE_FILE]
 // -q: echo and idle end as soon as STOP_FILE exists (the harness creates it once ping has ended), -d being only their
 // bound. -l: the scored latencies (one-way for echo, round trip for ping), in microseconds, one per line, sorted.
+// -t: the same scored samples in arrival order, one "seq send_ns recv_ns" line each (CLOCK_MONOTONIC, first copy only),
+// so a harness that changes the link during a run can attribute each sample to the link state it was sent in
+// (time_varying_netns.sh, 2026-11-02). Absent, nothing is recorded and nothing changes.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -88,6 +91,7 @@ struct options {
     bool wifi;
     const char* stop_file;    // -q: echo and idle stop once this file exists (checked every poll slice)
     const char* latency_file; // -l: every scored latency, in microseconds, one per line
+    const char* trace_file;   // -t: every scored sample in arrival order: seq, send and receive time
 };
 
 // The sample as the codec carries it: the first HEADER_BYTES of the payload.
@@ -115,6 +119,8 @@ static uint32_t warmup;
 
 static uint8_t seen[MAX_SEQ];
 static uint64_t latency_ns[MAX_SEQ];
+static uint64_t trace_send_ns[MAX_SEQ]; // -t: per scored sample, in arrival order (latency_ns is sorted at the end)
+static uint32_t trace_seq[MAX_SEQ];
 static uint32_t scored;
 static uint32_t duplicates;
 static uint32_t below_warmup;
@@ -184,6 +190,8 @@ static int32_t decode(struct tt_Data* data, const uint8_t* payload, uint32_t len
         below_warmup++;
         return (int32_t)len;
     }
+    trace_send_ns[scored] = sample->send_ns;
+    trace_seq[scored] = seq;
     latency_ns[scored++] = now_ns() - sample->send_ns;
     return (int32_t)len;
 }
@@ -419,6 +427,24 @@ static void write_latencies(void) {
     (void)fclose(file);
 }
 
+// -t: before latency_ns is sorted, while index i is still the i-th sample to arrive.
+static void write_trace(void) {
+    if (opts.trace_file == NULL) {
+        return;
+    }
+    FILE* file = fopen(opts.trace_file, "we");
+    if (file == NULL) {
+        fprintf(stderr, "cannot write %s\n", opts.trace_file);
+        return;
+    }
+    for (uint32_t i = 0; i < scored; i++) {
+        uint64_t recv_ns = trace_send_ns[i] + latency_ns[i];
+        fprintf(file, "%u %llu %llu\n", trace_seq[i], (unsigned long long)trace_send_ns[i],
+                (unsigned long long)recv_ns);
+    }
+    (void)fclose(file);
+}
+
 static void print_events(void) {
     for (uint32_t i = 0; i < event_count; i++) {
         printf("EVENT role_ctx=%d kind=%s peer=%u t_ns=%llu\n", opts.context_id, events[i].what,
@@ -491,6 +517,7 @@ static int run_role(void) {
         return 1;
     }
     double cpu = cpu_ms() - cpu_before;
+    write_trace();
     qsort(latency_ns, scored, sizeof(uint64_t), compare_u64);
     print_events();
     write_latencies();
@@ -525,7 +552,7 @@ static bool parse_options(int argc, char** argv) {
     opts.rate_hz = DEFAULT_RATE_HZ;
     int option = 0;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((option = getopt(argc, argv, "c:b:d:m:s:r:p:q:l:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((option = getopt(argc, argv, "c:b:d:m:s:r:p:q:l:t:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (option) {
         case 'c':
             opts.context_id = atoi(optarg) /* NOLINT(misc-include-cleaner) */;
@@ -554,6 +581,9 @@ static bool parse_options(int argc, char** argv) {
         case 'l':
             opts.latency_file = optarg;
             break;
+        case 't':
+            opts.trace_file = optarg;
+            break;
         default:
             return false;
         }
@@ -566,7 +596,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv)) {
         fprintf(stderr,
                 "usage: %s ping|echo|idle -c CONTEXT_ID -b BROADCAST -d SECONDS [-m be|rel] [-s BYTES] [-r HZ] "
-                "[-p ethernet|wifi] [-q STOP_FILE] [-l LATENCY_FILE]\n",
+                "[-p ethernet|wifi] [-q STOP_FILE] [-l LATENCY_FILE] [-t TRACE_FILE]\n",
                 argv[0]);
         return 2;
     }
