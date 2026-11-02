@@ -31,7 +31,7 @@ count() { # dir -> one number per rep, "-" when the run has no RESULT
         echo -n "${n:--} "
     done
 }
-u=($(count "$OUT/unpinned")); p=($(count "$OUT/pinned"))
+read -ra u <<<"$(count "$OUT/unpinned")"; read -ra p <<<"$(count "$OUT/pinned")"
 echo "unpinned resent: ${u[*]}"
 echo "pinned   resent: ${p[*]}"
 if [ "${#u[@]}" -ne "$REPS" ] || [ "${#p[@]}" -ne "$REPS" ] || printf '%s\n' "${u[@]}" "${p[@]}" | grep -qx -- -; then
