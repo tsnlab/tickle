@@ -30,6 +30,8 @@
 #
 # PHASES (netem words after "limit 10000"; GE = Gilbert-Elliott as wifi_burst_loss_netns.sh's ge(): 1-k = 0, 1-h = 100%):
 #   d1   delay 1ms   loss random ${D_BG_LOSS}%      d20  delay 20ms  loss random ${D_BG_LOSS}%
+#   d3   delay 3ms   loss random ${D_BG_LOSS}%      (static only, in no family: ethernet_seed_ab.sh's dose-response
+#                                                    arm s_d3, a round trip just past the reader's 3 plain 1 ms retries)
 #   j0   delay 6ms                                  j5   delay 6ms 5ms (uniform +-5 ms: reorders, as jitter does)
 #   l0   delay 1ms                                  lb5  delay 1ms loss random 5%
 #   lg5  delay 1ms GE L 5% B 4 (WB's ge5b4)         ld2  delay 21ms GE L 10% B 8 (the old tv's third phase, +20 ms)
@@ -74,16 +76,19 @@
 #     by more than the rule's own tolerance); too few samples in a window; a PC 1-minute load above nproc/2 at a run's
 #     start voids its latency (V2), not its delivery.
 #
-# Usage: [REPS=1] [DUR=30] [FAMILIES="D J LB LG LD"] [PHASES_S="2 10"] [CELLS="be_small rel_small rel_large"]
+# Usage: [REPS=1] [REP_FIRST=1] [DUR=30] [FAMILIES="D J LB LG LD"] [PHASES_S="2 10"] [CELLS="be_small rel_small rel_large"]
 #        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [OUT=dir] time_varying_netns.sh
 #   OUT defaults to ~/rig_results_safe/time_varying/<stamp>: raw logs per run under OUT/runs/<arm>-<cell>-<rep>/, the
 #   summary in OUT/summary.txt, which always ends with "=== time_varying_netns ended". READ_ONLY=1 re-reads an OUT.
+#   REP_FIRST (as wifi_burst_loss_netns.sh's) numbers the reps from it, so later reps can be added to an existing OUT;
+#   the summary is truncated only when it is 1.
 #   Needs `sudo -n ip` (tc runs under `ip netns exec`). ~45 s a run: the default set is 10 tv + 8 static arms x 3
 #   cells = 54 runs a rep, ~40 min.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 REPS=${REPS:-1}
+REP_FIRST=${REP_FIRST:-1}
 DUR=${DUR:-30}
 FAMILIES=${FAMILIES:-"D J LB LG LD"}
 PHASES_S=${PHASES_S:-"2 10"}
@@ -104,7 +109,7 @@ if [ "${READ_ONLY:-0}" = 1 ]; then
     python3 "$HERE/time_varying_read.py" "$OUT"
     exit $?
 fi
-: >"$SUM"
+[ "$REP_FIRST" = 1 ] && : >"$SUM"
 
 case "$PROFILE" in ethernet | wifi) ;; *) echo "PROFILE must be ethernet or wifi" >&2; exit 2 ;; esac
 LARGE_PROFILE=()
@@ -154,7 +159,7 @@ DIRTY=$(git -C "$REPO" status --porcelain -- src include platform | wc -l)
 say "=== time_varying_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFILE=$PROFILE REPS=$REPS DUR=$DUR" \
     "ARMS='$ARMS' CELLS='$CELLS' d_bg_loss=$D_BG_LOSS ==="
 {
-    echo "tree=$TREE_SHA dirty_paths=$DIRTY profile=$PROFILE reps=$REPS dur=$DUR d_bg_loss=$D_BG_LOSS"
+    echo "tree=$TREE_SHA dirty_paths=$DIRTY profile=$PROFILE reps=$REPS rep_first=$REP_FIRST dur=$DUR d_bg_loss=$D_BG_LOSS"
     echo "arms='$ARMS' cells='$CELLS' netem_extra='${NETEM_EXTRA:-}' node_env='${NODE_ENV:-}'"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
     echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS"
@@ -202,6 +207,7 @@ spec() {
     local words
     case "$1" in
     d1) words="delay 1ms loss random ${D_BG_LOSS}%" ;;
+    d3) words="delay 3ms loss random ${D_BG_LOSS}%" ;;
     d20) words="delay 20ms loss random ${D_BG_LOSS}%" ;;
     j0) words="delay 6ms" ;;
     j5) words="delay 6ms 5ms" ;;
@@ -376,7 +382,7 @@ run_one() { # run_one ARM CELL REP
 
 declare -a NS
 declare -a TV_PHASES
-for rep in $(seq 1 "$REPS"); do
+for rep in $(seq "$REP_FIRST" $((REP_FIRST + REPS - 1))); do
     for cell in $CELLS; do
         for arm in $ARMS; do
             run_one "$arm" "$cell" "$rep"

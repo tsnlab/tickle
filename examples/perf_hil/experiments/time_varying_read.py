@@ -45,7 +45,7 @@ SMALL_HZ = 100
 WARMUP = SMALL_HZ  # wifi_link_node scores from seq 100
 
 # Phase -> nominal (delay ms, loss share, jitter ms). D's background loss is read from the provenance.
-PHASES = {"d1": (1, None, 0), "d20": (20, None, 0), "j0": (6, 0.0, 0), "j5": (6, 0.0, 5), "l0": (1, 0.0, 0),
+PHASES = {"d1": (1, None, 0), "d3": (3, None, 0), "d20": (20, None, 0), "j0": (6, 0.0, 0), "j5": (6, 0.0, 5), "l0": (1, 0.0, 0),
           "lb5": (1, 0.05, 0), "lg5": (1, 0.05, 0), "ld2": (21, 0.10, 0)}
 FAMILIES = {"D": ["d1", "d20"], "J": ["j0", "j5"], "LB": ["l0", "lb5"], "LG": ["l0", "lg5"],
             "LD": ["l0", "lg5", "ld2"]}
@@ -192,6 +192,7 @@ def load(out):
     dur = num(prov, "dur", 30.0)
     bg = num(prov, "d_bg_loss", 2.0) / 100.0
     PHASES["d1"] = (1, bg, 0)
+    PHASES["d3"] = (3, bg, 0)
     PHASES["d20"] = (20, bg, 0)
     runs = []
     runs_dir = os.path.join(out, "runs")
