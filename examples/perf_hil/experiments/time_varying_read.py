@@ -148,7 +148,16 @@ def load_run(out, name, dur, nproc):
         r["delivered"] = int(num(e, "delivered"))
         r["copies"] = int(num(e, "large_duplicate")) + int(num(r["rstats"], "sub.late_below_ack")) + int(
             num(r["rstats"], "sub.duplicates"))
-        expected = 0.0  # the large rate is the harness's LARGE_HZ; the floor below is on what was offered
+        # large_duplicate counts duplicate UNITS (datagrams of a sample), not samples: its denominator is the units
+        # of the delivered samples. Units per sample from the reader's own frame count (hybrid_rx_loss events/frames:
+        # 120 samples of 1 MiB -> 86,760 frames, 723 each); without it the rate cannot be formed.
+        m = re.fullmatch(r"(\d+)/(\d+)", e.get("hybrid_rx_loss", ""))
+        reassembled = int(num(e, "large_reassembled"))
+        if m is None or reassembled == 0:
+            r["void"].append("no unit count (hybrid_rx_loss frames / large_reassembled) for the copy rate")
+            return r
+        r["units_per_sample"] = round(int(m.group(2)) / reassembled)
+        r["copy_den"] = r["delivered"] * r["units_per_sample"]
     else:
         r["first"] = WARMUP
         r["published"] = int(num(p, "published"))
@@ -156,6 +165,7 @@ def load_run(out, name, dur, nproc):
         r["delivered"] = int(num(e, "scored"))
         r["copies"] = int(num(r["rstats"], "echo.late_below_ack")) + int(num(r["rstats"], "echo.duplicates")) + int(
             num(e, "duplicates"))
+        r["copy_den"] = r["delivered"]
         expected = (dur - 1) * SMALL_HZ
         if r["delivered"] < MIN_SCORED_FRAC * expected:
             r["void"].append(f"{r['delivered']} samples scored, under {MIN_SCORED_FRAC:.0%} of {expected:.0f}")
@@ -390,17 +400,18 @@ def copies_rule(rule, limit, runs, arm, family, cell, emit):
         why += [f"{r['rep']}: {v}" for v in tv_phase_check(r, family)]
     why += treatment_void(runs, family, cell)
     tvu = usable(tv)
-    t_dl = sum(r["delivered"] for r in tvu)
+    unit = "samples" if cell == "rel_small" else "units"
+    t_dl = sum(r["copy_den"] for r in tvu)
     t_cp = sum(r["copies"] for r in tvu)
-    if t_dl < floor:
-        why.append(f"tv delivered {t_dl}, under {floor}")
+    if sum(r["delivered"] for r in tvu) < floor:
+        why.append(f"tv delivered {sum(r['delivered'] for r in tvu)} samples, under {floor}")
     statics = {}
     for ph in FAMILIES[family]:
         su = usable(static_runs(runs, ph, cell))
-        dl = sum(r["delivered"] for r in su)
-        if dl < floor:
-            why.append(f"s_{ph} delivered {dl}, under {floor}")
+        if sum(r["delivered"] for r in su) < floor:
+            why.append(f"s_{ph} delivered {sum(r['delivered'] for r in su)} samples, under {floor}")
             continue
+        dl = sum(r["copy_den"] for r in su)
         statics[ph] = (sum(r["copies"] for r in su) / dl, sum(r["copies"] for r in su), dl)
     if why:
         emit(rule, arm, cell, "VOID", "; ".join(why))
@@ -409,7 +420,7 @@ def copies_rule(rule, limit, runs, arm, family, cell, emit):
     worst = statics[worst_ph][0]
     tv_rate = t_cp / t_dl
     delta = tv_rate - worst
-    text = (f"tv copies after delivery {t_cp}/{t_dl} = {pct(tv_rate)}; worst static s_{worst_ph} "
+    text = (f"tv copies after delivery {t_cp}/{t_dl} {unit} = {pct(tv_rate)}; worst static s_{worst_ph} "
             f"{statics[worst_ph][1]}/{statics[worst_ph][2]} = {pct(worst)}; tv - worst = {pct(delta)} "
             f"(limit {pct(limit)}); statics: " + ", ".join(f"s_{k} {pct(v[0])}" for k, v in statics.items()))
     if worst > limit:
