@@ -58,21 +58,27 @@
 #      large_duplicate) <= 1% of delivered (R7's limit), tv minus worst static.
 #   V2 (D, LD down step): the reader's repair wait (one-way delay minus the destination phase's static p50) p99, over
 #      samples sent from 2 s after the step to the next step, <= 1.5 x the static arm's own p99. A 2 s phase leaves no
-#      such samples: V2 is read at PHASE_S=10 and VOID at 2 (the first 2 s are printed as the transient).
+#      such samples: V2 is read at PHASE_S=10 and VOID at 2 (the first 2 s are printed as the transient). The step is
+#      timed from the START of the change (t_before; a change takes ~65 ms of tc calls, printed). LD's down step lands
+#      in the lossless l0, where nothing is repaired: V2 is N/A there (amended 2026-11-03 after T1, before any re-run).
 #   V3 (LB, LG, LD loss steps): goodput (complete samples delivered / offered) of samples sent in the 2 s after each
 #      step >= 90% of the worst static phase's goodput (rel_small, rel_large; be_small is printed as the channel). The
 #      hybrid's n* is not printed by any node; its only reader-side input, the loss code p the publisher holds, is
 #      (large bench PEER_P lines): its convergence to the static arm's p is reported, not judged.
 #   V4 (J): copies after delivery <= 1% of delivered, tv minus worst static.
+#   rel_large copies are per unit: the denominator is delivered x 723 units (1 MiB at a 1500-byte MTU), checked per run
+#   against the publisher's own first-send unit count; a mismatch voids the run (amended 2026-11-03 after T1).
 #   VOID (outcome, never config): a missing RESULT line, a Publisher that never matched, under 60% of the offered
 #     samples scored, a missing or short trace, a tv run whose phase log has under 2 changes inside its samples' send
 #     interval; the clean control s_l0 losing anything (BE < 99.9%, RELIABLE < 100% delivered, any tc drop): the
-#     setup drops and every verdict is VOID; a treatment not seen in the outcome (D: d20's one-way p50 under 15 ms
-#     above d1's, per phase in the tv trace too; J: j5's p90-p10 spread under 4 ms above j0's; a lossy static arm's
-#     realized unicast loss outside [0.5 L, 1.5 L]; a tv loss arm whose be_small phases do not show their loss, or
-#     with no be_small, no tc drop at all); a static reference that cannot reproduce itself (its two halves differing
-#     by more than the rule's own tolerance); too few samples in a window; a PC 1-minute load above nproc/2 at a run's
-#     start voids its latency (V2), not its delivery.
+#     setup drops and every verdict is VOID; s_l0 rel_large resending anything (the clean path reorders; reported as
+#     CONTROL_RESENDS): every rel_large verdict is VOID; a treatment not seen in the outcome (D: d20's one-way p50
+#     under 15 ms above d1's, per phase in the tv trace too; J: j5's p90-p10 spread under 4 ms above j0's, and in a
+#     rel_large tv trace, whose one line per sample is its last unit's arrival, j5's p50 under 3 ms above j0's; a
+#     lossy static arm's realized unicast loss outside [0.5 L, 1.5 L]; a tv loss arm whose be_small phases do not show
+#     their loss, or with no be_small, no tc drop at all); a static reference that cannot reproduce itself (its two
+#     halves differing by more than the rule's own tolerance); too few samples in a window; a PC 1-minute load above
+#     nproc/2 at a run's start voids its latency (V2), not its delivery.
 #
 # Usage: [REPS=1] [DUR=30] [FAMILIES="D J LB LG LD"] [PHASES_S="2 10"] [CELLS="be_small rel_small rel_large"]
 #        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [OUT=dir] time_varying_netns.sh

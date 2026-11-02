@@ -6,7 +6,10 @@ up), V2 (repair wait after a delay step down), V3 (goodput across a loss step; t
 V4 (copies after delivery under jitter), each tv arm judged as (tv value - worst static phase value), with STATIC when
 the static arm of a phase already fails the same number, and VOID read from outcomes only.
 
-Prints one line per (rule, tv arm, cell): "<rule> <arm> <cell> PASS|FAIL|STATIC|VOID <text>", then a summary.
+Prints one line per (rule, tv arm, cell): "<rule> <arm> <cell> PASS|FAIL|STATIC|VOID|N/A <text>", then a summary.
+N/A is V2 on a family whose down step lands in a lossless phase (LD: nothing to repair). A "CONTROL_RESENDS" line
+reports the clean control's rel_large resends, which void every rel_large verdict; the verdict each would have read
+is printed after "read past the control (not scored)".
 """
 
 import bisect
@@ -38,6 +41,15 @@ V3_MIN_WINDOW_SMALL = 400  # offered samples in V3's windows, pooled
 V3_MIN_WINDOW_LARGE = 20
 DELAY_APPLIED_MIN_MS = 15.0  # d20 one-way p50 minus d1's (nominal 19 ms)
 JITTER_APPLIED_MIN_MS = 4.0  # j5 p90-p10 one-way spread minus j0's (nominal 8 ms)
+# rel_large's trace has one line per sample, stamped when the LAST of its units arrives: the maximum of ~723 jittered
+# delays sits at the top of the jitter range, so its spread barely moves (T1: 0.24 ms j0, 0.52 ms j5). Its p50 does:
+# a uniform +-5 ms jitter shifts the last unit's arrival by ~+5 ms (T1: +5.5 ms static).
+JITTER_LARGE_SHIFT_MIN_MS = 3.0  # rel_large: j5 phase one-way p50 minus j0's
+# rel_large copy rate denominator: the units (datagrams' worth of payload) of one sample at the bench's size over a
+# 1500-byte link MTU (veth default; the harness sets none). Checked per run against the publisher's own first-send
+# unit count (hybrid_run_units + hybrid_mtu_units = units x large_published), which moves with the size or the MTU.
+LARGE_SAMPLE_BYTES = 1048576
+LARGE_UNITS_PER_SAMPLE = 723
 LOSS_REALIZED = (0.5, 1.5)  # a lossy static arm's realized unicast loss, as a share of its nominal
 CLEAN_PHASE_LOSS_MAX = 0.005  # be_small in a tv arm's clean phase
 CONTROL_BE_MIN = 0.999
@@ -149,15 +161,23 @@ def load_run(out, name, dur, nproc):
         r["copies"] = int(num(e, "large_duplicate")) + int(num(r["rstats"], "sub.late_below_ack")) + int(
             num(r["rstats"], "sub.duplicates"))
         # large_duplicate counts duplicate UNITS (datagrams of a sample), not samples: its denominator is the units
-        # of the delivered samples. Units per sample from the reader's own frame count (hybrid_rx_loss events/frames:
-        # 120 samples of 1 MiB -> 86,760 frames, 723 each); without it the rate cannot be formed.
-        m = re.fullmatch(r"(\d+)/(\d+)", e.get("hybrid_rx_loss", ""))
-        reassembled = int(num(e, "large_reassembled"))
-        if m is None or reassembled == 0:
-            r["void"].append("no unit count (hybrid_rx_loss frames / large_reassembled) for the copy rate")
+        # of the delivered samples, a fixed count per sample (LARGE_UNITS_PER_SAMPLE). Not the reader's hybrid_rx_loss
+        # frames: that is a windowed estimate (halved at the window, reset by a stale forget, one frame per run in run
+        # mode) and gave 24..723 units per sample across T1's s_l0 reps.
+        size = int(num(p, "size", -1))
+        have = all(k in p for k in ("hybrid_run_units", "hybrid_mtu_units"))
+        first_sends = int(num(p, "hybrid_run_units")) + int(num(p, "hybrid_mtu_units")) if have else -1
+        lp = int(num(p, "large_published", -1))
+        if size != LARGE_SAMPLE_BYTES:
+            r["void"].append(f"sample size {size}, not the {LARGE_SAMPLE_BYTES} LARGE_UNITS_PER_SAMPLE is for")
             return r
-        r["units_per_sample"] = round(int(m.group(2)) / reassembled)
+        if lp <= 0 or first_sends != LARGE_UNITS_PER_SAMPLE * lp:
+            r["void"].append(f"publisher sent {first_sends} units for {lp} samples, not {LARGE_UNITS_PER_SAMPLE} each "
+                             "(link MTU or unit size changed)")
+            return r
+        r["units_per_sample"] = LARGE_UNITS_PER_SAMPLE
         r["copy_den"] = r["delivered"] * r["units_per_sample"]
+        r["retransmitted"] = int(num(p, "retransmitted", -1))
     else:
         r["first"] = WARMUP
         r["published"] = int(num(p, "published"))
@@ -288,6 +308,23 @@ def realized_loss(r):
     return (drop / (sent + drop)) if sent + drop else None
 
 
+def control_resends(runs):
+    """s_l0 rel_large must resend nothing: the clean path loses nothing, so a resend answers reordering (T1: run
+    datagrams arriving behind a higher seq at 1 ms are NACKed at once, dup == retransmitted in every rep). Returns
+    (reasons that void the rel_large verdicts, the finding line's per-rep counts)."""
+    why, counts = [], []
+    for r in sorted((r for r in runs if r["arm"] == "s_l0" and r["cell"] == "rel_large"), key=lambda r: r["rep"]):
+        if r["void"]:
+            continue  # control_void reports it
+        rt = r.get("retransmitted", -1)
+        dup = int(num(r["echo"], "large_duplicate"))
+        counts.append(f"rep {r['rep']}: retransmitted {rt}, large_duplicate {dup}, "
+                      f"{pct(dup / r['copy_den']) if r['copy_den'] else 'n/a'} of {r['copy_den']} units")
+        if rt != 0:
+            why.append(f"s_l0/rel_large/{r['rep']}: {'no retransmitted field' if rt < 0 else f'{rt} units resent'}")
+    return why, counts
+
+
 def control_void(runs):
     """The clean static arm s_l0 must lose nothing; otherwise the setup drops and nothing can be read."""
     ctl = [r for r in runs if r["arm"] == "s_l0"]
@@ -356,7 +393,12 @@ def tv_phase_check(r, family):
             gap = quantile(sorted(by["d20"]), 0.5) - quantile(sorted(by["d1"]), 0.5)
             if gap < DELAY_APPLIED_MIN_MS:
                 why.append(f"tv trace: d20 phase one-way p50 only {gap:.1f} ms above d1's")
-        if family == "J" and "j0" in by and "j5" in by:
+        if family == "J" and "j0" in by and "j5" in by and r["cell"] == "rel_large":
+            gap = quantile(sorted(by["j5"]), 0.5) - quantile(sorted(by["j0"]), 0.5)
+            if gap < JITTER_LARGE_SHIFT_MIN_MS:
+                why.append(f"tv trace: j5 phase one-way p50 only {gap:.1f} ms above j0's "
+                           f"(rel_large: last-unit arrival, judged by the shift)")
+        elif family == "J" and "j0" in by and "j5" in by:
             s0 = quantile(sorted(by["j0"]), 0.9) - quantile(sorted(by["j0"]), 0.1)
             s5 = quantile(sorted(by["j5"]), 0.9) - quantile(sorted(by["j5"]), 0.1)
             if s5 - s0 < JITTER_APPLIED_MIN_MS:
@@ -446,6 +488,14 @@ def v2(runs, arm, family, emit):
         return
     phase_s = float(arm.rsplit("_p", 1)[1])
     dest = FAMILIES[family][0]  # every down step lands in the family's first (1 ms) phase
+    # How long a change takes (t_before -> t_after: the harness's tc calls), every change of every rep.
+    took = sorted((ph["t1"] - ph["t0"]) / 1e6 for r in tv for ph in r["phases"][1:])
+    took_txt = (f"phase changes took {took[0]:.1f} / {quantile(took, 0.5):.1f} / {took[-1]:.1f} ms min/p50/max over "
+                f"{len(took)}" if took else "no phase change logged")
+    if not PHASES[dest][1]:
+        emit("V2", arm, cell, "N/A", f"not applicable (down step lands in a lossless phase s_{dest}: nothing to "
+             f"repair, no repair wait); {took_txt}")
+        return
     why = [f"{r['rep']}: {v}" for r in tv for v in r["void"] + r["lat_void"]]
     for r in usable(tv):
         why += [f"{r['rep']}: {v}" for v in tv_phase_check(r, family)]
@@ -472,7 +522,9 @@ def v2(runs, arm, family, emit):
             continue
         steps = down_steps(r, family)
         for k in steps:
-            start = r["phases"][k]["t1"]
+            # From the change's START: a sample sent while tc is being changed (60+ ms) is the one that waits behind
+            # the old phase's queue; starting at t_after missed every such wait (T1 LD: 11 ms HOL waits unjudged).
+            start = r["phases"][k]["t0"]
             end = r["phases"][k + 1]["t0"] if k + 1 < len(r["phases"]) else float("inf")
             for row in r["trace"]:
                 if start <= row[1] < end:
@@ -480,8 +532,9 @@ def v2(runs, arm, family, emit):
                     (transient if row[1] < start + V2_SETTLE_S * 1e9 else settled).append(w)
     transient.sort()
     settled.sort()
-    tr = (f"transient (first {V2_SETTLE_S:.0f} s) p99 {quantile(transient, 0.99):.2f} ms over {len(transient)}"
-          if transient else "no transient samples")
+    tr = (f"transient (first {V2_SETTLE_S:.0f} s from the change start) p99 {quantile(transient, 0.99):.2f} ms, "
+          f"max {transient[-1]:.2f} ms over {len(transient)}" if transient else "no transient samples")
+    tr += f"; {took_txt}"
     if min(h1, h2) <= 0 or max(h1, h2) / min(h1, h2) > V2_WAIT_FACTOR:
         emit("V2", arm, cell, "VOID", f"static s_{dest} repair-wait p99 halves {h1:.2f} / {h2:.2f} ms differ by more "
              f"than {V2_WAIT_FACTOR}x: the reference cannot decide; {tr}")
@@ -639,6 +692,16 @@ def channel_line(runs, arm, family):
     return "; ".join(out)
 
 
+def void_behind(rule, arm, cell, cr, emit, judge):
+    """VOID for the control's resends, with what the rule reads past the control printed (not scored): the resends
+    are a real effect, and the verdict they hide is part of the finding."""
+    got = []
+    judge(lambda *a: got.append(a))
+    behind = "; ".join(f"{v} {t}" for _, _, _, v, t in got) or "nothing"
+    emit(rule, arm, cell, "VOID", "the clean control resends: " + "; ".join(cr) + f" || read past the control (not "
+         f"scored): {behind}")
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: time_varying_read.py OUT", file=sys.stderr)
@@ -656,6 +719,10 @@ def main():
         if r["void"]:
             print(f"VOID run {r['arm']}-{r['cell']}-{r['rep']}: {'; '.join(r['void'])}")
     cv = control_void(runs)
+    cr, cr_counts = control_resends(runs)
+    if cr_counts:
+        print(f"CONTROL_RESENDS s_l0 rel_large ({'resends: rel_large verdicts VOID' if cr else 'none'}): "
+              + "; ".join(cr_counts))
     tv_arms = sorted({r["arm"] for r in runs if r["tv"]}, key=lambda a: (list(FAMILIES).index(a.rsplit("_p", 1)[0])
                                                                          if a.rsplit("_p", 1)[0] in FAMILIES else 99,
                                                                          float(a.rsplit("_p", 1)[1])))
@@ -671,11 +738,18 @@ def main():
                 continue
             if rule in ("V1", "V4"):
                 for cell in COPY_CELLS:
+                    if cell == "rel_large" and cr:
+                        void_behind(rule, arm, cell, cr, emit, lambda e, c=cell, rule=rule: copies_rule(
+                            rule, V1_COPIES_MAX if rule == "V1" else V4_COPIES_MAX, runs, arm, family, c, e))
+                        continue
                     copies_rule(rule, V1_COPIES_MAX if rule == "V1" else V4_COPIES_MAX, runs, arm, family, cell, emit)
             elif rule == "V2":
                 v2(runs, arm, family, emit)
             elif rule == "V3":
                 for cell in V3_CELLS:
+                    if cell == "rel_large" and cr:
+                        void_behind(rule, arm, cell, cr, emit, lambda e, c=cell: v3(runs, arm, family, c, e))
+                        continue
                     v3(runs, arm, family, cell, emit)
         ch = channel_line(runs, arm, family)
         if ch:
