@@ -11,6 +11,29 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-02
+
+The performance stage of the user's release order (2026-11-01): wired performance work done. **Not SemVer-compatible
+with 2.0.0**, by the user's call (2026-11-02): the version follows the release order (2.1 performance, 2.2 time-varying
+networks, 3.0 Security), and the breaking changes below are listed under "Changed (breaking)". Incompatible with 2.0.0
+on the wire (`tt_VERSION` 14).
+
+### Highlights
+
+- **QoS at creation, rmw-shaped** ([DESIGN.md](DESIGN.md) section 9): one profile struct per endpoint, rmw's defaults.
+- **Runtime options instead of compile-time constants** (`struct tt_InitOptions`, bundles 1-10): discovery, reliable,
+  service, poll and socket, hybrid, segment, capacity, QoS defaults per context.
+- **Link profiles** (ETHERNET, WIFI, T1S, TSN) with Wi-Fi discovery, Wi-Fi repair timing and repair reveal; send
+  pacing, traffic classes and send time.
+- **Linux receive** through the wait ring, which follows the thread that reads the data.
+- **Repairs of large samples** without storms: resend order, repair timeouts that follow the reader's progress, every
+  reassembling Subscriber owning its slot.
+- Documented limits, not fixed: the idle receive cost (RESULTS `C12I`) and the rmw receive gap on the Pi, +0.7 / +1.2 us
+  warm behind CycloneDDS / FastDDS (`KH2W`); slow-reader flow control (`C7W`).
+- Every change below, in detail.
+
+### Detailed changes since 2.0.0
+
 ### Changed (breaking)
 
 - **Same-host segments are named `tickle-seg-<ip>-<port>`, without the context id** ([DESIGN.md](DESIGN.md)
