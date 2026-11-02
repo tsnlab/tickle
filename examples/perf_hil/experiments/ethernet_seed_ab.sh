@@ -78,7 +78,8 @@
 #   setsid nohup examples/perf_hil/experiments/ethernet_seed_ab.sh > ~/rig_jobs/ethseed_<stamp>.log 2>&1 < /dev/null &
 #   Env: A_REF B_REF REPO_GIT (/home/semih/tickle) RES (~/rig_results_safe/ethernet_seed/<stamp>) REPS (3) DUR (24)
 #        T1_LOG T1_DEADLINE ("23:40") NOTIFY_SESSION (tickle-27) SKIP_T1_WAIT=1 (no wait) KEEP_WT=1 (keep worktrees)
-#        STOP_AFTER=preflight (refs, identity, worktrees, then the trap: a check of the chain that runs nothing)
+#        STOP_AFTER=preflight|t1 (stop after the preflight or the T1 wait, through the trap: checks of the chain that
+#        run nothing)
 #        NOTIFY_DRY=1 (claude-notify --dry-run)
 #   Every line it prints goes to RES/chain.log too; the last is always "ETHSEED_CHAIN_END <status>". To stop it, TERM
 #   its process group (setsid made one): kill -TERM -<pgid>. A TERM to the chain alone waits for the step it is in.
@@ -166,6 +167,7 @@ on_exit() {
         for wt in "${MADE_WT[@]}"; do
             git -C "$REPO_GIT" worktree remove --force "$wt" >/dev/null 2>&1 || say "could not remove worktree $wt"
         done
+        [ -d "$WTROOT" ] && rmdir "$WTROOT" 2>/dev/null
     fi
     local level=confirm title body
     case "$STATUS" in
@@ -260,6 +262,10 @@ if [ "${SKIP_T1_WAIT:-0}" != 1 ]; then
     done
     say "T1 ended: $(grep '^=== time_varying_netns ended' "$T1_LOG" | tail -1)"
     sleep 30 # its netns teardown and reader
+fi
+if [ "${STOP_AFTER:-}" = t1 ]; then
+    STATUS=STOPPED_AFTER_T1
+    exit 0
 fi
 
 # 2. unit tests in B (A's the same two as the control, only if B's fail) --------------------------------------------
