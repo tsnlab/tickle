@@ -22,7 +22,9 @@ from wifi_burst_read import load_runs as wb_load_runs  # noqa: E402
 
 LABELS = ("A", "B", "A2")
 GROUPS = {"tv": "ethernet", "wbe_small": "ethernet", "wbe_large": "ethernet", "wbw_small": "wifi", "wbw_large": "wifi"}
-EXPECTED_DIFF = ["src/tickle.c", "tests/test_reliable_pubsub.c"]
+# The paths A..B may change. ETHSEED_EXPECTED_DIFF (comma-separated) names them for another B: the Karn's-rule B
+# (2026-11-03) also re-pins two tests' deterministic counts and a wire golden. Set before the run, like a threshold.
+EXPECTED_DIFF = os.environ.get("ETHSEED_EXPECTED_DIFF", "src/tickle.c,tests/test_reliable_pubsub.c").split(",")
 
 # --- pre-registered thresholds (ethernet_seed_ab.sh header). Change only before a run, and say so there. ---
 P1_B_COPIES_MAX = 0.03  # s_d20 rel_small copies after delivery / delivered, every B rep

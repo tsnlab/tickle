@@ -81,6 +81,8 @@
 #        STOP_AFTER=preflight|t1 (stop after the preflight or the T1 wait, through the trap: checks of the chain that
 #        run nothing)
 #        NOTIFY_DRY=1 (claude-notify --dry-run)
+#        ETHSEED_EXPECTED_DIFF (comma-separated, default src/tickle.c,tests/test_reliable_pubsub.c): the paths A..B
+#        must change, exactly - for a B that also re-pins other tests (the Karn's-rule B, 2026-11-03)
 #   Every line it prints goes to RES/chain.log too; the last is always "ETHSEED_CHAIN_END <status>". To stop it, TERM
 #   its process group (setsid made one): kill -TERM -<pgid>. A TERM to the chain alone waits for the step it is in.
 set -uo pipefail
@@ -229,7 +231,8 @@ A2_SHA=$(git -C "$WTROOT/A2" rev-parse HEAD)
 echo "a_sha=$A_SHA b_sha=$B_SHA a2_sha=$A2_SHA b_parent=$B_PARENT a_short=$A_SHORT b_short=$B_SHORT" \
     "diff_paths=$DIFF_PATHS a_ref=$A_REF b_ref=$B_REF" >"$RES/identity.txt"
 say "identity: $(cat "$RES/identity.txt")"
-if [ "$B_PARENT" != "$A_SHA" ] || [ "$DIFF_PATHS" != "src/tickle.c,tests/test_reliable_pubsub.c" ]; then
+export ETHSEED_EXPECTED_DIFF=${ETHSEED_EXPECTED_DIFF:-src/tickle.c,tests/test_reliable_pubsub.c} # the reader checks it too
+if [ "$B_PARENT" != "$A_SHA" ] || [ "$DIFF_PATHS" != "$(tr , '\n' <<<"$ETHSEED_EXPECTED_DIFF" | sort | paste -sd, -)" ]; then
     say "B is not A + the fix alone (parent $B_PARENT, paths $DIFF_PATHS): not running an A/B that cannot read"
     exit 1
 fi
