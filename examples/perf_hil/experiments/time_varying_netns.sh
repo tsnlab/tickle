@@ -61,8 +61,11 @@
 #      such samples: V2 is read at PHASE_S=10 and VOID at 2 (the first 2 s are printed as the transient). The step is
 #      timed from the START of the change (t_before; a change takes ~65 ms of tc calls, printed). LD's down step lands
 #      in the lossless l0, where nothing is repaired: V2 is N/A there (amended 2026-11-03 after T1, before any re-run).
-#   V3 (LB, LG, LD loss steps): goodput (complete samples delivered / offered) of samples sent in the 2 s after each
-#      step >= 90% of the worst static phase's goodput (rel_small, rel_large; be_small is printed as the channel). The
+#   V3 (LB, LG, LD loss steps): deadline goodput (complete samples delivered within a deadline from their creation /
+#      offered; later counts as not delivered) of samples sent in the 2 s after each step >= 90% of the worst static
+#      phase's deadline goodput (rel_small 100 ms, rel_large 200 ms, drafts; be_small is printed as the channel).
+#      Amended 2026-11-02 by user decision after T1: eventual delivery read 100% for RELIABLE and could not fail. The
+#      clean control missing the deadline (> 0.1%), or a limit under one window sample, voids V3. The
 #      hybrid's n* is not printed by any node; its only reader-side input, the loss code p the publisher holds, is
 #      (large bench PEER_P lines): its convergence to the static arm's p is reported, not judged.
 #   V4 (J): copies after delivery <= 1% of delivered, tv minus worst static.

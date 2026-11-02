@@ -2,9 +2,11 @@
 """time_varying_read.py OUT - the reader of time_varying_netns.sh (release stage 3, T0; 2026-11-02).
 
 Implements the pre-registered rules of that harness's header IN CODE: V1 (copies after delivery after a delay step
-up), V2 (repair wait after a delay step down), V3 (goodput across a loss step; the hybrid's p convergence reported),
-V4 (copies after delivery under jitter), each tv arm judged as (tv value - worst static phase value), with STATIC when
-the static arm of a phase already fails the same number, and VOID read from outcomes only.
+up), V2 (repair wait after a delay step down), V3 (deadline goodput across a loss step: a sample counts only if it
+arrived within V3_DEADLINE_MS of its creation; the hybrid's p convergence reported), V4 (copies after delivery under
+jitter), each tv arm judged as (tv value - worst static phase value), with STATIC when the static arm of a phase
+already fails the same number, and VOID read from outcomes only. A "V3_DEADLINE" line per cell reports each static
+arm's samples that missed the deadline.
 
 Prints one line per (rule, tv arm, cell): "<rule> <arm> <cell> PASS|FAIL|STATIC|VOID|N/A <text>", then a summary.
 N/A is V2 on a family whose down step lands in a lossless phase (LD: nothing to repair). A "CONTROL_RESENDS" line
@@ -25,7 +27,18 @@ from wifi_burst_read import counters_of, kv, num, quantile, read_lines, result_o
 V1_COPIES_MAX = 0.01  # copies after delivery / delivered: tv minus worst static, and the STATIC limit (R7's 1%)
 V2_WAIT_FACTOR = 1.5  # repair-wait p99 after the settle time <= this x the destination static arm's p99
 V2_SETTLE_S = 2.0  # "returns within 2 s of the step": samples sent from here to the next step are judged
-V3_GOODPUT_DROP_MAX = 0.10  # transition goodput >= (1 - this) x the worst static phase's goodput
+V3_GOODPUT_DROP_MAX = 0.10  # transition deadline goodput >= (1 - this) x the worst static phase's deadline goodput
+# V3 deadline (user decision 2026-11-02): a sample counts as delivered only if it arrived within this long of its
+# creation (the trace's sent_ns, stamped just before publish; rel_large's arrival is its last unit's). Later is not
+# delivered: eventual delivery made RELIABLE read 100% everywhere and V3 could not fail. DRAFT, like the rest.
+#   rel_small 100 ms: 10 periods at 100 Hz. T1 statics: s_l0, s_lb5 100%, s_lg5 99.70%, s_ld2 94.09% (21 ms one way
+#     + 10% loss: a lost sample's repair takes a 42 ms round trip, a second loss another), so the worst phase is
+#     neither trivially 100% nor 0%.
+#   rel_large 200 ms: one period at 5 Hz - a sample not complete when its successor is created is stale. A deadline
+#     derived from the clean arm (2 x s_l0 p99, ~10 ms on T1) was rejected: it sits below the delay phases' own
+#     one-way p50 (s_ld2 22 ms, s_d20 21 ms), so s_ld2 read 0% and LD's V3 could not fail (worst 0 -> limit 0).
+#     T1 statics at 200 ms: s_l0 100%, s_lb5 100%, s_lg5 99.60%, s_ld2 80.67%.
+V3_DEADLINE_MS = {"rel_small": 100.0, "rel_large": 200.0}
 V3_WINDOW_S = 2.0  # the transition: samples sent within this long after a loss step
 V4_COPIES_MAX = 0.01  # copies after delivery / delivered under jitter: tv minus worst static, and the STATIC limit
 P_CONVERGE_FACTOR = 2.0  # report only: the publisher's p within this factor of the static arm's final p
@@ -39,6 +52,7 @@ MIN_PHASE_CHANGES = 2  # a tv run with fewer changes inside its samples' send in
 V2_MIN_WINDOW = 400  # samples in V2's judged window, pooled
 V3_MIN_WINDOW_SMALL = 400  # offered samples in V3's windows, pooled
 V3_MIN_WINDOW_LARGE = 20
+CONTROL_DEADLINE_MIN = 0.999  # V3: s_l0 must meet the cell's deadline this often, or the deadline is below the setup
 DELAY_APPLIED_MIN_MS = 15.0  # d20 one-way p50 minus d1's (nominal 19 ms)
 JITTER_APPLIED_MIN_MS = 4.0  # j5 p90-p10 one-way spread minus j0's (nominal 8 ms)
 # rel_large's trace has one line per sample, stamped when the LAST of its units arrives: the maximum of ~723 jittered
@@ -273,18 +287,28 @@ def pooled_owd(rs):
     return sorted(owd_ms(x) for r in rs for x in r["trace"])
 
 
-def static_goodput(rs):
+def on_time(r, deadline_ms):
+    """The offered samples that arrived within deadline_ms of their creation (trace sent_ns -> arrived_ns)."""
+    return {row[0] for row in r["trace"] if row[0] >= r["first"] and owd_ms(row) <= deadline_ms}
+
+
+def static_goodput(rs, deadline_ms=None):
+    """Delivered / offered, pooled; with a deadline, only the samples delivered within it."""
     off = sum(r["offered"] for r in rs)
-    dl = sum(min(r["delivered"], r["offered"]) for r in rs)
+    if deadline_ms is None:
+        dl = sum(min(r["delivered"], r["offered"]) for r in rs)
+    else:
+        dl = sum(len(on_time(r, deadline_ms)) for r in rs)
     return (dl / off) if off else None
 
 
-def halves_goodput(rs):
-    """The static reference split in time: first and second half of each run's offered samples, pooled."""
+def halves_goodput(rs, deadline_ms):
+    """The static reference split in time: first and second half of each run's offered samples, pooled, each judged
+    by the deadline."""
     a_off = a_dl = b_off = b_dl = 0
     for r in rs:
         st = send_times(r)
-        delivered = {s for s, _, _ in r["trace"]}
+        delivered = on_time(r, deadline_ms)
         seqs = sorted(st)
         mid = len(seqs) // 2
         for i, s in enumerate(seqs):
@@ -625,25 +649,32 @@ def v3(runs, arm, family, cell, emit):
             sum(x[1] for x in r["counters"].get("p", {}).get("bands", {}).values()) for r in usable(tv)):
         why.append("no be_small run and no tc drop on ping: the loss steps are not seen")
     why += treatment_void(runs, family, cell)
+    deadline = V3_DEADLINE_MS[cell]
+    # The deadline must be one the clean path meets: otherwise it measures the setup, not the step.
+    ctl = static_goodput(usable(static_runs(runs, "l0", cell)), deadline)
+    if ctl is not None and ctl < CONTROL_DEADLINE_MIN:
+        why.append(f"clean control s_l0 met the {deadline:g} ms deadline for only {pct(ctl)} (< "
+                   f"{pct(CONTROL_DEADLINE_MIN)}): the deadline is below the setup's own latency")
     statics = {}
     for ph in FAMILIES[family]:
         su = usable(static_runs(runs, ph, cell))
-        g = static_goodput(su)
+        g = static_goodput(su, deadline)
         if g is None:
             why.append(f"s_{ph}: no usable run")
             continue
-        statics[ph] = (g, su)
+        statics[ph] = (g, su, static_goodput(su))
     if why:
         emit("V3", arm, cell, "VOID", "; ".join(why))
         return
     worst_ph = min(statics, key=lambda k: statics[k][0])
-    worst, wruns = statics[worst_ph]
-    h1, h2 = halves_goodput(wruns)
-    off = dl = 0
+    worst, wruns, _ = statics[worst_ph]
+    h1, h2 = halves_goodput(wruns, deadline)
+    off = dl = dl_any = 0
     conv = []
     for r in usable(tv):
         st = send_times(r)
-        got = {s for s, _, _ in r["trace"]}
+        got = on_time(r, deadline)
+        anyway = {s for s, _, _ in r["trace"]}
         for k in range(1, len(r["phases"])):
             a, b = r["phases"][k - 1]["key"], r["phases"][k]["key"]
             if PHASES[a][1] == PHASES[b][1]:
@@ -653,26 +684,35 @@ def v3(runs, arm, family, cell, emit):
                 if t1 <= t < t1 + window:
                     off += 1
                     dl += s in got
+                    dl_any += s in anyway
         if cell == "rel_large":
             conv.append(f"rep {r['rep']}: {p_convergence(r, runs)}")
     floor = V3_MIN_WINDOW_SMALL if cell != "rel_large" else V3_MIN_WINDOW_LARGE
     if h1 is None or h2 is None or abs(h1 - h2) > V3_GOODPUT_DROP_MAX * worst:
-        emit("V3", arm, cell, "VOID", f"static s_{worst_ph} goodput halves {pct(h1)} / {pct(h2)} differ by more than "
-             f"{V3_GOODPUT_DROP_MAX:.0%} of {pct(worst)}: the reference cannot decide")
+        emit("V3", arm, cell, "VOID", f"static s_{worst_ph} deadline goodput ({deadline:g} ms) halves {pct(h1)} / "
+             f"{pct(h2)} differ by more than {V3_GOODPUT_DROP_MAX:.0%} of {pct(worst)}: the reference cannot decide")
         return
     if off < floor:
         emit("V3", arm, cell, "VOID", f"{off} samples offered in the transition windows, under {floor}")
         return
+    limit = (1 - V3_GOODPUT_DROP_MAX) * worst
+    # A limit no outcome can fall below cannot decide: under one sample of the window (e.g. a worst static at 0%).
+    if limit * off < 1:
+        emit("V3", arm, cell, "VOID", f"limit {pct(limit)} of {off} window samples is under one sample (worst static "
+             f"s_{worst_ph} {pct(worst)} within {deadline:g} ms): no outcome can fail")
+        return
     g = dl / off
-    text = (f"transition goodput {dl}/{off} = {pct(g)} (first {window / 1e9:g} s after each loss step); worst static "
-            f"s_{worst_ph} {pct(worst)}; tv - worst = {pct(g - worst)} (limit -{V3_GOODPUT_DROP_MAX:.0%} relative); "
-            "statics: " + ", ".join(f"s_{k} {pct(v[0])}" for k, v in statics.items()))
+    text = (f"transition deadline goodput (<= {deadline:g} ms from creation) {dl}/{off} = {pct(g)} (first "
+            f"{window / 1e9:g} s after each loss step; eventual {dl_any}/{off} = {pct(dl_any / off)}); worst static "
+            f"s_{worst_ph} {pct(worst)}; tv - worst = {pct(g - worst)} (limit {pct(limit)}, -{V3_GOODPUT_DROP_MAX:.0%} "
+            "relative); statics within the deadline (eventual): "
+            + ", ".join(f"s_{k} {pct(v[0])} ({pct(v[2])})" for k, v in statics.items()))
     if cell == "rel_large":
         text += "; hybrid p convergence (report only; n* is not printed by any node, p is its only reader input): " + \
             " | ".join(conv)
     else:
         text += "; hybrid n*: not applicable to this cell (no fragmented samples)"
-    emit("V3", arm, cell, "PASS" if g >= (1 - V3_GOODPUT_DROP_MAX) * worst else "FAIL", text)
+    emit("V3", arm, cell, "PASS" if g >= limit else "FAIL", text)
 
 
 def channel_line(runs, arm, family):
@@ -690,6 +730,20 @@ def channel_line(runs, arm, family):
             per[r["phases"][k]["key"]] = (o + 1, d + (s in got))
         out.append(f"rep {r['rep']}: " + ", ".join(f"{k} loss {pct(1 - d / o)} of {o}" for k, (o, d) in per.items()))
     return "; ".join(out)
+
+
+def deadline_line(runs, cell):
+    """Report: every static arm's offered samples that missed V3's deadline (late or never delivered), pooled."""
+    out = []
+    for arm in sorted({r["arm"] for r in runs if not r["tv"] and r["cell"] == cell}):
+        su = usable(static_runs(runs, arm[2:], cell))
+        off = sum(r["offered"] for r in su)
+        if not off:
+            continue
+        ok = sum(len(on_time(r, V3_DEADLINE_MS[cell])) for r in su)
+        lost = off - sum(min(r["delivered"], r["offered"]) for r in su)
+        out.append(f"{arm} {off - ok}/{off} missed ({lost} never delivered)")
+    return ", ".join(out)
 
 
 def void_behind(rule, arm, cell, cr, emit, judge):
@@ -723,6 +777,10 @@ def main():
     if cr_counts:
         print(f"CONTROL_RESENDS s_l0 rel_large ({'resends: rel_large verdicts VOID' if cr else 'none'}): "
               + "; ".join(cr_counts))
+    for cell in V3_CELLS:
+        dl = deadline_line(runs, cell)
+        if dl:
+            print(f"V3_DEADLINE {cell} {V3_DEADLINE_MS[cell]:g} ms (static arms, report only): {dl}")
     tv_arms = sorted({r["arm"] for r in runs if r["tv"]}, key=lambda a: (list(FAMILIES).index(a.rsplit("_p", 1)[0])
                                                                          if a.rsplit("_p", 1)[0] in FAMILIES else 99,
                                                                          float(a.rsplit("_p", 1)[1])))
