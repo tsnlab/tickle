@@ -87,6 +87,11 @@
 #        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [NODE_PIN="cpu0 cpu1 cpu2"] [OUT=dir] time_varying_netns.sh
 #   NODE_PIN runs node k (ping/pub, echo/sub, idle) under taskset on the k-th CPU listed (X0a, the reorder source);
 #   each run's meta.txt records it.
+#   EST_TRACE=1 builds both binaries with -Dtt_ESTIMATOR_TRACE (X0d): every node prints, at most every 100 ms, one
+#   "ESTTRACE t_ns=... ctx=... obj=..." line per writer proxy, reader entry and service client with the estimators'
+#   state (tickle.c's estimator_trace()), to stderr - each node's .err file (echo.err, ping.err; the small cells then
+#   keep stderr apart from their .log, as rel_large always does). Off by default, and then nothing here changes;
+#   provenance.txt and each meta.txt record it. The trace costs a clock read per poll and a write per 100 ms.
 #   OUT defaults to ~/rig_results_safe/time_varying/<stamp>: raw logs per run under OUT/runs/<arm>-<cell>-<rep>/, the
 #   summary in OUT/summary.txt, which always ends with "=== time_varying_netns ended". READ_ONLY=1 re-reads an OUT.
 #   Needs `sudo -n ip` (tc runs under `ip netns exec`). ~45 s a run: the default set is 10 tv + 8 static arms x 3
@@ -105,6 +110,10 @@ SMALL_HZ=100
 SMALL_BYTES=100
 LARGE_BYTES=1048576
 LARGE_HZ=${LARGE_HZ:-5}
+EST_TRACE=${EST_TRACE:-0}
+case "$EST_TRACE" in 0 | 1) ;; *) echo "EST_TRACE must be 0 or 1" >&2; exit 2 ;; esac
+TRACE_DEF=()
+[ "$EST_TRACE" = 1 ] && TRACE_DEF=(-Dtt_ESTIMATOR_TRACE)
 OUT=${OUT:-$HOME/rig_results_safe/time_varying/$(date +%Y%m%d-%H%M%S)}
 T0=$(date +%s)
 mkdir -p "$OUT/runs" || exit 1
@@ -168,15 +177,17 @@ say "=== time_varying_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFI
     echo "tree=$TREE_SHA dirty_paths=$DIRTY profile=$PROFILE reps=$REPS dur=$DUR d_bg_loss=$D_BG_LOSS"
     echo "arms='$ARMS' cells='$CELLS' netem_extra='${NETEM_EXTRA:-}' node_env='${NODE_ENV:-}'"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
-    echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS"
+    echo "est_trace=$EST_TRACE"
+    echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS${TRACE_DEF:+ ${TRACE_DEF[*]}}"
     echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" \
-        "-Dtt_RELIABLE_STATS -DR4_TRACE"
+        "-Dtt_RELIABLE_STATS -DR4_TRACE${TRACE_DEF:+ ${TRACE_DEF[*]}}"
 } >>"$OUT/provenance.txt"
 
 # --- build: both binaries from this tree, and the monotonic stamp ---------------------------------------------------
 CORE=("$REPO/src/tickle.c" "$REPO/src/encoding.c" "$REPO/src/log.c" "$REPO/src/hal_linux.c")
 export TMPDIR=$HOME/tmp_build
-if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -I"$REPO/include" -I"$REPO/src" \
+if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS "${TRACE_DEF[@]}" -I"$REPO/include" \
+    -I"$REPO/src" \
     -I"$REPO/examples/perf_hil/tickle/common" -o "$WORK/node" "$HERE/wifi_link_node.c" "${CORE[@]}" -lpthread -lm \
     >"$WORK/build.log" 2>&1; then
     say "VOID  wifi_link_node did not build"
@@ -184,7 +195,8 @@ if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -I
     exit 1
 fi
 if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 \
-    -Dtt_RELIABLE_STATS -DR4_TRACE -I"$REPO/include" -I"$REPO/src" -I"$REPO/examples/perf_hil/tickle/common" \
+    -Dtt_RELIABLE_STATS -DR4_TRACE "${TRACE_DEF[@]}" -I"$REPO/include" -I"$REPO/src" \
+    -I"$REPO/examples/perf_hil/tickle/common" \
     -o "$WORK/large" "$HERE/large_sample_bench.c" "${CORE[@]}" -lpthread -lm >>"$WORK/build.log" 2>&1; then
     say "VOID  large_sample_bench did not build"
     tail -5 "$WORK/build.log"
@@ -328,6 +340,18 @@ inns() {
     # shellcheck disable=SC2086 # NODE_ENV is words on purpose
     sudo -n ip netns exec "${NS[$k]}" env ${NODE_ENV:-} bash -c 'ulimit -v 2000000; exec "$@"' inns "${pin[@]}" "$@"
 }
+# trace_err FILE CMD...: CMD with its stderr in FILE under EST_TRACE=1 - the small cells' ESTTRACE lines apart from
+# their .log, where a line written to stderr can land inside a buffered stdout line and cut a RESULT or RSTATS line.
+# Without EST_TRACE, CMD as it is, its stderr where the caller put it.
+trace_err() {
+    local file=$1
+    shift
+    if [ "$EST_TRACE" = 1 ]; then
+        "$@" 2>"$file"
+    else
+        "$@"
+    fi
+}
 
 run_one() { # run_one ARM CELL REP
     local arm=$1 cell=$2 rep=$3 run="$1-$2-$3" k
@@ -353,7 +377,8 @@ run_one() { # run_one ARM CELL REP
         ;;
     esac
     echo "load=$(cut -d' ' -f1 /proc/loadavg) nproc=$(nproc) start=$(date -Is) tv=$tv phase_s=${PHASE_S:-0}" \
-        "phases='${TV_PHASES[*]}' spec0='$(spec "$SHAPE_PHASE")' node_pin='${NODE_PIN:-}'" >"$RUN_DIR/meta.txt"
+        "phases='${TV_PHASES[*]}' spec0='$(spec "$SHAPE_PHASE")' node_pin='${NODE_PIN:-}' est_trace=$EST_TRACE" \
+        >"$RUN_DIR/meta.txt"
     if ! topo "$run" >"$RUN_DIR/topo.log" 2>&1; then
         say "VOID  $run: no topology (see $RUN_DIR/topo.log)"
         return 1
@@ -365,7 +390,8 @@ run_one() { # run_one ARM CELL REP
     rm -f "$stop"
     [ "$cell" != be_small ] && mode=rel
     local common=(-b "$BCAST" -p "$PROFILE" -q "$stop")
-    inns 2 "$WORK/node" idle -c 3 -d $((DUR + 60)) "${common[@]}" >"$RUN_DIR/idle.log" 2>&1 &
+    trace_err "$RUN_DIR/idle.err" inns 2 "$WORK/node" idle -c 3 -d $((DUR + 60)) "${common[@]}" \
+        >"$RUN_DIR/idle.log" 2>&1 &
     local idle_pid=$!
     TV_PID=""
     if [ "$cell" = rel_large ]; then
@@ -379,13 +405,15 @@ run_one() { # run_one ARM CELL REP
             >"$RUN_DIR/ping.log" 2>"$RUN_DIR/ping.err"
         wait "$echo_pid"
     else
-        inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" \
-            -l "$RUN_DIR/owd_us.txt" -t "$RUN_DIR/trace_echo.txt" "${common[@]}" >"$RUN_DIR/echo.log" 2>&1 &
+        trace_err "$RUN_DIR/echo.err" inns 1 "$WORK/node" echo -c 2 -d $((DUR + 60)) -m "$mode" -s "$SMALL_BYTES" \
+            -r "$SMALL_HZ" -l "$RUN_DIR/owd_us.txt" -t "$RUN_DIR/trace_echo.txt" "${common[@]}" \
+            >"$RUN_DIR/echo.log" 2>&1 &
         local echo_pid=$!
         sleep 1
         [ "$tv" = 1 ] && { tv_cycle & TV_PID=$!; }
-        inns 0 "$WORK/node" ping -c 1 -d "$DUR" -m "$mode" -s "$SMALL_BYTES" -r "$SMALL_HZ" -l "$RUN_DIR/rtt_us.txt" \
-            -t "$RUN_DIR/trace_ping.txt" "${common[@]}" >"$RUN_DIR/ping.log" 2>&1
+        trace_err "$RUN_DIR/ping.err" inns 0 "$WORK/node" ping -c 1 -d "$DUR" -m "$mode" -s "$SMALL_BYTES" \
+            -r "$SMALL_HZ" -l "$RUN_DIR/rtt_us.txt" -t "$RUN_DIR/trace_ping.txt" "${common[@]}" \
+            >"$RUN_DIR/ping.log" 2>&1
         sleep 1
         touch "$stop"
         wait "$echo_pid"

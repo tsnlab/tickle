@@ -8003,6 +8003,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->repair_timing = false;
     node->repair_reveal = 0;
     node->repair_reveal_pace_ns = 0;
+#ifdef tt_ESTIMATOR_TRACE
+    node->estimator_trace_ns = 0; // the first poll prints
+#endif
     node->announce_repeats = 0;
     node->announce_repeats_left = 0;
     node->announce_repeat_gap_ns = 0;
@@ -27619,6 +27622,193 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 
 static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout);
 
+// Estimator trace (X0d, 2026-11-03): the estimators' internal state, printed by the poll so a time-varying-network
+// experiment can watch them converge. Compiled out unless built with -Dtt_ESTIMATOR_TRACE (estimator_trace() is then
+// nothing, and tt_Context has no field for it). At most once per tt_ESTIMATOR_TRACE_INTERVAL_NS (100 ms) per context,
+// on tt_get_ns(), at the end of a tt_Context_poll() - a node that is not polled prints nothing. One line per object to
+// the log's stream (stderr unless tt_log_set_output() moved it): "ESTTRACE " and key=value pairs, each line with t_ns
+// (tt_get_ns(), CLOCK_MONOTONIC on Linux), ctx (this context's id) and obj (its kind), then the object's ids and its
+// values, times in ns:
+//   obj=wproxy  a Subscriber's writer proxy: the recovery estimate and the retry interval it gives
+//               (reliable_retry_interval()), the repair transit and the time a repair is taken to be on its way
+//               (repair_in_flight_ns()); in a large-sample build the estimate over recoveries spanning a send too, and
+//               the retry cadence while the writer still sends (retry_cadence_while_sending(), at the interval).
+//   obj=peer    a Publisher's reader entry: in a large-sample build the large-repair timeout's srtt/rttvar and the
+//               timeout and RACK threshold the resend order reads (large_order_times()); with the hybrid transport the
+//               p that reader's node reported (hybrid_peer_p()) and n* over tt_HYBRID_N_MAX at that p.
+//   obj=hybrid_rx  the reader's own loss estimate (frames, events, its posterior mean) and the code it announces.
+//   obj=client  a service Client's call latency estimate (latency, latency_var).
+// The reader has no time-based reorder hold-off to print: a held resend is the writer's (obj=peer's timeouts).
+#ifdef tt_ESTIMATOR_TRACE
+#ifndef tt_ESTIMATOR_TRACE_INTERVAL_NS
+#define tt_ESTIMATOR_TRACE_INTERVAL_NS 100000000ULL
+#endif
+#define ESTTRACE_LINE 640U // room kept for one line: the longest is under 400 bytes
+#define ESTTRACE_PART 256U // one optional group of a line (sending_*, repair_*, hybrid_*)
+#define ESTTRACE_BUF 8192U // the lines of one trace, written out when full and at its end
+
+// One trace's lines, and what every line begins with.
+struct estimator_trace_out {
+    char text[ESTTRACE_BUF];
+    size_t used;
+    unsigned long long t_ns;
+    unsigned ctx;
+};
+
+static void estimator_trace_flush(struct estimator_trace_out* out) {
+    if (out->used != 0) {
+        FILE* stream = tt_log_output != NULL ? tt_log_output : stderr; // the log's stream: stderr unless redirected
+        (void)fwrite(out->text, 1, out->used, stream);
+        (void)fflush(stream);
+        out->used = 0;
+    }
+}
+
+// Room for one more line: what is held is written out first when a line might not fit.
+static char* estimator_trace_room(struct estimator_trace_out* out) {
+    if (sizeof(out->text) - out->used < ESTTRACE_LINE) {
+        estimator_trace_flush(out);
+    }
+    return out->text + out->used;
+}
+
+// Counts what snprintf() wrote at estimator_trace_room() (its return), at most what fitted.
+static void estimator_trace_wrote(struct estimator_trace_out* out, int written) {
+    if (written > 0) {
+        size_t left = sizeof(out->text) - out->used;
+        out->used += (size_t)written < left ? (size_t)written : left - 1U;
+    }
+}
+
+static void estimator_trace_proxy(const struct tt_Context* node, const struct tt_Subscriber* sub,
+                                  const struct tt_WriterProxy* proxy, struct estimator_trace_out* out) {
+    uint64_t interval = reliable_retry_interval(node, proxy);
+#if tt_LARGE_SAMPLES
+    char sending[ESTTRACE_PART];
+    (void)snprintf(sending, sizeof(sending), " sending_srtt_ns=%u sending_rttvar_ns=%u retry_cadence_ns=%llu",
+                   (unsigned)proxy->sending_srtt_ns, (unsigned)proxy->sending_rttvar_ns,
+                   (unsigned long long)retry_cadence_while_sending(node, proxy, interval));
+#else
+    const char* sending = "";
+#endif
+    char* line = estimator_trace_room(out);
+    estimator_trace_wrote(
+        out, snprintf(line, sizeof(out->text) - out->used,
+                      "ESTTRACE t_ns=%llu ctx=%u obj=wproxy sub=%08x reliable=%d writer_ctx=%u writer=%08x "
+                      "recovery_srtt_ns=%u recovery_rttvar_ns=%u retry_interval_ns=%llu transit_srtt_ns=%u "
+                      "transit_rttvar_ns=%u transit_min_ns=%u repair_in_flight_ns=%llu%s\n",
+                      out->t_ns, out->ctx, (unsigned)sub->endpoint.entity_id, sub->reliable ? 1 : 0,
+                      (unsigned)proxy->context_id, (unsigned)proxy->entity_id, (unsigned)proxy->recovery_srtt_ns,
+                      (unsigned)proxy->recovery_rttvar_ns, (unsigned long long)interval,
+                      (unsigned)proxy->transit_srtt_ns, (unsigned)proxy->transit_rttvar_ns,
+                      (unsigned)proxy->transit_min_ns, (unsigned long long)repair_in_flight_ns(node, proxy), sending));
+}
+
+static void estimator_trace_peer(const struct tt_Context* node, const struct tt_Publisher* pub,
+                                 const struct tt_PeerAck* ack, struct estimator_trace_out* out) {
+    char large[ESTTRACE_PART] = "";
+    char hybrid[ESTTRACE_PART] = "";
+#if tt_LARGE_SAMPLES
+    struct large_order order;
+    memset(&order, 0, sizeof(order));
+    large_order_times(ack, &order);
+    (void)snprintf(large, sizeof(large),
+                   " repair_srtt_ns=%u repair_rttvar_ns=%u repair_timeout_ns=%llu repair_rack_rtt_ns=%u "
+                   "repair_min_rtt_ns=%u rack_ns=%llu",
+                   (unsigned)ack->repair_srtt_ns, (unsigned)ack->repair_rttvar_ns,
+                   (unsigned long long)order.timeout << LARGE_REPAIR_SHIFT, (unsigned)ack->repair_rack_rtt_ns,
+                   (unsigned)ack->repair_min_rtt_ns, (unsigned long long)order.rack << LARGE_REPAIR_SHIFT);
+#endif
+#if tt_HYBRID_TRANSPORT
+    double loss = hybrid_peer_p(node, ack->context_id);
+    (void)snprintf(
+        hybrid, sizeof(hybrid), " hybrid_code=0x%04x hybrid_p=%.6g n_star=%u",
+        (unsigned)node->hybrid.peer_loss_p[ack->context_id], loss,
+        (unsigned)hybrid_n_star(loss, (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, (uint32_t)tt_HYBRID_N_MAX));
+#else
+    UNUSED(node);
+#endif
+    char* line = estimator_trace_room(out);
+    estimator_trace_wrote(out, snprintf(line, sizeof(out->text) - out->used,
+                                        "ESTTRACE t_ns=%llu ctx=%u obj=peer pub=%08x reliable=%d reader_ctx=%u "
+                                        "reader=%08x acked=%d ack_seq_no=%u%s%s\n",
+                                        out->t_ns, out->ctx, (unsigned)pub->endpoint.entity_id, pub->reliable ? 1 : 0,
+                                        (unsigned)ack->context_id, (unsigned)ack->entity_id, ack->acked ? 1 : 0,
+                                        (unsigned)ack->ack_seq_no, large, hybrid));
+}
+
+static void estimator_trace_client(const struct tt_Client* client, struct estimator_trace_out* out) {
+    char* line = estimator_trace_room(out);
+    estimator_trace_wrote(out, snprintf(line, sizeof(out->text) - out->used,
+                                        "ESTTRACE t_ns=%llu ctx=%u obj=client client=%08x latency_ns=%u "
+                                        "latency_var_ns=%u backed_off=%d call_backoff=%u\n",
+                                        out->t_ns, out->ctx, (unsigned)client->endpoint.entity_id,
+                                        (unsigned)client->latency, (unsigned)client->latency_var,
+                                        client->latency_backed_off ? 1 : 0, (unsigned)client->call_backoff));
+}
+
+#if tt_HYBRID_TRANSPORT
+static void estimator_trace_hybrid_rx(const struct tt_HybridState* hybrid, struct estimator_trace_out* out) {
+    if (hybrid->rx_loss.frames == 0) {
+        return;
+    }
+    char* line = estimator_trace_room(out);
+    estimator_trace_wrote(
+        out, snprintf(line, sizeof(out->text) - out->used,
+                      "ESTTRACE t_ns=%llu ctx=%u obj=hybrid_rx frames=%u events=%u p=%.6g mtu_frames=%u mtu_events=%u "
+                      "advertised_code=0x%04x advertised_p=%.6g\n",
+                      out->t_ns, out->ctx, (unsigned)hybrid->rx_loss.frames, (unsigned)hybrid->rx_loss.events,
+                      loss_estimate_mean(&hybrid->rx_loss), (unsigned)hybrid->mtu_loss.frames,
+                      (unsigned)hybrid->mtu_loss.events, (unsigned)hybrid->advertised_loss,
+                      hybrid_loss_decode(hybrid->advertised_loss)));
+}
+#endif
+
+static void estimator_trace_endpoint(const struct tt_Context* node, const struct tt_Endpoint* endpoint,
+                                     struct estimator_trace_out* out) {
+    if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+        const struct tt_Subscriber* sub = (const struct tt_Subscriber*)endpoint;
+        for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+            if (sub->writers[i].context_id != tt_CONTEXT_ID_INVALID) {
+                estimator_trace_proxy(node, sub, &sub->writers[i], out);
+            }
+        }
+    } else if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        const struct tt_Publisher* pub = (const struct tt_Publisher*)endpoint;
+        for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+            if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
+                estimator_trace_peer(node, pub, &pub->peer_acks[i], out);
+            }
+        }
+    } else if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
+        estimator_trace_client((const struct tt_Client*)endpoint, out);
+    }
+}
+
+static void estimator_trace(struct tt_Context* node) {
+    uint64_t now = tt_get_ns();
+    if (node->estimator_trace_ns != 0 && now - node->estimator_trace_ns < tt_ESTIMATOR_TRACE_INTERVAL_NS) {
+        return;
+    }
+    node->estimator_trace_ns = now;
+    struct estimator_trace_out out;
+    out.used = 0;
+    out.t_ns = (unsigned long long)now;
+    out.ctx = node->id;
+    state_lock(node);
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        if (node->endpoints[i] != NULL) {
+            estimator_trace_endpoint(node, node->endpoints[i], &out);
+        }
+    }
+#if tt_HYBRID_TRANSPORT
+    estimator_trace_hybrid_rx(&node->hybrid, &out);
+#endif
+    state_unlock(node);
+    estimator_trace_flush(&out);
+}
+#endif
+
 tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -27649,6 +27839,9 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
         state_unlock(node);
     }
 #endif
+#endif
+#ifdef tt_ESTIMATOR_TRACE
+    estimator_trace(node); // at most once per tt_ESTIMATOR_TRACE_INTERVAL_NS
 #endif
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);

@@ -129,7 +129,8 @@ TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 # failed its wrap control at that window on the fixed seed (2026-10-11) - a test defect, present at the default window
 # on other seeds too, which only this build showed. Their own tree, so the default binaries beside them stay as they are.
 LARGE_DEFINES = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
-LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff
+# test_estimator_trace.c again too: its sending_* and repair_* fields exist only in a large-sample build.
+LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff $(OBJ)/tests-large/test_estimator_trace
 # The services tests again with one call per Client (tt_CLIENT_MAX_OUTSTANDING 1): the behaviour before 2026-10-16,
 # which a build may still choose, must stay what it was.
 ONE_CALL_DEFINES = -Dtt_CLIENT_MAX_OUTSTANDING=1

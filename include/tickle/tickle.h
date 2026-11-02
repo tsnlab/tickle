@@ -2220,6 +2220,11 @@ struct tt_Context {
     // writer proxy's least repair transit.
     uint8_t repair_reveal;
     uint32_t repair_reveal_pace_ns;
+#ifdef tt_ESTIMATOR_TRACE
+    // When this context last printed its ESTTRACE lines (estimator_trace(), tickle.c); 0: never. Only in a build with
+    // -Dtt_ESTIMATOR_TRACE, after every other field, so the default build's layout is untouched.
+    uint64_t estimator_trace_ns;
+#endif
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
