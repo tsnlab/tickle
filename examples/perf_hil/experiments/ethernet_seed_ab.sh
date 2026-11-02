@@ -36,8 +36,10 @@
 #     B's mean above 10% -> FALSIFIED (the seed is not the mechanism). Otherwise FAIL.
 #   P1d (report): s_d3 (3 ms each way) - A's timer ACKNACKs per gap >= 2.5 (predicted ~4) and B's <= 1.5: CONFIRMED,
 #     else NOT_CONFIRMED (the mechanism's dose-response; does not change the verdict).
-#   P2 (tv s_d20 rel_small): B delivers 100% in every rep and B's round-trip p99 <= A's + 40 ms (a second-round loss now
-#     waits about one round trip instead of 1 ms).
+#   P2 (tv s_d20 rel_small): B's round trips completed not below A's beyond the tolerance (floor 0.1 point), and B's
+#     round-trip p99 <= A's + 40 ms (a second-round loss now waits about one round trip instead of 1 ms). Amended
+#     2026-11-03 by the user's option (a) before the 6-rep run: it was "B delivers 100% forward in every rep", which
+#     a single sample lost to KEEP_LAST eviction failed; forward delivery is now reported, not judged.
 #   P3 (regression: tv s_d1, wbe ge1b2 ge5b2 ge5b4 ge10b4 tv; rel_small and rel_large): no metric (delivered, p99,
 #     copies, resends) worse than A beyond the tolerance, and no R1 (rel_small >= 99.5% at ge5b2/ge5b4) or R3
 #     (rel_large >= 95% at ge5b4/ge10b4) that A meets and B does not.
@@ -95,7 +97,8 @@ if [ "${1:-}" = __ab ]; then
         case "$1" in
         1) echo "A B A2" ;;
         2) echo "B A2 A" ;;
-        *) echo "A2 A B" ;;
+        3) echo "A2 A B" ;;
+        *) order $((($1 - 1) % 3 + 1)) ;; # REPS above 3 repeats the rotation
         esac
     }
     # step LABEL REP GROUP TIMEOUT ENDED_PATTERN EXPECTED_RUNS HARNESS [VAR=VALUE...]: one harness call into

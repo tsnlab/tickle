@@ -35,15 +35,18 @@ AA_DECISION_MAX = 0.05  # |A - A2| on s_d20 rel_small copies above this: A does 
 DOSE_A_TIMER_MIN = 2.5  # s_d3 rel_small: A timer per gap (predicted ~4) ...
 DOSE_B_TIMER_MAX = 1.5  # ... and B's (predicted ~0-1): the mechanism's dose-response, report only
 P2_P99_SLACK_MS = 40.0  # s_d20 rel_small round-trip p99: B <= A + one base round trip
+# P2 judges round trips completed, not forward delivery (user 2026-11-03, option (a), before the 6-rep run): B's
+# round-trip delivery not below A's beyond the A/A tolerance, whose floor here is 0.1 point. Forward delivery is reported.
+P2_RT_FLOOR = 0.001
 CONTROL_MOVED_MAX_SHARE = 0.10  # control comparisons outside the A/A tolerance: more than this share (and > 1) VOID
 MIN_REPS = 2  # valid reps per label for any judged cell
 R1 = {"ge5b2": 0.995, "ge5b4": 0.995}  # wifi_burst R1, rel_small delivered
 R3 = {"ge5b4": 0.95, "ge10b4": 0.95}  # wifi_burst R3, rel_large delivered
 # Absolute floors of the B-vs-A tolerance, per metric: tol = max(2 x |A - A2|, 2 x SE of A and A2 reps, floor).
-FLOORS = {"delivered": lambda a: 0.005, "copies": lambda a: 0.005, "owd_p99": lambda a: max(0.10 * a, 1.0),
+FLOORS = {"delivered": lambda a: 0.005, "rt_delivered": lambda a: P2_RT_FLOOR, "copies": lambda a: 0.005, "owd_p99": lambda a: max(0.10 * a, 1.0),
           "rtt_p99": lambda a: max(0.10 * a, 1.0), "p99": lambda a: max(0.10 * a, 1.0),
           "retx": lambda a: 0.10 * a + 5.0, "timer_per_gap": lambda a: 0.5, "timer": lambda a: 0.10 * a + 5.0}
-WORSE_IF_LOWER = ("delivered",)
+WORSE_IF_LOWER = ("delivered", "rt_delivered")
 LATENCY = ("owd_p99", "rtt_p99", "p99")
 
 REGRESSION = [("tv", "s_d1", "rel_small"), ("tv", "s_d1", "rel_large")] + [
@@ -96,6 +99,8 @@ def load_group(res, label, group):
             m["copies"] = m["dups"] / dl if dl else None
             m["owd_p99"] = quantile(r["owd"], 0.99) / 1000.0 if r["owd"] else None
             m["rtt_p99"] = quantile(r["rtt"], 0.99) / 1000.0 if r["rtt"] else None
+            asked = int(num(r["ping"], "published")) - int(num(r["ping"], "warmup"))
+            m["rt_delivered"] = int(num(r["ping"], "scored")) / asked if asked > 0 else None  # round trips completed
             m["timer_sum"] = int(num(rs, "echo.timer")) + int(num(rs, "ping.timer"))
             m["gaps_sum"] = int(num(rs, "echo.gaps_opened")) + int(num(rs, "ping.gaps_opened"))
             if "echo.timer" not in rs or "ping.timer" not in rs:
@@ -307,10 +312,12 @@ def main():
     p2 = "VOID"
     bdl = d.values("B", *dec, "delivered")
     ra, rb = d.values("A", *dec, "rtt_p99"), d.values("B", *dec, "rtt_p99")
-    if len(bdl) >= MIN_REPS and len(ra) >= MIN_REPS and len(rb) >= MIN_REPS:
-        p2 = "PASS" if all(x >= 1.0 for x in bdl) and mean(rb) <= mean(ra) + P2_P99_SLACK_MS else "FAIL"
-        emit(f"P2    s_d20 rel_small {p2}: B delivered {[f'{x:.2%}' for x in bdl]} (100% each); round-trip p99 A "
-             f"{mean(ra):.1f} B {mean(rb):.1f} ms (B <= A + {P2_P99_SLACK_MS:.0f})")
+    rt_v, rt_text = compare(d, *dec, "rt_delivered")
+    if rt_v != "void" and len(ra) >= MIN_REPS and len(rb) >= MIN_REPS:
+        p2 = "PASS" if rt_v != "worse" and mean(rb) <= mean(ra) + P2_P99_SLACK_MS else "FAIL"
+        emit(f"P2    s_d20 rel_small {p2}: round trips {rt_text} (need B not worse); round-trip p99 A {mean(ra):.1f} B "
+             f"{mean(rb):.1f} ms (B <= A + {P2_P99_SLACK_MS:.0f}); B forward delivered {[f'{x:.2%}' for x in bdl]}"
+             " (report only)")
     else:
         emit(f"P2    VOID: unloaded reps A {len(ra)} B {len(rb)}, delivered reps B {len(bdl)}")
 
