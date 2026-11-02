@@ -79,7 +79,8 @@ wireless").
   **2026-10-26** (RESULTS `R4K`, `K5`): K's ~2x-resend reps are such a collapse. A seed from a probe whose repair was
   already on its way (~0.2 ms) locks Karn's rule for the rep. Two cheap fixes (branches `experiment/k5-floor`, `experiment/k5-discard`) stop
   it but give back K's ge5b2 tail; the clean fix is a wire change (a request serial echoed in the repair), for the
-  wireless stage. K stays held for that wire change (the user, 2026-10-26).
+  wireless stage. K stays held for that wire change (the user, 2026-10-26). **2026-11-02** (RESULTS `KR`): K gains
+  nothing on main any more and its 2x-resend reps no longer occur; K and the wire change are dropped.
   **2026-10-27** (RESULTS `EWS`, `EWF`): ETHERNET amp's writer storm (a whole sample's resend batch outlasting a
   2 x srtt timeout). Landed: the timeout waits while the reader progresses (forced loop 0 of 20 against 10 of 20; rig
   core gate PASS 0/88, Array delivery 100%, 1% p99 +0.5 ms within the rule). The stall with no progress: landed the same
@@ -122,7 +123,9 @@ wireless").
 - **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27), last, for v3.0 (the user, 2026-11-01).
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
 - **Wireless** (correlated loss, Wi-Fi, internet, congestion control): next after v2.1 (the user, 2026-11-01).
-- **Wire changes** (run header merge, FEC, range NACK): at the wireless stage (the user, 2026-10-15).
+- **Wire changes** (run header merge, FEC, range NACK): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
+  `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on real Wi-Fi hardware; slow-reader
+  flow control (`C7W`) waits for that or the 32-Pi testbed (the user, 2026-11-02).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
   decided on the 32-Raspberry-Pi testbed once it is built (the user, 2026-10-16).
 - **rmw_tickle at REP-2004 Quality Level 2**, after Security: pull requests with DCO and required CI (the user's
