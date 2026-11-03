@@ -417,7 +417,7 @@ MUTANTS = [
     (
         "reader: a sample left short not closed",
         "src/tickle.c",
-        "            hybrid_rx_gap(node, writer, writer->next, writer->count); // the writer's last sample ended short",
+        "            hybrid_rx_gap(node, writer, writer->sample, writer->next, writer->count, true);",
         "            (void)0;",
         SEND,
     ),
@@ -641,8 +641,57 @@ MUTANTS = [
     (
         "reader: a repair counted",
         "src/tickle.c",
-        "    if (sample != writer->sample || index + units <= writer->next) {\n        return; // an older sample's unit, or a repair",
-        "    if (sample != writer->sample) {\n        return; // an older sample's unit, or a repair",
+        "    if (sample != writer->sample || index + units <= writer->next) {\n        hybrid_rx_late(",
+        "    if (sample != writer->sample) {\n        hybrid_rx_late(",
+        SEND,
+    ),
+    (
+        "reorder: a late first transmission not taken back",
+        "src/tickle.c",
+        "        hybrid_rx_late(node, writer, sample, index, count, units, run); // a repair returned above: this was late\n",
+        "",
+        SEND,
+    ),
+    (
+        "reorder: a gap with a receiver drop kept",
+        "src/tickle.c",
+        "    if (remember && excused == 0 && (left != 0 || tail_lost)) {",
+        "    if (remember && (left != 0 || tail_lost)) {",
+        SEND,
+    ),
+    (
+        "reorder: a second copy taken back again",
+        "src/tickle.c",
+        "    if ((gap->taken >> slot) & 1U) {",
+        "    if (false) {",
+        SEND,
+    ),
+    (
+        "reorder: a window emptied since taken from",
+        "src/tickle.c",
+        "        if (gap->window_epoch == hybrid->window_epoch) {",
+        "        if (true) {",
+        SEND,
+    ),
+    (
+        "reorder: an rx_loss restarted since taken from",
+        "src/tickle.c",
+        "        bool same_rx = gap->rx_epoch == hybrid->rx_epoch;",
+        "        bool same_rx = true;",
+        SEND,
+    ),
+    (
+        "reorder: a gap of unknown layout taken back at its first late unit",
+        "src/tickle.c",
+        "        events = gap->left == 0 ? 1U : 0U; // the last of the range: nothing of it was lost",
+        "        events = 1U; // the last of the range: nothing of it was lost",
+        SEND,
+    ),
+    (
+        "reorder: the oldest gap kept past the ring",
+        "src/tickle.c",
+        "        hybrid->counted_next = (uint8_t)((hybrid->counted_next + 1U) % tt_HYBRID_COUNTED_GAPS);",
+        "        hybrid->counted_next = 0;",
         SEND,
     ),
     (
@@ -781,7 +830,7 @@ MUTANTS = [
     (
         "law: the hold's windows kept",
         "src/tickle.c",
-        "        hybrid->window = (struct tt_RunWindow) {0}; // the full memory drains: nothing in it is about the cap now\n",
+        "        hybrid_window_reset(hybrid); // the full memory drains: nothing in it is about the cap now\n",
         "",
         SEND,
     ),
@@ -873,8 +922,8 @@ MUTANTS = [
         "reader: a gap judged by the layout of the sample before",
         "src/tickle.c",
         "    hybrid_rx_layout(writer, index, units, tail, run);\n    if (index > writer->next) {\n"
-        "        hybrid_rx_gap(node, writer, writer->next, index);\n    }\n",
-        "    if (index > writer->next) {\n        hybrid_rx_gap(node, writer, writer->next, index);\n    }\n"
+        "        hybrid_rx_gap(node, writer, writer->sample, writer->next, index, true);\n    }\n",
+        "    if (index > writer->next) {\n        hybrid_rx_gap(node, writer, writer->sample, writer->next, index, true);\n    }\n"
         "    hybrid_rx_layout(writer, index, units, tail, run);\n",
         SEND,
     ),
@@ -1213,22 +1262,22 @@ MUTANTS = [
     (
         "reader: a run dropped by the receiver still a lost run",
         "src/tickle.c",
-        "        if (hybrid_rx_receiver_lost(node, 1) != 0) {\n            continue;\n        }",
+        "        if (hybrid_rx_receiver_lost(node, 1) != 0) {\n            excused++;\n            continue;\n        }",
         "        (void)hybrid_rx_receiver_lost(node, 1);",
         SEND,
     ),
     (
         "reader: MTU units dropped by the receiver still lost",
         "src/tickle.c",
-        "            uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);",
-        "            uint32_t lost = body_end - from;",
+        "            left = (body_end - from) - excused;",
+        "            left = body_end - from;",
         SEND,
     ),
     (
         "reader: a tail dropped by the receiver still lost",
         "src/tickle.c",
-        "    if (end > tail && from <= tail && hybrid_rx_receiver_lost(node, 1) == 0) {",
-        "    if (end > tail && from <= tail) {",
+        "    if (hybrid_rx_receiver_lost(node, 1) == 0) {\n        hybrid_rx_mtu(node, 1, 1); // the tail",
+        "    if (true) {\n        hybrid_rx_mtu(node, 1, 1); // the tail",
         SEND,
     ),
     (
@@ -1304,15 +1353,15 @@ MUTANTS = [
     (
         "p_mtu: a sample lost whole without its tail",
         "src/tickle.c",
-        "        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail",
-        "        hybrid_rx_gap(node, writer, 0, count - 1U); // all of it: its runs, and its tail",
+        "        hybrid_rx_gap(node, writer, writer->sample + (missed * count), 0, count, passed == 0);",
+        "        hybrid_rx_gap(node, writer, writer->sample + (missed * count), 0, count - 1U, passed == 0);",
         SEND,
     ),
     (
         "p_mtu: a sample lost whole without its runs",
         "src/tickle.c",
-        "        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail",
-        "        hybrid_rx_gap(node, writer, count - 1U, count); // all of it: its runs, and its tail",
+        "        hybrid_rx_gap(node, writer, writer->sample + (missed * count), 0, count, passed == 0);",
+        "        hybrid_rx_gap(node, writer, writer->sample + (missed * count), count - 1U, count, passed == 0);",
         SEND,
     ),
     (

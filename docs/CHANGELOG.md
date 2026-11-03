@@ -11,6 +11,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hybrid transport: reordering is no longer counted as loss.** A reader counted a gap the moment a later datagram
+  arrived and kept it when the missing first transmission came late: on a link with +-5 ms jitter and no loss its p
+  read 0.98 and the writer sent every large sample as MTU units, at ~4x the sender's CPU (netns T1 at dc45d3d9, arm
+  s_j5, rel_large). The reader now keeps the last 8 gaps it counted and, when a first transmission (a repair is
+  addressed to the reader and told apart) fills one, takes back exactly what that gap counted ([DESIGN.md](DESIGN.md)
+  section 8, "What the reader measures"; `reordered=` on the hybrid line). BEST_EFFORT and RELIABLE readers alike. No
+  wire or API change.
+
 ## [2.1.0] - 2026-11-02
 
 The performance stage of the user's release order (2026-11-01): wired performance work done. **Not SemVer-compatible

@@ -794,6 +794,28 @@ struct tt_HybridRxWriter {
     uint8_t layout_n;
 };
 
+// A gap the reader counted as lost (tickle.c, hybrid_rx_gap()), and what of that count is not taken back yet. A first
+// transmission that fills it later was only late - reordered on the path - and what the gap counted of it is taken
+// back (hybrid_rx_late()). Only a gap counted whole is kept: one with a datagram put down to a receiver drop cannot
+// say which datagram that was. tt_HYBRID_COUNTED_GAPS of them a context, the oldest replaced; a gap no longer kept
+// stays counted, as every gap did before 2026-11-03.
+#define tt_HYBRID_COUNTED_GAPS 8
+struct tt_HybridCountedGap {
+    uint64_t taken; // which of its first 64 datagrams have come back: a second copy takes back nothing more
+    uint32_t entity_id;
+    uint32_t sample;   // the sample's first seq_no
+    uint16_t from;     // body units [from, body_end) counted lost
+    uint16_t body_end; // (from == body_end: none, only the tail)
+    // What is still counted of the body: lost runs, or lost MTU units; for a layout not known (one event on the
+    // whole range), the units not arrived yet - the event is taken back when the last arrives.
+    uint16_t left;
+    uint16_t rx_epoch;     // tt_HybridState.rx_epoch when counted: rx_loss restarted since, nothing to take back there
+    uint16_t window_epoch; // tt_HybridState.window_epoch when counted: the pooled run window emptied since, the same
+    uint8_t source;        // tt_CONTEXT_ID_INVALID: a free entry
+    uint8_t layout;        // as counted: 0 not known (p only), 1 MTU units, else runs of this many units
+    uint8_t tail;          // the sample's tail was counted lost too (an MTU unit), not taken back yet
+};
+
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
 #define tt_HYBRID_N_BUCKETS 7
 
@@ -868,6 +890,15 @@ struct tt_HybridState {
     // Entries of rx_writers replaced while they held a writer: more writers at once than tt_HYBRID_RX_WRITERS, whose
     // losses then go partly uncounted (see tt_HybridRxWriter).
     uint64_t rx_writer_evictions;
+    // Gaps counted lost and not yet filled (tt_HybridCountedGap); the entry the next one replaces when none is free;
+    // how often rx_loss restarted (rx_epoch) and the pooled run window was emptied (window_epoch), since what an entry
+    // counted into before either is not there to take back. reordered: datagrams that arrived late into a counted gap
+    // and took back what it counted (the hybrid line's reordered=).
+    struct tt_HybridCountedGap counted_gaps[tt_HYBRID_COUNTED_GAPS];
+    uint8_t counted_next;
+    uint16_t rx_epoch;
+    uint16_t window_epoch;
+    uint64_t reordered;
 };
 #endif
 

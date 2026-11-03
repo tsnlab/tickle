@@ -5054,6 +5054,7 @@ static uint32_t hybrid_rx_receiver_lost(struct tt_Context* node, uint32_t datagr
     hybrid->receiver_lost += taken;
     if (taken != 0 && hybrid->advertised_loss == 0) {
         loss_estimate_restart(&hybrid->rx_loss); // no p announced yet: the first starts after it
+        hybrid->rx_epoch++;                      // the counted gaps' events went with it (hybrid_rx_late())
     } else if (taken != 0) {
         loss_estimate_doubt(&hybrid->rx_loss);
     }
@@ -5072,13 +5073,15 @@ static void hybrid_rx_receiver_age(struct tt_Context* node) {
 }
 
 // Units [from, body_end) of the body, sent in runs of `layout` units (at least 2) and never came: each run lost,
-// unless a receiver drop is put against it.
-static void hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from,
-                               uint32_t body_end, uint32_t layout) {
+// unless a receiver drop is put against it. Returns how many were put down to receiver drops.
+static uint32_t hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from,
+                                   uint32_t body_end, uint32_t layout) {
     uint32_t tail = (uint32_t)writer->count - 1U;
+    uint32_t excused = 0;
     for (uint32_t start = (from / layout) * layout; start < body_end; start += layout) {
         uint32_t size = tail - start < layout ? tail - start : layout;
         if (hybrid_rx_receiver_lost(node, 1) != 0) {
+            excused++;
             continue;
         }
         hybrid_rx_run(node, writer, size, true);
@@ -5086,17 +5089,64 @@ static void hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter
         uint32_t last = start + size < body_end ? start + size : body_end;
         writer->body_lost += last - first;
     }
+    return excused;
 }
 
-// Units [from, end) of the writer's current sample were sent and never came (end <= count): what they were sent as.
-// A run is one datagram and an MTU unit one; those put down to receiver drops are left out (above).
-static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from, uint32_t end) {
+// A gap of `writer`'s sample `sample`, counted whole just now (no datagram of it put down to a receiver drop): kept
+// for hybrid_rx_late(), in a free entry or the oldest. `left` and `layout` say what its body counted, `tail` whether
+// it counted the tail.
+static void hybrid_rx_remember_gap(struct tt_HybridState* hybrid, const struct tt_HybridRxWriter* writer,
+                                   uint32_t sample, uint32_t from, uint32_t body_end, uint32_t left, uint32_t layout,
+                                   bool tail) {
+    struct tt_HybridCountedGap* gap = NULL;
+    for (uint32_t i = 0; i < tt_HYBRID_COUNTED_GAPS && gap == NULL; i++) {
+        struct tt_HybridCountedGap* entry = &hybrid->counted_gaps[i];
+        if (entry->source == tt_CONTEXT_ID_INVALID || (entry->left == 0 && entry->tail == 0)) {
+            gap = entry;
+        }
+    }
+    if (gap == NULL) {
+        gap = &hybrid->counted_gaps[hybrid->counted_next];
+        hybrid->counted_next = (uint8_t)((hybrid->counted_next + 1U) % tt_HYBRID_COUNTED_GAPS);
+    }
+    *gap = (struct tt_HybridCountedGap) {.taken = 0,
+                                         .entity_id = writer->entity_id,
+                                         .sample = sample,
+                                         .from = (uint16_t)from,
+                                         .body_end = (uint16_t)body_end,
+                                         .left = (uint16_t)left,
+                                         .rx_epoch = hybrid->rx_epoch,
+                                         .window_epoch = hybrid->window_epoch,
+                                         .source = writer->source,
+                                         .layout = (uint8_t)layout,
+                                         .tail = tail ? 1U : 0U};
+}
+
+// A sample's tail never came: lost as an MTU unit, unless a receiver drop is put against it (counted in *excused).
+// Returns whether it was counted lost.
+static bool hybrid_rx_gap_tail(struct tt_Context* node, uint32_t* excused) {
+    if (hybrid_rx_receiver_lost(node, 1) == 0) {
+        hybrid_rx_mtu(node, 1, 1); // the tail, always an MTU unit
+        return true;
+    }
+    (*excused)++;
+    return false;
+}
+
+// Units [from, end) of `writer`'s sample `sample` were sent and never came (end <= count, the writer's count): what
+// they were sent as. A run is one datagram and an MTU unit one; those put down to receiver drops are left out (above).
+// A gap counted whole is remembered (hybrid_rx_remember_gap()) where `remember`: a first transmission of it may only
+// be late.
+static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t sample, uint32_t from,
+                          uint32_t end, bool remember) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t tail = (uint32_t)writer->count - 1U;
     uint32_t body_end = end < tail ? end : tail;
+    uint32_t excused = 0;
+    uint32_t left = 0;
+    uint32_t layout = writer->layout_n;
     hybrid->tick_units += end - from;
     if (from < body_end) {
-        uint32_t layout = writer->layout_n;
         // A whole body lost while the writer's layout is not known yet - no run of its seen since the cap last moved,
         // or ever - is counted as runs of the size rule (e) assumes, the largest the cap allows
         // (hybrid_rx_judge_path()): the likeliest to be lost whole. Counted in p only, as before 2026-10-27, it never
@@ -5107,20 +5157,144 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
             layout = node->hybrid.cap < tail ? node->hybrid.cap : tail;
         }
         if (layout >= 2U) {
-            hybrid_rx_gap_runs(node, writer, from, body_end, layout);
+            excused = hybrid_rx_gap_runs(node, writer, from, body_end, layout);
+            left = ((body_end - 1U - ((from / layout) * layout)) / layout) + 1U - excused; // the runs counted
         } else if (layout == 1U) {
-            uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);
-            if (lost != 0) {
-                hybrid_rx_mtu(node, lost, lost);
+            excused = hybrid_rx_receiver_lost(node, body_end - from);
+            left = (body_end - from) - excused;
+            if (left != 0) {
+                hybrid_rx_mtu(node, left, left);
             }
         } else if (hybrid_rx_receiver_lost(node, 1) == 0) {
             // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
             loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);
             writer->body_lost += body_end - from;
+            left = body_end - from; // the units that must all arrive before the event is taken back
+        } else {
+            excused = 1;
         }
     }
-    if (end > tail && from <= tail && hybrid_rx_receiver_lost(node, 1) == 0) {
-        hybrid_rx_mtu(node, 1, 1); // the tail, always an MTU unit
+    bool tail_lost = end > tail && from <= tail && hybrid_rx_gap_tail(node, &excused);
+    // A receiver drop leaves which datagram it was unknown, and before the first p it restarts rx_loss under what was
+    // counted just before it: a gap with one is not remembered at all.
+    if (remember && excused == 0 && (left != 0 || tail_lost)) {
+        uint32_t body_from = from < body_end ? from : body_end;
+        hybrid_rx_remember_gap(hybrid, writer, sample, body_from, body_end, left, layout, tail_lost);
+    }
+}
+
+// A run window emptied (the control law decided, or has nothing to judge): the gaps counted into it are not there to
+// take back (hybrid_rx_late()).
+static void hybrid_window_reset(struct tt_HybridState* hybrid) {
+    hybrid->window = (struct tt_RunWindow) {0};
+    hybrid->window_n = 0;
+    hybrid->window_epoch++;
+}
+
+// The datagrams of a counted gap whose return is told from a second copy of them (tt_HybridCountedGap.taken).
+#define HYBRID_GAP_TAKEN_BITS 64U
+
+// `taken` less of a count a counted gap raised, never below 0: a window that halved since holds half of it, so up to
+// one event a halving stays (DESIGN.md section 8, "What the reader measures").
+static void hybrid_uncount(uint32_t* count, uint32_t taken) {
+    *count -= *count < taken ? *count : taken;
+}
+
+// Whether a late datagram, units [index, index + units) and a run or not, is one of what `gap` counted and has not
+// come back before; if so, marks it come back. Counted as runs, it must be one of them, starting where they did;
+// counted as MTU units it may also be a run that came instead (the sample's first datagram to arrive was its tail, and
+// the layout read was the sample's before), and covers each of its units. A second copy of one already back is not.
+static bool hybrid_gap_take(struct tt_HybridCountedGap* gap, uint32_t index, uint32_t units, bool run) {
+    bool runs = gap->layout >= 2U;
+    uint32_t start = runs ? (gap->from / gap->layout) * gap->layout : gap->from;
+    if (gap->left == 0 || index < start || (runs && (!run || (index - start) % gap->layout != 0))) {
+        return false;
+    }
+    uint32_t slot = (index - start) / (runs ? gap->layout : 1U);
+    if (slot >= HYBRID_GAP_TAKEN_BITS) {
+        return true; // past the bits: `left` alone bounds what comes back
+    }
+    if ((gap->taken >> slot) & 1U) {
+        return false; // a second copy: what it counted is taken back once
+    }
+    uint32_t end = index + units < gap->body_end ? index + units : gap->body_end;
+    uint32_t slots = runs ? 1U : end - (index > gap->from ? index : gap->from);
+    for (uint32_t k = slot; k < slot + slots && k < HYBRID_GAP_TAKEN_BITS; k++) {
+        gap->taken |= (uint64_t)1U << k;
+    }
+    return true;
+}
+
+// What `gap` counted of `arrived` units of it that came late is taken back, into the estimates it was counted into
+// (`same_rx`: rx_loss not restarted since): a lost run one event of p and one lost run in the pooled window (not
+// emptied since) and the writer's, lost MTU units one event each of p and p_mtu, a gap of unknown layout its one event
+// once the last of its units has arrived.
+static void hybrid_gap_uncount(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer,
+                               struct tt_HybridCountedGap* gap, uint32_t arrived, bool same_rx) {
+    uint32_t events = 0;
+    if (gap->layout >= 2U) {
+        gap->left--;
+        events = 1;
+        if (gap->window_epoch == hybrid->window_epoch) {
+            hybrid_uncount(&hybrid->window.lost, 1);
+        }
+        hybrid_uncount(&writer->runs.lost, 1);
+        writer->run_tick = hybrid->ticks + 1U; // a run of this writer's got through
+    } else if (gap->layout == 1U) {
+        events = arrived < gap->left ? arrived : gap->left;
+        gap->left = (uint16_t)(gap->left - events);
+        hybrid_uncount(&hybrid->mtu_loss.events, events);
+    } else {
+        gap->left = (uint16_t)(gap->left > arrived ? gap->left - arrived : 0U);
+        events = gap->left == 0 ? 1U : 0U; // the last of the range: nothing of it was lost
+    }
+    if (same_rx) {
+        hybrid_uncount(&hybrid->rx_loss.events, events);
+    }
+}
+
+// A first transmission - a repair is addressed to this reader and never comes here - of `writer`'s sample `sample`,
+// units [index, index + units) (`count` units in the sample), arrived below where the reader had got to: it was only
+// late, reordered on the path. If a counted gap remembered (hybrid_rx_remember_gap()) is where it lies, what that gap
+// counted of this datagram is taken back - exactly that, and only into the estimates it was counted into
+// (hybrid_gap_uncount()); of the writer's current sample its units in body_lost too, and rule (e)'s odds start again,
+// since the sample's body did not all go. A gap no longer remembered stays counted. Until 2026-11-03 every reordered
+// datagram stayed a loss: on a link of +-5 ms jitter and no loss the reader's p was 0.98 and every large sample went as
+// MTU units (the time-varying netns campaign, s_j5).
+static void hybrid_rx_late(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t sample, uint32_t index,
+                           uint32_t count, uint32_t units, bool run) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    bool tail = !run && index == count - 1U;
+    for (uint32_t i = 0; i < tt_HYBRID_COUNTED_GAPS; i++) {
+        struct tt_HybridCountedGap* gap = &hybrid->counted_gaps[i];
+        if (gap->source != writer->source || gap->entity_id != writer->entity_id || gap->sample != sample) {
+            continue;
+        }
+        bool same_rx = gap->rx_epoch == hybrid->rx_epoch;
+        if (tail && gap->tail != 0) {
+            gap->tail = 0; // the tail is in one of the sample's gaps at most
+            if (same_rx) {
+                hybrid_uncount(&hybrid->rx_loss.events, 1);
+            }
+            hybrid_uncount(&hybrid->mtu_loss.events, 1);
+            hybrid->reordered++;
+            return;
+        }
+        if (tail || index >= gap->body_end || index + units <= gap->from) {
+            continue; // the sample's gaps never overlap: another one's, if any
+        }
+        if (!hybrid_gap_take(gap, index, units, run)) {
+            return;
+        }
+        uint32_t first = index > gap->from ? index : gap->from;
+        uint32_t arrived = (index + units < gap->body_end ? index + units : gap->body_end) - first;
+        hybrid_gap_uncount(hybrid, writer, gap, arrived, same_rx);
+        if (sample == writer->sample && gap->layout != 1U) { // MTU units never reach body_lost
+            writer->body_lost = (uint16_t)(writer->body_lost > arrived ? writer->body_lost - arrived : 0U);
+            writer->path_odds = 1.0; // the sample's body did not all go
+        }
+        hybrid->reordered++;
+        return;
     }
 }
 
@@ -5139,6 +5313,7 @@ static bool hybrid_rx_forget_stale(struct tt_Context* node) {
     }
     hybrid->stale_forgets++;
     hybrid->stale_events += events;
+    hybrid->rx_epoch++; // the counted gaps' events went with it (hybrid_rx_late())
     return true;
 }
 
@@ -5282,7 +5457,8 @@ static void hybrid_rx_missed(struct tt_Context* node, struct tt_HybridRxWriter* 
         return;
     }
     for (uint32_t missed = unseen; missed != 0; missed--) {
-        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail
+        // all of it: its runs, and its tail - remembered only where the samples lost are known
+        hybrid_rx_gap(node, writer, writer->sample + (missed * count), 0, count, passed == 0);
         node->hybrid.missed_samples++;
     }
 }
@@ -5311,7 +5487,8 @@ static struct tt_HybridRxWriter* hybrid_rx_entry_for_new(struct tt_HybridState* 
 // [index, index + units), as a run or as one MTU unit. A repair - addressed to this reader alone, where every first
 // transmission goes to everyone (tt_Context.rx_targeted) - counts for nothing: what was lost of its sample was counted
 // when the loss showed. Until 2026-10-17 one could pass for the sample's first transmission: a repaired tail as a tail
-// through, a sample lost whole and repaired before the next as a sample sent in MTU units.
+// through, a sample lost whole and repaired before the next as a sample sent in MTU units. A first transmission below
+// the next expected unit, or of an older sample, was only late: it takes back what its gap counted (hybrid_rx_late()).
 static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
                            uint32_t count, uint32_t units, bool run) {
     if (node->rx_targeted) {
@@ -5335,10 +5512,17 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         writer->next = (uint16_t)index;
         writer->source = source;
         writer->path_odds = 1.0;
+        for (uint32_t i = 0; i < tt_HYBRID_COUNTED_GAPS; i++) {
+            struct tt_HybridCountedGap* gap = &hybrid->counted_gaps[i];
+            if (gap->source == source && gap->entity_id == entity_id) {
+                gap->source = tt_CONTEXT_ID_INVALID; // counted into the writer's runs this entry no longer holds
+            }
+        }
     }
     if (seq_delta(sample, writer->sample) > 0) {
         if (writer->next < writer->count) {
-            hybrid_rx_gap(node, writer, writer->next, writer->count); // the writer's last sample ended short
+            // the writer's last sample ended short
+            hybrid_rx_gap(node, writer, writer->sample, writer->next, writer->count, true);
         }
         hybrid_rx_missed(node, writer, sample, count);
         writer->sample = sample;
@@ -5348,12 +5532,13 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     writer->seen_tick = (uint16_t)hybrid->ticks;
     if (sample != writer->sample || index + units <= writer->next) {
-        return; // an older sample's unit, or a repair
+        hybrid_rx_late(node, writer, sample, index, count, units, run); // a repair returned above: this was late
+        return;
     }
     uint32_t tail = count - 1U;
     hybrid_rx_layout(writer, index, units, tail, run);
     if (index > writer->next) {
-        hybrid_rx_gap(node, writer, writer->next, index);
+        hybrid_rx_gap(node, writer, writer->sample, writer->next, index, true);
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
@@ -18324,8 +18509,7 @@ static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double uni
 static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max,
                            const struct tt_HybridOptions* opts) {
     if (now < hybrid->hold_until_ns) {
-        hybrid->window = (struct tt_RunWindow) {0}; // the full memory drains: nothing in it is about the cap now
-        hybrid->window_n = 0;
+        hybrid_window_reset(hybrid); // the full memory drains: nothing in it is about the cap now
         return;
     }
     hybrid_scale(hybrid, now, units_per_s, n_max, opts);
@@ -18339,8 +18523,7 @@ static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double u
         decided = hybrid->window.sent >= opts->window_max_runs; // undecided: gather more, up to a bound
     }
     if (decided) {
-        hybrid->window = (struct tt_RunWindow) {0};
-        hybrid->window_n = 0;
+        hybrid_window_reset(hybrid);
     }
 }
 
@@ -18418,8 +18601,7 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     if (!hybrid->cap_off && hybrid->path_until_ns == 0) {
         hybrid_control(hybrid, now, units_per_s, n_max, &node->opts.hybrid_transport);
     } else {
-        hybrid->window = (struct tt_RunWindow) {0}; // one unit while the path drops fragments: nothing to judge
-        hybrid->window_n = 0;
+        hybrid_window_reset(hybrid); // one unit while the path drops fragments: nothing to judge
     }
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
@@ -28605,11 +28787,12 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // The realized treatment of a hybrid-transport arm (DESIGN.md section 8): what this context sent in runs and alone,
     // the n it chose per sample and destination (n_hist: 1, 2-3, 4-7, 8-15, 16-31, 32 to n_max - 1, n_max), and as a
     // reader the ceiling it advertised last, the control law's decisions, its p's events/frames at the end and the
-    // events it forgot (loss_estimate_forget_stale()). A rig arm reads it; there is no other.
+    // events it forgot (loss_estimate_forget_stale()), and the late datagrams that took back a counted gap
+    // (hybrid_rx_late()). A rig arm reads it; there is no other.
     TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
                 "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu receiver_drops=%lu "
                 "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu missed_samples=%lu "
-                "rx_writer_evictions=%lu",
+                "rx_writer_evictions=%lu reordered=%lu",
                 node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
                 (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
                 (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
@@ -28621,7 +28804,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->hybrid.receiver_lost, (unsigned)node->hybrid.rx_loss.events,
                 (unsigned)node->hybrid.rx_loss.frames, (unsigned long)node->hybrid.stale_forgets,
                 (unsigned long)node->hybrid.stale_events, (unsigned long)node->hybrid.missed_samples,
-                (unsigned long)node->hybrid.rx_writer_evictions);
+                (unsigned long)node->hybrid.rx_writer_evictions, (unsigned long)node->hybrid.reordered);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

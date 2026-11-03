@@ -1649,6 +1649,215 @@ static void test_receiver_drops_are_not_path_loss(void) {
     test_mock_receiver_drops = 0;
 }
 
+// Reordering is not loss (tickle.c, hybrid_rx_late()). A first transmission that arrives after the reader has counted
+// the gap in front of a later one was only late - jitter reorders a sample's datagrams - and what the gap counted is
+// taken back. Reader 0 gets every datagram in order, reader 1 the same datagrams with some reordered: a lost run
+// arriving after the run past it, two MTU units after the one past them, a sample's tail after the next sample's first
+// run. Their estimates, run windows and rule (e)'s per-writer state end the same. Until 2026-11-03 each reordered
+// datagram stayed a loss: on a link of +-5 ms jitter and no loss the reader's p read 0.98 and the writer sent every
+// large sample as MTU units. hybrid_rx_note() does not know the stream's reliability: this is BEST_EFFORT's as much as
+// RELIABLE's.
+#define REORDER_COUNT 136U // three runs of 45 and the tail
+static void reorder_note(struct tt_Context* node, uint32_t entity_id, uint32_t sample, uint32_t index) {
+    if (index == REORDER_COUNT - 1U) {
+        hybrid_rx_note(node, SENDER_ID, entity_id, sample, index, REORDER_COUNT, 1, false);
+    } else {
+        hybrid_rx_note(node, SENDER_ID, entity_id, sample, index, REORDER_COUNT, 45, true);
+    }
+}
+
+static void expect_same_reception(const struct tt_HybridState* in_order, const struct tt_HybridState* reordered) {
+    EXPECT_EQ_U32(in_order->rx_loss.events, reordered->rx_loss.events);
+    EXPECT_EQ_U32(in_order->rx_loss.frames, reordered->rx_loss.frames);
+    EXPECT_EQ_U32(in_order->mtu_loss.events, reordered->mtu_loss.events);
+    EXPECT_EQ_U32(in_order->mtu_loss.frames, reordered->mtu_loss.frames);
+    EXPECT_EQ_U32(in_order->window.lost, reordered->window.lost);
+    EXPECT_EQ_U32(in_order->window.sent, reordered->window.sent);
+    EXPECT_EQ_U32(in_order->window.frames, reordered->window.frames);
+    EXPECT_EQ_U32(in_order->tick_units, reordered->tick_units);
+    for (uint32_t i = 0; i < 2U; i++) {
+        EXPECT_EQ_U32(in_order->rx_writers[i].runs.lost, reordered->rx_writers[i].runs.lost);
+        EXPECT_EQ_U32(in_order->rx_writers[i].runs.sent, reordered->rx_writers[i].runs.sent);
+        EXPECT_EQ_U32(in_order->rx_writers[i].body_lost, reordered->rx_writers[i].body_lost);
+    }
+}
+
+static void test_a_reordered_original_is_not_loss(void) {
+    static const uint32_t ceilings[2] = {FULL_CEILING, FULL_CEILING};
+    init_set(SMALL_LEN, 2, ceilings, false);
+    test_mock_receiver_drops = 0;
+    struct tt_Context* in_order = &readers[0].ctx;
+    struct tt_Context* late = &readers[1].ctx;
+    // Writer 7, runs of 45. Sample 100: run 45 arrives after run 90, before the tail.
+    static const uint32_t sample_100[4] = {0, 90, 45, REORDER_COUNT - 1U};
+    for (uint32_t i = 0; i < 4U; i++) {
+        reorder_note(in_order, 7, 100, i == 3U ? REORDER_COUNT - 1U : i * 45U);
+        reorder_note(late, 7, 100, sample_100[i]);
+        if (i == 1U) {
+            EXPECT_EQ_U32(1, late->hybrid.rx_loss.events); // the gap is counted when it shows, as before
+            EXPECT_EQ_U32(1, late->hybrid.window.lost);
+            EXPECT_EQ_U32(45, late->hybrid.rx_writers[0].body_lost);
+        }
+    }
+    EXPECT_EQ_U32(0, late->hybrid.rx_loss.events); // and taken back when its run arrives
+    EXPECT_EQ_U32(0, late->hybrid.window.lost);
+    EXPECT_EQ_U32(0, late->hybrid.rx_writers[0].body_lost);
+    // Sample 236: whole, but its tail arrives after sample 372's first run - the sample "ended short" when 372 began.
+    for (uint32_t i = 0; i < 3U; i++) {
+        reorder_note(in_order, 7, 236, i * 45U);
+        reorder_note(late, 7, 236, i * 45U);
+    }
+    reorder_note(in_order, 7, 236, REORDER_COUNT - 1U);
+    reorder_note(in_order, 7, 372, 0);
+    reorder_note(late, 7, 372, 0);
+    EXPECT_EQ_U32(1, late->hybrid.mtu_loss.events);
+    reorder_note(late, 7, 236, REORDER_COUNT - 1U); // an older sample's tail, late
+    EXPECT_EQ_U32(0, late->hybrid.mtu_loss.events);
+    for (uint32_t i = 1; i < 3U; i++) {
+        reorder_note(in_order, 7, 372, i * 45U);
+        reorder_note(late, 7, 372, i * 45U);
+    }
+    reorder_note(in_order, 7, 372, REORDER_COUNT - 1U);
+    reorder_note(late, 7, 372, REORDER_COUNT - 1U);
+    // Writer 8, MTU units: units 1 and 2 arrive after unit 3.
+    static const uint32_t mtu_order[10] = {0, 3, 1, 2, 4, 5, 6, 7, 8, 9};
+    for (uint32_t i = 0; i < 10U; i++) {
+        hybrid_rx_note(in_order, SENDER_ID, 8, 50, i, 10, 1, false);
+        hybrid_rx_note(late, SENDER_ID, 8, 50, mtu_order[i], 10, 1, false);
+        if (i == 1U) {
+            EXPECT_EQ_U32(2, late->hybrid.mtu_loss.events);
+        }
+    }
+    expect_same_reception(&in_order->hybrid, &late->hybrid);
+    EXPECT_EQ_U32(0, late->hybrid.rx_loss.events);
+    // A gap of a layout not known yet - the last sample MTU units, this one's first datagram seen its short last run -
+    // is one event on its units, taken back when the last of them has arrived.
+    for (uint32_t i = 0; i < 30U; i++) {
+        hybrid_rx_note(late, SENDER_ID, 9, 300, i, 30, 1, false);
+    }
+    uint32_t frames = late->hybrid.rx_loss.frames;
+    hybrid_rx_note(late, SENDER_ID, 9, 330, 20, 30, 9, true);
+    EXPECT_EQ_U32(1, late->hybrid.rx_loss.events);
+    hybrid_rx_note(late, SENDER_ID, 9, 330, 0, 30, 10, true);
+    EXPECT_EQ_U32(1, late->hybrid.rx_loss.events); // half the range still out
+    hybrid_rx_note(late, SENDER_ID, 9, 330, 10, 30, 10, true);
+    EXPECT_EQ_U32(0, late->hybrid.rx_loss.events);
+    hybrid_rx_note(late, SENDER_ID, 9, 330, 29, 30, 1, false);
+    EXPECT_EQ_U32(frames + 30U, late->hybrid.rx_loss.frames); // each unit seen once, as in order
+    EXPECT_EQ_U32(0, late->hybrid.rx_writers[2].body_lost);
+}
+
+// What reordering takes back is only what it counted. A gap filled by a repair - addressed to this reader
+// (tt_Context.rx_targeted) - or never filled stays counted, and a second copy of a late datagram takes back nothing
+// more: of a sample's two lost runs one late arrival, twice, leaves the other counted. Three samples of writer 7, one
+// gap each: repaired, late (with a second copy), never filled; and an MTU unit of writer 8's, repaired.
+static void test_a_real_loss_still_counts(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    test_mock_receiver_drops = 0;
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    reorder_note(node, 7, 100, 0);
+    reorder_note(node, 7, 100, 90); // run 45 lost
+    reorder_note(node, 7, 100, REORDER_COUNT - 1U);
+    node->rx_targeted = true;
+    reorder_note(node, 7, 100, 45); // its repair
+    node->rx_targeted = false;
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+    reorder_note(node, 7, 236, 0);
+    reorder_note(node, 7, 236, REORDER_COUNT - 1U); // runs 45 and 90 not come yet
+    EXPECT_EQ_U32(3, hybrid->rx_loss.events);
+    reorder_note(node, 7, 236, 45); // late
+    reorder_note(node, 7, 236, 45); // and a second copy of it
+    EXPECT_EQ_U32(2, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(2, hybrid->window.lost);
+    EXPECT_EQ_U32(2, hybrid->rx_writers[0].runs.lost);
+    reorder_note(node, 7, 372, 0);
+    reorder_note(node, 7, 372, 90); // run 45 lost, never filled
+    reorder_note(node, 7, 372, REORDER_COUNT - 1U);
+    EXPECT_EQ_U32(3, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(3, hybrid->window.lost);
+    EXPECT_EQ_U32(3, hybrid->rx_writers[0].runs.lost);
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 0, 10, 1, false);
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 2, 10, 1, false); // unit 1 lost
+    node->rx_targeted = true;
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 1, 10, 1, false); // its repair
+    node->rx_targeted = false;
+    EXPECT_EQ_U32(1, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(4, hybrid->rx_loss.events);
+    // A gap one of whose datagrams was put down to a receiver drop is not kept: which one the drop was is not known, so
+    // a late run there may be the one the drop excused, and the run counted beside it a real loss.
+    hybrid->advertised_loss = hybrid_loss_code(0.01); // a p announced: the drop is a doubt, not a restart
+    reorder_note(node, 10, 600, 0);
+    test_mock_receiver_drops = 1;                    // the HAL's count only grows: it stays at 1
+    reorder_note(node, 10, 600, REORDER_COUNT - 1U); // runs 45 (the drop's) and 90 (lost) missing
+    EXPECT_EQ_U32(5, hybrid->rx_loss.events);
+    reorder_note(node, 10, 600, 45);
+    EXPECT_EQ_U32(5, hybrid->rx_loss.events);
+    test_mock_receiver_drops = 0;
+}
+
+// More reorders than the reader keeps gaps for (tt_HYBRID_COUNTED_GAPS) degrade to what the reader did before
+// 2026-11-03: the gaps no longer kept stay counted, the others are taken back, and nothing is taken back twice or
+// below 0. Ten one-unit gaps of an MTU writer, all open at once, then all filled late: two stay counted. And a gap
+// counted into a run window or an rx_loss that has since been emptied takes nothing from the next one's real losses:
+// a decision of the control law between a gap and its late run leaves the new window's lost run counted, and an
+// estimate restarted by a receiver drop (before its first p) keeps the event counted after it.
+static void test_more_reorders_than_the_reader_keeps(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    test_mock_receiver_drops = 0;
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 0, 40, 1, false);
+    for (uint32_t gap = 1; gap <= 10U; gap++) {
+        hybrid_rx_note(node, SENDER_ID, 8, 50, 2U * gap, 40, 1, false); // unit 2 gap - 1 missing
+    }
+    EXPECT_EQ_U32(10, hybrid->mtu_loss.events);
+    for (uint32_t gap = 1; gap <= 10U; gap++) {
+        hybrid_rx_note(node, SENDER_ID, 8, 50, (2U * gap) - 1U, 40, 1, false); // each late
+    }
+    EXPECT_EQ_U32(10U - 8U, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(10U - 8U, hybrid->rx_loss.events);
+    // Never below 0: an estimate that has lost the event since (here emptied by hand) keeps 0.
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 22, 40, 1, false); // unit 21 missing
+    hybrid->mtu_loss.events = 0;
+    hybrid->rx_loss.events = 0;
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 21, 40, 1, false);
+    EXPECT_EQ_U32(0, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(0, hybrid->rx_loss.events);
+    // The run window decided between a gap and its late run.
+    reorder_note(node, 7, 100, 0);
+    reorder_note(node, 7, 100, 90); // run 45 not come yet
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+    hybrid->hold_until_ns = test_mock_now + 1U; // a decision in a hold: the window emptied
+    hybrid_control(hybrid, test_mock_now, 0.0, 45, &node->opts.hybrid_transport);
+    hybrid->hold_until_ns = 0;
+    EXPECT_EQ_U32(0, hybrid->window.sent);
+    reorder_note(node, 7, 100, REORDER_COUNT - 1U);
+    reorder_note(node, 7, 236, 0);
+    reorder_note(node, 7, 236, 90); // run 45 lost
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+    EXPECT_EQ_U32(2, hybrid->rx_loss.events);
+    reorder_note(node, 7, 100, 45);           // sample 100's late run
+    EXPECT_EQ_U32(1, hybrid->window.lost);    // the new window's loss stays
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events); // rx_loss was not emptied: taken back there
+    EXPECT_EQ_U32(1, hybrid->rx_writers[1].runs.lost);
+    // rx_loss restarted between a gap and its late unit.
+    hybrid->advertised_loss = 0;
+    hybrid_rx_note(node, SENDER_ID, 9, 500, 0, 10, 1, false);
+    hybrid_rx_note(node, SENDER_ID, 9, 500, 2, 10, 1, false); // unit 1 not come yet
+    test_mock_receiver_drops = 1; // the HAL's count only grows: it stays at 1, no drop after this one
+    hybrid_rx_note(node, SENDER_ID, 9, 500, 4, 10, 1, false); // unit 3 put down to a receiver drop: a restart
+    EXPECT_EQ_U32(0, hybrid->rx_loss.events);
+    hybrid_rx_note(node, SENDER_ID, 9, 500, 6, 10, 1, false); // unit 5 lost: the new estimate's event
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events);
+    uint32_t mtu_events = hybrid->mtu_loss.events;
+    hybrid_rx_note(node, SENDER_ID, 9, 500, 1, 10, 1, false); // unit 1, late
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events);                 // the event it counted went with the restart
+    EXPECT_EQ_U32(mtu_events - 1U, hybrid->mtu_loss.events);  // p_mtu was not restarted: taken back there
+    test_mock_receiver_drops = 0;
+}
+
 // Writers of one source, `writers` of them, each sending 21-unit samples - a run of 20 and the tail alone - round by
 // round, the first round whole and the next `lossy_rounds` with every run lost and only the tail through: the shape in
 // which a stream's runs all die in the reader host's reassembly memory (the PC A/B, 2026-10-27). Returns the runs the
@@ -3907,6 +4116,9 @@ int main(void) {
     test_a_gap_goes_by_its_own_samples_layout();
     test_a_sample_lost_whole_is_counted();
     test_receiver_drops_are_not_path_loss();
+    test_a_reordered_original_is_not_loss();
+    test_a_real_loss_still_counts();
+    test_more_reorders_than_the_reader_keeps();
     test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();
     test_p_is_announced_when_n_star_moves();
