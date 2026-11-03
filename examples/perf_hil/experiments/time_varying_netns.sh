@@ -69,6 +69,10 @@
 #      hybrid's n* is not printed by any node; its only reader-side input, the loss code p the publisher holds, is
 #      (large bench PEER_P lines): its convergence to the static arm's p is reported, not judged.
 #   V4 (J): copies after delivery <= 1% of delivered, tv minus worst static.
+#   A/A (user 2026-11-03, after X0c flipped 4 of ~30 verdicts between the same tree's rep halves): V1, V2 and V4 FAIL
+#     only when over the limit AND tv - static exceeds the A/A spread (the same quantity on the odd reps against the
+#     even reps); over the limit inside the spread is NOISE (undecided). D and LD need 8 usable reps for V1/V2 (run
+#     them with REPS=8), the others 4; fewer is VOID. Copy ratios are also printed per run (median and range).
 #   rel_large copies are per unit: the denominator is delivered x 723 units (1 MiB at a 1500-byte MTU), checked per run
 #   against the publisher's own first-send unit count; a mismatch voids the run (amended 2026-11-03 after T1).
 #   VOID (outcome, never config): a missing RESULT line, a Publisher that never matched, under 60% of the offered

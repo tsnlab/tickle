@@ -8,7 +8,8 @@ jitter), each tv arm judged as (tv value - worst static phase value), with STATI
 already fails the same number, and VOID read from outcomes only. A "V3_DEADLINE" line per cell reports each static
 arm's samples that missed the deadline.
 
-Prints one line per (rule, tv arm, cell): "<rule> <arm> <cell> PASS|FAIL|STATIC|VOID|N/A <text>", then a summary.
+Prints one line per (rule, tv arm, cell): "<rule> <arm> <cell> PASS|FAIL|NOISE|STATIC|VOID|N/A <text>", then a
+summary. NOISE: over the limit, but tv - static inside the A/A spread (odd reps against even reps): undecided.
 N/A is V2 on a family whose down step lands in a lossless phase (LD: nothing to repair). A "CONTROL_RESENDS" line
 reports the clean control's rel_large resends, which void every rel_large verdict; the verdict each would have read
 is printed after "read past the control (not scored)".
@@ -42,6 +43,14 @@ V3_DEADLINE_MS = {"rel_small": 100.0, "rel_large": 200.0}
 V3_WINDOW_S = 2.0  # the transition: samples sent within this long after a loss step
 V4_COPIES_MAX = 0.01  # copies after delivery / delivered under jitter: tv minus worst static, and the STATIC limit
 P_CONVERGE_FACTOR = 2.0  # report only: the publisher's p within this factor of the static arm's final p
+# A/A rule (user 2026-11-03, from X0c: the same tree's rep halves flipped 4 of ~30 verdicts, all D/LD V1/V2): a tv
+# arm FAILs V1, V2 or V4 only when it is over the limit AND its tv - static also exceeds the A/A spread - the
+# same quantity on the odd reps against the even reps (interleaved in time), tv and static alike. An excess inside the
+# spread reads NOISE: undecided, not a pass. D and LD arms need AA_MIN_REPS_DELAY usable reps for V1/V2, the others
+# AA_MIN_REPS (two per half); fewer is VOID.
+AA_MIN_REPS = 4
+AA_MIN_REPS_DELAY = 8
+DELAY_FAMILIES = ("D", "LD")
 
 # --- VOID limits (outcomes) ---
 MIN_SCORED_FRAC = 0.6  # a small run scoring under this share of DUR x 100 Hz is VOID
@@ -466,6 +475,9 @@ def copies_rule(rule, limit, runs, arm, family, cell, emit):
         why += [f"{r['rep']}: {v}" for v in tv_phase_check(r, family)]
     why += treatment_void(runs, family, cell)
     tvu = usable(tv)
+    need = AA_MIN_REPS_DELAY if family in DELAY_FAMILIES else AA_MIN_REPS
+    if len({r["rep"] for r in tvu}) < need:
+        why.append(f"tv {len({r['rep'] for r in tvu})} usable reps, under {need} (the A/A spread needs them)")
     unit = "samples" if cell == "rel_small" else "units"
     t_dl = sum(r["copy_den"] for r in tvu)
     t_cp = sum(r["copies"] for r in tvu)
@@ -486,13 +498,29 @@ def copies_rule(rule, limit, runs, arm, family, cell, emit):
     worst = statics[worst_ph][0]
     tv_rate = t_cp / t_dl
     delta = tv_rate - worst
-    text = (f"tv copies after delivery {t_cp}/{t_dl} {unit} = {pct(tv_rate)}; worst static s_{worst_ph} "
+    # The A/A spread: tv - worst on the odd reps against the even reps.
+    halves = []
+    for parity in (1, 0):
+        hv = [r for r in tvu if int(r["rep"]) % 2 == parity]
+        hs = [r for r in usable(static_runs(runs, worst_ph, cell)) if int(r["rep"]) % 2 == parity]
+        hv_dl, hs_dl = sum(r["copy_den"] for r in hv), sum(r["copy_den"] for r in hs)
+        halves.append((sum(r["copies"] for r in hv) / hv_dl if hv_dl else 0.0)
+                      - (sum(r["copies"] for r in hs) / hs_dl if hs_dl else 0.0))
+    spread = abs(halves[0] - halves[1])
+    per_run = sorted(r["copies"] / r["copy_den"] for r in tvu if r["copy_den"])
+    text = (f"tv copies after delivery {t_cp}/{t_dl} {unit} = {pct(tv_rate)} (per run median "
+            f"{pct(quantile(per_run, 0.5))}, range {pct(per_run[0])}..{pct(per_run[-1])}); worst static s_{worst_ph} "
             f"{statics[worst_ph][1]}/{statics[worst_ph][2]} = {pct(worst)}; tv - worst = {pct(delta)} "
-            f"(limit {pct(limit)}); statics: " + ", ".join(f"s_{k} {pct(v[0])}" for k, v in statics.items()))
+            f"(limit {pct(limit)}; A/A odd/even reps {pct(halves[0])} / {pct(halves[1])}, spread {pct(spread)}); "
+            "statics: " + ", ".join(f"s_{k} {pct(v[0])}" for k, v in statics.items()))
     if worst > limit:
         emit(rule, arm, cell, "STATIC", text + f" - s_{worst_ph} already over {pct(limit)}")
+    elif delta <= limit:
+        emit(rule, arm, cell, "PASS", text)
+    elif delta <= spread:
+        emit(rule, arm, cell, "NOISE", text + " - tv - worst over the limit but inside the A/A spread: undecided")
     else:
-        emit(rule, arm, cell, "PASS" if delta <= limit else "FAIL", text)
+        emit(rule, arm, cell, "FAIL", text)
 
 
 def down_steps(r, family):
@@ -528,6 +556,9 @@ def v2(runs, arm, family, emit):
     ref_owd = pooled_owd(ref)
     if len(ref_owd) < V2_MIN_WINDOW:
         why.append(f"static s_{dest}: {len(ref_owd)} unloaded samples, under {V2_MIN_WINDOW}")
+    need = AA_MIN_REPS_DELAY if family in DELAY_FAMILIES else AA_MIN_REPS
+    if len({r["rep"] for r in usable(tv)}) < need:
+        why.append(f"tv {len({r['rep'] for r in usable(tv)})} usable reps, under {need} (the A/A spread needs them)")
     if why:
         emit("V2", arm, cell, "VOID", "; ".join(why))
         return
@@ -541,6 +572,7 @@ def v2(runs, arm, family, emit):
         second += [owd_ms(x) - base for x in rows[len(rows) // 2:]]
     h1, h2 = quantile(sorted(first), 0.99), quantile(sorted(second), 0.99)
     transient, settled = [], []
+    by_parity = {1: [], 0: []}
     for r in usable(tv):
         if r["lat_void"]:
             continue
@@ -553,7 +585,11 @@ def v2(runs, arm, family, emit):
             for row in r["trace"]:
                 if start <= row[1] < end:
                     w = owd_ms(row) - base
-                    (transient if row[1] < start + V2_SETTLE_S * 1e9 else settled).append(w)
+                    if row[1] < start + V2_SETTLE_S * 1e9:
+                        transient.append(w)
+                    else:
+                        settled.append(w)
+                        by_parity[int(r["rep"]) % 2].append(w)
     transient.sort()
     settled.sort()
     tr = (f"transient (first {V2_SETTLE_S:.0f} s from the change start) p99 {quantile(transient, 0.99):.2f} ms, "
@@ -569,10 +605,15 @@ def v2(runs, arm, family, emit):
         return
     got = quantile(settled, 0.99)
     limit = V2_WAIT_FACTOR * ref_p99
-    emit("V2", arm, cell, "PASS" if got <= limit else "FAIL",
+    hp = [quantile(sorted(by_parity[k]), 0.99) if by_parity[k] else 0.0 for k in (1, 0)]
+    spread = abs(hp[0] - hp[1])
+    verdict = "PASS" if got <= limit else ("NOISE" if got - ref_p99 <= spread else "FAIL")
+    noise = " - over the limit but tv - static inside the A/A spread: undecided" if verdict == "NOISE" else ""
+    emit("V2", arm, cell, verdict,
          f"repair-wait p99 {got:.2f} ms over {len(settled)} settled samples vs limit {limit:.2f} ms "
          f"({V2_WAIT_FACTOR} x s_{dest} p99 {ref_p99:.2f} ms over its p50 {base:.2f} ms; halves {h1:.2f}/{h2:.2f}); "
-         f"tv - static = {got - ref_p99:+.2f} ms; {tr}")
+         f"tv - static = {got - ref_p99:+.2f} ms; A/A odd/even reps p99 {hp[0]:.2f} / {hp[1]:.2f} ms, spread "
+         f"{spread:.2f}{noise}; {tr}")
 
 
 def decode_p(code):
