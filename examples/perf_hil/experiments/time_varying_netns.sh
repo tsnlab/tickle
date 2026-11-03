@@ -87,8 +87,55 @@
 #     halves differing by more than the rule's own tolerance); too few samples in a window; a PC 1-minute load above
 #     nproc/2 at a run's start voids its latency (V2), not its delivery.
 #
+# X1, THE STATIC CONDITION MAP (added 2026-11-03; ~/claude_reports/TIME_VARYING_EXPERIMENT_PLAN_2026-11-03.md X1). A
+# static arm s_x<D>l<L> is "delay <D>ms" plus, for L > 0, "loss random <L>%" (s_x1l0 is s_l0's netem, so the grid uses
+# s_l0 for that point). X1=1 sets ARMS to s_l0 and every other point of X1_DELAYS (default "1 3 5 10 20 50 100") x
+# X1_LOSSES (default "0 1 2 5 10"): 35 arms with s_l0, and NODE_PIN to "2 4 6" unless it is set (X0a: unpinned veth
+# reorders on this PC; NODE_PIN="" runs unpinned on purpose). One run is one PROFILE: X1 is two OUTs, ETHERNET and
+# WIFI, read together by `time_varying_read.py --x1 OUT_ETH OUT_WIFI` (a plain read of an OUT with grid arms prints
+# the same section after the tv verdicts). Every existing arm, key and rule above is unchanged.
+#   PRE-REGISTERED (2026-11-03, before any X1 run; the reader's X1_* constants enforce each one, per profile x cell x
+#   metric, on the median over a point's usable reps, and print the first grid point over the limit - lowest delay,
+#   then loss - and, per loss, the delays over it). A static FAIL found here is a bug, fixed separately.
+#   COPIES (rel cells): copies after delivery <= 1% of delivered (R7 / V1, rel_large per unit as above).
+#   DELIVERY: RELIABLE delivers 100% of offered (the s_l0 control's own rule; the small ping drains 3 s, the large
+#     sub runs 8 s past the publisher, so a tail repair has time even at 100 ms); BE >= (1 - L) - 4 binomial sigmas
+#     of the offered count - 0.1% (CONTROL_BE_MIN's allowance): over 70 BE points ~0.2% chance of one false FAIL.
+#   TIMER_PER_GAP (rel cells): repair requests the retry timer sent (the reader's RSTATS acknack_tx timer) per gap it
+#     opened (gaps_opened), <= 1.0. A gap's first request is immediate; the timer re-asks only when that request or
+#     its repair is lost, 1/(1-L)^2 - 1 = 0.23 a gap at 10% - and once per gap is plan decision 2's cost unit (at
+#     most one spurious copy a gap). X0c (c63d12ad): 0.11..0.21 at s_lb5 (1 ms, 5%), 15 at s_d20 (20 ms, 2%): the
+#     repair-request storm this map is to locate. Needs 10 gaps a rep, else n/a.
+#   RESEND_PER_MISSING (rel cells): units the data writer retransmitted per unit the reader saw missing
+#     (missing_opened), <= 1.5 (plan decision 2's "retransmits <= 1.5 x missing"); an ideal ARQ needs 1/(1-L) = 1.11
+#     at 10%. Needs 10 missing a rep. Retransmits with no loss are printed (X1 ZERO_LOSS_RESENDS, report only).
+#   RTT_P99 (be_small at every L - a lost round trip is not scored -, rel_small at 0%): round-trip p99 <= s_l0's p99
+#     + 2 (D - 1) ms + slack, slack = 1 ms + 1% of 2 (D - 1). s_l0's p99 already holds the 1 ms of each way; netem
+#     delay is a constant add, and the clean tail is ~0.1 ms (X0c s_l0 p99 - p50 0.08 ms, s_d20 p90 - p50 0.03 ms),
+#     so 1 ms is a scheduling hiccup's room at p99 and the 1% the per-packet timer error netem may add over a long
+#     delay (not measured here); a HOL wait or a spurious repair round is >= 2 D and exceeds it.
+#   OWD_P99: rel_small under loss: R2 (wifi_burst_loss_netns.sh) for independent loss: one-way p99 <= base_owd + T +
+#     K x 1.5 x base_rtt, base_owd / base_rtt = s_l0 rel_small one-way / round-trip p50 + (D - 1) / 2 (D - 1),
+#     T = 10 ms, K the least k with L x q^k <= 1%, q = 1 - (1 - L)^2 (K = 1 to 5%, 2 at 10%). rel_large at 0%: one-way
+#     p99 <= s_l0 rel_large p99 + (D - 1) + 1 ms + 1% of (D - 1).
+#   OWD_P50 (rel_large under loss): R4: one-way p50 <= s_l0 rel_large p50 + (D - 1) + 4 x base_rtt.
+#   COPIES_RETURN, TIMER_PER_GAP_RETURN, RESEND_PER_MISSING_RETURN (rel_small): the three limits above on the return
+#     stream, echo's RELIABLE pongs to ping (ping is that stream's reader, echo its writer). Added before any X1 run
+#     but after the smoke (2026-11-03, 50 ms / 5%: 32% copies after delivery on the pongs, none on the data stream,
+#     which V1 reads alone).
+#   Report only (no agreed limit): RTT_P50, IMMEDIATE_PER_GAP, ONTIME (V3's deadline from creation), ABANDONED (the
+#     reader's hb_abandoned_seq + jump_abandoned_seq + retry_giveups, which explains a RELIABLE DELIVERY miss).
+#   VOID: the s_l0 rules above (any loss in the control voids every X1 verdict; its rel_large resends void rel_large's);
+#     a rep is dropped from its point (printed) when the run voids as above, its realized unicast loss is outside
+#     [0.5 L, 1.5 L], or its one-way p50 is under (D - 1) - 0.5 ms - 5% of (D - 1) above s_l0's (the delay not seen); a
+#     loaded PC drops a rep's latency metrics only. A point with no usable rep reads V.
+#   TIME (measured on the X1 smoke, 2026-11-03, this PC, DUR=30; a run's length is set by DUR, not by the delay):
+#     37 s a small run (50 ms / 5% as 1 ms), 40 s a rel_large run, 12 s the build. 35 arms x (2 x 37 + 40) s = 66 min
+#     a rep and profile; both profiles: REPS=2 ~4.4 h, REPS=4 ~8.9 h (sequential: one PC, one pinned CPU set).
+#
 # Usage: [REPS=1] [DUR=30] [FAMILIES="D J LB LG LD"] [PHASES_S="2 10"] [CELLS="be_small rel_small rel_large"]
-#        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [NODE_PIN="cpu0 cpu1 cpu2"] [OUT=dir] time_varying_netns.sh
+#        [ARMS=...] [D_BG_LOSS=2] [PROFILE=ethernet|wifi] [NODE_PIN="cpu0 cpu1 cpu2"] [OUT=dir]
+#        [X1=1 [X1_DELAYS="1 3 5 10 20 50 100"] [X1_LOSSES="0 1 2 5 10"]] time_varying_netns.sh
 #   NODE_PIN runs node k (ping/pub, echo/sub, idle) under taskset on the k-th CPU listed (X0a, the reorder source);
 #   each run's meta.txt records it.
 #   EST_TRACE=1 builds both binaries with -Dtt_ESTIMATOR_TRACE (X0d): every node prints, at most every 100 ms, one
@@ -145,6 +192,21 @@ family_phases() {
     *) return 1 ;;
     esac
 }
+X1=${X1:-0}
+case "$X1" in 0 | 1) ;; *) echo "X1 must be 0 or 1" >&2; exit 2 ;; esac
+X1_DELAYS=${X1_DELAYS:-"1 3 5 10 20 50 100"}
+X1_LOSSES=${X1_LOSSES:-"0 1 2 5 10"}
+if [ "$X1" = 1 ]; then # the X1 grid; (1 ms, 0%) is the control s_l0 itself
+    [ -n "${ARMS:-}" ] && { echo "X1=1 sets ARMS; give X1_DELAYS / X1_LOSSES instead" >&2; exit 2; }
+    ARMS="s_l0"
+    for dl in $X1_DELAYS; do
+        for lp in $X1_LOSSES; do
+            [[ $dl =~ ^[0-9]+$ && $lp =~ ^[0-9]+$ ]] || { echo "X1_DELAYS/X1_LOSSES are integers" >&2; exit 2; }
+            [ "$dl/$lp" = 1/0 ] || ARMS="$ARMS s_x${dl}l$lp"
+        done
+    done
+    NODE_PIN=${NODE_PIN-"2 4 6"} # X0a: unpinned veth reorders on this PC; NODE_PIN="" runs unpinned on purpose
+fi
 if [ -z "${ARMS:-}" ]; then
     ARMS=""
     STATICS="s_l0"
@@ -182,6 +244,7 @@ say "=== time_varying_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFI
     echo "arms='$ARMS' cells='$CELLS' netem_extra='${NETEM_EXTRA:-}' node_env='${NODE_ENV:-}'"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
     echo "est_trace=$EST_TRACE"
+    [ "$X1" = 1 ] && echo "x1=1 x1_delays='$X1_DELAYS' x1_losses='$X1_LOSSES' node_pin='${NODE_PIN:-}'"
     echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS${TRACE_DEF:+ ${TRACE_DEF[*]}}"
     echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" \
         "-Dtt_RELIABLE_STATS -DR4_TRACE${TRACE_DEF:+ ${TRACE_DEF[*]}}"
@@ -236,6 +299,11 @@ spec() {
     lb5) words="delay 1ms loss random 5%" ;;
     lg5) words="delay 1ms $(ge 5 4)" ;;
     ld2) words="delay 21ms $(ge 10 8)" ;;
+    x*l*) # X1 grid key x<delay ms>l<random loss %>
+        [[ $1 =~ ^x([0-9]+)l([0-9]+)$ ]] || return 1
+        words="delay ${BASH_REMATCH[1]}ms"
+        [ "${BASH_REMATCH[2]}" != 0 ] && words="$words loss random ${BASH_REMATCH[2]}%"
+        ;;
     *) return 1 ;;
     esac
     echo "limit 10000 $words ${NETEM_EXTRA:-}"

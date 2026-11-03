@@ -13,6 +13,11 @@ summary. NOISE: over the limit, but tv - static inside the A/A spread (odd reps 
 N/A is V2 on a family whose down step lands in a lossless phase (LD: nothing to repair). A "CONTROL_RESENDS" line
 reports the clean control's rel_large resends, which void every rel_large verdict; the verdict each would have read
 is printed after "read past the control (not scored)".
+
+X1 (the static condition map, harness X1=1): when an OUT holds grid arms s_x<delay>l<loss>, an "X1" section follows
+the summary - per cell and metric a delay x loss table ("X1 TABLE") and an "X1 BOUNDARY <profile> <cell> <metric>
+PASS|FAIL|VOID" line naming the first grid point over the pre-registered limit. `time_varying_read.py --x1 OUT...`
+prints only that section, for each OUT (one profile each).
 """
 
 import bisect
@@ -797,9 +802,357 @@ def void_behind(rule, arm, cell, cr, emit, judge):
          f"scored): {behind}")
 
 
+# --- X1: the static condition map ------------------------------------------------------------------------------------
+# Experiment X1 (~/claude_reports/TIME_VARYING_EXPERIMENT_PLAN_2026-11-03.md): static arms s_x<delay ms>l<loss %> over
+# a delay x random-loss grid (the harness's X1=1), the control s_l0 standing for (1 ms, 0%). Per profile x cell x metric
+# a delay x loss table of the per-rep median [range], and per metric where it first crosses its limit. The limits are
+# PRE-REGISTERED here, before any X1 run (2026-11-03); the harness header gives the reasons. A metric with no agreed
+# limit is printed and labelled report only. A judged point is the median over its usable reps.
+X1_ARM_RE = re.compile(r"^s_x(\d+)l(\d+)$")
+X1_DELIVERY_REL_MIN = 1.0  # RELIABLE delivers every offered sample (the s_l0 control's own rule)
+X1_BE_SIGMAS = 4.0  # BE: delivered >= (1 - L) - 4 binomial sigmas - X1_BE_ALLOW
+X1_BE_ALLOW = 1 - CONTROL_BE_MIN  # 0.1%, the clean control's BE allowance
+X1_TIMER_PER_GAP_MAX = 1.0  # repair requests sent by the retry timer per gap the reader opened
+X1_RESEND_PER_MISSING_MAX = 1.5  # units the writer retransmitted per unit the reader saw missing (plan decision 2)
+X1_SLACK_MS = 1.0  # latency shift limits: + this + X1_SLACK_REL x the added delay
+X1_SLACK_REL = 0.01
+X1_REPAIR_FACTOR = 1.5  # R2 (wifi_burst_read.py ROUND_FACTOR): a repair round is 1.5 round trips
+X1_P99_TARGET = 0.01  # R2: K is the least k with L x q^k <= this
+X1_PERIOD_MS = 1000.0 / SMALL_HZ  # R2's T: detection by the next sample
+X1_R4_RTTS = 4  # R4 (wifi_burst_loss_netns.sh): rel_large one-way p50 <= ctl p50 + 4 base round trips
+X1_MIN_GAPS = 10  # a rep's per-gap / per-missing ratio needs this many gaps / missing units, else n/a
+X1_DELAY_TOL_MS = 0.5  # treatment: one-way p50 - s_l0's >= (d - 1) - this - X1_DELAY_TOL_REL x (d - 1)
+X1_DELAY_TOL_REL = 0.05
+X1_COL = 24  # table column width
+
+
+def x1_key(arm):
+    if arm == "s_l0":
+        return (1, 0)
+    m = X1_ARM_RE.match(arm)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def x1_median(vals):
+    v = sorted(x for x in vals if x is not None)
+    n = len(v)
+    return None if not n else (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2)
+
+
+def x1_rounds(loss):
+    """R2's K for independent loss: a lost sample needs another round when its request or its repair is lost,
+    q = 1 - (1 - L)^2 a round; K is the least k with L x q^k <= X1_P99_TARGET."""
+    q = 1 - (1 - loss) ** 2
+    k = 1
+    while loss * q**k > X1_P99_TARGET and k < 20:
+        k += 1
+    return k
+
+
+def x1_rt(r, i):
+    """Round trip (small cells: ping's RESULT, every scored round trip) p50 (i=0) or p99 (i=1) in ms."""
+    if r["cell"] == "rel_large":
+        return None
+    v = num(r["ping"], ("p50_us", "p99_us")[i], -1.0)
+    return v / 1e3 if v >= 0 else None
+
+
+def x1_owd(r, q):
+    o = pooled_owd([r])
+    return quantile(o, q) if o else None
+
+
+def x1_ratio(n, d):
+    """n per d, n/a when either count is absent from the node output (an absent field is not a zero) or d is under
+    X1_MIN_GAPS."""
+    return n / d if n is not None and d is not None and d >= X1_MIN_GAPS else None
+
+
+def x1_get(r, key):
+    """An RSTATS counter ("<role>.<field>") as an int, None when the node did not print it."""
+    return int(num(r["rstats"], key)) if key in r["rstats"] else None
+
+
+def x1_rs(r, key):
+    """The data direction's reader (echo; rel_large's sub) RSTATS counter, None when absent."""
+    return x1_get(r, ("sub." if r["cell"] == "rel_large" else "echo.") + key)
+
+
+def x1_resent(r):
+    """The data writer's retransmissions: ping's (small cells; it writes nothing else), the large publisher's units
+    (its RESULT; -1 there when absent)."""
+    if r["cell"] == "rel_large":
+        return r["retransmitted"] if r["retransmitted"] >= 0 else None
+    return x1_get(r, "ping.retransmitted")
+
+
+def x1_copies(r):
+    floor = MIN_DELIVERED if r["cell"] != "rel_large" else MIN_DELIVERED_LARGE
+    return r["copies"] / r["copy_den"] if r["delivered"] >= floor and r["copy_den"] else None
+
+
+def x1_ret_copies(r):
+    """rel_small's return stream: copies after delivery at ping (core's late_below_ack and duplicates, the node's own
+    duplicates) per pong it scored; n/a when a field is absent."""
+    parts = [x1_get(r, "ping.late_below_ack"), x1_get(r, "ping.duplicates")]
+    if None in parts or "duplicates" not in r["ping"] or "scored" not in r["ping"]:
+        return None
+    scored = int(num(r["ping"], "scored"))
+    return (sum(parts) + int(num(r["ping"], "duplicates"))) / scored if scored >= MIN_DELIVERED else None
+
+
+def x1_abandoned(r):
+    parts = [x1_rs(r, k) for k in ("hb_abandoned_seq", "jump_abandoned_seq", "retry_giveups")]
+    return None if None in parts else float(sum(parts))
+
+
+def x1_delivered(r):
+    return min(r["delivered"], r["offered"]) / r["offered"] if r["offered"] else None
+
+
+def x1_ontime(r):
+    if r["cell"] not in V3_DEADLINE_MS or not r["offered"]:
+        return None
+    return len(on_time(r, V3_DEADLINE_MS[r["cell"]])) / r["offered"]
+
+
+def lim_copies(cell, d, loss, ctx):
+    return ("<=", V1_COPIES_MAX, "R7/V1")
+
+
+def lim_delivery(cell, d, loss, ctx):
+    if cell != "be_small":
+        return (">=", X1_DELIVERY_REL_MIN, "RELIABLE 100%")
+    n = ctx["offered"] or 1
+    lim = (1 - loss) - X1_BE_SIGMAS * (loss * (1 - loss) / n) ** 0.5 - X1_BE_ALLOW
+    return (">=", lim, f"1-L - {X1_BE_SIGMAS:g} sigma - {pct(X1_BE_ALLOW)}")
+
+
+def lim_timer(cell, d, loss, ctx):
+    return ("<=", X1_TIMER_PER_GAP_MAX, "timer requests per gap")
+
+
+def lim_resend(cell, d, loss, ctx):
+    return ("<=", X1_RESEND_PER_MISSING_MAX, "plan decision 2")
+
+
+def lim_rtt(cell, d, loss, ctx):
+    """be_small at every loss (a lost round trip is not scored) and rel_small at 0%: the clean control's p99 shifted by
+    the added delay both ways, plus the slack. rel_small under loss is judged by OWD_P99 (R2)."""
+    if (cell == "rel_small" and loss) or ctx["base_rtt_p99"] is None:
+        return None
+    add = 2 * (d - 1)
+    return ("<=", ctx["base_rtt_p99"] + add + X1_SLACK_MS + X1_SLACK_REL * add, "s_l0 p99 + 2(d-1) + slack")
+
+
+def lim_owd_p99(cell, d, loss, ctx):
+    """rel_small under loss: R2 for independent loss, base_owd + T + K x 1.5 x base_rtt, the bases s_l0's p50s shifted
+    by the added delay. rel_large at 0%: s_l0's p99 shifted by the added delay one way, plus the slack."""
+    if cell == "rel_small" and loss and ctx["base_owd_p50"] is not None and ctx["base_rtt_p50"] is not None:
+        k = x1_rounds(loss)
+        owd, rtt = ctx["base_owd_p50"] + (d - 1), ctx["base_rtt_p50"] + 2 * (d - 1)
+        return ("<=", owd + X1_PERIOD_MS + k * X1_REPAIR_FACTOR * rtt, f"R2 K={k}")
+    if cell == "rel_large" and not loss and ctx["base_owd_p99"] is not None:
+        add = d - 1
+        return ("<=", ctx["base_owd_p99"] + add + X1_SLACK_MS + X1_SLACK_REL * add, "s_l0 p99 + (d-1) + slack")
+    return None
+
+
+def lim_owd_p50(cell, d, loss, ctx):
+    """rel_large under loss: R4, the clean control's one-way p50 + 4 base round trips (s_l0 rel_small's round-trip
+    p50), each shifted by the added delay."""
+    if cell != "rel_large" or not loss or ctx["base_owd_p50"] is None or ctx["base_rtt_p50"] is None:
+        return None
+    return ("<=", ctx["base_owd_p50"] + (d - 1) + X1_R4_RTTS * (ctx["base_rtt_p50"] + 2 * (d - 1)), "R4")
+
+
+REL_CELLS = ("rel_small", "rel_large")
+SMALL_CELLS = ("be_small", "rel_small")
+ALL_CELLS = ("be_small", "rel_small", "rel_large")
+# name, cells, value(run), limit(cell, delay ms, loss share, ctx) -> (op, limit, why) | None (no limit at that point;
+# a metric whose limit is None is report only), format, whether a loaded PC voids it (latency)
+X1_METRICS = [
+    ("COPIES", REL_CELLS, x1_copies, lim_copies, "pct", False),
+    ("DELIVERY", ALL_CELLS, x1_delivered, lim_delivery, "pct", False),
+    ("TIMER_PER_GAP", REL_CELLS, lambda r: x1_ratio(x1_rs(r, "timer"), x1_rs(r, "gaps_opened")), lim_timer, "f2",
+     False),
+    ("RESEND_PER_MISSING", REL_CELLS, lambda r: x1_ratio(x1_resent(r), x1_rs(r, "missing_opened")), lim_resend, "f2",
+     False),
+    ("RTT_P99", SMALL_CELLS, lambda r: x1_rt(r, 1), lim_rtt, "ms", True),
+    ("OWD_P99", REL_CELLS, lambda r: x1_owd(r, 0.99), lim_owd_p99, "ms", True),
+    ("OWD_P50", ("rel_large",), lambda r: x1_owd(r, 0.5), lim_owd_p50, "ms", True),
+    ("RTT_P50", SMALL_CELLS, lambda r: x1_rt(r, 0), None, "ms", True),
+    ("IMMEDIATE_PER_GAP", REL_CELLS, lambda r: x1_ratio(x1_rs(r, "immediate"), x1_rs(r, "gaps_opened")), None, "f2",
+     False),
+    ("ONTIME", REL_CELLS, x1_ontime, None, "pct", True),
+    ("ABANDONED", REL_CELLS, x1_abandoned, None, "f0", False),
+    # rel_small's return stream (echo's RELIABLE pongs to ping), under the same limits: the X1 smoke (2026-11-03,
+    # 50 ms / 5%) showed copies after delivery at 32% on this stream with none on the data stream.
+    ("COPIES_RETURN", ("rel_small",), x1_ret_copies, lim_copies, "pct", False),
+    ("TIMER_PER_GAP_RETURN", ("rel_small",), lambda r: x1_ratio(x1_get(r, "ping.timer"),
+                                                                x1_get(r, "ping.gaps_opened")), lim_timer, "f2", False),
+    ("RESEND_PER_MISSING_RETURN", ("rel_small",), lambda r: x1_ratio(x1_get(r, "echo.retransmitted"),
+                                                                     x1_get(r, "ping.missing_opened")),
+     lim_resend, "f2", False),
+]
+
+
+def x1_fmt(v, f):
+    if v is None:
+        return "-"
+    return pct(v) if f == "pct" else {"f2": f"{v:.2f}", "f0": f"{v:.0f}"}.get(f, f"{v:.1f}")
+
+
+def x1_rep_why(r, d, loss, base_owd50):
+    """Reasons a rep of a grid point is not usable: its own VOIDs, then the treatment seen in its outcome - the
+    realized unicast loss within LOSS_REALIZED of nominal, the one-way p50 at least the added delay above s_l0's."""
+    why = list(r["void"])
+    if why:
+        return why
+    if loss:
+        real = realized_loss(r)
+        if real is None or not LOSS_REALIZED[0] * loss / 100 <= real <= LOSS_REALIZED[1] * loss / 100:
+            why.append(f"realized unicast loss {pct(real)} for nominal {loss}%")
+    p50 = x1_owd(r, 0.5)
+    need = (d - 1) - X1_DELAY_TOL_MS - X1_DELAY_TOL_REL * (d - 1)
+    if d > 1 and base_owd50 is not None and (p50 is None or p50 - base_owd50 < need):
+        seen = "n/a" if p50 is None else f"{p50 - base_owd50:.2f} ms"
+        why.append(f"one-way p50 {seen} above s_l0's, under {need:.2f} ms: the delay is not seen")
+    return why
+
+
+def x1_table(profile, cell, metric, reps, delays, losses, ctx):
+    """Prints one metric's delay x loss table; returns the judged points over their limit."""
+    name, _, value, limit_of, f, lat = metric
+    judged = limit_of is not None
+    print(f"X1 TABLE {profile} {cell} {name}{'' if judged else ' (report only)'}: per-rep median [min..max]; "
+          + ("! over its limit, = no limit at this point; " if judged else "") + "- n/a; V no usable rep")
+    print("  delay\\loss " + "".join(f"{str(lo) + '%':>{X1_COL}}" for lo in losses))
+    over = []
+    for d in delays:
+        row = f"  {d:>6} ms "
+        for lo in losses:
+            rs = reps.get((d, lo))
+            if rs is None:
+                row += " " * X1_COL
+                continue
+            if not rs:
+                row += f"{'V':>{X1_COL}}"
+                continue
+            vals = [v for v in (value(r) for r in rs if not (lat and r["lat_void"])) if v is not None]
+            med = x1_median(vals)
+            txt = x1_fmt(med, f)
+            if len(vals) > 1 and min(vals) != max(vals):
+                txt += f"[{x1_fmt(min(vals), f).rstrip('%')}..{x1_fmt(max(vals), f).rstrip('%')}]"
+            mark = ""
+            if judged and med is not None:
+                ctx["offered"] = x1_median([r["offered"] for r in rs])
+                lim = limit_of(cell, d, lo / 100, ctx)
+                if lim is None:
+                    mark = "="
+                elif (med > lim[1]) if lim[0] == "<=" else (med < lim[1]):
+                    mark = "!"
+                    over.append((d, lo, txt, lim))
+            row += f"{txt + mark:>{X1_COL}}"
+        print(row)
+    return over
+
+
+def x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary):
+    ctl = usable(static_runs(runs, "l0", cell))
+    ctl_l = [r for r in ctl if not r["lat_void"]]
+    ctl_rs = [r for r in usable(static_runs(runs, "l0", "rel_small")) if not r["lat_void"]]
+    ctx = {"base_owd_p50": x1_median([x1_owd(r, 0.5) for r in ctl_l]),
+           "base_owd_p99": x1_median([x1_owd(r, 0.99) for r in ctl_l]),
+           "base_rtt_p99": x1_median([x1_rt(r, 1) for r in ctl_l]),
+           "base_rtt_p50": x1_median([x1_rt(r, 0) for r in ctl_rs])}
+    base50_all = x1_median([x1_owd(r, 0.5) for r in ctl])
+    print(f"--- X1 {profile} {cell}: s_l0 bases (median over its unloaded reps): one-way p50 "
+          f"{x1_fmt(ctx['base_owd_p50'], 'ms')} / p99 {x1_fmt(ctx['base_owd_p99'], 'ms')} ms, round trip p99 "
+          f"{x1_fmt(ctx['base_rtt_p99'], 'ms')} ms, rel_small round trip p50 {x1_fmt(ctx['base_rtt_p50'], 'ms')} ms")
+    reps = {}
+    for (k, c), rs in sorted(grid.items()):
+        if c != cell:
+            continue
+        reps[k] = []
+        for r in sorted(rs, key=lambda r: int(r["rep"])):
+            why = list(r["void"]) if r["arm"] == "s_l0" else x1_rep_why(r, k[0], k[1], base50_all)
+            if why:
+                print(f"X1 VOID rep {r['arm']}/{cell}/{r['rep']}: {'; '.join(why)}")
+            else:
+                reps[k].append(r)
+    if cell != "be_small":
+        zl = [f"{r['arm']}/{r['rep']}: timer {x1_rs(r, 'timer')}, retransmitted {x1_resent(r)}"
+              for k, rs in sorted(reps.items()) if not k[1] for r in rs if x1_rs(r, "timer") or x1_resent(r)]
+        if zl:
+            print(f"X1 ZERO_LOSS_RESENDS {profile} {cell} (report only): " + "; ".join(zl))
+    void = cv or (cell == "rel_large" and cr)
+    for metric in X1_METRICS:
+        name, cells, _, limit_of, f, _ = metric
+        if cell not in cells:
+            continue
+        over = x1_table(profile, cell, metric, reps, delays, losses, ctx)
+        if limit_of is None:
+            continue
+        if over:
+            first = min(over, key=lambda x: (x[0], x[1]))
+            rows = []
+            for lo in losses:
+                ds = [x[0] for x in over if x[1] == lo]
+                if ds:
+                    rows.append(f"{lo}%: from {ds[0]} ms (over at {', '.join(str(x) for x in ds)} ms)")
+            verdict = "VOID" if void else "FAIL"
+            text = (f"first point over its limit (lowest delay, then loss): {first[0]} ms / {first[1]}% "
+                    f"{first[2]} vs {first[3][0]} {x1_fmt(first[3][1], f)} ({first[3][2]}); per loss: "
+                    + "; ".join(rows))
+        else:
+            verdict = "VOID" if void else "PASS"
+            text = "no judged point over its limit"
+        print(f"X1 BOUNDARY {profile} {cell} {name} {verdict}: {text}")
+        summary.append(f"{cell}/{name} {verdict}" + (f" from {first[0]} ms/{first[1]}%" if over else ""))
+
+
+def x1_section(out, runs):
+    prov = kv(" ".join(read_lines(os.path.join(out, "provenance.txt"))))
+    profile = prov.get("profile", "?")
+    grid = {}
+    for r in runs:
+        k = x1_key(r["arm"])
+        if k is not None:
+            grid.setdefault((k, r["cell"]), []).append(r)
+    delays = sorted({k[0] for k, _ in grid})
+    losses = sorted({k[1] for k, _ in grid})
+    pins = set()
+    for r in runs:
+        m = re.search(r"node_pin='([^']*)'", " ".join(read_lines(os.path.join(
+            out, "runs", f"{r['arm']}-{r['cell']}-{r['rep']}", "meta.txt"))))
+        pins.add(m.group(1) if m else "?")
+    print(f"=== X1 static map {out}: profile {profile}, delays {delays} ms x random loss {losses} %, "
+          f"{sum(len(v) for v in grid.values())} grid runs (s_l0 included); meta node_pin {sorted(pins)}")
+    cv = control_void(runs)
+    cr, _ = control_resends(runs)
+    if cv:
+        print("X1 VOID (every verdict): the clean control: " + "; ".join(cv))
+    if cr:
+        print("X1 VOID (rel_large verdicts): the clean control resends: " + "; ".join(cr))
+    summary = []
+    for cell in ALL_CELLS:
+        if any(c == cell and k != (1, 0) for k, c in grid):
+            x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary)
+    print(f"--- X1 summary {profile}: " + (", ".join(summary) if summary else "no grid arm"))
+
+
+def has_x1(runs):
+    return any(X1_ARM_RE.match(r["arm"]) for r in runs)
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--x1":
+        for out in sys.argv[2:]:
+            x1_section(out, load(out)[0])
+        return 0
     if len(sys.argv) != 2:
-        print("usage: time_varying_read.py OUT", file=sys.stderr)
+        print("usage: time_varying_read.py OUT | time_varying_read.py --x1 OUT [OUT...]", file=sys.stderr)
         return 2
     out = sys.argv[1]
     runs, dur = load(out)
@@ -861,6 +1214,8 @@ def main():
             continue
         print(f"{rule}: " + ", ".join(f"{a}/{c} {v}" for _, a, c, v in got))
     print("V5 (service call retries): not measured by this harness (plan decision 3)")
+    if has_x1(runs):
+        x1_section(out, runs)
     return 0
 
 
