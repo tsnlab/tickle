@@ -824,6 +824,15 @@ X1_MIN_GAPS = 10  # a rep's per-gap / per-missing ratio needs this many gaps / m
 X1_DELAY_TOL_MS = 0.5  # treatment: one-way p50 - s_l0's >= (d - 1) - this - X1_DELAY_TOL_REL x (d - 1)
 X1_DELAY_TOL_REL = 0.05
 X1_COL = 24  # table column width
+# HISTORY (coordinator rule, 2026-11-03, before any full X1 run): both RELIABLE streams are KEEP_LAST 10
+# (wifi_link_node's zeroed profile, data and pongs; large_sample_bench KEEP_LAST_DEPTH), so the writer holds
+# depth x period of history: 100 ms at 100 Hz, 2 s at the large bench's 5 Hz. Where 2 D + the clean round trip
+# (s_l0 rel_small p50) reaches that span a repair can come after its sample's eviction, and the writer abandons it by
+# design (DDS-shaped KEEP_LAST, a user decision): DELIVERY there is HISTORY, printed with the abandoned count and not
+# judged. Copies and timer requests stay judged everywhere: NACKing what the writer has already evicted, and the copies
+# that follow, is waste.
+X1_HISTORY_DEPTH = 10
+X1_HISTORY_NOTED = ("COPIES", "TIMER_PER_GAP", "COPIES_RETURN", "TIMER_PER_GAP_RETURN")
 
 
 def x1_key(arm):
@@ -901,9 +910,25 @@ def x1_ret_copies(r):
     return (sum(parts) + int(num(r["ping"], "duplicates"))) / scored if scored >= MIN_DELIVERED else None
 
 
-def x1_abandoned(r):
-    parts = [x1_rs(r, k) for k in ("hb_abandoned_seq", "jump_abandoned_seq", "retry_giveups")]
+def x1_abandoned(r, role=None):
+    """The reader's hb_abandoned_seq + jump_abandoned_seq + retry_giveups: the data stream's reader, or role's."""
+    keys = ("hb_abandoned_seq", "jump_abandoned_seq", "retry_giveups")
+    parts = [x1_rs(r, k) if role is None else x1_get(r, f"{role}.{k}") for k in keys]
     return None if None in parts else float(sum(parts))
+
+
+def x1_history_span_ms(cell, large_hz):
+    """The writer's KEEP_LAST history in ms: depth x period."""
+    return X1_HISTORY_DEPTH * 1000.0 / (large_hz if cell == "rel_large" else SMALL_HZ)
+
+
+def x1_history_limited(cell, d, ctx):
+    """True where 2 D + the clean round trip reaches the writer's history span; None when it cannot be decided."""
+    if cell not in REL_CELLS:
+        return False
+    if ctx["base_rtt_p50"] is None:
+        return None
+    return 2 * d + ctx["base_rtt_p50"] >= ctx["span"][cell]
 
 
 def x1_delivered(r):
@@ -922,6 +947,11 @@ def lim_copies(cell, d, loss, ctx):
 
 def lim_delivery(cell, d, loss, ctx):
     if cell != "be_small":
+        hist = x1_history_limited(cell, d, ctx)
+        if hist is None:
+            return None
+        if hist:
+            return ("HISTORY", ctx["span"][cell], "2D + base_rtt >= the writer's KEEP_LAST span")
         return (">=", X1_DELIVERY_REL_MIN, "RELIABLE 100%")
     n = ctx["offered"] or 1
     lim = (1 - loss) - X1_BE_SIGMAS * (loss * (1 - loss) / n) ** 0.5 - X1_BE_ALLOW
@@ -1026,9 +1056,11 @@ def x1_table(profile, cell, metric, reps, delays, losses, ctx):
     name, _, value, limit_of, f, lat = metric
     judged = limit_of is not None
     print(f"X1 TABLE {profile} {cell} {name}{'' if judged else ' (report only)'}: per-rep median [min..max]; "
-          + ("! over its limit, = no limit at this point; " if judged else "") + "- n/a; V no usable rep")
+          + ("! over its limit, = no limit at this point, h history-limited (not judged); " if judged else "")
+          + "- n/a; V no usable rep")
     print("  delay\\loss " + "".join(f"{str(lo) + '%':>{X1_COL}}" for lo in losses))
     over = []
+    points = {}
     for d in delays:
         row = f"  {d:>6} ms "
         for lo in losses:
@@ -1050,22 +1082,26 @@ def x1_table(profile, cell, metric, reps, delays, losses, ctx):
                 lim = limit_of(cell, d, lo / 100, ctx)
                 if lim is None:
                     mark = "="
+                elif lim[0] == "HISTORY":
+                    mark = "h"
                 elif (med > lim[1]) if lim[0] == "<=" else (med < lim[1]):
                     mark = "!"
                     over.append((d, lo, txt, lim))
+            points[(d, lo)] = txt + mark
             row += f"{txt + mark:>{X1_COL}}"
         print(row)
-    return over
+    return over, points
 
 
-def x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary):
+def x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary, large_hz):
     ctl = usable(static_runs(runs, "l0", cell))
     ctl_l = [r for r in ctl if not r["lat_void"]]
     ctl_rs = [r for r in usable(static_runs(runs, "l0", "rel_small")) if not r["lat_void"]]
     ctx = {"base_owd_p50": x1_median([x1_owd(r, 0.5) for r in ctl_l]),
            "base_owd_p99": x1_median([x1_owd(r, 0.99) for r in ctl_l]),
            "base_rtt_p99": x1_median([x1_rt(r, 1) for r in ctl_l]),
-           "base_rtt_p50": x1_median([x1_rt(r, 0) for r in ctl_rs])}
+           "base_rtt_p50": x1_median([x1_rt(r, 0) for r in ctl_rs]),
+           "span": {c: x1_history_span_ms(c, large_hz) for c in REL_CELLS}}
     base50_all = x1_median([x1_owd(r, 0.5) for r in ctl])
     print(f"--- X1 {profile} {cell}: s_l0 bases (median over its unloaded reps): one-way p50 "
           f"{x1_fmt(ctx['base_owd_p50'], 'ms')} / p99 {x1_fmt(ctx['base_owd_p99'], 'ms')} ms, round trip p99 "
@@ -1091,9 +1127,19 @@ def x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary):
         name, cells, _, limit_of, f, _ = metric
         if cell not in cells:
             continue
-        over = x1_table(profile, cell, metric, reps, delays, losses, ctx)
+        over, points = x1_table(profile, cell, metric, reps, delays, losses, ctx)
         if limit_of is None:
             continue
+        hist = [k for k in sorted(points) if x1_history_limited(cell, k[0], ctx)]
+        role = "ping" if name.endswith("_RETURN") else None
+        notes = [f"{k[0]} ms/{k[1]}% {points[k]} abandoned "
+                 + x1_fmt(x1_median([x1_abandoned(r, role) for r in reps[k]]), "f0") for k in hist]
+        if name == "DELIVERY" and hist:
+            print(f"X1 HISTORY {profile} {cell} DELIVERY (report only, not judged; KEEP_LAST {X1_HISTORY_DEPTH} span "
+                  f"{ctx['span'][cell]:g} ms <= 2D + base_rtt): " + "; ".join(notes))
+        elif name in X1_HISTORY_NOTED and hist:
+            print(f"X1 HISTORY_NOTE {profile} {cell} {name} (judged; history-limited points, "
+                  f"{'pong' if role else 'data'} stream's abandoned count beside): " + "; ".join(notes))
         if over:
             first = min(over, key=lambda x: (x[0], x[1]))
             rows = []
@@ -1138,7 +1184,7 @@ def x1_section(out, runs):
     summary = []
     for cell in ALL_CELLS:
         if any(c == cell and k != (1, 0) for k, c in grid):
-            x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary)
+            x1_cell(out, runs, profile, cell, grid, delays, losses, cv, cr, summary, num(prov, "large_hz", 5.0))
     print(f"--- X1 summary {profile}: " + (", ".join(summary) if summary else "no grid arm"))
 
 

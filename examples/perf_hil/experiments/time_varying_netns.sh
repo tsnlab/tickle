@@ -101,6 +101,14 @@
 #   DELIVERY: RELIABLE delivers 100% of offered (the s_l0 control's own rule; the small ping drains 3 s, the large
 #     sub runs 8 s past the publisher, so a tail repair has time even at 100 ms); BE >= (1 - L) - 4 binomial sigmas
 #     of the offered count - 0.1% (CONTROL_BE_MIN's allowance): over 70 BE points ~0.2% chance of one false FAIL.
+#     HISTORY (amended 2026-11-03 after the smoke, before any full X1 run): both RELIABLE streams are KEEP_LAST 10,
+#     so the writer holds depth x period of history - rel_small (data and pongs) 10 x 10 ms = 100 ms, rel_large
+#     10 x 1/LARGE_HZ = 2 s at 5 Hz. Where 2 D + base_rtt (s_l0 rel_small round-trip p50) >= that span, a repair can
+#     come after its sample's eviction and the writer abandons it by design (DDS-shaped KEEP_LAST, user decision):
+#     DELIVERY there reads HISTORY, report only, printed with the abandoned count (X1 HISTORY). Below the span the
+#     100% rule stands. COPIES and TIMER_PER_GAP (and their _RETURN versions) stay judged at every point: a reader
+#     NACKing samples already evicted, and the copies that follow, is waste; at history-limited points the abandoned
+#     count is printed beside them (X1 HISTORY_NOTE). The smoke's 50 ms / 5% DELIVERY 94.9% is such a point.
 #   TIMER_PER_GAP (rel cells): repair requests the retry timer sent (the reader's RSTATS acknack_tx timer) per gap it
 #     opened (gaps_opened), <= 1.0. A gap's first request is immediate; the timer re-asks only when that request or
 #     its repair is lost, 1/(1-L)^2 - 1 = 0.23 a gap at 10% - and once per gap is plan decision 2's cost unit (at
@@ -145,8 +153,9 @@
 #   provenance.txt and each meta.txt record it. The trace costs a clock read per poll and a write per 100 ms.
 #   OUT defaults to ~/rig_results_safe/time_varying/<stamp>: raw logs per run under OUT/runs/<arm>-<cell>-<rep>/, the
 #   summary in OUT/summary.txt, which always ends with "=== time_varying_netns ended". READ_ONLY=1 re-reads an OUT.
-#   Needs `sudo -n ip` (tc runs under `ip netns exec`). ~45 s a run: the default set is 10 tv + 8 static arms x 3
-#   cells = 54 runs a rep, ~40 min.
+#   Needs `sudo -n ip` (tc runs under `ip netns exec`). A run takes ~37 s on a small cell and ~40 s on rel_large
+#   (measured 2026-11-03, DUR=30; the delay does not change it), plus a 12 s build: the default set is 10 tv + 8 static
+#   arms x 3 cells = 54 runs a rep, ~35 min.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
