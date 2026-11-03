@@ -81,6 +81,15 @@
 #else
 #define BENCH_RSTATS(role) ((void)(role))
 #endif
+// The reorder hold-off's A/B arm (TT_HOLDOFF_POLICY, ab/reorder-holdoff) and its HOLDOFF: treatment line, the same way.
+#if __has_include("../tickle/common/holdoff_env.h")
+#include "../tickle/common/holdoff_env.h"
+#define BENCH_HOLDOFF_FROM_ENV() holdoff_from_env()
+#define BENCH_PRINT_HOLDOFF(node) print_holdoff(node)
+#else
+#define BENCH_HOLDOFF_FROM_ENV() ((void)0)
+#define BENCH_PRINT_HOLDOFF(node) ((void)(node))
+#endif
 
 #define BENCH_HEADER 16U // send_ns (8), index (4), reserved (4)
 #define BENCH_SEND_NS_BYTES 8U
@@ -898,6 +907,7 @@ int main(int argc, char** argv) {
 
     static struct tt_Context node;
     bool created = false;
+    BENCH_HOLDOFF_FROM_ENV(); // TT_HOLDOFF_POLICY, before the context reads it
     if (opts.wifi) {
         struct tt_InitOptions init;
         memset(&init, 0, sizeof(init));
@@ -921,6 +931,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     print_repair_reveal(&node);
+    BENCH_PRINT_HOLDOFF(&node);
     int result = opts.publisher ? run_publisher(&node, &opts) : run_subscriber(&node, &opts);
     BENCH_RSTATS(opts.publisher ? "pub" : "sub");
     tt_Context_destroy(&node);

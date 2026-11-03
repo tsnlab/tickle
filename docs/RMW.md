@@ -74,6 +74,7 @@ export RMW_IMPLEMENTATION=rmw_tickle
 | `RMW_TICKLE_LOANS` | `0`: no loans (as `ROS_DISABLE_LOANED_MESSAGES=1`) | on |
 | `RMW_TICKLE_LOAN_RING_SLOTS` | `1`: lend received samples in their ring slot | off |
 | `RMW_TICKLE_LOAN_PUBLISH_SLOTS` | `1`: borrow lends the subscriber's ring slot (up to 4 at once; then a kept buffer) | off |
+| `RMW_TICKLE_REORDER_HOLDOFF` | a reliable reader's wait before it NACKs a gap: `auto`, `off` or ns (at most 1 s); logged as `reorder hold-off:` | auto |
 
 Test switches, not for use: `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSEMBLY_CAP_OFF`, `RMW_TICKLE_RUN_UNITS`
 (forced hybrid arms, DESIGN.md section 8), `RMW_TICKLE_TRACE_FILE` (counters at shutdown), the Linux HAL's `TT_*`

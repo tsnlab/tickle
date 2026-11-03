@@ -223,6 +223,39 @@ static void configure_hybrid_transport(struct tt_NetOptions* net) {
 #endif
 }
 
+// The reorder hold-off (tt_ReliableOptions.reorder_holdoff, ab/reorder-holdoff): a RELIABLE reader's wait before it
+// NACKs a gap, in case it is a reordering. A context setting ROS has no field for, so from the environment like the
+// hybrid transport's:
+//   RMW_TICKLE_REORDER_HOLDOFF  auto | off | <ns>   unset or auto: what the links resolve (core's default: auto)
+// A value core would refuse (above tt_REORDER_HOLDOFF_MAX) or cannot read is warned about and ignored. The log line is
+// load-bearing, as the hybrid transport's is: a rig arm is VOID unless it shows the treatment it asked for.
+static void configure_reorder_holdoff(struct tt_ReliableOptions* reliable) {
+    const char* value = getenv("RMW_TICKLE_REORDER_HOLDOFF");
+    if (value != NULL && value[0] != '\0') {
+        char* end = NULL;
+        unsigned long long hold_ns = strtoull(value, &end, 10);
+        if (strcmp(value, "auto") == 0) {
+            reliable->reorder_holdoff = tt_REORDER_HOLDOFF_AUTO;
+        } else if (strcmp(value, "off") == 0) {
+            reliable->reorder_holdoff = tt_REORDER_HOLDOFF_OFF;
+        } else if (end != value && *end == '\0' && hold_ns != 0 && hold_ns <= tt_REORDER_HOLDOFF_MAX) {
+            reliable->reorder_holdoff = (uint64_t)hold_ns;
+        } else {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                                   "RMW_TICKLE_REORDER_HOLDOFF='%s' is not auto, off or 1..%llu ns; ignored", value,
+                                   (unsigned long long)tt_REORDER_HOLDOFF_MAX);
+        }
+    }
+    if (reliable->reorder_holdoff == tt_REORDER_HOLDOFF_AUTO) {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "reorder hold-off: auto");
+    } else if (reliable->reorder_holdoff == tt_REORDER_HOLDOFF_OFF) {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "reorder hold-off: off");
+    } else {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "reorder hold-off: %llu ns",
+                               (unsigned long long)reliable->reorder_holdoff);
+    }
+}
+
 // A condition variable whose timed waits measure CLOCK_MONOTONIC, the clock of every deadline in this package
 // (tt_get_ns()): a step of the date then neither ends a wait early nor stretches it by the step.
 static int cond_init_monotonic(pthread_cond_t* cond) { // NOLINT(misc-include-cleaner) - <pthread.h> above
@@ -397,6 +430,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         net->context_id = atoi(node_id);
     }
     configure_hybrid_transport(net);
+    configure_reorder_holdoff(&impl->init_options.reliable);
     // The QoS defaults a zero profile field takes (tt_InitOptions bundle 5): RMW_TICKLE_CACHE_BYTES,
     // RMW_TICKLE_KEEP_ALL_BYTES and RMW_TICKLE_MAX_BLOCKING_MS, read here once for every endpoint of the context.
     rmw_tickle_qos_defaults_from_env(&impl->init_options.qos);

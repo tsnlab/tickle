@@ -627,6 +627,7 @@ static const struct tt_ReliableOptions reliable_defaults = {
     .stuck_warn_interval = (uint64_t)tt_RELIABLE_STUCK_WARN_INTERVAL,
     .idle_heartbeat_period =
         tt_IDLE_HEARTBEAT_PERIOD != 0 ? (uint64_t)tt_IDLE_HEARTBEAT_PERIOD : tt_QOS_DURATION_INFINITE,
+    .reorder_holdoff = (uint64_t)tt_RELIABLE_REORDER_HOLDOFF,
     .max_srtt_multiple = (uint16_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE,
     .idle_heartbeat_retry_multiple = (uint16_t)tt_IDLE_HEARTBEAT_RETRY_MULTIPLE,
     .retry = (uint8_t)tt_RELIABLE_RETRY,
@@ -648,6 +649,7 @@ static void resolve_reliable_options(struct tt_ReliableOptions* reliable) {
         reliable->stuck_warn_interval != 0 ? reliable->stuck_warn_interval : def->stuck_warn_interval;
     reliable->idle_heartbeat_period =
         reliable->idle_heartbeat_period != 0 ? reliable->idle_heartbeat_period : def->idle_heartbeat_period;
+    reliable->reorder_holdoff = reliable->reorder_holdoff != 0 ? reliable->reorder_holdoff : def->reorder_holdoff;
     reliable->max_srtt_multiple =
         reliable->max_srtt_multiple != 0 ? reliable->max_srtt_multiple : def->max_srtt_multiple;
     reliable->idle_heartbeat_retry_multiple = reliable->idle_heartbeat_retry_multiple != 0
@@ -922,6 +924,8 @@ static void resolve_segment_options(struct tt_SegmentOptions* segment) {
 static_assert(tt_MAX_ACK_ENTRIES >= 1 && tt_MAX_ACK_ENTRIES <= UINT16_MAX, "capacity.ack_entries is a uint16_t");
 static_assert(tt_MAX_PEER_COUNT >= 1 && tt_MAX_PEER_COUNT <= UINT8_MAX, "capacity.peers is a uint8_t");
 static_assert(tt_PUBLISHER_CLAIMS >= 1 && tt_PUBLISHER_CLAIMS <= UINT8_MAX, "capacity.publisher_claims is a uint8_t");
+static_assert(tt_RELIABLE_HOLDOFF_SLOTS >= 1 && tt_RELIABLE_HOLDOFF_SLOTS <= UINT8_MAX,
+              "capacity.holdoff_slots is a uint8_t");
 static void resolve_capacity_options(struct tt_Capacity* capacity) {
     if (capacity->ack_entries == 0) {
         capacity->ack_entries = tt_MAX_ACK_ENTRIES;
@@ -937,6 +941,9 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
     }
     if (capacity->large_retained == 0) {
         capacity->large_retained = tt_LARGE_RETAINED;
+    }
+    if (capacity->holdoff_slots == 0) {
+        capacity->holdoff_slots = tt_RELIABLE_HOLDOFF_SLOTS;
     }
 }
 
@@ -1035,6 +1042,13 @@ static void resolve_link_repair_timing(struct tt_LinkOptions* link) {
     if (link->repair_reveal == tt_REPAIR_REVEAL_DEFAULT) {
         link->repair_reveal = link->profile == tt_LINK_PROFILE_WIFI ? (uint8_t)tt_REPAIR_REVEAL_ALL_MISSING
                                                                     : (uint8_t)tt_REPAIR_REVEAL_OFF;
+    }
+    // reorder_holdoff left 0: off on T1S and TSN, whose PLCA bus and scheduled streams keep the sender's order (a
+    // property of the medium, not a measurement - the user's call of 2026-11-02, (iii)); the build's default, auto, on
+    // ETHERNET and WIFI. Auto stays 0 (tt_REORDER_HOLDOFF_AUTO).
+    if (link->reorder_holdoff == 0) {
+        bool ordered = link->profile == tt_LINK_PROFILE_T1S || link->profile == tt_LINK_PROFILE_TSN;
+        link->reorder_holdoff = ordered ? tt_REORDER_HOLDOFF_OFF : (uint64_t)tt_RELIABLE_REORDER_HOLDOFF;
     }
 }
 
@@ -1147,6 +1161,10 @@ static tt_ret_t validate_link_conflicts(const struct tt_InitOptions* opts) {
         if (link_contradicts(link->large_fragmentation, net->large_fragmentation, tt_LARGE_FRAGMENTATION_AUTO)) {
             return reject_option("net.links[].large_fragmentation",
                                  "differs from net.large_fragmentation, which it sets");
+        }
+        if (link_contradicts(link->reorder_holdoff, opts->reliable.reorder_holdoff,
+                             (uint64_t)tt_RELIABLE_REORDER_HOLDOFF)) {
+            return reject_option("net.links[].reorder_holdoff", "differs from reliable.reorder_holdoff, which it sets");
         }
     }
     return tt_RET_OK;
@@ -1277,6 +1295,9 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     }
     if (link->repair_reveal_pace_ns > UINT32_MAX) {
         return reject_option("net.links[].repair_reveal_pace_ns", "is above UINT32_MAX ns");
+    }
+    if (link->reorder_holdoff != tt_REORDER_HOLDOFF_OFF && link->reorder_holdoff > tt_REORDER_HOLDOFF_MAX) {
+        return reject_option("net.links[].reorder_holdoff", "is above tt_REORDER_HOLDOFF_MAX and not _OFF");
     }
     if (link->announce_repeats != tt_ANNOUNCE_REPEATS_NONE && link->announce_repeats > tt_ANNOUNCE_REPEATS_MAX) {
         return reject_option("net.links[].announce_repeats", "is above tt_ANNOUNCE_REPEATS_MAX");
@@ -1416,6 +1437,9 @@ static tt_ret_t validate_reliable_options(const struct tt_ReliableOptions* relia
     }
     if (reliable->timer_lateness_initial > UINT32_MAX) {
         return reject_option("reliable.timer_lateness_initial", "is above UINT32_MAX ns, where the ceiling overflows");
+    }
+    if (reliable->reorder_holdoff != tt_REORDER_HOLDOFF_OFF && reliable->reorder_holdoff > tt_REORDER_HOLDOFF_MAX) {
+        return reject_option("reliable.reorder_holdoff", "is above tt_REORDER_HOLDOFF_MAX and not _OFF");
     }
     return tt_RET_OK;
 }
@@ -1704,6 +1728,9 @@ static tt_ret_t validate_capacity_options(const struct tt_Capacity* capacity, co
     if (capacity->large_retained > tt_LARGE_RETAINED) {
         return reject_option("capacity.large_retained", "exceeds tt_LARGE_RETAINED");
     }
+    if (capacity->holdoff_slots > tt_RELIABLE_HOLDOFF_SLOTS) {
+        return reject_option("capacity.holdoff_slots", "exceeds tt_RELIABLE_HOLDOFF_SLOTS");
+    }
     return tt_RET_OK;
 }
 
@@ -1989,8 +2016,56 @@ static void link_reveal_fold(const struct tt_LinkOptions* link, uint8_t* reveal,
     *pace = link->repair_reveal_pace_ns > *pace ? link->repair_reveal_pace_ns : *pace;
 }
 
+#if TT_HOLDOFF_TEST_SEAM
+uint8_t tt_holdoff_test_policy = tt_HOLDOFF_POLICY_DEFAULT; // NOLINT(misc-use-internal-linkage) - tickle.h, A/B only
+uint64_t tt_holdoff_test_value = 0;                         // NOLINT(misc-use-internal-linkage) - tickle.h, A/B only
+#endif
+
+// The context's reorder hold-off (tt_Context.holdoff_mode, holdoff_ns, holdoff_policy) from its links' resolved values
+// (one per link; a context with none configured has one ETHERNET link, the build's default): the context's own
+// reliable.reorder_holdoff where it set one, else auto if any link is auto, else the longest fixed hold, and off only
+// where every link is off. The A/B seam's value, when set, replaces the result.
+static void holdoff_apply(struct tt_Context* node, const uint64_t* link_values, uint8_t count) {
+    uint64_t value = tt_REORDER_HOLDOFF_OFF;
+    if (context_value_set(node->opts.reliable.reorder_holdoff, (uint64_t)tt_RELIABLE_REORDER_HOLDOFF)) {
+        value = node->opts.reliable.reorder_holdoff;
+    } else {
+        for (uint8_t i = 0; i < count; i++) {
+            uint64_t link = link_values[i];
+            if (link == tt_REORDER_HOLDOFF_AUTO) {
+                value = tt_REORDER_HOLDOFF_AUTO;
+                break;
+            }
+            if (link != tt_REORDER_HOLDOFF_OFF && (value == tt_REORDER_HOLDOFF_OFF || link > value)) {
+                value = link;
+            }
+        }
+    }
+    uint8_t policy = tt_HOLDOFF_POLICY_E;
+#if TT_HOLDOFF_TEST_SEAM
+    if (tt_holdoff_test_value != 0) {
+        value = tt_holdoff_test_value;
+    }
+    if (tt_holdoff_test_policy == tt_HOLDOFF_POLICY_B || tt_holdoff_test_policy == tt_HOLDOFF_POLICY_D) {
+        policy = tt_holdoff_test_policy;
+    }
+#endif
+    if (value == tt_REORDER_HOLDOFF_AUTO) {
+        node->holdoff_mode = tt_HOLDOFF_MODE_AUTO;
+        node->holdoff_ns = 0;
+    } else if (value == tt_REORDER_HOLDOFF_OFF) {
+        node->holdoff_mode = tt_HOLDOFF_MODE_OFF;
+        node->holdoff_ns = 0;
+    } else {
+        node->holdoff_mode = tt_HOLDOFF_MODE_FIXED;
+        node->holdoff_ns = (uint32_t)(value < tt_REORDER_HOLDOFF_MAX ? value : tt_REORDER_HOLDOFF_MAX);
+    }
+    node->holdoff_policy = node->holdoff_mode == tt_HOLDOFF_MODE_AUTO ? policy : 0U;
+}
+
 static void link_profiles_apply(struct tt_Context* node) {
     struct tt_NetOptions* net = &node->opts.net;
+    uint64_t holdoff[tt_MAX_LINK_COUNT] = {0};
     uint32_t control = (uint32_t)tt_CONTROL_MAX_LENGTH;
     uint64_t floor = 0;
     uint32_t divisor = 0;
@@ -2016,6 +2091,9 @@ static void link_profiles_apply(struct tt_Context* node) {
             repeats = link_announce_repeats(link) > repeats ? link_announce_repeats(link) : repeats;
             repair_timing = repair_timing || link->repair_timing == tt_SWITCH_ON;
             link_reveal_fold(link, &reveal, &reveal_pace);
+            holdoff[i] = link->reorder_holdoff;
+        } else {
+            holdoff[i] = (uint64_t)tt_RELIABLE_REORDER_HOLDOFF; // the one ETHERNET link a context with none has
         }
         link_warn_mtu(&node->links[i], mtu);
         uint32_t link_control = link_control_length(mtu);
@@ -2028,6 +2106,7 @@ static void link_profiles_apply(struct tt_Context* node) {
     node->repair_timing = repair_timing;
     node->repair_reveal = reveal;
     node->repair_reveal_pace_ns = (uint32_t)reveal_pace;
+    holdoff_apply(node, holdoff, link_count(node));
     node->announce_repeats = repeats;
     node->batch_default = batch;
     node->piggyback_every = divisor != 0 ? (uint32_t)tt_RELIABLE_BITMAP_BITS / divisor : 0U;
@@ -8047,6 +8126,7 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
 static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_ns);
 static void rtt_estimate_fold(uint32_t* srtt_ns, uint32_t* rttvar_ns, uint64_t sample_ns);
 static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy);
+static void holdoff_forget(struct tt_Context* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy);
 static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* proxy);
@@ -8134,6 +8214,9 @@ static void node_init_locks(struct tt_Context* node) {
     node->repair_timing = false;  // nor its readers' retry estimate
     node->repair_reveal = 0;      // nor their re-ask on a repair above the watermark
     node->repair_reveal_pace_ns = 0;
+    node->holdoff_mode = tt_HOLDOFF_MODE_OFF; // nor their reorder hold-off: every gap NACKed at once, as before 2026-11
+    node->holdoff_policy = 0;
+    node->holdoff_ns = 0;
     node->announce_repeats = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
@@ -8192,6 +8275,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->repair_timing = false;
     node->repair_reveal = 0;
     node->repair_reveal_pace_ns = 0;
+    node->holdoff_mode = tt_HOLDOFF_MODE_OFF; // until link_profiles_apply() says what the links ask
+    node->holdoff_policy = 0;
+    node->holdoff_ns = 0;
 #ifdef tt_ESTIMATOR_TRACE
     node->estimator_trace_ns = 0; // the first poll prints
 #endif
@@ -9538,6 +9624,7 @@ static tt_ret_t subscriber_reset(struct tt_Context* node, struct tt_Subscriber* 
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
         sub->writers[i].acknack_scheduled = false;          // read by destroy, which may follow at once
+        sub->writers[i].holdoff_scheduled = false;          // ...as is the reorder hold-off's timer
     }
 
     return tt_RET_OK;
@@ -15304,6 +15391,7 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
             tt_Context_unschedule(node, acknack_retry, &sub->writers[i]);
             sub->writers[i].acknack_scheduled = false;
         }
+        holdoff_forget(node, &sub->writers[i]); // and its reorder hold-off timer
     }
 
     if (remove_endpoint_from_node(node, endpoint)) {
@@ -16525,6 +16613,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->transit_srtt_ns = 0;
             proxy->transit_rttvar_ns = 0;
             proxy->transit_min_ns = 0;
+            // Nothing held, nothing learnt. No timer can be pending: the slot's last writer was forgotten with it.
+            proxy->holdoff_scheduled = false;
+            holdoff_forget(NULL, proxy);
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -16622,16 +16713,18 @@ static uint64_t oldest_request_naming(const struct tt_WriterProxy* proxy, uint32
     return oldest;
 }
 
-static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, uint64_t now) {
+// Answers whether it filled a missing seq_no: a recovery, which the reorder hold-off counts as clean
+// (holdoff_note_clean()).
+static bool note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, uint64_t now) {
     bool missing =
         seq_no == proxy->ack_seq_no || (seq_no - proxy->ack_seq_no < proxy_window_bits(proxy) &&
                                         !bitmap_test_bit(proxy->received_bitmap, seq_no - proxy->ack_seq_no));
     if (!missing) {
-        return; // a second copy of something already here: it says nothing about the request it answers
+        return false; // a second copy of something already here: it says nothing about the request it answers
     }
     uint64_t oldest = oldest_request_naming(proxy, seq_no);
     if (oldest == 0 || now < oldest) {
-        return; // named by no request still remembered - nothing to time it from
+        return true; // named by no request still remembered - nothing to time it from
     }
     uint64_t took = now - oldest;
     rtt_estimate_fold(&proxy->transit_srtt_ns, &proxy->transit_rttvar_ns, took);
@@ -16640,6 +16733,7 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
     if (proxy->transit_min_ns == 0 || sample < proxy->transit_min_ns) {
         proxy->transit_min_ns = sample;
     }
+    return true;
 }
 
 // A copy of seq_no arrived and this reader declined it (tt_Subscriber.accept_callback: a bounded KEEP_ALL queue with
@@ -16907,6 +17001,486 @@ static uint64_t reliable_retry_interval_publisher(const struct tt_Context* node)
     return configured != 0 ? configured : reliable_opts(node)->retry_initial;
 }
 
+// ---- Reorder hold-off (ab/reorder-holdoff, stage S3 of claude_reports/REORDER_HOLDOFF_DESIGN_2026-11-03) ----
+//
+// A gap a reliable reader sees may be a loss or a reordering: a later datagram overtook the missing one, which is only
+// late. NACKed at once, a reordered datagram is sent twice - its original arrives after the request, and its repair
+// after that as a copy after delivery (nack_spurious, E1). So a gap is held back from every ACKNACK for a while (H)
+// after it showed, and NACKed only if it is still open then.
+//
+// Where: every path that names a gap leaves the held ones out - the first ACKNACK of a gap (maybe_arm_acknack_retry(),
+// N1), the narrow one for a gap opened while the retry runs (update_reliable_ack(), N2), the retry timer
+// (acknack_retry(), N3), the answer to a HEARTBEAT's request and the tail a HEARTBEAT revealed (answer_ack_request(),
+// inform_subscriber_of_heartbeat(), N4) and the repair reveal (maybe_reveal_lost_repairs(), N5). The held gaps are one
+// run of seq_nos above everything already NACKed, so each path adds one skip run (holdoff_skip()).
+//
+// State (tt_WriterProxy.held): a FIFO of gaps in the order they showed, which is also seq_no order - a gap opens
+// above the highest received (record_out_of_order_arrival()) or the HEARTBEAT's last seq_no - so the gaps due at any
+// moment are a prefix of it. A gap's hold is judged with the H of the moment, so a change of auto's H reaches the
+// gaps already held. One timer per proxy at the head's due time (acknack_holdoff_due()); what it releases goes as the
+// gap's first request (acknack_held).
+//
+// Every approximation errs toward off: a gap is NACKed early, never late. Released before its time (holdoff_early):
+// when the highest received is half the window past it (the window would pass it by and jump_ack_baseline() abandon it,
+// as HIL 0-c did to gaps that waited on a timer), when a sample collided in the reorder buffer
+// (tt_WriterProxy.collided), when the FIFO is full (its oldest) and when the scheduler is full (all). The watermark
+// passing a gap - filled, jumped or evicted - forgets it.
+//
+// Modes (tt_Context.holdoff_mode): off, fixed H, or auto. Auto's candidates are all gated (the user's decision (i),
+// 2026-11-03: on a link that never reorders auto must be off exactly): H is 0 - nothing held, every byte as off - until
+// a late original fills a gap already NACKed (E1, holdoff_note_reorder()), and 0 again after HOLDOFF_GATE_CLOSE clean
+// recoveries (repairs filling a gap) with no reorder between. Open:
+//   E (RACK-time): H = m x max(min repair transit / 4, D), at most srtt - D the decaying largest reorder delay seen (E1
+//     and E2, a held gap filled by its late original), m one more at each E1 a round trip after the last, up to
+//     HOLDOFF_M_MAX; every HOLDOFF_DECAY clean recoveries D halves and m is 1 again. Before any srtt the cap is the
+//     larger of retry_initial and D: a reader NACKs before its first round trip is timed (the start of a jittered run,
+//     2026-11-03 15:08), and the delay its first E1 showed is the only measure there is.
+//   B (dupthresh): released once thr datagrams arrived past the gap - thr = max(HOLDOFF_THR_MIN, the largest reorder
+//     distance seen + 1), at most a quarter of the window - or at a backstop of min(retry interval, srtt).
+//   D (time + distance): released at E's H, or once thr datagrams passed it and a quarter of E's H has.
+// RFC 8985's RACK in our own words: the time a gap showed stands in for a send time the reader does not know, and E1
+// for a DSACK. Wire format unchanged: a late original is told from a repair by its address (tt_Context.rx_targeted).
+#define HOLDOFF_GATE_CLOSE 64U // clean recoveries with no reorder that close auto's gate
+#define HOLDOFF_DECAY 16U      // ...and each this many, the delay and distance seen halve and m is 1
+#define HOLDOFF_M_MAX 16U      // E and D: the multiplier's most
+#define HOLDOFF_THR_MIN 3U     // B and D: the fewest datagrams past a gap that call it lost
+#define HOLDOFF_HELD 0
+#define HOLDOFF_DUE 1
+#define HOLDOFF_EARLY 2
+
+static void acknack_holdoff_due(struct tt_Context* node, uint64_t time, void* param);
+
+// The FIFO's size: the context's capacity.holdoff_slots, the compiled size for a hand-built context.
+static uint8_t holdoff_slots(const struct tt_Context* node) {
+    uint8_t slots = node->opts.capacity.holdoff_slots;
+    return slots != 0 && slots <= tt_RELIABLE_HOLDOFF_SLOTS ? slots : (uint8_t)tt_RELIABLE_HOLDOFF_SLOTS;
+}
+
+// The k-th held gap, oldest first.
+static struct tt_HoldoffEntry* holdoff_at(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t k) {
+    uint32_t index = (uint32_t)proxy->held_head + k;
+    uint32_t slots = holdoff_slots(node);
+    return &proxy->held[index >= slots ? index - slots : index];
+}
+
+static uint32_t holdoff_tail_seq_no(const struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    return holdoff_at(node, proxy, (uint32_t)proxy->held_count - 1U)->high_seq_no;
+}
+
+// Drops the oldest held gap; the next one starts above it.
+static void holdoff_pop(const struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    proxy->held_floor = holdoff_at(node, proxy, 0)->high_seq_no + 1U;
+    uint8_t next = (uint8_t)(proxy->held_head + 1U);
+    proxy->held_head = next < holdoff_slots(node) ? next : 0U;
+    proxy->held_count--;
+}
+
+// The round trip auto's hold is bounded by: the repair transit's srtt, else the recovery estimate's; 0 before either.
+static uint32_t holdoff_srtt(const struct tt_WriterProxy* proxy) {
+    return proxy->transit_srtt_ns != 0 ? proxy->transit_srtt_ns : proxy->recovery_srtt_ns;
+}
+
+// E's H (and D's): m x max(min transit / 4, D), at most srtt - before any, the larger of retry_initial and D.
+static uint64_t holdoff_rack_ns(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    uint64_t base = proxy->transit_min_ns / 4U;
+    base = proxy->holdoff_delay_ns > base ? proxy->holdoff_delay_ns : base;
+    uint64_t hold = (uint64_t)(proxy->holdoff_m != 0 ? proxy->holdoff_m : 1U) * base;
+    uint64_t cap = holdoff_srtt(proxy);
+    if (cap == 0) {
+        cap = reliable_opts(node)->retry_initial;
+        cap = proxy->holdoff_delay_ns > cap ? proxy->holdoff_delay_ns : cap;
+    }
+    return hold < cap ? hold : cap;
+}
+
+// How long a gap of this proxy is held now, ns (for B the backstop, for D E's time); 0 = not at all. At most
+// tt_REORDER_HOLDOFF_MAX, whatever an estimate says: the age is compared in 32 bits.
+static uint64_t holdoff_time_ns(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    uint64_t hold = 0;
+    if (node->holdoff_mode == tt_HOLDOFF_MODE_FIXED) {
+        hold = node->holdoff_ns;
+    } else if (node->holdoff_mode == tt_HOLDOFF_MODE_AUTO && proxy->holdoff_gate) {
+        if (node->holdoff_policy == tt_HOLDOFF_POLICY_B) {
+            uint64_t backstop = reliable_retry_interval(node, proxy);
+            uint64_t srtt = holdoff_srtt(proxy);
+            hold = srtt != 0 && srtt < backstop ? srtt : backstop;
+        } else {
+            hold = holdoff_rack_ns(node, proxy);
+        }
+    }
+    return hold < tt_REORDER_HOLDOFF_MAX ? hold : tt_REORDER_HOLDOFF_MAX;
+}
+
+// B and D: datagrams past a gap that call it lost.
+static uint32_t holdoff_threshold(const struct tt_WriterProxy* proxy) {
+    uint32_t thr = (uint32_t)proxy->holdoff_disp + 1U;
+    thr = thr > HOLDOFF_THR_MIN ? thr : HOLDOFF_THR_MIN;
+    uint32_t most = proxy_window_bits(proxy) / 4U;
+    return thr < most ? thr : most;
+}
+
+// How many seq_nos the highest received lies past seq_no (0 if not past it).
+static uint32_t holdoff_behind(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    int highest = proxy_highest_received(proxy);
+    if (highest < 0) {
+        return 0;
+    }
+    int32_t behind = seq_delta(proxy->ack_seq_no + (uint32_t)highest, seq_no);
+    return behind > 0 ? (uint32_t)behind : 0U;
+}
+
+// The same in datagrams: over the last arrival's span (a large sample's run carries several seq_nos; 1 otherwise).
+static uint32_t holdoff_distance(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    uint32_t span = node->rx_seq_span != 0 ? node->rx_seq_span : 1U;
+    return holdoff_behind(proxy, seq_no) / span;
+}
+
+// Whether a held gap is due at `now` under `hold` (HOLDOFF_DUE), due early by a safety rule (HOLDOFF_EARLY), or still
+// held (HOLDOFF_HELD, and *wait is how long until its time rule makes it due).
+static int holdoff_entry_state(const struct tt_Context* node, const struct tt_WriterProxy* proxy,
+                               const struct tt_HoldoffEntry* entry, uint64_t now, uint64_t hold, uint64_t* wait) {
+    uint32_t behind = holdoff_behind(proxy, entry->high_seq_no);
+    if (behind >= proxy_window_bits(proxy) / 2U || proxy->collided) {
+        return HOLDOFF_EARLY;
+    }
+    uint64_t age = (uint32_t)((uint32_t)now - entry->detected_ns);
+    if (age >= hold) {
+        return HOLDOFF_DUE;
+    }
+    uint64_t due_at = hold;
+    bool counting = node->holdoff_mode == tt_HOLDOFF_MODE_AUTO &&
+                    (node->holdoff_policy == tt_HOLDOFF_POLICY_B || node->holdoff_policy == tt_HOLDOFF_POLICY_D);
+    if (counting && holdoff_distance(node, proxy, entry->high_seq_no) >= holdoff_threshold(proxy)) {
+        due_at = node->holdoff_policy == tt_HOLDOFF_POLICY_B ? 0U : hold / 4U;
+        if (age >= due_at) {
+            return HOLDOFF_DUE;
+        }
+    }
+    *wait = due_at - age;
+    return HOLDOFF_HELD;
+}
+
+// Whether positions low..high (relative to ack_seq_no) hold any still missing.
+static bool holdoff_range_open(const struct tt_WriterProxy* proxy, int low, int high) {
+    for (int word = low / tt_RELIABLE_BITMAP_WORD_BITS;
+         word <= high / tt_RELIABLE_BITMAP_WORD_BITS && word < (int)proxy_words(proxy); word++) {
+        if ((~proxy->received_bitmap[word] & bitmap_range_in_word(word, low, high)) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// NACKs seq_nos first..last, just released from the hold, as a gap's first request, and arms the retry timer if none
+// runs - what maybe_arm_acknack_retry() does for a gap not held. The gaps still held lie above them.
+static void holdoff_send_released(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t first,
+                                  uint32_t last) {
+    int32_t low = seq_delta(first, proxy->ack_seq_no);
+    int32_t high = seq_delta(last, proxy->ack_seq_no);
+    low = low < 0 ? 0 : low;
+    if (high < low || (uint32_t)high >= proxy_window_bits(proxy) || !holdoff_range_open(proxy, low, high)) {
+        return; // filled meanwhile: nothing to ask
+    }
+    RSTAT_INC(acknack_held);
+    send_acknack_range(node, proxy, (int)low, (int)high);
+    if (!proxy->acknack_scheduled) {
+        proxy->retry = 0;
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+            proxy->acknack_scheduled = true;
+        } else {
+            TT_LOG_ERROR("Cannot schedule acknack_retry");
+        }
+    }
+}
+
+// Releases every held gap now - the scheduler cannot time them - and NACKs them if `send`; else the caller's ACKNACK,
+// about to go, names them.
+static void holdoff_release_all(struct tt_Context* node, struct tt_WriterProxy* proxy, bool send) {
+    if (proxy->held_count == 0) {
+        return;
+    }
+    uint32_t first = proxy->held_floor;
+    uint32_t last = holdoff_tail_seq_no(node, proxy);
+#ifdef tt_RELIABLE_STATS
+    g_rstats.holdoff_released += proxy->held_count;
+    g_rstats.holdoff_early += proxy->held_count;
+#endif
+    proxy->held_count = 0;
+    if (send) {
+        holdoff_send_released(node, proxy, first, last);
+    }
+}
+
+// The timer at the oldest held gap's due time: armed, moved earlier, or cancelled when nothing is held. Moved only
+// earlier - a timer that fires before its gap is due finds it held and arms again.
+static void holdoff_arm(struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now, bool send) {
+    if (proxy->held_count == 0) {
+        if (proxy->holdoff_scheduled) {
+            tt_Context_unschedule(node, acknack_holdoff_due, proxy);
+            proxy->holdoff_scheduled = false;
+        }
+        return;
+    }
+    uint64_t wait = 0;
+    (void)holdoff_entry_state(node, proxy, holdoff_at(node, proxy, 0), now, holdoff_time_ns(node, proxy), &wait);
+    uint64_t due = now + wait;
+    if (proxy->holdoff_scheduled) {
+        if (proxy->holdoff_due_ns <= due) {
+            return;
+        }
+        tt_Context_unschedule(node, acknack_holdoff_due, proxy);
+        proxy->holdoff_scheduled = false;
+    }
+    if (tt_Context_schedule(node, due, acknack_holdoff_due, proxy)) {
+        proxy->holdoff_scheduled = true;
+        proxy->holdoff_due_ns = due;
+        return;
+    }
+    TT_LOG_ERROR("Cannot schedule acknack_holdoff_due - NACKing the held gaps now");
+    holdoff_release_all(node, proxy, send);
+}
+
+// Forgets the held gaps the watermark passed - filled, jumped or evicted - and starts the rest at the watermark at
+// least.
+static void holdoff_trim(const struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    while (proxy->held_count != 0 && seq_delta(holdoff_at(node, proxy, 0)->high_seq_no, proxy->ack_seq_no) < 0) {
+        holdoff_pop(node, proxy);
+    }
+    if (proxy->held_count != 0 && seq_delta(proxy->held_floor, proxy->ack_seq_no) < 0) {
+        proxy->held_floor = proxy->ack_seq_no;
+    }
+}
+
+// Brings the hold up to date at `now`: forgets what the watermark passed (holdoff_trim()), releases the gaps due -
+// NACKing them if `send`, else leaving them to the caller's ACKNACK - and arms the timer for the rest.
+static void holdoff_service(struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now, bool send) {
+    holdoff_trim(node, proxy);
+    uint64_t hold = holdoff_time_ns(node, proxy);
+    uint32_t first = proxy->held_floor;
+    uint32_t last = first;
+    bool released = false;
+    while (proxy->held_count != 0) {
+        uint64_t wait = 0;
+        int state = holdoff_entry_state(node, proxy, holdoff_at(node, proxy, 0), now, hold, &wait);
+        if (state == HOLDOFF_HELD) {
+            break;
+        }
+        last = holdoff_at(node, proxy, 0)->high_seq_no;
+        released = true;
+        RSTAT_INC(holdoff_released);
+        if (state == HOLDOFF_EARLY) {
+            RSTAT_INC(holdoff_early);
+        }
+        holdoff_pop(node, proxy);
+    }
+    if (released && send) {
+        holdoff_send_released(node, proxy, first, last);
+    }
+    holdoff_arm(node, proxy, now, send);
+}
+
+static void acknack_holdoff_due(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(time);
+    struct tt_WriterProxy* proxy = param;
+    proxy->holdoff_scheduled = false;
+    holdoff_service(node, proxy, tt_get_ns(), true);
+}
+
+// For an ACKNACK about to go: brings the hold up to date (what it releases goes in this ACKNACK) and writes the run of
+// positions still held to *skip. Answers the runs written: 0 - nothing held, the ACKNACK is what it was before the
+// hold-off existed - or 1.
+static int holdoff_skip(struct tt_Context* node, struct tt_WriterProxy* proxy, struct acknack_skip* skip) {
+    if (proxy->held_count == 0) {
+        return 0;
+    }
+    holdoff_service(node, proxy, tt_get_ns(), false);
+    if (proxy->held_count == 0) {
+        return 0;
+    }
+    int32_t low = seq_delta(proxy->held_floor, proxy->ack_seq_no);
+    skip->low_bit = low < 0 ? 0 : (int)low;
+    skip->high_bit = (int)seq_delta(holdoff_tail_seq_no(node, proxy), proxy->ack_seq_no);
+    return 1;
+}
+
+// Whether every position open in 0..high_bit is held (holdoff_skip()'s `runs` of `held`): an ACKNACK would ask nothing.
+static bool holdoff_all_held(const struct tt_WriterProxy* proxy, int high_bit, const struct acknack_skip* held,
+                             int runs) {
+    return runs != 0 && !names_any_open(proxy, high_bit, held, runs);
+}
+
+// A gap of seq_nos first..last just showed, at `now`. Held back if this proxy's hold is on, above what is held
+// already; answers whether it is held - then no ACKNACK names it until it is released. Not while a sample of this
+// writer's is collided (its gaps are NACKed from the watermark: extend_gap_to_watermark()), and not where a position
+// still missing lies between the newest held gap and this one: the FIFO's runs are contiguous.
+static bool holdoff_hold(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t first, uint32_t last,
+                         uint64_t now) {
+    uint64_t hold = proxy->collided ? 0U : holdoff_time_ns(node, proxy);
+    if (hold == 0) {
+        return false;
+    }
+    holdoff_trim(node, proxy);
+    if (proxy->held_count != 0) {
+        uint32_t tail = holdoff_tail_seq_no(node, proxy);
+        if (seq_delta(last, tail) <= 0) {
+            return true; // held already
+        }
+        int32_t between = seq_delta(first, tail + 1U);
+        if (between > 0 && holdoff_range_open(proxy, seq_delta(tail + 1U, proxy->ack_seq_no),
+                                              seq_delta(first - 1U, proxy->ack_seq_no))) {
+            return false;
+        }
+        first = tail + 1U;
+    }
+    if (seq_delta(last, first) < 0) {
+        return true;
+    }
+    if (proxy->held_count == holdoff_slots(node)) {
+        uint32_t oldest_first = proxy->held_floor;
+        uint32_t oldest_last = holdoff_at(node, proxy, 0)->high_seq_no;
+        holdoff_pop(node, proxy);
+        RSTAT_INC(holdoff_released);
+        RSTAT_INC(holdoff_early);
+        holdoff_send_released(node, proxy, oldest_first, oldest_last);
+    }
+    if (proxy->held_count == 0) {
+        proxy->held_floor = first;
+    }
+    struct tt_HoldoffEntry* entry = holdoff_at(node, proxy, proxy->held_count);
+    entry->high_seq_no = last;
+    entry->detected_ns = (uint32_t)now;
+    proxy->held_count++;
+#ifdef tt_RELIABLE_STATS
+    g_rstats.holdoff_engaged++;
+    rstat_hist(g_rstats.holdoff_value_hist, hold);
+#endif
+    holdoff_arm(node, proxy, now, true);
+    return true;
+}
+
+// A late original - the writer's first transmission, not a repair - filled a gap: a reorder, `delay` after the gap
+// showed and `distance` datagrams behind the highest received. `spurious`: the gap had been NACKed (E1); else it was
+// held and the hold absorbed it (E2). Auto's evidence: E1 opens the gate, and grows m once a round trip; both reset the
+// clean count and feed D and the distance seen.
+static void holdoff_note_reorder(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t delay,
+                                 uint32_t distance, bool spurious, uint64_t now) {
+    if (node->holdoff_mode != tt_HOLDOFF_MODE_AUTO) {
+        return;
+    }
+    proxy->holdoff_clean = 0;
+    uint32_t sample = delay < UINT32_MAX ? (uint32_t)delay : UINT32_MAX;
+    sample = sample != 0 ? sample : 1U;
+    proxy->holdoff_delay_ns = sample > proxy->holdoff_delay_ns ? sample : proxy->holdoff_delay_ns;
+    uint16_t dist = distance < UINT16_MAX ? (uint16_t)distance : (uint16_t)UINT16_MAX;
+    proxy->holdoff_disp = dist > proxy->holdoff_disp ? dist : proxy->holdoff_disp;
+    if (!spurious) {
+        return;
+    }
+    if (!proxy->holdoff_gate) {
+        proxy->holdoff_gate = true;
+        proxy->holdoff_m = 1;
+        proxy->holdoff_bump_ns = (uint32_t)now;
+        RSTAT_INC(holdoff_gate_opened);
+        return;
+    }
+    uint64_t round = holdoff_srtt(proxy) != 0 ? holdoff_srtt(proxy) : reliable_opts(node)->retry_initial;
+    if ((uint32_t)now - proxy->holdoff_bump_ns >= round && proxy->holdoff_m < HOLDOFF_M_MAX) {
+        proxy->holdoff_m++;
+        proxy->holdoff_bump_ns = (uint32_t)now;
+    }
+}
+
+// A repair arrived; `repaired`: it filled a gap (note_repair_arrival()) - a clean recovery while auto's gate is open.
+// Every HOLDOFF_DECAY of them D and the distance seen halve and m is 1; HOLDOFF_GATE_CLOSE of them with no reorder
+// close the gate.
+static void holdoff_note_clean(const struct tt_Context* node, struct tt_WriterProxy* proxy, bool repaired) {
+    if (!repaired || node->holdoff_mode != tt_HOLDOFF_MODE_AUTO || !proxy->holdoff_gate) {
+        return;
+    }
+    proxy->holdoff_clean++;
+    if (proxy->holdoff_clean >= HOLDOFF_GATE_CLOSE) {
+        proxy->holdoff_gate = false;
+        proxy->holdoff_delay_ns = 0;
+        proxy->holdoff_disp = 0;
+        proxy->holdoff_m = 0;
+        proxy->holdoff_clean = 0;
+        return;
+    }
+    if (proxy->holdoff_clean % HOLDOFF_DECAY == 0) {
+        proxy->holdoff_delay_ns /= 2U;
+        proxy->holdoff_disp /= 2U;
+        proxy->holdoff_m = 1;
+    }
+}
+
+// The writer's seq_no arrived as the watermark's probe ended (end_watermark_probe()) and it was no repair: the request
+// that named it was spurious (E1). Timed from that request plus the hold of now - the gap showed about that long
+// before.
+static void holdoff_note_probe_original(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    if (node->holdoff_mode != tt_HOLDOFF_MODE_AUTO) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    uint64_t delay = now > proxy->probe_ns ? now - proxy->probe_ns : 0U;
+    holdoff_note_reorder(node, proxy, delay + holdoff_time_ns(node, proxy), holdoff_distance(node, proxy, seq_no), true,
+                         now);
+}
+
+// An arrival was recorded while gaps are held (update_reliable_ack(), the in-order path's one added test): if it is the
+// late original of a held position (E2), auto learns the reorder's delay - exact, from the gap's detection - and then
+// the hold is brought up to date, NACKing what is due.
+static void holdoff_on_arrival(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no, bool is_new) {
+    uint64_t now = tt_get_ns();
+    if (is_new && !node->rx_targeted && seq_delta(seq_no, proxy->held_floor) >= 0 &&
+        seq_delta(holdoff_tail_seq_no(node, proxy), seq_no) >= 0) {
+        for (uint32_t k = 0; k < proxy->held_count; k++) {
+            const struct tt_HoldoffEntry* entry = holdoff_at(node, proxy, k);
+            if (seq_delta(entry->high_seq_no, seq_no) >= 0) {
+                holdoff_note_reorder(node, proxy, (uint32_t)((uint32_t)now - entry->detected_ns),
+                                     holdoff_distance(node, proxy, seq_no), false, now);
+                break;
+            }
+        }
+    }
+    holdoff_service(node, proxy, now, true);
+}
+
+// A HEARTBEAT announced seq_nos up to heartbeat_last_seq_no; the ones above the highest received and above what the
+// previous HEARTBEAT (hb_before) announced are a gap it revealed, held as one from now: the HEARTBEAT, too, can have
+// overtaken the data it announces. Clamped to the window, as highest_relevant_bit() is.
+static void holdoff_hold_revealed(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t hb_before) {
+    int32_t ahead = seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no);
+    if (node->holdoff_mode == tt_HOLDOFF_MODE_OFF || ahead < 0) {
+        return;
+    }
+    uint32_t first = proxy->ack_seq_no + (uint32_t)(proxy_highest_received(proxy) + 1);
+    if (seq_delta(hb_before, first) >= 0 && seq_delta(hb_before, proxy->ack_seq_no) >= 0) {
+        first = hb_before + 1U;
+    }
+    uint32_t last = proxy->ack_seq_no + (uint32_t)highest_relevant_bit_from(proxy, ahead);
+    if (seq_delta(last, first) >= 0) {
+        (void)holdoff_hold(node, proxy, first, last, tt_get_ns());
+    }
+}
+
+// A proxy forgotten or claimed again: nothing held, nothing learnt, no timer.
+static void holdoff_forget(struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    if (node != NULL && proxy->holdoff_scheduled) {
+        tt_Context_unschedule(node, acknack_holdoff_due, proxy);
+    }
+    proxy->holdoff_scheduled = false;
+    proxy->holdoff_due_ns = 0;
+    proxy->held_head = 0;
+    proxy->held_count = 0;
+    proxy->held_floor = 0;
+    proxy->holdoff_delay_ns = 0;
+    proxy->holdoff_bump_ns = 0;
+    proxy->holdoff_disp = 0;
+    proxy->holdoff_m = 0;
+    proxy->holdoff_clean = 0;
+    proxy->holdoff_gate = false;
+}
+
 // Folds one request-to-recovery time into proxy's estimate, RFC 6298-style: on the first sample
 // srtt = R and rttvar = R/2, then rttvar = 3/4 rttvar + 1/4 |srtt - R| and srtt = 7/8 srtt + 1/8 R.
 // R is clamped to at least 1ns so a first sample can never leave srtt at the 0 that means "none".
@@ -17002,6 +17576,8 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
             rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
         }
 #endif
+    } else if (!node->rx_targeted) {
+        holdoff_note_probe_original(node, proxy, seq_no); // the original, after its request: a spurious NACK (E1)
     }
     proxy->probe_ns = 0;
 }
@@ -17099,6 +17675,15 @@ static void acknack_retry_note_frontier(const struct tt_ReliableOptions* reliabl
     }
 }
 
+// Asks acknack_retry() to run again at `when`, or says it cannot (the reorder hold-off's N3, when every gap open is
+// held).
+static void acknack_retry_again(struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t when) {
+    if (!tt_Context_schedule(node, when, acknack_retry, proxy)) {
+        TT_LOG_ERROR("Cannot schedule acknack_retry");
+        proxy->acknack_scheduled = false;
+    }
+}
+
 // Scheduled (tt_Context_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
 // 0), re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to
 // re-trigger update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up
@@ -17119,6 +17704,15 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
         // again, nothing asked until the writer sent something more; a writer that had stopped never did (rmw
         // test_loaned_messages, held case).
         proxy->acknack_scheduled = false;
+        return;
+    }
+    // The reorder hold-off (N3): the gaps still held stay out of the retry. If nothing open is outside them there is
+    // nothing to ask: no ACKNACK, no retry counted, asked again at the next interval - a held gap that is lost goes
+    // with its release (holdoff_send_released()).
+    struct acknack_skip held[1] = {{0, -1}};
+    int held_runs = holdoff_skip(node, proxy, held);
+    if (holdoff_all_held(proxy, highest, held, held_runs)) {
+        acknack_retry_again(node, proxy, tt_get_ns() + reliable_retry_interval(node, proxy));
         return;
     }
 
@@ -17145,7 +17739,7 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // parent's.
     bool sending = false;
     uint64_t checked_ns = tt_get_ns();
-    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY + 1];
     int skip_count = 0;
     {
         uint64_t interval = reliable_retry_interval(node, proxy);
@@ -17154,6 +17748,8 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
             bool due = checked_ns - proxy->retry_sent_ns >= retry_cadence_while_sending(node, proxy, interval);
             bool answering = proxy->repair_arrival_ns != 0 && checked_ns - proxy->repair_arrival_ns < interval;
             skip_count = repairs_in_flight(node, proxy, highest, checked_ns, skips);
+            skips[skip_count] = held[0]; // counted only if held_runs says it is one
+            skip_count += held_runs;
             if (!due || !answering || !names_any_open(proxy, highest, skips, skip_count)) {
                 if (!tt_Context_schedule(node, checked_ns + interval, acknack_retry, proxy)) {
                     TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -17190,10 +17786,10 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     if (sending) {
         send_acknack_skipping(node, proxy, 0, highest, skips, skip_count);
     } else {
-        send_acknack(node, proxy);
+        send_acknack_skipping(node, proxy, 0, highest, held, held_runs); // send_acknack() when nothing is held
     }
 #else
-    send_acknack(node, proxy);
+    send_acknack_skipping(node, proxy, 0, highest, held, held_runs); // send_acknack() when nothing is held
 #endif
 
     // A gap still open past its retries at the plain interval is worth a line: the writer neither repairs it nor says
@@ -17312,8 +17908,18 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
         // update while this proxy already has a retry armed relies purely on acknack_retry()'s own
         // periodic re-send (which already re-reads the current bitmap state fresh each tick, so
         // nothing about a widened gap goes unreported, just delayed by at most one interval).
+        //
+        // The reorder hold-off (N1): a gap still held stays out, and when every open one is held nothing is asked and
+        // no retry armed - the release asks for it and arms the retry (holdoff_send_released()). Nothing held, this
+        // is send_acknack() as it was.
+        struct acknack_skip held[1] = {{0, -1}};
+        int held_runs = holdoff_skip(node, proxy, held);
+        int highest = highest_relevant_bit(proxy);
+        if (holdoff_all_held(proxy, highest, held, held_runs)) {
+            return;
+        }
         RSTAT_INC(acknack_immediate);
-        send_acknack(node, proxy);
+        send_acknack_skipping(node, proxy, 0, highest, held, held_runs);
         proxy->retry = 0;
         if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
@@ -17367,10 +17973,12 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 }
 
 // Bit positions (relative to ack_seq_no) of a gap one DATA arrival just revealed - positions above
-// the previously highest received bit and below the arrival itself. low_bit < 0 means none.
+// the previously highest received bit and below the arrival itself. low_bit < 0 means none. filled: the arrival itself
+// filled a position below the previously highest received (a gap's datagram, late or repaired).
 struct new_gap_range {
     int low_bit;
     int high_bit;
+    bool filled;
 };
 
 // update_reliable_ack()'s in-window (0 < offset < tt_RELIABLE_BITMAP_BITS) arrival: records it in
@@ -17429,8 +18037,38 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
         new_gap->low_bit = prev_highest + 1;
         new_gap->high_bit = (int)offset - 1;
     }
+    new_gap->filled = (int)offset < prev_highest;
     proxy_mark_received(proxy, offset);
     return true;
+}
+
+// The reorder hold-off's half of recording an arrival above the watermark (update_reliable_ack(), not on the in-order
+// path): the writer's original filling a gap already NACKed is auto's evidence of reorder (E1); and a gap the arrival
+// opened is held, if the hold is on - above what a HEARTBEAT already revealed, which was held or NACKed then. Answers
+// whether that gap is held: then its narrow ACKNACK (N2) is not sent.
+static bool holdoff_after_record(struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no,
+                                 const struct new_gap_range* new_gap, bool is_new) {
+    if (node->holdoff_mode == tt_HOLDOFF_MODE_OFF) {
+        return false; // off: what main did, not even a clock read
+    }
+    uint64_t now = tt_get_ns();
+    if (new_gap->filled && is_new && !node->rx_targeted && node->holdoff_mode == tt_HOLDOFF_MODE_AUTO) {
+        uint64_t asked = oldest_request_naming(proxy, seq_no);
+        if (asked != 0 && now >= asked) {
+            holdoff_note_reorder(node, proxy, (now - asked) + holdoff_time_ns(node, proxy),
+                                 holdoff_distance(node, proxy, seq_no), true, now);
+        }
+    }
+    if (new_gap->low_bit < 0) {
+        return false;
+    }
+    uint32_t first = proxy->ack_seq_no + (uint32_t)new_gap->low_bit;
+    uint32_t last = proxy->ack_seq_no + (uint32_t)new_gap->high_bit;
+    if (seq_delta(proxy->heartbeat_last_seq_no, first) >= 0 &&
+        seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) >= 0) {
+        first = proxy->heartbeat_last_seq_no + 1U;
+    }
+    return seq_delta(last, first) >= 0 && holdoff_hold(node, proxy, first, last, now);
 }
 
 #ifdef tt_RELIABLE_STATS
@@ -17707,9 +18345,16 @@ static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterP
         return;
     }
     if (node->repair_reveal == tt_REPAIR_REVEAL_ALL_MISSING) {
+        // Everything missing but what the reorder hold-off still holds (N5); nothing held, send_acknack() as it was.
+        struct acknack_skip held[1] = {{0, -1}};
+        int held_runs = holdoff_skip(node, proxy, held);
+        int highest = highest_relevant_bit(proxy);
+        if (holdoff_all_held(proxy, highest, held, held_runs)) {
+            return; // every gap open is held
+        }
         proxy->reveal_ns = now;
         RSTAT_INC(acknack_reveal);
-        send_acknack(node, proxy);
+        send_acknack_skipping(node, proxy, 0, highest, held, held_runs);
         return;
     }
     uint64_t arrived_asked = oldest_request_naming(proxy, seq_no);
@@ -17719,7 +18364,7 @@ static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterP
         return; // named by no request remembered: nothing to order it against
     }
     uint64_t window = repair_in_flight_ns(node, proxy);
-    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY + 1];
     int skip_count = 0;
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         const struct tt_RepairRequest* request = &proxy->requests[slot];
@@ -17745,6 +18390,7 @@ static void maybe_reveal_lost_repairs(struct tt_Context* node, struct tt_WriterP
         skips[skip_count].high_bit = (int)high;
         skip_count++;
     }
+    skip_count += holdoff_skip(node, proxy, &skips[skip_count]); // nor what the reorder hold-off holds (N5)
     if (!names_any_open(proxy, high_bit, skips, skip_count)) {
         return; // nothing revealed: every missing unit is on its way
     }
@@ -17795,13 +18441,14 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     RSTAT_ON_ARRIVAL(node, proxy, seq_no);
     if (node->rx_targeted) {
         uint64_t now = tt_get_ns();
-        note_repair_arrival(proxy, seq_no, now);
+        holdoff_note_clean(node, proxy, note_repair_arrival(proxy, seq_no, now));
 #if tt_LARGE_SAMPLES
         proxy->repair_arrival_ns = now;
 #endif
     }
-    struct new_gap_range new_gap = {-1, -1};
+    struct new_gap_range new_gap = {-1, -1, false};
     bool is_new = true;
+    bool held = false;      // the gap this arrival opened is held back (the reorder hold-off)
     bool revealing = false; // a repair recorded above the watermark (maybe_reveal_lost_repairs())
     if (seq_no == proxy->ack_seq_no) {
         end_watermark_probe(node, proxy, seq_no);
@@ -17829,6 +18476,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
             // first would hide the real gap below this arrival and the reader would never ask for
             // what it genuinely lost.
             node->rx_span_absorbed += absorb_seq_span(proxy, offset, node->rx_seq_span);
+            held = holdoff_after_record(node, proxy, seq_no, &new_gap, is_new);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -17865,9 +18513,16 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     // burned the Publisher's per-sample resend cap, since removed). Bounded by one
     // ACKNACK per loss event (a new gap needs at least one genuinely missing position), not one per
     // DATA arrival - unlike the ACKNACK flood maybe_arm_acknack_retry()'s own comment describes.
+    //
+    // The reorder hold-off adds one test here, on every arrival - the in-order path's only addition: with gaps held,
+    // a held gap's late original is learnt from and what is due is NACKed (holdoff_on_arrival()). A gap held is not
+    // NACKed by the new-gap ACKNACK below (N2).
+    if (proxy->held_count != 0) {
+        holdoff_on_arrival(node, proxy, seq_no, is_new);
+    }
     bool retry_already_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
-    if (retry_already_armed && new_gap.low_bit >= 0) {
+    if (retry_already_armed && new_gap.low_bit >= 0 && !held) {
         if (proxy->collided) {
             extend_gap_to_watermark(proxy, &new_gap);
         }
@@ -18860,6 +19515,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
                 tt_Context_unschedule(node, acknack_retry, proxy);
                 proxy->acknack_scheduled = false;
             }
+            holdoff_forget(node, proxy);               // its reorder hold-off timer too
             proxy->context_id = tt_CONTEXT_ID_INVALID; // frees the slot; a restart re-runs first contact
             proxy->entity_id = 0;
             sub->superseded_pending -= proxy->superseded_pending < sub->superseded_pending ? proxy->superseded_pending
@@ -23115,8 +23771,15 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     proxy->sender_port = ctx->sender_port;
     // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
     // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
+    uint32_t hb_before = proxy->heartbeat_last_seq_no;
     if (seq_delta(proxy->heartbeat_last_seq_no, ctx->last_seq_no) < 0) {
         proxy->heartbeat_last_seq_no = ctx->last_seq_no;
+    }
+    // The reorder hold-off (N4): the tail this Heartbeat revealed is a gap like one a DATA arrival opens - the
+    // Heartbeat may have overtaken the data it announces - and is held from now. Not at first contact: what a
+    // Heartbeat shows there is a durable reader's backlog, not a gap.
+    if (!first_contact) {
+        holdoff_hold_revealed(node, proxy, hb_before);
     }
 
     // tt_HEARTBEAT_FLAG_FINAL's own doc comment (tickle.h) - had_gap must be read before maybe_arm_
@@ -23191,8 +23854,9 @@ static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* p
     if (high_bit < 0) {
         return; // no gap after all - the caller's had_gap says otherwise only if this were called without one
     }
-    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY + 1];
     int skip_count = repairs_in_flight(node, proxy, high_bit, tt_get_ns(), skips);
+    skip_count += holdoff_skip(node, proxy, &skips[skip_count]); // nor what the reorder hold-off holds (N4)
     if (!names_any_open(proxy, high_bit, skips, skip_count)) {
         RSTAT_INC(ack_request_in_flight);
         send_acknack_range(node, proxy, 0, -1);

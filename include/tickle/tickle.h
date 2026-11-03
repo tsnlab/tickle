@@ -945,6 +945,28 @@ struct tt_HybridState {
 #define tt_REPAIR_REVEAL_OFF 1U         // ask again on the retry timer and the HEARTBEAT chase only, as before
 #define tt_REPAIR_REVEAL_REVEALED 2U    // ask again at once for the units the arrival shows lost, and nothing else
 #define tt_REPAIR_REVEAL_ALL_MISSING 3U // ask again at once for everything missing, repairs still on their way included
+// A RELIABLE reader's wait before it NACKs a gap, in case the gap is a reordering (tt_ReliableOptions.reorder_holdoff,
+// tt_LinkOptions.reorder_holdoff; config.h tt_RELIABLE_REORDER_HOLDOFF). A value between is a fixed hold in ns.
+#define tt_REORDER_HOLDOFF_AUTO 0U // spelled out for readers: 0 is "the build's" (or the profile's), auto by default
+#define tt_REORDER_HOLDOFF_OFF UINT64_MAX // NACK a gap the moment it shows (the behaviour before 2026-11)
+#define tt_REORDER_HOLDOFF_MAX tt_SECOND  // a fixed value's most (the hold is timed in 32 bits: below 2^31 ns)
+// What a context resolved (tt_Context.holdoff_mode): 0 off, as a hand-built context is.
+#define tt_HOLDOFF_MODE_OFF 0U
+#define tt_HOLDOFF_MODE_FIXED 1U
+#define tt_HOLDOFF_MODE_AUTO 2U
+// ab/reorder-holdoff only, not public API (config.h TT_HOLDOFF_TEST_SEAM): the auto candidates (stage S3's A/B), and
+// under the seam the candidate a context created after it is set runs, and a value that replaces every context's
+// resolved reorder_holdoff - so that one binary runs every A/B arm. tt_holdoff_test_policy 0 = the branch's default
+// candidate (E); tt_holdoff_test_value 0 = no override, tt_REORDER_HOLDOFF_OFF = off, else a fixed hold in ns. Read
+// once, when a context is created. All of it is removed with the losing candidates before the hold-off lands.
+#define tt_HOLDOFF_POLICY_DEFAULT 0U
+#define tt_HOLDOFF_POLICY_B 1U // dupthresh, gated: released once thr datagrams arrived past the gap, or a backstop
+#define tt_HOLDOFF_POLICY_D 2U // time + distance, gated: (distance >= thr and a quarter of E's time) or E's time
+#define tt_HOLDOFF_POLICY_E 3U // RACK-time, gated: m x max(min transit / 4, the reorder delay seen), at most srtt
+#if TT_HOLDOFF_TEST_SEAM
+extern uint8_t tt_holdoff_test_policy;
+extern uint64_t tt_holdoff_test_value;
+#endif
 
 // One link a context talks on (the successor of struct _tt_Link's settings; see that struct in config.h).
 //
@@ -1023,6 +1045,12 @@ struct tt_LinkOptions {
     // The least time between two such re-asks to one writer, in ns; 0 = the least repair transit the reader has timed
     // from that writer. At most UINT32_MAX. Context: the longest any link sets.
     uint64_t repair_reveal_pace_ns;
+    // A RELIABLE reader's wait before it NACKs a gap, in case it is a reordering (tt_REORDER_HOLDOFF_*, else a fixed
+    // hold in ns of at most tt_REORDER_HOLDOFF_MAX). 0 = the profile's: ETHERNET and WIFI auto
+    // (tt_RELIABLE_REORDER_HOLDOFF), T1S and TSN off - a PLCA bus and a scheduled TSN stream keep their order. Context
+    // (where reliable.reorder_holdoff is not set): auto if any link is, else the longest fixed hold, off only if every
+    // link is off.
+    uint64_t reorder_holdoff;
 };
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
@@ -1099,6 +1127,10 @@ struct tt_ReliableOptions {
     // A RELIABLE Publisher's idle HEARTBEAT period when its own tt_PublisherOptions.idle_heartbeat_ns is 0; 0 =
     // tt_IDLE_HEARTBEAT_PERIOD, tt_QOS_DURATION_INFINITE = off.
     uint64_t idle_heartbeat_period;
+    // A RELIABLE reader's wait before it NACKs a gap (tt_REORDER_HOLDOFF_*, else a fixed hold in ns, at most
+    // tt_REORDER_HOLDOFF_MAX). 0 = what the links say (tt_LinkOptions.reorder_holdoff); set, it decides for every link,
+    // and a link that sets a different value is refused.
+    uint64_t reorder_holdoff;
     uint16_t max_srtt_multiple;             // 0 = tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
     uint16_t idle_heartbeat_retry_multiple; // 0 = tt_IDLE_HEARTBEAT_RETRY_MULTIPLE
     uint8_t retry;                          // 0 = tt_RELIABLE_RETRY; at most UINT8_MAX - 1
@@ -1302,6 +1334,7 @@ struct tt_Capacity {
     uint8_t request_history;  // ACKNACK requests a reader remembers per writer; tt_RELIABLE_REQUEST_HISTORY
     uint8_t publisher_claims; // ring slots one Publisher may hold claimed at once; tt_PUBLISHER_CLAIMS
     uint8_t large_retained;   // large samples one Publisher keeps by reference at once; tt_LARGE_RETAINED
+    uint8_t holdoff_slots;    // gaps a reader holds back per writer (the reorder hold-off); tt_RELIABLE_HOLDOFF_SLOTS
 };
 
 struct tt_InitOptions {
@@ -2251,6 +2284,12 @@ struct tt_Context {
     // writer proxy's least repair transit.
     uint8_t repair_reveal;
     uint32_t repair_reveal_pace_ns;
+    // The reliable readers' reorder hold-off (tt_LinkOptions.reorder_holdoff, ab/reorder-holdoff), set by
+    // link_profiles_apply(): holdoff_mode tt_HOLDOFF_MODE_* (0, off, a hand-built context's); holdoff_ns
+    // the fixed hold; holdoff_policy the auto candidate (tt_HOLDOFF_POLICY_*, the A/B seam's).
+    uint8_t holdoff_mode;
+    uint8_t holdoff_policy;
+    uint32_t holdoff_ns;
 #ifdef tt_ESTIMATOR_TRACE
     // When this context last printed its ESTTRACE lines (estimator_trace(), tickle.c); 0: never. Only in a build with
     // -Dtt_ESTIMATOR_TRACE, after every other field, so the default build's layout is untouched.
@@ -3670,6 +3709,12 @@ struct tt_RepairRequest {
     uint32_t last_seq_no;
 };
 
+// One gap a reliable Subscriber holds back from its ACKNACKs (tt_WriterProxy.held, the reorder hold-off).
+struct tt_HoldoffEntry {
+    uint32_t high_seq_no;
+    uint32_t detected_ns; // low 32 bits of tt_get_ns()
+};
+
 struct tt_WriterProxy {
     uint8_t context_id;
     uint32_t entity_id;
@@ -3875,6 +3920,28 @@ struct tt_WriterProxy {
     // for has come back sooner, so no recovery is folded into recovery_srtt_ns as faster than it (2026-10-26, RESULTS
     // `RLF`; path_recovery_sample(), tickle.c). Fills the padding before `sub`: the struct does not grow.
     uint32_t transit_min_ns;
+    // The reorder hold-off (ab/reorder-holdoff; tickle.c "Reorder hold-off"): gaps opened and not NACKed yet, oldest
+    // first, a ring of the context's capacity.holdoff_slots from held_head, held_count of them. Entry k covers the
+    // missing seq_nos from the one before it (held_floor for the first) up to its high_seq_no; detected_ns is the low
+    // 32 bits of when the gap showed, so gaps are held in seq_no order and in time order at once. Each is NACKed when
+    // its hold has passed (acknack_holdoff_due(), scheduled at holdoff_due_ns while holdoff_scheduled), or earlier by
+    // a safety rule; until then every ACKNACK leaves it out.
+    struct tt_HoldoffEntry held[tt_RELIABLE_HOLDOFF_SLOTS];
+    uint64_t holdoff_due_ns;
+    uint32_t held_floor;
+    // The auto candidates' state: the reorder delay seen (decaying max, ns), the reorder distance seen (datagrams),
+    // the low 32 bits of when the multiplier last grew, the multiplier, clean recoveries since the last reorder, and
+    // the gate - closed (no hold) until a late original fills a gap already NACKed, closed again after
+    // HOLDOFF_GATE_CLOSE clean recoveries.
+    uint32_t holdoff_delay_ns;
+    uint32_t holdoff_bump_ns;
+    uint16_t holdoff_disp;
+    uint8_t held_head;
+    uint8_t held_count;
+    uint8_t holdoff_m;
+    uint8_t holdoff_clean;
+    bool holdoff_gate;
+    bool holdoff_scheduled;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,

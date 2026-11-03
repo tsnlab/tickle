@@ -70,6 +70,17 @@ struct tt_ReliableStats {
     // Not a fill: a late original finding its seq_no already filled by the repair a remembered request asked for - the
     // other order of E1's race (E1 late; rstat_late_originals()), per seq_no.
     uint64_t nack_spurious_late;
+    // The reorder hold-off (ab/reorder-holdoff, stage S3; tickle.c "Reorder hold-off"), the arm's own report of its
+    // treatment: gaps held back from the ACKNACKs (engaged), and released to be NACKed (released) - of which by a
+    // safety rule before their hold had passed (early: the window half passed, a reorder-slot collision, the FIFO full,
+    // the scheduler full). acknack_held: ACKNACKs sent for released gaps. gate_opened: auto's gate opening on a late
+    // original filling a gap already NACKed. holdoff_value_hist: the hold a gap was held with when it was held, us.
+    uint64_t holdoff_engaged;
+    uint64_t holdoff_released;
+    uint64_t holdoff_early;
+    uint64_t acknack_held;
+    uint64_t holdoff_gate_opened;
+    uint64_t holdoff_value_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
 
     // --- Publisher side (process_acknack() / retransmit_reliable_samples()) ---
     uint64_t acknack_received;           // ACKNACKs reaching a reliable Publisher's retransmit loop

@@ -199,6 +199,30 @@
 #define tt_RELIABLE_REQUEST_HISTORY 32
 #endif
 #endif
+// The reorder hold-off (2026-11, ab/reorder-holdoff): how long a RELIABLE reader waits before it NACKs a gap, in case
+// the gap is a reordering and its datagram only late. Nanoseconds, at most tt_REORDER_HOLDOFF_MAX (tickle.h); 0 = auto,
+// the default: a hold chosen per writer from the reorder the reader has seen, and none until it has seen a late
+// original fill a gap it had already NACKed - so on a link that never reorders auto NACKs at once, as before.
+// tt_REORDER_HOLDOFF_OFF = never hold (the behaviour before 2026-11). What an ETHERNET or WIFI link's 0 stands for; T1S
+// and TSN are off (tt_LinkOptions.reorder_holdoff).
+#ifndef tt_RELIABLE_REORDER_HOLDOFF
+#define tt_RELIABLE_REORDER_HOLDOFF 0
+#endif
+// Gaps one writer proxy holds at once (tt_WriterProxy.held), 8 bytes each. A gap opened while all are taken releases
+// the oldest - it is NACKed at once, early rather than late. 4 on FreeRTOS, where a writer proxy's bytes are the cost,
+// as with tt_RELIABLE_REQUEST_HISTORY. The compiled size; a context may use fewer, struct tt_Capacity.holdoff_slots.
+#ifndef tt_RELIABLE_HOLDOFF_SLOTS
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_RELIABLE_HOLDOFF_SLOTS 4
+#else
+#define tt_RELIABLE_HOLDOFF_SLOTS 8
+#endif
+#endif
+// The A/B screening's private candidate selector (ab/reorder-holdoff, stage S3; tt_holdoff_test_policy, tickle.h). Not
+// public API: the losing candidates and this seam are removed before the hold-off lands.
+#ifndef TT_HOLDOFF_TEST_SEAM
+#define TT_HOLDOFF_TEST_SEAM 1
+#endif
 // Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
 // KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable
 // gap would retry silently forever; rate-limited by time, not retry count, so the cadence stays

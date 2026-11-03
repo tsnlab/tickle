@@ -56,6 +56,9 @@ static void print_reliable_stats(const char* role) {
            "reorder_absorbed=%llu reorder_fill_before_rtt=%llu\n",
            role, U(stats.reorder_fill_original), U(stats.nack_spurious), U(stats.nack_spurious_late),
            U(stats.reorder_absorbed), U(stats.reorder_fill_before_rtt));
+    printf("RSTATS: role=%s holdoff engaged=%llu released=%llu early=%llu acknack_held=%llu gate_opened=%llu\n", role,
+           U(stats.holdoff_engaged), U(stats.holdoff_released), U(stats.holdoff_early), U(stats.acknack_held),
+           U(stats.holdoff_gate_opened));
     printf("RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu reveal=%llu sent=%llu bits_sent=%llu "
            "bytes_sent=%llu ack_request_answered=%llu ack_request_in_flight=%llu\n",
            role, U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_reveal),
@@ -93,6 +96,7 @@ static void print_reliable_stats(const char* role) {
     print_reliable_hist(role, "request_to_recover", stats.request_to_recover_hist);
     print_reliable_hist(role, "reorder_delay", stats.reorder_delay_hist);
     print_reliable_hist_unit(role, "reorder_distance_dgrams", stats.reorder_distance_hist, "");
+    print_reliable_hist(role, "holdoff_value", stats.holdoff_value_hist);
 }
 #else
 static inline void print_reliable_stats(const char* role) {
