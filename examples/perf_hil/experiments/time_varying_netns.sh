@@ -33,6 +33,10 @@
 #   j0   delay 6ms                                  j5   delay 6ms 5ms (uniform +-5 ms: reorders, as jitter does)
 #   l0   delay 1ms                                  lb5  delay 1ms loss random 5%
 #   lg5  delay 1ms GE L 5% B 4 (WB's ge5b4)         ld2  delay 21ms GE L 10% B 8 (the old tv's third phase, +20 ms)
+#   r1   delay 1ms reorder 1%                       r6   delay 6ms reorder 1%
+#   (r1, r6: link reorder without loss, added 2026-11-04 for holdoff_ab.sh, REORDER_HOLDOFF_DESIGN 4.2: netem sends 1%
+#   of the datagrams at once, ahead of every one still in its delay queue. No correlation: netem's reorder correlation
+#   couples events into runs, so the share of gaps it opens would not be the 1% the reader's treatment check expects.)
 #   D carries a constant background loss (D_BG_LOSS, default 2%) in both its phases: with no loss a delay step has
 #   nothing to repair, so neither V1 (copies after a repair) nor V2 (repair wait) could be exercised. 2% and not 1%:
 #   V2 reads a p99, which at 1% loss sits on the edge between repaired and unrepaired samples. The factor varied is
@@ -312,6 +316,8 @@ spec() {
     lb5) words="delay 1ms loss random 5%" ;;
     lg5) words="delay 1ms $(ge 5 4)" ;;
     ld2) words="delay 21ms $(ge 10 8)" ;;
+    r1) words="delay 1ms reorder 1%" ;;
+    r6) words="delay 6ms reorder 1%" ;;
     x*l*) # X1 grid key x<delay ms>l<random loss %>
         [[ $1 =~ ^x([0-9]+)l([0-9]+)$ ]] || return 1
         words="delay ${BASH_REMATCH[1]}ms"
