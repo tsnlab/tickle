@@ -20,6 +20,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   addressed to the reader and told apart) fills one, takes back exactly what that gap counted ([DESIGN.md](DESIGN.md)
   section 8, "What the reader measures"; `reordered=` on the hybrid line). BEST_EFFORT and RELIABLE readers alike. No
   wire or API change.
+- **RELIABLE: no repair-request storm on long paths.** On a link with tens of ms of delay a reader on the ETHERNET
+  profile re-asked a missing sample about once a millisecond until the repair arrived (netns `s_d20`, 20 ms one way:
+  15 timer requests per gap, 24-37% of samples arriving again after delivery). The reader's recovery estimate now starts
+  from the profile's seed and is timed by Karn's rule on every link, as WIFI already did: copies 0.70-0.91%, 0.4
+  requests per gap. Cost: one Wi-Fi-like cell's one-way p99 +8 ms (57.6 -> 65.7 ms, `ge5b4`), landed on the overall
+  judgement ([RESULTS.md](RESULTS.md) `ESD`). No wire or API change.
 
 ## [2.1.0] - 2026-11-02
 
