@@ -116,6 +116,7 @@ DUR=${DUR:-60}
 MM_DELAY=${MM_DELAY:-20}
 MM_LOSS=${MM_LOSS:-2}
 MM_QUEUE=${MM_QUEUE:-}
+TUN_TXQ=${TUN_TXQ:-10000} # each TUN's txqueuelen (see shape())
 DATA_DIR=${DATA_DIR:-down}
 PROFILE=${PROFILE:-ethernet}
 NODE_PIN=${NODE_PIN-"2 4 6"}
@@ -302,7 +303,7 @@ for key in $KEYS; do
 done
 {
     echo "tree=$TREE_SHA dirty_paths=$DIRTY profile=$PROFILE reps=$REPS dur=$DUR est_trace=$EST_TRACE"
-    echo "traces='$KEYS' cells='$CELLS' mm_delay=$MM_DELAY mm_loss=$MM_LOSS mm_queue='$MM_QUEUE' data_dir=$DATA_DIR"
+    echo "traces='$KEYS' cells='$CELLS' mm_delay=$MM_DELAY mm_loss=$MM_LOSS mm_queue='$MM_QUEUE' tun_txq=$TUN_TXQ data_dir=$DATA_DIR"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
     echo "large_load_max=$LARGE_LOAD_MAX win_s=$WIN_S node_pin='$NODE_PIN' node_env='${NODE_ENV:-}' control=$CONTROL"
     echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS${TRACE_DEF:+ ${TRACE_DEF[*]}}"
@@ -345,8 +346,11 @@ wait_line() {
 tun_of() {
     sudo -n ip -n "$1" -o link show | awk -F': ' '$2 != "lo" { sub(/@.*/, "", $2); print $2; exit }'
 }
-# shape NS DEV NETEM: the netem words as DEV's root qdisc (handle 10:); nothing when NETEM is empty (the control).
+# shape NS DEV NETEM: DEV's queue to the Mahimahi process TUN_TXQ long (the default 500 dropped a 1 MiB sample's
+# ~723-unit burst at the TUN on every arm, the control included: tx_dropped 13-1677 a run, full_20261103-231121), then
+# the netem words as DEV's root qdisc (handle 10:); no qdisc when NETEM is empty (the control).
 shape() {
+    sudo -n ip -n "$1" link set dev "$2" txqueuelen "$TUN_TXQ" || return 1
     [ -n "$3" ] || return 0
     # shellcheck disable=SC2086 # the netem arguments are words on purpose
     sudo -n ip netns exec "$1" tc qdisc replace dev "$2" root handle 10: netem $3

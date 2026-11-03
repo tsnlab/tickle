@@ -148,7 +148,10 @@ def treatment(r, ctx):
         why.append(f"one-way p50 {fmt(p50, 'ms')} ms under {need:.2f} ms: the delay is not seen")
     if r["kind"] == "delay":
         return why
-    if ctx["loss"]:
+    # rel_large's data goes as GSO super-packets: netem drops one whole, while its Sent count is in segments, so the
+    # ratio reads ~4x low (0.36-0.60% for 2%, full_20261103-231121). Its netem is the same shape() call as the arm's
+    # small cells, which this rule does judge; rel_large's own ratio is not a treatment check.
+    if ctx["loss"] and r["cell"] != "rel_large":
         side = "out" if ctx["data_dir"] == "down" else "in"
         real = netem_loss(r, side)
         lo, hi = tv.LOSS_REALIZED
@@ -291,25 +294,28 @@ def judge(emit, name, key, cell, t_runs, c_runs, value, kind, limit, f, gate):
 
 
 def control_void(runs, cells):
-    """The clean control (mm-delay alone) must lose nothing; its rel_large must resend nothing."""
+    """The clean control (mm-delay alone) must lose nothing; its rel_large must resend nothing. Returns {cell: reasons}
+    (a control failure voids its own cell's verdicts only: the control's rel_large dropping at the TUN once voided
+    every rel_small verdict too, full_20261103-231121) and rel_large's resends."""
     ctl = [r for r in runs if r["arm"] == "delay"]
     if not ctl:
-        return ["no control arm 'delay' in this OUT"], []
-    why, large = [], []
+        return {cell: ["no control arm 'delay' in this OUT"] for cell in cells}, []
+    why, large = {cell: [] for cell in cells}, []
     for cell in cells:
         if not runs_of(ctl, "delay", cell):
-            why.append(f"no control run of {cell}")
+            why[cell].append(f"no control run of {cell}")
     for r in ctl:
         name = f"delay/{r['cell']}/{r['rep']}"
+        mine = why.setdefault(r["cell"], [])
         if r["void"] or r["treat"]:
-            why.append(f"{name}: {'; '.join(r['void'] + r['treat'])}")
+            mine.append(f"{name}: {'; '.join(r['void'] + r['treat'])}")
             continue
         share = r["delivered"] / r["offered"] if r["offered"] else 0.0
         need = tv.CONTROL_BE_MIN if r["cell"] == "be_small" else 1.0
         if share < need:
-            why.append(f"{name}: delivered {pct(share)} (< {pct(need)})")
+            mine.append(f"{name}: delivered {pct(share)} (< {pct(need)})")
         if r["drops"]:
-            why.append(f"{name}: {r['drops']} qdisc or TUN drops")
+            mine.append(f"{name}: {r['drops']} qdisc or TUN drops")
         if r["cell"] == "rel_large" and r.get("retransmitted", -1) != 0:
             large.append(f"{name}: retransmitted {r.get('retransmitted')}")
     return why, large
@@ -387,7 +393,7 @@ def main():
             print(f"VOID run {r['arm']}-{r['cell']}-{r['rep']}: {'; '.join(r['void'] + r['treat'])}")
     cv, cl = control_void(runs, cells)
     if default:
-        cv = [f"a node ran in the default namespace ({', '.join(default)})"] + cv
+        cv = {c: [f"a node ran in the default namespace ({', '.join(default)})"] + w for c, w in cv.items()}
     if cl:
         print("CONTROL_RESENDS delay rel_large (rel_large verdicts VOID): " + "; ".join(cl))
     for arm in ["delay"] + [f"{k}_{key}" for key in keys for k in ("const", "trace")]:
@@ -400,7 +406,7 @@ def main():
         for cell in cells:
             if not runs_of(runs, t_arm, cell) and not runs_of(runs, c_arm, cell):
                 continue
-            gate = "; ".join(cv) if cv else None
+            gate = "; ".join(cv.get(cell, [])) or None
             if not gate and cell == "rel_large" and cl:
                 gate = "the control resent on rel_large"
             if not gate:
@@ -413,7 +419,8 @@ def main():
             if cell == "rel_small":
                 be_t, be_c = runs_of(runs, t_arm, "be_small"), runs_of(runs, c_arm, "be_small")
                 dl = tv.V3_DEADLINE_MS[cell] + ctx["delay"]
-                g = gate or (None if be_t and be_c else "no be_small runs to normalize by")
+                g = gate or "; ".join(cv.get("be_small", [])) or None  # T_ONTIME reads be_small too
+                g = g or (None if be_t and be_c else "no be_small runs to normalize by")
                 lat = [f"{r['arm']}-{r['cell']}-{r['rep']}" for r in tr + cr + be_t + be_c if r["lat_void"]]
                 g = g or (f"PC loaded at the start of {', '.join(lat)}" if lat else None)
 
