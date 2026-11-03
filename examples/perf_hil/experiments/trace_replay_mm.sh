@@ -121,6 +121,10 @@ DATA_DIR=${DATA_DIR:-down}
 PROFILE=${PROFILE:-ethernet}
 NODE_PIN=${NODE_PIN-"2 4 6"}
 EST_TRACE=${EST_TRACE:-0}
+# One datagram per skb by default: with UDP GSO a writer's batch is one skb, and netem drops it whole however many
+# datagrams it holds, so a rel_large arm's "1%" was 1% of skbs (X1 and trace replay 2026-11-03: rel_large's
+# realized loss read 0.36-0.60% for 2%). wifi_burst_loss_netns.sh learned this on its first baseline. NODE_ENV= (empty) turns it back on.
+NODE_ENV=${NODE_ENV-TT_UDP_OFFLOAD=0}
 CONTROL=${CONTROL:-1}
 SMALL_HZ=100
 SMALL_BYTES=100

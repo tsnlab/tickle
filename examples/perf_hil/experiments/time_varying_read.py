@@ -1175,6 +1175,10 @@ def x1_section(out, runs):
         pins.add(m.group(1) if m else "?")
     print(f"=== X1 static map {out}: profile {profile}, delays {delays} ms x random loss {losses} %, "
           f"{sum(len(v) for v in grid.values())} grid runs (s_l0 included); meta node_pin {sorted(pins)}")
+    env = re.search(r"node_env='([^']*)'", " ".join(read_lines(os.path.join(out, "provenance.txt"))))
+    if not env or "TT_UDP_OFFLOAD=0" not in env.group(1):
+        print("X1 LOSS_MODEL rel_large: node_env has no TT_UDP_OFFLOAD=0 - netem dropped whole GSO skbs, so rel_large's "
+              "loss here is per skb, not per datagram (read its rows as that)")
     cv = control_void(runs)
     cr, _ = control_resends(runs)
     if cv:
