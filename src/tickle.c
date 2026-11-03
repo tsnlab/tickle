@@ -154,14 +154,18 @@ void tt_reliable_stats_reset(void) {
     memset(g_rstats_lro_held_ns, 0, sizeof(g_rstats_lro_held_ns));
 }
 
-static void rstat_hist(uint64_t* hist, uint64_t delta_ns) {
-    uint64_t micros = delta_ns / tt_MICROSECOND;
+// bucket 0 = 0, bucket i (1..N-2) = [2^(i-1), 2^i), the last bucket the rest.
+static void rstat_hist_count(uint64_t* hist, uint64_t value) {
     int bucket = 0;
-    while (micros > 0 && bucket < tt_RELIABLE_STATS_HIST_BUCKETS - 1) {
-        micros >>= 1;
+    while (value > 0 && bucket < tt_RELIABLE_STATS_HIST_BUCKETS - 1) {
+        value >>= 1;
         bucket++;
     }
     hist[bucket]++;
+}
+
+static void rstat_hist(uint64_t* hist, uint64_t delta_ns) {
+    rstat_hist_count(hist, delta_ns / tt_MICROSECOND);
 }
 
 static void rstat_mark_missing(uint32_t first_seq_no, uint32_t count, uint64_t now) {
@@ -17430,13 +17434,70 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
 }
 
 #ifdef tt_RELIABLE_STATS
+// A fill (reorder hold-off stage S0, 2026-11-03): a seq_no filled in a tracked gap by an arrival that is no repair -
+// not addressed to this node (tt_Context.rx_targeted false), so the writer's first transmission, which came late:
+// reordered on the path. The same positions rstat_on_arrival() counts as recovered (the gap's head, or a cleared bit
+// below the highest received), but counted per seq_no the arrival covers - a large sample's run fills its run_count
+// units at once, and its repairs come back as large.duplicate a unit at a time, the count nack_spurious is read
+// against (the plan's VOID rule V-I). Called before rstat_recovered(), which forgets the gap's detection time.
+// Behaviour is untouched; this only counts.
+//   nack_spurious: the seq_no was already named by a request this reader still remembers (oldest_request_naming()) -
+//     its repair is on its way and will arrive as a duplicate (E1).
+//   reorder_absorbed: not named yet - the late original came before any NACK went, or after the request ring forgot
+//     it (E2).
+//   reorder_fill_before_rtt: fills while this reader has no recovery estimate yet (recovery_srtt_ns 0), the start a
+//     hold-off must cope with before any RTT sample.
+//   reorder_delay_hist: fill time minus the gap's detection time (g_rstats_missing_since_ns, exact when a DATA arrival
+//     opened the gap); a gap opened otherwise (a Heartbeat) has no detection time here and is timed from its oldest
+//     remembered request instead, which is later than detection: such a sample errs short. A gap with neither adds no
+//     sample.
+//   reorder_distance_hist: how far behind the highest seq_no received it came, in datagrams - the seq_no distance over
+//     the arriving datagram's own span (tt_Context.rx_seq_span: a run's unit count, 1 for a small or MTU datagram).
+static void rstat_reorder_fills(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint32_t offset,
+                                int prev_highest) {
+    uint32_t span = node->rx_seq_span != 0 ? node->rx_seq_span : 1U;
+    uint64_t now = tt_get_ns();
+    for (uint32_t k = 0; k < span; k++) {
+        uint32_t position = offset + k;
+        if (position >= (uint32_t)prev_highest) {
+            break; // at or above the highest received (or a jump): nothing missing up there
+        }
+        if (position != 0 && bitmap_test_bit(proxy->received_bitmap, position)) {
+            continue; // already here: a duplicate, counted at its own site
+        }
+        uint32_t seq_no = proxy->ack_seq_no + position;
+        uint64_t asked = oldest_request_naming(proxy, seq_no);
+        uint64_t detected = g_rstats_missing_since_ns[seq_no % RSTAT_SEQ_SLOTS];
+        g_rstats.reorder_fill_original++;
+        if (asked != 0) {
+            g_rstats.nack_spurious++;
+        } else {
+            g_rstats.reorder_absorbed++;
+        }
+        if (proxy->recovery_srtt_ns == 0) {
+            g_rstats.reorder_fill_before_rtt++;
+        }
+        if (detected == 0) {
+            detected = asked;
+        }
+        if (detected != 0 && now >= detected) {
+            rstat_hist(g_rstats.reorder_delay_hist, now - detected);
+        }
+        rstat_hist_count(g_rstats.reorder_distance_hist, ((uint32_t)prev_highest - position) / span);
+    }
+}
+
 // Classifies one DATA arrival (seq_no >= proxy->ack_seq_no) before update_reliable_ack() touches
 // received_bitmap: filling an already-tracked gap (below the highest seq_no received so far) counts
-// as recovered; landing above it opens a gap for every position skipped in between. Bit j of
-// received_bitmap means "received(ack_seq_no + j)", and ack_seq_no itself is always still missing.
-static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
+// as recovered (and, when it is no repair, as fills: rstat_reorder_fills()); landing above it opens a
+// gap for every position skipped in between. Bit j of received_bitmap means "received(ack_seq_no + j)",
+// and ack_seq_no itself is always still missing.
+static void rstat_on_arrival(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint32_t seq_no) {
     uint32_t offset = seq_no - proxy->ack_seq_no;
     int prev_highest = proxy_highest_received(proxy);
+    if (!node->rx_targeted && prev_highest > 0) {
+        rstat_reorder_fills(node, proxy, offset, prev_highest);
+    }
     if (offset == 0) {
         if (prev_highest >= 0) {
             rstat_recovered(seq_no); // head of a tracked gap - something above it already arrived
@@ -17461,9 +17522,9 @@ static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no
     }
     rstat_mark_missing(proxy->ack_seq_no + (uint32_t)(prev_highest + 1), newly_missing, tt_get_ns());
 }
-#define RSTAT_ON_ARRIVAL(proxy, seq_no) rstat_on_arrival((proxy), (seq_no))
+#define RSTAT_ON_ARRIVAL(node, proxy, seq_no) rstat_on_arrival((node), (proxy), (seq_no))
 #else
-#define RSTAT_ON_ARRIVAL(proxy, seq_no) ((void)0)
+#define RSTAT_ON_ARRIVAL(node, proxy, seq_no) ((void)0)
 #endif
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
@@ -17691,7 +17752,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
                      // for it either way (unchanged from before this milestone).
     }
 
-    RSTAT_ON_ARRIVAL(proxy, seq_no);
+    RSTAT_ON_ARRIVAL(node, proxy, seq_no);
     if (node->rx_targeted) {
         uint64_t now = tt_get_ns();
         note_repair_arrival(proxy, seq_no, now);

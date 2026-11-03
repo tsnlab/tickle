@@ -20,18 +20,23 @@
 
 #include <tickle/reliable_stats.h>
 
-static void print_reliable_hist(const char* role, const char* name, const uint64_t* hist) {
+// unit: "us" for a time histogram; "" for a count (reorder_distance_dgrams: bucket 0 is exactly 0, printed lt1).
+static void print_reliable_hist_unit(const char* role, const char* name, const uint64_t* hist, const char* unit) {
     printf("RSTATS: role=%s hist=%s", role, name);
     for (int i = 0; i < tt_RELIABLE_STATS_HIST_BUCKETS; i++) {
         if (i == 0) {
-            printf(" lt1us=%llu", (unsigned long long)hist[i]);
+            printf(" lt1%s=%llu", unit, (unsigned long long)hist[i]);
         } else if (i == tt_RELIABLE_STATS_HIST_BUCKETS - 1) {
-            printf(" ge%lluus=%llu", 1ULL << (i - 1), (unsigned long long)hist[i]);
+            printf(" ge%llu%s=%llu", 1ULL << (i - 1), unit, (unsigned long long)hist[i]);
         } else {
-            printf(" lt%lluus=%llu", 1ULL << i, (unsigned long long)hist[i]);
+            printf(" lt%llu%s=%llu", 1ULL << i, unit, (unsigned long long)hist[i]);
         }
     }
     printf("\n");
+}
+
+static void print_reliable_hist(const char* role, const char* name, const uint64_t* hist) {
+    print_reliable_hist_unit(role, name, hist, "us");
 }
 
 static void print_reliable_stats(const char* role) {
@@ -47,6 +52,10 @@ static void print_reliable_stats(const char* role) {
            U(stats.jump_data), U(stats.jump_heartbeat), U(stats.jump_abandoned_seq), U(stats.retry_giveups),
            U(stats.giveups_suppressed_unknown), U(stats.heartbeat_advances), U(stats.heartbeat_abandoned_seq),
            U(stats.recovered), U(stats.recovered_after_request), U(stats.late_below_ack), U(stats.duplicates));
+    printf("RSTATS: role=%s reorder reorder_fill_original=%llu nack_spurious=%llu reorder_absorbed=%llu "
+           "reorder_fill_before_rtt=%llu\n",
+           role, U(stats.reorder_fill_original), U(stats.nack_spurious), U(stats.reorder_absorbed),
+           U(stats.reorder_fill_before_rtt));
     printf("RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu reveal=%llu sent=%llu bits_sent=%llu "
            "bytes_sent=%llu ack_request_answered=%llu ack_request_in_flight=%llu\n",
            role, U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_reveal),
@@ -82,6 +91,8 @@ static void print_reliable_stats(const char* role) {
     print_reliable_hist(role, "lro_rack_extra", stats.lro_rack_extra_hist);
     print_reliable_hist(role, "detect_to_recover", stats.detect_to_recover_hist);
     print_reliable_hist(role, "request_to_recover", stats.request_to_recover_hist);
+    print_reliable_hist(role, "reorder_delay", stats.reorder_delay_hist);
+    print_reliable_hist_unit(role, "reorder_distance_dgrams", stats.reorder_distance_hist, "");
 }
 #else
 static inline void print_reliable_stats(const char* role) {

@@ -56,6 +56,17 @@ struct tt_ReliableStats {
     uint64_t duplicates;                 // arrivals whose bitmap bit was already set
     uint64_t detect_to_recover_hist[tt_RELIABLE_STATS_HIST_BUCKETS];  // gap detected -> recovered, us
     uint64_t request_to_recover_hist[tt_RELIABLE_STATS_HIST_BUCKETS]; // first ACKNACK naming it -> recovered, us
+    // Fills (reorder hold-off stage S0, 2026-11-03; tickle.c rstat_reorder_fills()): seq_nos of a tracked gap filled by
+    // an arrival that was no repair (not addressed to this node) - the writer's first transmission, late. Counted per
+    // seq_no, as a large run fills several and its repairs return one unit at a time (large_duplicate).
+    uint64_t reorder_fill_original;   // every fill
+    uint64_t nack_spurious;           // ...of which the gap was already named in a request still remembered (E1)
+    uint64_t reorder_absorbed;        // ...of which it was not named yet (E2)
+    uint64_t reorder_fill_before_rtt; // ...of all fills, those while the reader had no recovery estimate yet
+    uint64_t reorder_delay_hist[tt_RELIABLE_STATS_HIST_BUCKETS]; // gap detected -> fill, us
+    // How far behind the highest seq_no received the fill came, in datagrams (bucket 0 = 0, bucket i = [2^(i-1),
+    // 2^i) datagrams, the last the rest).
+    uint64_t reorder_distance_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
 
     // --- Publisher side (process_acknack() / retransmit_reliable_samples()) ---
     uint64_t acknack_received;           // ACKNACKs reaching a reliable Publisher's retransmit loop

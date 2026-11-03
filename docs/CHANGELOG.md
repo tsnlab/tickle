@@ -11,6 +11,14 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+### Added
+
+- **RSTATS: late originals that fill a gap** (reorder hold-off stage S0, instrumentation only, `-Dtt_RELIABLE_STATS`).
+  A reader counts a gap filled by the writer's first transmission rather than a repair (`reorder_fill_original`),
+  split into already NACKed (`nack_spurious`) and not yet (`reorder_absorbed`), those before the reader's first
+  recovery estimate (`reorder_fill_before_rtt`), and histograms `reorder_delay` (detection to fill, us) and
+  `reorder_distance_dgrams`. No behaviour, wire or API change.
+
 ### Fixed
 
 - **Hybrid transport: reordering is no longer counted as loss.** A reader counted a gap the moment a later datagram
