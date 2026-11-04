@@ -17,7 +17,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   A reader counts a gap filled by the writer's first transmission rather than a repair (`reorder_fill_original`),
   split into already NACKed (`nack_spurious`) and not yet (`reorder_absorbed`), those before the reader's first
   recovery estimate (`reorder_fill_before_rtt`), and histograms `reorder_delay` (detection to fill, us) and
-  `reorder_distance_dgrams`. No behaviour, wire or API change.
+  `reorder_distance_dgrams`. `nack_spurious_late` counts the other order of the race: the repair came first and the
+  late original found its seq_no already received. No behaviour, wire or API change.
 
 ### Fixed
 

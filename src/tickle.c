@@ -17443,6 +17443,9 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
 // Behaviour is untouched; this only counts.
 //   nack_spurious: the seq_no was already named by a request this reader still remembers (oldest_request_naming()) -
 //     its repair is on its way and will arrive as a duplicate (E1).
+//   nack_spurious_late (rstat_late_originals(), not here): the other order of the same race - the repair won, and the
+//     late original finds its seq_no already received; that NACK was as spurious, and the original is the duplicate
+//     (E1 late). Off arm, s_j5 rel_large: 98,330 E1 against 107,319 large duplicates, the ~7% between them this.
 //   reorder_absorbed: not named yet - the late original came before any NACK went, or after the request ring forgot
 //     it (E2).
 //   reorder_fill_before_rtt: fills while this reader has no recovery estimate yet (recovery_srtt_ns 0), the start a
@@ -17487,6 +17490,38 @@ static void rstat_reorder_fills(const struct tt_Context* node, const struct tt_W
     }
 }
 
+// Set while update_reliable_ack() records what is no arrival (frag_pool_deliver_whole(): a held sample's span from the
+// watermark, which may cover seq_nos recorded long ago): rstat_late_originals() then counts nothing.
+static bool g_rstats_not_an_arrival;
+
+// E1 late (2026-11-04): an arrival that is no repair (tt_Context.rx_targeted false) covering seq_nos already received -
+// below ack_seq_no, or a received_bitmap bit set - that a request this reader still remembers named
+// (oldest_request_naming(), a ring keyed by seq_no range, so a seq_no the watermark has passed is found as well): the
+// earlier copy was the repair, so this is the writer's original, late, and the NACK was spurious. Counted per seq_no
+// unit the arrival covers, as rstat_reorder_fills() is, into nack_spurious_late. Called where an arrival is classified
+// before dedup, from two places only: update_reliable_ack()'s entry, which every recorded DATA, run and record passes
+// - the small path's duplicates and late_below_ack sites and large_accept_run()'s already-landed units both sit
+// behind it - and large_accept_reliable()'s own duplicate test, the one large.duplicate site an untargeted unit
+// reaches that returns before it (a run starting below the watermark goes there a unit at a time). The other
+// large.duplicate sites are best-effort (no requests) or a unit landed but unrecorded (not received). A seq_no below
+// the watermark that was given up rather than received reads as received here: rare without loss, and those are the
+// cells this is read in. Behaviour is untouched; this only counts.
+static void rstat_late_originals(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint32_t seq_no,
+                                 uint32_t span) {
+    if (node->rx_targeted || g_rstats_not_an_arrival) {
+        return; // a repair: a second one is a double request, not a late original
+    }
+    for (uint32_t k = 0; k < span; k++) {
+        uint32_t unit = seq_no + k;
+        int32_t offset = seq_delta(unit, proxy->ack_seq_no);
+        bool received = offset < 0 || (offset > 0 && (uint32_t)offset < proxy_window_bits(proxy) &&
+                                       bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset));
+        if (received && oldest_request_naming(proxy, unit) != 0) {
+            g_rstats.nack_spurious_late++;
+        }
+    }
+}
+
 // Classifies one DATA arrival (seq_no >= proxy->ack_seq_no) before update_reliable_ack() touches
 // received_bitmap: filling an already-tracked gap (below the highest seq_no received so far) counts
 // as recovered (and, when it is no repair, as fills: rstat_reorder_fills()); landing above it opens a
@@ -17523,8 +17558,12 @@ static void rstat_on_arrival(const struct tt_Context* node, const struct tt_Writ
     rstat_mark_missing(proxy->ack_seq_no + (uint32_t)(prev_highest + 1), newly_missing, tt_get_ns());
 }
 #define RSTAT_ON_ARRIVAL(node, proxy, seq_no) rstat_on_arrival((node), (proxy), (seq_no))
+#define RSTAT_LATE_ORIGINALS(node, proxy, seq_no, span) rstat_late_originals((node), (proxy), (seq_no), (span))
+#define RSTAT_NOT_AN_ARRIVAL(on) (g_rstats_not_an_arrival = (on))
 #else
 #define RSTAT_ON_ARRIVAL(node, proxy, seq_no) ((void)0)
+#define RSTAT_LATE_ORIGINALS(node, proxy, seq_no, span) ((void)0)
+#define RSTAT_NOT_AN_ARRIVAL(on) ((void)0)
 #endif
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
@@ -17743,6 +17782,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     // At first contact nothing is late: a DURABLE reader's sample a window or more past the default of 1 - a writer
     // past 2^31 among them, which seq_delta() places before 1 - took its baseline above, and one inside the window is
     // ahead of it.
+    RSTAT_LATE_ORIGINALS(node, proxy, seq_no, node->rx_seq_span);
     if (seq_delta(seq_no, proxy->ack_seq_no) < 0) {
         RSTAT_INC(late_below_ack);
         return true; // old relative to the ack watermark, but NOT reliable evidence of "already
@@ -23748,7 +23788,9 @@ static bool frag_pool_deliver_whole(struct tt_Context* node, struct tt_Subscribe
     if (proxy != NULL && seq_delta(proxy->ack_seq_no, end) < 0) {
         const uint16_t span = node->rx_seq_span;
         node->rx_seq_span = (uint16_t)(end - proxy->ack_seq_no);
+        RSTAT_NOT_AN_ARRIVAL(true);
         (void)update_reliable_ack(node, sub, proxy->ack_seq_no, slot->source, slot->entity_id, sender_ip, sender_port);
+        RSTAT_NOT_AN_ARRIVAL(false);
         node->rx_seq_span = span;
         proxy = find_writer_proxy(sub, slot->source, slot->entity_id);
     }
@@ -24490,6 +24532,7 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
         if (seq_delta(fragment->seq_no, proxy->ack_seq_no) < 0 ||
             (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset))) {
             node->large.duplicate++; // already here, or already past
+            RSTAT_LATE_ORIGINALS(node, proxy, fragment->seq_no, 1U);
             return;
         }
     }

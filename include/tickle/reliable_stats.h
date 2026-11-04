@@ -67,6 +67,9 @@ struct tt_ReliableStats {
     // How far behind the highest seq_no received the fill came, in datagrams (bucket 0 = 0, bucket i = [2^(i-1),
     // 2^i) datagrams, the last the rest).
     uint64_t reorder_distance_hist[tt_RELIABLE_STATS_HIST_BUCKETS];
+    // Not a fill: a late original finding its seq_no already filled by the repair a remembered request asked for - the
+    // other order of E1's race (E1 late; rstat_late_originals()), per seq_no.
+    uint64_t nack_spurious_late;
 
     // --- Publisher side (process_acknack() / retransmit_reliable_samples()) ---
     uint64_t acknack_received;           // ACKNACKs reaching a reliable Publisher's retransmit loop

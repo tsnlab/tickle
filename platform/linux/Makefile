@@ -130,7 +130,9 @@ TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 # on other seeds too, which only this build showed. Their own tree, so the default binaries beside them stay as they are.
 LARGE_DEFINES = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
 # test_estimator_trace.c again too: its sending_* and repair_* fields exist only in a large-sample build.
-LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff $(OBJ)/tests-large/test_estimator_trace
+# test_reorder_fill_stats.c again too: large_accept_reliable()'s own duplicate test exists only in a large-sample build.
+LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff $(OBJ)/tests-large/test_estimator_trace \
+                  $(OBJ)/tests-large/test_reorder_fill_stats
 # The services tests again with one call per Client (tt_CLIENT_MAX_OUTSTANDING 1): the behaviour before 2026-10-16,
 # which a build may still choose, must stay what it was.
 ONE_CALL_DEFINES = -Dtt_CLIENT_MAX_OUTSTANDING=1

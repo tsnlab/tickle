@@ -52,10 +52,10 @@ static void print_reliable_stats(const char* role) {
            U(stats.jump_data), U(stats.jump_heartbeat), U(stats.jump_abandoned_seq), U(stats.retry_giveups),
            U(stats.giveups_suppressed_unknown), U(stats.heartbeat_advances), U(stats.heartbeat_abandoned_seq),
            U(stats.recovered), U(stats.recovered_after_request), U(stats.late_below_ack), U(stats.duplicates));
-    printf("RSTATS: role=%s reorder reorder_fill_original=%llu nack_spurious=%llu reorder_absorbed=%llu "
-           "reorder_fill_before_rtt=%llu\n",
-           role, U(stats.reorder_fill_original), U(stats.nack_spurious), U(stats.reorder_absorbed),
-           U(stats.reorder_fill_before_rtt));
+    printf("RSTATS: role=%s reorder reorder_fill_original=%llu nack_spurious=%llu nack_spurious_late=%llu "
+           "reorder_absorbed=%llu reorder_fill_before_rtt=%llu\n",
+           role, U(stats.reorder_fill_original), U(stats.nack_spurious), U(stats.nack_spurious_late),
+           U(stats.reorder_absorbed), U(stats.reorder_fill_before_rtt));
     printf("RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu reveal=%llu sent=%llu bits_sent=%llu "
            "bytes_sent=%llu ack_request_answered=%llu ack_request_in_flight=%llu\n",
            role, U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_reveal),
