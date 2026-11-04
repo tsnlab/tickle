@@ -8,9 +8,9 @@
 # TREES. Each is a `git archive` of one commit into OUT/trees/<name> (frozen: an edit in a shared worktree during the
 # run cannot reach it), with this checkout's time_varying_netns.sh, time_varying_read.py and wifi_burst_read.py laid
 # over it (the harness is not the code under test; the bench nodes and the core stay the tree's own):
-#   main = MAIN_REF (default 6e33e811, tr-fix: main ad4f7fe8 + the harness's one-datagram-per-skb default). Its nodes
+#   main = MAIN_REF (default 8453f93d, main with E1 late and repair_duplicate; the S3 third run). Its nodes
 #          have no hold-off and print no HOLDOFF line.
-#   ab   = AB_REF (default bccfdea9, ab/reorder-holdoff): the hold-off behind the A/B seam. Its nodes read
+#   ab   = AB_REF (default 18fbfa0c, ab/reorder-holdoff on 8453f93d): the hold-off behind the A/B seam. Its nodes read
 #          TT_HOLDOFF_POLICY and print "HOLDOFF: mode= policy= value_ns= env=" (holdoff_env.h).
 #   The harness refuses to start if main has holdoff_env.h or ab has not (the tree would not run what the arm names).
 #
@@ -97,8 +97,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 
-MAIN_REF=${MAIN_REF:-6e33e8114bfe31d576dbd8d5e1a800ec2725d72d}
-AB_REF=${AB_REF:-bccfdea91374efba344519b91d8a0bcb0f145eed}
+MAIN_REF=${MAIN_REF:-8453f93d05813a74c10792df0d3a292aadcedd45}
+AB_REF=${AB_REF:-18fbfa0c2503efad576c3cb87310686606267df1}
 ARMS=${ARMS:-"main off f250us f1ms f4ms f12ms B D E"}
 REPS=${REPS:-3}
 DUR=${DUR:-30}
