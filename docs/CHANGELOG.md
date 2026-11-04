@@ -18,7 +18,9 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   split into already NACKed (`nack_spurious`) and not yet (`reorder_absorbed`), those before the reader's first
   recovery estimate (`reorder_fill_before_rtt`), and histograms `reorder_delay` (detection to fill, us) and
   `reorder_distance_dgrams`. `nack_spurious_late` counts the other order of the race: the repair came first and the
-  late original found its seq_no already received. No behaviour, wire or API change.
+  late original found its seq_no already received. `repair_duplicate` counts a repair finding its seq_no already
+  received other than the one repair a spurious fill left to come, so the reliable path's large duplicates are
+  `nack_spurious + nack_spurious_late + repair_duplicate`. No behaviour, wire or API change.
 
 ### Fixed
 

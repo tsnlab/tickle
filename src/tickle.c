@@ -139,6 +139,10 @@ static uint64_t g_rstats_requested_ns[RSTAT_SEQ_SLOTS];     // 0 = not yet named
 // The resend order's held units (large_resend_due()): when the reader first asked again for a unit whose resend was
 // pending, by seq_no % RSTAT_SEQ_SLOTS; 0 = not held since its last resend.
 static uint64_t g_rstats_lro_held_ns[RSTAT_SEQ_SLOTS];
+// Set when a late original filled a seq_no a remembered request named (nack_spurious): its repair is still to come
+// and will arrive as a duplicate that nack_spurious already stands for. Cleared by that first repair
+// (rstat_late_originals()) and when the seq_no goes missing again (rstat_mark_missing()).
+static uint8_t g_rstats_spurious_fill[RSTAT_SEQ_SLOTS];
 
 #define RSTAT_INC(field) (g_rstats.field++)
 #define RSTAT_ADD(field, n) (g_rstats.field += (uint64_t)(n))
@@ -152,6 +156,7 @@ void tt_reliable_stats_reset(void) {
     memset(g_rstats_missing_since_ns, 0, sizeof(g_rstats_missing_since_ns));
     memset(g_rstats_requested_ns, 0, sizeof(g_rstats_requested_ns));
     memset(g_rstats_lro_held_ns, 0, sizeof(g_rstats_lro_held_ns));
+    memset(g_rstats_spurious_fill, 0, sizeof(g_rstats_spurious_fill));
 }
 
 // bucket 0 = 0, bucket i (1..N-2) = [2^(i-1), 2^i), the last bucket the rest.
@@ -173,6 +178,7 @@ static void rstat_mark_missing(uint32_t first_seq_no, uint32_t count, uint64_t n
         uint32_t slot = (first_seq_no + i) % RSTAT_SEQ_SLOTS;
         g_rstats_missing_since_ns[slot] = now;
         g_rstats_requested_ns[slot] = 0;
+        g_rstats_spurious_fill[slot] = 0;
     }
 }
 
@@ -17474,6 +17480,7 @@ static void rstat_reorder_fills(const struct tt_Context* node, const struct tt_W
         g_rstats.reorder_fill_original++;
         if (asked != 0) {
             g_rstats.nack_spurious++;
+            g_rstats_spurious_fill[seq_no % RSTAT_SEQ_SLOTS] = 1U;
         } else {
             g_rstats.reorder_absorbed++;
         }
@@ -17506,17 +17513,34 @@ static bool g_rstats_not_an_arrival;
 // large.duplicate sites are best-effort (no requests) or a unit landed but unrecorded (not received). A seq_no below
 // the watermark that was given up rather than received reads as received here: rare without loss, and those are the
 // cells this is read in. Behaviour is untouched; this only counts.
+//
+// A repair (rx_targeted) covering a seq_no already received is no late original. It is one of two things: the repair
+// a spurious fill left to come (g_rstats_spurious_fill set - nack_spurious stands for it, and the flag is spent), or a
+// second copy of a seq_no a repair, or an original never missed, already supplied - repair_duplicate (2026-11-04, the
+// S3 re-run's V-I residual: off s_r1 and J_p10, large_duplicate - nack_spurious - nack_spurious_late equal to the
+// writer's retransmissions less the units that went missing, rep for rep). So that large_duplicate, on the reliable
+// path, is nack_spurious + nack_spurious_late + repair_duplicate, each copy counted once.
 static void rstat_late_originals(const struct tt_Context* node, const struct tt_WriterProxy* proxy, uint32_t seq_no,
                                  uint32_t span) {
-    if (node->rx_targeted || g_rstats_not_an_arrival) {
-        return; // a repair: a second one is a double request, not a late original
+    if (g_rstats_not_an_arrival) {
+        return;
     }
     for (uint32_t k = 0; k < span; k++) {
         uint32_t unit = seq_no + k;
         int32_t offset = seq_delta(unit, proxy->ack_seq_no);
         bool received = offset < 0 || (offset > 0 && (uint32_t)offset < proxy_window_bits(proxy) &&
                                        bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset));
-        if (received && oldest_request_naming(proxy, unit) != 0) {
+        if (!received) {
+            continue;
+        }
+        if (node->rx_targeted) {
+            uint32_t slot = unit % RSTAT_SEQ_SLOTS;
+            if (g_rstats_spurious_fill[slot] != 0U) {
+                g_rstats_spurious_fill[slot] = 0U; // the repair nack_spurious stands for
+            } else {
+                g_rstats.repair_duplicate++;
+            }
+        } else if (oldest_request_naming(proxy, unit) != 0) {
             g_rstats.nack_spurious_late++;
         }
     }

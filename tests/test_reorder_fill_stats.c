@@ -304,6 +304,12 @@ static uint32_t spurious_count(void) {
     return (uint32_t)stats.nack_spurious;
 }
 
+static uint32_t repair_duplicate_count(void) {
+    struct tt_ReliableStats stats;
+    tt_reliable_stats_get(&stats);
+    return (uint32_t)stats.repair_duplicate;
+}
+
 // (a) The repair wins (E1 late). 1, 3 (gap at 2, NACKed), 2's repair, then 2's original: below the watermark now, and
 // named by a request - one late spurious NACK, and no fill. Then the same above the watermark: 4, 7 (gap 5-6), 6's
 // repair (a bit set while 5 is missing), 6's original - a second, through the duplicates site.
@@ -331,12 +337,15 @@ static void test_a_late_original_after_its_repair_is_a_late_spurious_nack(void) 
     tt_reliable_stats_get(&stats);
     EXPECT_EQ_U32(2, (uint32_t)stats.nack_spurious_late);
     EXPECT_EQ_U32(0, (uint32_t)stats.nack_spurious);
+    EXPECT_EQ_U32(0, (uint32_t)stats.repair_duplicate); // the duplicates were originals
     EXPECT_EQ_U32(0, (uint32_t)stats.reorder_fill_original);
     EXPECT_EQ_U32(1, (uint32_t)stats.late_below_ack);
     EXPECT_EQ_U32(1, (uint32_t)stats.duplicates);
 }
 
-// (b) The original wins (E1): 1, 3, 2's original, then its repair - nack_spurious, and the repair is no late original.
+// (b) The original wins (E1): 1, 3, 2's original, then its repair - nack_spurious, and the repair is no late original
+// and no repair_duplicate: nack_spurious stands for it. A second repair of 2 then is one (the flag is spent), and so,
+// above the watermark, is 6's repair after 6's late original fill and its repair (4, 7, 6, 6r, 6r).
 static void test_a_repair_after_its_late_original_is_not_late(void) {
     reset();
     arrive(1, 100, false);
@@ -344,6 +353,19 @@ static void test_a_repair_after_its_late_original_is_not_late(void) {
     arrive(2, 300, false);
     arrive(2, 100, true);
     EXPECT_EQ_U32(1, spurious_count());
+    EXPECT_EQ_U32(0, late_count());
+    EXPECT_EQ_U32(0, repair_duplicate_count());
+    arrive(2, 100, true);
+    EXPECT_EQ_U32(1, repair_duplicate_count());
+
+    arrive(4, 100, false);
+    arrive(7, 100, false);
+    arrive(6, 300, false);
+    arrive(6, 100, true);
+    EXPECT_EQ_U32(2, spurious_count());
+    EXPECT_EQ_U32(1, repair_duplicate_count()); // the repair nack_spurious stands for
+    arrive(6, 100, true);
+    EXPECT_EQ_U32(2, repair_duplicate_count());
     EXPECT_EQ_U32(0, late_count());
 }
 
@@ -372,6 +394,7 @@ static void test_an_unrequested_duplicate_is_not_late(void) {
     EXPECT_EQ_U32(1, (uint32_t)stats.duplicates);
     EXPECT_EQ_U32(0, (uint32_t)stats.nack_spurious_late);
     EXPECT_EQ_U32(0, (uint32_t)stats.nack_spurious);
+    EXPECT_EQ_U32(0, (uint32_t)stats.repair_duplicate); // originals, not repairs
 }
 
 // (d) A run (tt_Context.rx_seq_span) after a partial repair counts only the units a request named and its repair
@@ -404,17 +427,22 @@ static void test_a_run_counts_only_named_units_already_repaired(void) {
     EXPECT_EQ_U32(2, late_count());
     unit.seq_no = 22;
     large_accept_reliable(&node, &sub, &unit);
+    EXPECT_EQ_U32(0, repair_duplicate_count());
     unit.seq_no = 24;
     node.rx_targeted = true;
     large_accept_reliable(&node, &sub, &unit);
     node.rx_targeted = false;
     EXPECT_EQ_U64(duplicate + 3U, node.large.duplicate); // the control: all three were duplicates
     EXPECT_EQ_U32(2, late_count());
+    EXPECT_EQ_U32(1, repair_duplicate_count()); // 24 was repaired before: a second repair
+#endif
+#if !tt_LARGE_SAMPLES
+    EXPECT_EQ_U32(0, repair_duplicate_count());
 #endif
 }
 
-// (e) A second repair (the seq_no asked for twice) is no late original: 1, 3, 2's repair twice - below the watermark -
-// and 4, 7, 6's repair twice - a bit set.
+// (e) A second repair (the seq_no asked for twice) is no late original but a repair_duplicate: 1, 3, 2's repair twice -
+// below the watermark - and 4, 7, 6's repair twice - a bit set.
 static void test_a_second_repair_is_not_late(void) {
     reset();
     arrive(1, 100, false);
@@ -431,6 +459,23 @@ static void test_a_second_repair_is_not_late(void) {
     EXPECT_EQ_U32(1, (uint32_t)stats.late_below_ack); // the controls: both were duplicates
     EXPECT_EQ_U32(1, (uint32_t)stats.duplicates);
     EXPECT_EQ_U32(0, (uint32_t)stats.nack_spurious_late);
+    EXPECT_EQ_U32(2, (uint32_t)stats.repair_duplicate);
+}
+
+// (f) A seq_no that goes missing again forgets its spurious fill: 1, 3, 2's original (nack_spurious, flag set), then
+// 4098 (2 + RSTAT_SEQ_SLOTS, the same slot) opening a gap over it - its repair is no longer the one nack_spurious
+// stands for. The window is far smaller than the slot ring, so this drives the slot directly.
+static void test_a_slot_gone_missing_again_forgets_its_fill(void) {
+    reset();
+    arrive(1, 100, false);
+    arrive(3, 100, false);
+    arrive(2, 300, false);
+    EXPECT_EQ_U32(1, spurious_count());
+    EXPECT_EQ_U32(1U, (uint32_t)g_rstats_spurious_fill[2U % RSTAT_SEQ_SLOTS]);
+    rstat_mark_missing(2U + RSTAT_SEQ_SLOTS, 1U, test_mock_now);
+    EXPECT_EQ_U32(0U, (uint32_t)g_rstats_spurious_fill[2U % RSTAT_SEQ_SLOTS]);
+    arrive(2, 100, true);
+    EXPECT_EQ_U32(1, repair_duplicate_count());
 }
 
 #if tt_FRAG_ENABLED
@@ -454,6 +499,7 @@ static void test_a_held_span_recorded_is_no_late_original(void) {
     (void)frag_pool_deliver_whole(&node, &sub, &header, &slot, TEST_SENDER_IP, TEST_SENDER_PORT);
     EXPECT_EQ_U32(5, proxy->ack_seq_no); // the control: the span was recorded
     EXPECT_EQ_U32(0, late_count());
+    EXPECT_EQ_U32(0, repair_duplicate_count());
     // ...and only while it records: 7 (gap 5-6), 6's repair, 6's original counts as before.
     arrive(7, 100, false);
     arrive(6, 100, true);
@@ -472,6 +518,7 @@ int main(void) {
     test_an_unrequested_duplicate_is_not_late();
     test_a_run_counts_only_named_units_already_repaired();
     test_a_second_repair_is_not_late();
+    test_a_slot_gone_missing_again_forgets_its_fill();
 #if tt_FRAG_ENABLED
     test_a_held_span_recorded_is_no_late_original();
 #endif

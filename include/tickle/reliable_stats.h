@@ -70,6 +70,10 @@ struct tt_ReliableStats {
     // Not a fill: a late original finding its seq_no already filled by the repair a remembered request asked for - the
     // other order of E1's race (E1 late; rstat_late_originals()), per seq_no.
     uint64_t nack_spurious_late;
+    // Not a fill either: a repair finding its seq_no already received, other than the one repair a spurious fill left
+    // to come (nack_spurious stands for that) - a seq_no asked for and repaired twice, or repaired after its original
+    // was never missed; per seq_no (rstat_late_originals()).
+    uint64_t repair_duplicate;
 
     // --- Publisher side (process_acknack() / retransmit_reliable_samples()) ---
     uint64_t acknack_received;           // ACKNACKs reaching a reliable Publisher's retransmit loop
