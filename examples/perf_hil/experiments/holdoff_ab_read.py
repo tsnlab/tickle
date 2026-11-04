@@ -55,7 +55,8 @@ AA_VOID_MAX = 0.10  # A/A difference above this voids the metric in the cell (V-
 AA_FLOOR = {"m1": 0.001, "p99": 1.0, "goodput": 0.01, "acknack": 10.0, "retx": 100.0}  # denominators' floors
 GOODPUT_DROP_MAX = 0.01  # G1: deadline goodput >= off - max(1 point, 2 x A/A)
 COUNT_SLACK = 1.0  # G3/G4: a count a rep <= off's x (1 + TOL_MIN) + this
-VI_MAX = 0.05  # V-I: |(nack_spurious + nack_spurious_late) - large_duplicate| / large_duplicate, off, reorder cells
+VI_MAX = 0.05  # V-I: |(nack_spurious + nack_spurious_late + repair_duplicate) - large_duplicate| / large_duplicate,
+#   off, reorder cells
 VI_MIN_DUP = 50  # a cell with fewer pooled duplicates cannot check V-I
 J_APPLIED_M1_MIN = 0.50  # V-T: off's s_j5 M1 median (T1: 98.5% with GSO)
 R1_SHARE = 0.01  # s_r1's netem reorder share
@@ -197,10 +198,14 @@ def augment(r, run_dir):
         m["goodput"] = len(tvr.on_time(r, DEADLINE_MS[dc])) / r["offered"]
     sub, ro, ho, ack = rd["sub"], rd["reorder"], rd["holdoff"], rd["acknack_tx"]
     m["fill"] = int(num(ro, "reorder_fill_original"))
-    # E1 and E1 late (the repair won the race and the late original is the duplicate). A build without the late
-    # counter cannot pass V-I: its E1 alone falls ~7% short on the jitter cells (screening 20261104-042117).
-    m["spurious"] = (int(num(ro, "nack_spurious")) + int(num(ro, "nack_spurious_late"))
-                     if "nack_spurious_late" in ro else None)
+    # E1 and E1 late (the repair won the race and the late original is the duplicate), and repair_duplicate (a
+    # repair of a seq_no already received, other than the one a spurious fill left to come). A build without the late
+    # counter cannot pass V-I: its E1 alone falls ~7% short on the jitter cells (screening 20261104-042117); nor one
+    # without repair_duplicate: s_r1 and J_p10 fell 6-7% short by exactly retransmitted - missing_opened (re-run
+    # 20261104-102514). Amended 2026-11-04 before the third run, the 5% unchanged.
+    m["spurious"] = (int(num(ro, "nack_spurious")) + int(num(ro, "nack_spurious_late")) +
+                     int(num(ro, "repair_duplicate"))
+                     if "nack_spurious_late" in ro and "repair_duplicate" in ro else None)
     m["absorbed"] = int(num(ro, "reorder_absorbed"))
     m["gaps"] = int(num(sub, "gaps_opened"))
     m["jump_abandoned"] = int(num(sub, "jump_abandoned_seq"))
@@ -308,16 +313,17 @@ class Reading:
             if ld < VI_MIN_DUP:
                 continue
             if any(r["m"]["spurious"] is None for r in offs):
-                self.global_void.append(f"V-I: {cell} off printed no nack_spurious_late (a build before E1 late)")
+                self.global_void.append(f"V-I: {cell} off printed no nack_spurious_late or repair_duplicate (a build "
+                                        "before E1 late or repair_duplicate)")
                 continue
             sp = sum(r["m"]["spurious"] for r in offs)
             checked += 1
             diff = abs(sp - ld) / ld
             ok = diff <= VI_MAX
-            self.out(f"V-I {cell}: off nack_spurious+late {sp} vs large_duplicate {ld}, {fmt(diff, '%')} "
+            self.out(f"V-I {cell}: off nack_spurious+late+repair_dup {sp} vs large_duplicate {ld}, {fmt(diff, '%')} "
                      f"({'ok' if ok else 'OVER ' + fmt(VI_MAX, '%')})")
             if not ok:
-                self.global_void.append(f"V-I: {cell} nack_spurious+late {sp} vs large_duplicate {ld} ({fmt(diff, '%')})")
+                self.global_void.append(f"V-I: {cell} nack_spurious+late+repair_dup {sp} vs large_duplicate {ld} ({fmt(diff, '%')})")
         if not checked:
             self.global_void.append(f"V-I could not be checked: no reorder cell where off has >= {VI_MIN_DUP} "
                                     "large duplicates")
@@ -772,6 +778,7 @@ def st_write_run(base, arm, rep, part, tvarm, s):
     large_dup = int(round(s["m1"] * dl * 723))
     spurious = large_dup if s["spurious"] is None else s["spurious"]
     late = "" if s.get("no_late") else " nack_spurious_late=0"
+    late += "" if s.get("no_repair_dup") else " repair_duplicate=0"
     w("ping.log", ho + [f"RESULT: role=pub size=1048576 reliable=1 published={s['offered']} retransmitted={s['retx']} "
                         f"cpu_ms=1.0 cpu_ms_per_mb=0.5 large_published={s['offered']} hybrid_runs=1 "
                         f"hybrid_run_units={s['offered'] * 723} hybrid_mtu_units=0",
@@ -846,6 +853,13 @@ def selftest():
         s["no_late"] = True  # a build before E1 late: E1 alone, short by the late originals
     case("V-I: a build that prints no nack_spurious_late voids everything", vi_old, [
         ("VOID ALL names the missing counter", lambda rd: any("nack_spurious_late" in g for g in rd.global_void)),
+        ("every candidate VOID", lambda rd: all(rd.verdict[a][0] == "VOID" for a in ST_ARMS)),
+    ])
+
+    def vi_no_rd(arm, cell, rep, s):
+        s["no_repair_dup"] = True  # a build before repair_duplicate (ae925f33): short by the second repairs
+    case("V-I: a build that prints no repair_duplicate voids everything", vi_no_rd, [
+        ("VOID ALL names the missing counter", lambda rd: any("repair_duplicate" in g for g in rd.global_void)),
         ("every candidate VOID", lambda rd: all(rd.verdict[a][0] == "VOID" for a in ST_ARMS)),
     ])
 
