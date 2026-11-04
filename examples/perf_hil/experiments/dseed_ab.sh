@@ -153,9 +153,11 @@ for r in $(seq 1 "$ROUNDS"); do
         tree=${TREE[$arm]}
         run_out="$OUT/$arm-r$r"
         echo "round=$r arm=$arm start=$(date -Is) $(tree_state "$tree")" | tee -a "$OUT/order.txt"
-        # The box lock is taken around each invocation, inside this (detached) process.
+        # The box lock is taken around each invocation, inside this (detached) process. The owner names the
+        # campaign's OUT, set apart from the invocation's own OUT below.
+        owner="dseed_ab.sh pid=$$ arm=$arm round=$r out=$OUT $(date -Is)"
         RIG_LOCK_SCOPE=box RIG_LOCK_WAIT=${RIG_LOCK_WAIT:-36000} \
-            RIG_LOCK_OWNER="dseed_ab.sh pid=$$ arm=$arm round=$r out=$OUT $(date -Is)" \
+            RIG_LOCK_OWNER="$owner" \
             REPS=1 NODE_PIN="$TV_NODE_PIN" PROFILE=ethernet EST_TRACE=1 CELLS="$TV_CELLS" ARMS="$TV_ARMS" \
             OUT="$run_out" "$REPO/examples/perf_hil/rig_lock.sh" \
             "$tree/examples/perf_hil/experiments/time_varying_netns.sh" >"$OUT/$arm-r$r.log" 2>&1 </dev/null &
