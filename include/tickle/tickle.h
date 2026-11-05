@@ -170,6 +170,14 @@ struct tt_DiscoveryRequest {
     uint64_t first_sent_ns; // the first, which the round trip is timed from (tt_Context.discovery_rtt_ns)
 };
 
+// The announces this context sent most recently, by tag (tt_Context.announce_sent): what a reply's echo is looked up
+// in.
+#define tt_DISCOVERY_ECHO_SLOTS 8
+struct tt_AnnounceSent {
+    uint64_t sent_ns; // when it was built, 0 = the slot is free
+    uint8_t tag;
+};
+
 struct tt_Endpoint {
     uint8_t kind;
     // The index, in its context, of the node that owns this endpoint (CONTEXT_NODE_PLAN.md stage 2): the one it was
@@ -1499,6 +1507,29 @@ struct tt_Context {
     // plus tt_CONTEXT_TX_INTERVAL after the request (discovery_retry_after(), tickle.c). Kept across a
     // peer's death: it describes the path to that node id, and the next answer corrects it.
     uint32_t discovery_rtt_ns[tt_MAX_CONTEXT_IDS];
+    // Per source node, the smoothed round trip of our ANNOUNCES (ns, 0 = none yet): from when one was built to the
+    // peer's reply echoing its tag (note_discovery_echo(), tickle.c). Separate from discovery_rtt_ns on purpose: an
+    // announce goes out when this node joins or changes, on a path that is still idle, where a request for a list can
+    // go out any time - under a large sample's burst it measured 19 ms on test_large_sample's link - and this is the
+    // seed a reader with no recovery sample yet bases its retry interval on (retry_interval_for()), for which a
+    // load-inflated value is a slow first recovery. Kept across a peer's death like discovery_rtt_ns.
+    uint32_t announce_rtt_ns[tt_MAX_CONTEXT_IDS];
+#if tt_LARGE_SAMPLES
+    // Per source node, when an original fragment of its large sample (not a repair addressed to us) last arrived (0 =
+    // none): an announce of ours answered while its writer was sending is queued behind that send, and is not timed
+    // (note_discovery_echo()) - the rule that keeps a busy writer's recovery out of the estimate, for the seed.
+    uint64_t peer_large_ns[tt_MAX_CONTEXT_IDS];
+#endif
+    // The tag and echo an announce carries (struct tt_AnnounceHeader.marks): announce_tag the last tag used (the next
+    // is the one after, 1-255 wrapping past 0); announce_tag_out the tag of the announce being built, announce_echo_out
+    // the tag it answers - set by the reply, cleared by the build, so only that one announce carries it. announce_sent
+    // keeps the last tt_DISCOVERY_ECHO_SLOTS announces' tags and build times, announce_sent_next the slot the next
+    // overwrites.
+    uint8_t announce_tag;
+    uint8_t announce_tag_out;
+    uint8_t announce_echo_out;
+    uint8_t announce_sent_next;
+    struct tt_AnnounceSent announce_sent[tt_DISCOVERY_ECHO_SLOTS];
     // LIVELINESS (rmw_tickle/LIVELINESS_PLAN.md). One scheduler entry, check_liveliness(), armed at the
     // earliest expiry among the remote nodes and leased entities this node tracks (liveliness_check_ns),
     // re-armed when it fires and moved earlier only for something new that expires sooner.
@@ -4973,7 +5004,12 @@ struct tt_AnnounceHeader {
     // estimate, read as 1; else the exponent e in the high byte and the mantissa m in the low, p = (256 + m) / 2^(e +
     // 9).
     uint16_t loss_p;
-    uint16_t reserved; // zero
+    // Since 2026-11-05, in what used to be `reserved` (zero, read by no build), so the version stays (DESIGN.md section
+    // 3): the low byte is this announce's tag (1-255, 0 = none: an older build), the high byte the tag of the announce
+    // it answers (0 = it answers none). A peer's reply carries our tag back, which times the round trip exactly -
+    // tt_Context.announce_rtt_ns - however many announces were outstanding. Every fragment of an announce carries
+    // both.
+    uint16_t marks;
     /* Dynamically allocated
     struct tt_UpdateEntity entities[];
     */

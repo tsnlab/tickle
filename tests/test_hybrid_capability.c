@@ -200,7 +200,7 @@ static void test_capability_round_trip_mixed_peers(void) {
     memcpy(&wire, captured[0] + at, sizeof(wire));
     EXPECT_EQ_U32(65507, wire.ip_reassembly_max);
     EXPECT_EQ_U32(0, wire.loss_p); // no estimate yet
-    EXPECT_EQ_U32(0, wire.reserved);
+    EXPECT_EQ_U32(1, wire.marks);  // tag 1, an echo of nothing
     EXPECT_TRUE(deliver(0, LINUX_ID));
     EXPECT_EQ_U32(65507, receiver.peer_ip_reassembly_max[LINUX_ID]);
     EXPECT_TRUE(receiver.update_seen[LINUX_ID]); // the announce was applied, not only read
@@ -281,7 +281,7 @@ static void test_reverse_endian_announce(void) {
     struct tt_AnnounceHeader announce_header = {.entity_count = 0,
                                                 .ip_reassembly_max = __builtin_bswap16(4000U),
                                                 .loss_p = 0,
-                                                .reserved = 0};
+                                                .marks = 0};
     memcpy(bytes + sizeof(single) + sizeof(data), &announce_header, sizeof(announce_header));
     uint32_t len = (uint32_t)(sizeof(single) + sizeof(data) + sizeof(announce_header));
     EXPECT_TRUE(process_packet(&receiver, bytes, 0, len, PEER_IP(5), PORT, tt_TRANSPORT_UDP));

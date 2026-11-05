@@ -18,7 +18,11 @@
 //   - the golden, tests/wire_identity/initoptions_parent.bin, is the parent's capture (83ef91b6, before the options),
 //     written by tests/wire_identity_initoptions.sh from this same source, which also checks the parent against
 //     itself (the control) and that a mutant changing one default is seen.
-// Nothing is masked: both trees speak the same tt_VERSION, and the mock clock makes every timestamp the same.
+// Nothing is masked but one thing: both trees speak the same tt_VERSION, and the mock clock makes every timestamp the
+// same. The exception (2026-11-05): the 2 bytes of each announce's tt_AnnounceHeader.marks, which the parent wrote as
+// zero and this tree fills with the announce's tag (and the echo of the one it answers; DESIGN.md section 3) - zeroed
+// in the capture and the golden before they are compared with each other; every other byte, and the arms with each
+// other unmasked, are compared as they are.
 //
 // Built with -DWIRE_CAPTURE_OUT=path (and -DTICKLE_C= a tree's tickle.c) it writes the legacy arm's capture instead.
 
@@ -38,6 +42,7 @@
 #define TICKLE_C "../src/tickle.c"
 #endif
 #include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox: the parent's tickle.c, or this tree's
+#include "test_wire_mask.h"
 
 #ifndef WIRE_GOLDEN
 #define WIRE_GOLDEN "../../tests/wire_identity/initoptions_parent.bin"
@@ -194,6 +199,20 @@ static void run_scenario(enum create_arm arm, struct capture_buffer* out) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&node));
 }
 
+// Zeroes the marks of every announce in a capture (records of: length, destination, the bytes as sent).
+static void mask_announce_marks(uint8_t* bytes, uint32_t len) {
+    uint32_t at = 0;
+    while (at + 8U <= len) {
+        uint32_t length;
+        memcpy(&length, bytes + at, 4);
+        if (at + 8U + length > len) {
+            return;
+        }
+        mask_announce_marks_in(bytes + at + 8U, length);
+        at += 8U + length;
+    }
+}
+
 static bool same_capture(const struct capture_buffer* a, const uint8_t* b, size_t b_len, const char* what) {
     if (a->len != b_len || memcmp(a->bytes, b, b_len) != 0) {
         uint32_t first = 0;
@@ -211,6 +230,7 @@ static struct capture_buffer legacy;
 static struct capture_buffer with_null;
 static struct capture_buffer with_defaults;
 static uint8_t golden[CAPTURE_MAX];
+static struct capture_buffer masked;
 #endif
 
 int main(void) {
@@ -243,7 +263,10 @@ int main(void) {
         (void)fclose(in);
     }
     EXPECT_TRUE(golden_len > 0);
-    EXPECT_TRUE(same_capture(&legacy, golden, golden_len, "create() vs the parent's golden"));
+    masked = legacy;
+    mask_announce_marks(masked.bytes, masked.len);
+    mask_announce_marks(golden, (uint32_t)golden_len);
+    EXPECT_TRUE(same_capture(&masked, golden, golden_len, "create() vs the parent's golden"));
     if (test_result() != 0) {
         return 1;
     }

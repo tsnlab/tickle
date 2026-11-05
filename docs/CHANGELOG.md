@@ -13,6 +13,17 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Announce round trip from a tag and its echo, and the reader's first retry interval** (`tt_VERSION` unchanged). Every
+  announce carries a tag and a reply echoes the tag it answers, in the 2 bytes of `tt_AnnounceHeader` that were zero and
+  read by no build (`marks`; DESIGN.md section 3). The announce's sender times the round trip exactly
+  (`tt_Context.announce_rtt_ns`, smoothed), skipping a reply that spans the peer sending it a large sample (a busy writer
+  answers when its send ends). A reliable reader with no recovery sample yet bases its retry interval on it instead of
+  `retry_initial`, only while it has none and never below `retry_initial` (`retry_interval_for()`). Why: at 50-100 ms
+  each way the writer evicts a lost sample before the request arrives, no recovery is ever timed, and the reader asked
+  24-56 times a gap at 1 ms for the whole round trip (X1, 2026-11-04). `ESTIMATOR_TRACE` prints `discovery_seed_ns`.
+  A first version that timed "the one outstanding announce" measured nothing at 100 ms, where two to four are always
+  outstanding. A/B pending (`dseed_ab.sh`).
+
 - **RSTATS: late originals that fill a gap** (reorder hold-off stage S0, instrumentation only, `-Dtt_RELIABLE_STATS`).
   A reader counts a gap filled by the writer's first transmission rather than a repair (`reorder_fill_original`),
   split into already NACKed (`nack_spurious`) and not yet (`reorder_absorbed`), those before the reader's first

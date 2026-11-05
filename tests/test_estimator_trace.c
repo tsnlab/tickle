@@ -12,7 +12,8 @@
 // defined ahead of tickle.c, so this binary is the one build of the unit tests that has it. Readings, each enforced
 // below:
 //   T1 lines   the first poll prints one obj=wproxy line for the Subscriber's writer proxy and one obj=peer line for
-//              the Publisher's reader entry, each with t_ns, ctx and the values set here - the retry interval the one
+//              the Publisher's reader entry, each with t_ns, ctx and the values set here (the writer context's
+//              discovery seed, discovery_seed_ns, among them) - the retry interval the one
 //              retry_interval_of() gives for them, and in the large build the repair timeout large_order_times() gives.
 //   T2 limit   polls 50 ms and 99.999999 ms after it print nothing; the poll at 100 ms prints both lines again, with
 //              the later t_ns. A trace printed every poll fails T2; one never printed again fails its second half.
@@ -134,6 +135,7 @@ static void test_trace_prints_and_is_rate_limited(void) {
     proxy->transit_srtt_ns = 1500000;
     proxy->transit_rttvar_ns = 250000;
     proxy->transit_min_ns = 1000000;
+    node.announce_rtt_ns[2] = 200000000; // the discovery seed, printed beside the estimate it stands in for
     struct tt_PeerAck* ack = &pub.peer_acks[0];
     ack->context_id = 2;
     ack->entity_id = 0x5678;
@@ -158,6 +160,7 @@ static void test_trace_prints_and_is_rate_limited(void) {
     EXPECT_EQ_INT(2, count_occurrences(first, stamp));
     EXPECT_EQ_INT(1, count_occurrences(first, " writer_ctx=2 writer=00001234 recovery_srtt_ns=3000000 "
                                               "recovery_rttvar_ns=500000 "));
+    EXPECT_EQ_INT(1, count_occurrences(first, " recovery_rttvar_ns=500000 discovery_seed_ns=200000000 "));
     EXPECT_EQ_INT(1, count_occurrences(first, expected));
     EXPECT_EQ_INT(1, count_occurrences(first, " transit_srtt_ns=1500000 transit_rttvar_ns=250000 "
                                               "transit_min_ns=1000000 "));

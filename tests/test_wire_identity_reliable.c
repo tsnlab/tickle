@@ -42,6 +42,7 @@
 #define TICKLE_C "../src/tickle.c"
 #endif
 #include TICKLE_C // NOLINT(bugprone-suspicious-include) -- whitebox: the parent's tickle.c, or this tree's
+#include "test_wire_mask.h"
 
 #ifndef WIRE_GOLDEN
 #define WIRE_GOLDEN "../../tests/wire_identity/reliable_parent.bin"
@@ -432,6 +433,21 @@ static void run_scenario(const struct tt_InitOptions* opts, struct capture_buffe
     teardown_pair();
 }
 
+// Zeroes the marks of every announce in a capture (records of: the instant, who sent it, the length, the bytes as sent;
+// test_wire_mask.h).
+static void mask_announce_marks(uint8_t* bytes, uint32_t len) {
+    uint32_t at = 0;
+    while (at + 13U <= len) {
+        uint32_t length;
+        memcpy(&length, bytes + at + 9, 4);
+        if (at + 13U + length > len) {
+            return;
+        }
+        mask_announce_marks_in(bytes + at + 13U, length);
+        at += 13U + length;
+    }
+}
+
 static bool same_capture(const struct capture_buffer* a, const uint8_t* b, size_t b_len, const char* what) {
     if (a->len == b_len && memcmp(a->bytes, b, b_len) == 0) {
         return true;
@@ -447,6 +463,7 @@ static bool same_capture(const struct capture_buffer* a, const uint8_t* b, size_
 static struct capture_buffer by_default;
 static struct capture_buffer explicit_values;
 static uint8_t golden[CAPTURE_MAX];
+static struct capture_buffer masked;
 
 int main(void) {
     struct tt_InitOptions opts;
@@ -487,7 +504,10 @@ int main(void) {
         (void)fclose(in);
     }
     EXPECT_TRUE(golden_len > 0);
-    EXPECT_TRUE(same_capture(&by_default, golden, golden_len, "defaults vs the parent's golden"));
+    masked = by_default;
+    mask_announce_marks(masked.bytes, masked.len);
+    mask_announce_marks(golden, (uint32_t)golden_len);
+    EXPECT_TRUE(same_capture(&masked, golden, golden_len, "defaults vs the parent's golden"));
     if (test_result() != 0) {
         return 1;
     }

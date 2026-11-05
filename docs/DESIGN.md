@@ -427,7 +427,8 @@ source. `source` is the context id (1-254); `receiver` an id or `tt_SUBMESSAGE_I
 | 15 | `FRAG_RUN` | `tt_DataHeader`, frag_index, frag_count, run_count (u8), 1 B zero - 20 B | hybrid run, 8/9 geometry |
 
 **Announce** (a DATA or FRAG_FIRST/FRAG_CONT of the discovery endpoint, section 5): `tt_AnnounceHeader` - entity_count
-(u8), ip_reassembly_max, loss_p, 2 B zero - 7 B; then per endpoint or node a `tt_UpdateEntity` record and two strings
+(u8), ip_reassembly_max, loss_p, `marks` (u16: the announce's tag in the low byte, the tag it answers in the high one;
+0 = none) - 7 B; then per endpoint or node a `tt_UpdateEntity` record and two strings
 (type, name):
 
 | offset | field | bytes | meaning |
@@ -468,7 +469,11 @@ every receive path, Linux and FreeRTOS alike (both run the same `process_heartbe
 keeps the old meaning. An old peer then sends zero, which a new one reads as before, and ignores what a new one sends;
 the two interoperate and a default context's bytes do not change, so the version stays. Used so far: the summary's
 timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is `client_tag` (a zero pad byte until
-2026-10-09). `tt_AnnounceHeader`'s 2 reserved bytes stay zero and unread.
+2026-10-09). `tt_AnnounceHeader`'s 2 reserved bytes became `marks` on 2026-11-05 by the same rule: every announce carries a tag
+(1-255, wrapping past 0), and a reply carries the tag of the announce it answers, so the sender times that announce's
+round trip exactly (`tt_Context.announce_rtt_ns`) however many were outstanding. An older peer sends 0 and ignores what it
+reads, so nothing is timed with it and nothing else changes. Not byte-identical to the parent's for a default context:
+the wire identity tests mask these two bytes and compare the rest.
 
 ## 4. Sending: flush, batching and unicast peers
 

@@ -46,8 +46,17 @@ def main():
 
     # 2. A field that IS reset today loses its assignment.
     touched = ccr.reset_touches(SRC)
-    victim = next(f for f in ccr.context_fields(HDR) if f in touched and "segment" not in f and not f.startswith("rx_"))
-    stripped = re.sub(r"^\s*node->%s\s*=.*$" % re.escape(victim), "", SRC, flags=re.M)
+    # A victim whose reset is a plain assignment: stripping a memset-reset field would change nothing, and a mutant
+    # that mutates nothing proves nothing (announce_broadcast_ns, reset by memset, once survived as the victim).
+    def reset_line(f):
+        return re.compile(r"^\s*node->%s\s*=.*$" % re.escape(f), flags=re.M)
+
+    victim = next(
+        f
+        for f in ccr.context_fields(HDR)
+        if f in touched and "segment" not in f and not f.startswith("rx_") and reset_line(f).search(SRC)
+    )
+    stripped = reset_line(victim).sub("", SRC)
     check("existing field loses its reset -> caught (%s)" % victim, victim in missing(HDR, stripped))
 
     # 3. Control: the same field on unmutated source must NOT be flagged.

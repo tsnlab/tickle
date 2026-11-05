@@ -8461,6 +8461,15 @@ static void reset_node_state(struct tt_Context* node) {
     node->discovery_retry_scheduled = false;
     node->discovery_retry_ns = 0;
     memset(node->discovery_rtt_ns, 0, sizeof(node->discovery_rtt_ns));
+    memset(node->announce_rtt_ns, 0, sizeof(node->announce_rtt_ns));
+#if tt_LARGE_SAMPLES
+    memset(node->peer_large_ns, 0, sizeof(node->peer_large_ns));
+#endif
+    node->announce_tag = 0;
+    node->announce_tag_out = 0;
+    node->announce_echo_out = 0;
+    node->announce_sent_next = 0;
+    memset(node->announce_sent, 0, sizeof(node->announce_sent));
     node->liveliness_check_scheduled = false;
     node->liveliness_check_ns = 0;
     memset(node->liveliness_flags, 0, sizeof(node->liveliness_flags));
@@ -16580,6 +16589,12 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
     return highest_relevant_bit_from(proxy, seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no));
 }
 
+// The announce round trip to the context of proxy's writer (tt_Context.announce_rtt_ns): what a reader with no
+// recovery sample yet bases its waits on (retry_interval_for(), repair_in_flight_ns()). 0 with no proxy or none timed.
+static uint32_t discovery_seed_ns(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    return proxy != NULL ? node->announce_rtt_ns[proxy->context_id] : 0U;
+}
+
 // How long a repair this reader asked for is taken to be on its way: the measured repair transit's srtt +
 // max(G, 4 * rttvar) - the retry timer's own formula, on a sample that counts only the
 // transit - or the options' retry_initial (tt_RELIABLE_RETRY_INITIAL) before there is one. srtt alone (d603d369) was
@@ -16839,19 +16854,31 @@ static uint64_t reliable_retry_configured(const struct tt_Context* node) {
 // options: tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE and tt_RELIABLE_RETRY_INITIAL by default). See config.h for why the
 // bounds are relative and why the one absolute term remains.
 //
-// The configured value is a parameter rather than read here so the dynamic path can be exercised
+// Until that first sample, `seed_ns` - the announce round trip to the writer's context (tt_Context.announce_rtt_ns,
+// 0 if none) - lengthens retry_initial to the interval it gives as srtt with rttvar = srtt / 2, RFC 6298's first
+// sample, when that is longer. 50 and 100 ms each way (2026-11-04): a lost sample was evicted by its KEEP_LAST 10
+// writer before the request reached it, so no recovery was ever timed, and at 1 ms the reader asked 24-56 times a gap
+// for the whole 200 ms round trip. Only ever longer, never shorter than retry_initial: before any recovery statistics,
+// nothing asks more aggressively than it always has. A fallback only - recovery_srtt_ns stays 0 - so the first real
+// recovery is still timed as the seed (repair_timing_times()) and replaces it outright.
+//
+// The configured value and the seed are parameters rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
 // untestable in the default build.
 static uint64_t retry_interval_of(const struct tt_ReliableOptions* reliable, uint64_t granularity, uint32_t srtt_ns,
                                   uint32_t rttvar_ns);
 
 static uint64_t retry_interval_for(const struct tt_ReliableOptions* reliable, uint64_t configured, uint64_t granularity,
-                                   const struct tt_WriterProxy* proxy) {
+                                   uint32_t seed_ns, const struct tt_WriterProxy* proxy) {
     if (configured != 0) {
         return configured;
     }
     if (proxy == NULL) {
         return reliable->retry_initial;
+    }
+    if (proxy->recovery_srtt_ns == 0 && seed_ns != 0) {
+        uint64_t seeded = retry_interval_of(reliable, granularity, seed_ns, seed_ns / 2U);
+        return seeded > reliable->retry_initial ? seeded : reliable->retry_initial;
     }
     return retry_interval_of(reliable, granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);
 }
@@ -16887,7 +16914,7 @@ static bool writer_still_sending(const struct tt_WriterProxy* proxy, uint64_t no
 
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
     return retry_interval_for(reliable_opts(node), reliable_retry_configured(node), reliable_retry_granularity(node),
-                              proxy);
+                              discovery_seed_ns(node, proxy), proxy);
 }
 
 #if tt_LARGE_SAMPLES
@@ -16970,7 +16997,8 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 // plain rule after it, failed its A/B (ethernet_seed_ab.sh 2026-11-03, ETHERNET, 20 ms each way): a recovery with
 // retries, timed from its first request, lengthened the estimate until a doubly lost sample's second request came
 // after KEEP_LAST 10 had evicted it - 3 of 2,300 samples lost in every rep, round-trip p99 114 against 90 ms. The
-// sending estimate as above.
+// sending estimate as above. And when no recovery completes at all - the writer evicted the sample before the request
+// came - the interval before it is the discovery round trip's (retry_interval_for(), 2026-11-04), not 1 ms.
 static bool repair_timing_times(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 
 // The recovery `took` as the path's estimate takes it: never faster than the least repair transit this reader has timed
@@ -17060,10 +17088,11 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
 // which is addressed to this node (tt_Context.rx_targeted) - and arrived after the probe's request went, the writer
 // was still sending while the probe waited, and its recovery is not timed (tt_WriterProxy.probe_busy). After, not at:
 // what came in with the datagram that revealed the gap - the same poll's reading - was sent before the request.
-static void note_large_arrival(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now) {
+static void note_large_arrival(struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now) {
     proxy->large_arrival_ns = now;
     if (!node->rx_targeted) {
         proxy->original_arrival_ns = now;
+        node->peer_large_ns[proxy->context_id] = now;
         if (proxy->probe_ns != 0 && now > proxy->probe_ns) {
             proxy->probe_busy = true;
         }
@@ -18085,7 +18114,7 @@ static void fill_announce_capability(const struct tt_Context* node, struct tt_An
 #else
     announce->loss_p = 0;
 #endif
-    announce->reserved = 0;
+    announce->marks = (uint16_t)((uint16_t)node->announce_tag_out | ((uint16_t)node->announce_echo_out << 8));
 }
 
 // Sends this node's announce as the part_count (>= 2) fragments plan_update_parts() laid out, each
@@ -18147,13 +18176,103 @@ static bool send_update_parts(struct tt_Context* node, struct tt_Endpoint* const
     return true;
 }
 
+// --- The announce round trip from an announce's tag and its reply's echo (tt_Context.announce_rtt_ns)
+// ----------------
+//
+// Every announce carries a tag, and a reply carries the tag of the announce it answers (struct
+// tt_AnnounceHeader.marks). A reply naming one of the last tt_DISCOVERY_ECHO_SLOTS announces we built is that
+// announce's round trip, exactly, whatever else was outstanding: at 100 ms each way an announce goes out every ~100 ms,
+// so two or three are always in flight and timing "the one outstanding" cannot work (the first version, 82f4ba78,
+// measured nothing: 2026-11-05). Timed from when the announce was built - a broadcast waits for the next flush tick
+// after that - so the sample includes the wait and errs long, never short. A peer that echoes nothing (an older build,
+// or a reply to a request, which carries no tag) times nothing here; a request is still timed from its own send
+// (note_discovery_round_trip()).
+//
+// Not timed: an echo not among those slots (older than the last eight announces, or never ours), one older than
+// DISCOVERY_ECHO_WINDOW_NS, taken as a reply that came too late to be this announce's, and - in a large-sample build -
+// one that spans the peer sending a large sample to us (tt_Context.peer_large_ns): a busy writer answers when its send
+// ends, and that wait says how long it was busy, not how long the path takes - the rule that keeps its recovery out of
+// the estimate (probe_busy), applied to the seed. test_large_sample's busy-writer run measured 19 ms for a path of 0.
+#define DISCOVERY_ECHO_WINDOW_NS (10ULL * tt_SECOND)
+
+// Folds one round trip into `*srtt_ns`, RFC 6298-style (gain 1/8; the first taken whole).
+static void fold_discovery_round_trip(uint32_t* srtt_ns, uint64_t elapsed) {
+    // 1 ns at least: 0 means "not measured", and an answer delivered within the same clock reading is
+    // a measured round trip of nothing (two nodes in one process on the mock clock).
+    uint32_t sample = elapsed >= UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+    if (sample == 0) {
+        sample = 1;
+    }
+    if (*srtt_ns == 0) {
+        *srtt_ns = sample;
+    } else {
+        *srtt_ns = (uint32_t)((int64_t)*srtt_ns + (((int64_t)sample - (int64_t)*srtt_ns) / 8));
+    }
+}
+
+// The announce being built (announce_tag_out) went out, or may have: remembered by tag. Called once per announce,
+// however many fragments it has.
+static void note_announce_sent(struct tt_Context* node, uint64_t now) {
+    struct tt_AnnounceSent* slot = &node->announce_sent[node->announce_sent_next];
+    slot->sent_ns = now;
+    slot->tag = node->announce_tag_out;
+    node->announce_sent_next = (uint8_t)((node->announce_sent_next + 1U) % tt_DISCOVERY_ECHO_SLOTS);
+}
+
+// `source`'s announce carried `echo`: if it names one of ours, that announce's round trip to `source`.
+static void note_discovery_echo(struct tt_Context* node, uint8_t source, uint8_t echo) {
+    if (echo == 0) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    for (uint8_t i = 0; i < tt_DISCOVERY_ECHO_SLOTS; i++) {
+        const struct tt_AnnounceSent* sent = &node->announce_sent[i];
+        if (sent->sent_ns == 0 || sent->tag != echo) {
+            continue;
+        }
+        uint64_t elapsed = now - sent->sent_ns;
+        bool queued = false;
+#if tt_LARGE_SAMPLES
+        queued = node->peer_large_ns[source] >= sent->sent_ns; // its writer was sending: the reply waited behind that
+#endif
+        if (now >= sent->sent_ns && elapsed < DISCOVERY_ECHO_WINDOW_NS && !queued) {
+            fold_discovery_round_trip(&node->announce_rtt_ns[source], elapsed);
+        }
+        return;
+    }
+}
+
 // Builds this node's current announce (its own endpoint list, a DATA of the built-in discovery endpoint)
 // and sends it either way it is needed: peer_count == 0 broadcasts it, batched (is_flush=false - a change
 // pushed by announce_soon(), or a request answered in bulk, no synchronous waiter, node_flush()'s own tick
 // is fine); peer_count >= 1 unicasts it to that one peer, flushed immediately (a first-contact reply from
 // process_announce(), or a request answered by answer_discovery_request() - the whole point is the other
 // side learning us as fast as possible).
+static bool build_and_send_update_untagged(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);
+
+// Gives it the next tag (and the echo a reply set), builds and sends it (build_and_send_update_untagged()), and
+// remembers the tag with the time - a reply to a reply left unsent for a full send buffer is remembered by
+// send_unicast_update_unless_full() only if it went.
 static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
+    uint64_t now = tt_get_ns();
+    uint8_t tag = (uint8_t)(node->announce_tag + 1U);
+    node->announce_tag = tag != 0 ? tag : 1U;
+    node->announce_tag_out = node->announce_tag;
+    bool built = build_and_send_update_untagged(node, peers, peer_count);
+    node->announce_echo_out = 0; // that reply's, not the next announce's
+    if (!built) {
+        return false;
+    }
+#if tt_LARGE_SAMPLES
+    if (node->large.reply_unless_full) {
+        return true;
+    }
+#endif
+    note_announce_sent(node, now);
+    return true;
+}
+
+static bool build_and_send_update_untagged(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t old_tx_tail = node->tx_tail;
 
     // start_encode()/encode() below already log their own reason when they fail (e.g. "Lack of
@@ -18233,11 +18352,16 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
 // its large fragments go on from the poll as the buffer drains. Any other build sends the reply as it always has.
 static void send_unicast_update_unless_full(struct tt_Context* node, const struct tt_Peer* peer) {
 #if tt_LARGE_SAMPLES
+    uint64_t now = tt_get_ns();
+    uint64_t skipped = node->large.discovery_replies_skipped;
     node->large.reply_unless_full = true;
-#endif
-    (void)build_and_send_update(node, peer, 1);
-#if tt_LARGE_SAMPLES
+    bool built = build_and_send_update(node, peer, 1);
     node->large.reply_unless_full = false;
+    if (built && node->large.discovery_replies_skipped == skipped) {
+        note_announce_sent(node, now); // left unsent, nothing can echo it
+    }
+#else
+    (void)build_and_send_update(node, peer, 1);
 #endif
 }
 
@@ -19733,10 +19857,11 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
 // Nor does it wait for room in the send buffer (send_unicast_update_unless_full()): left unsent when the buffer is
 // full, for the same reason and with the same recovery.
 static void reply_with_own_announce(struct tt_Context* node, uint8_t sender_node_id, uint32_t sender_ip,
-                                    uint16_t sender_port) {
+                                    uint16_t sender_port, uint8_t echo) {
     if (node->tx_tail != sizeof(struct tt_Header)) {
         return;
     }
+    node->announce_echo_out = echo; // the tag of the announce this answers: the peer's round trip, timed
 
     struct tt_Peer reply_to = {sender_node_id, sender_ip, sender_port};
     send_unicast_update_unless_full(node, &reply_to);
@@ -19808,6 +19933,13 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     if (frag_count < 1 || update_parts_too_many(frag_count) || frag_index >= frag_count) {
         TT_LOG_ERROR("Illegal announce fragment %u of %u", frag_index, frag_count);
         return false;
+    }
+    // Its tag, which a reply of ours echoes, and the tag of ours it answers, which times the round trip to it - once
+    // per announce, from its first fragment, though every fragment carries both.
+    uint16_t marks = rd16(header, announce->marks);
+    uint8_t tag_in = (uint8_t)(marks & 0xFFU);
+    if (frag_index == 0) {
+        note_discovery_echo(node, source, (uint8_t)(marks >> 8));
     }
 #if tt_FRAG_ENABLED
     // Every announce and fragment carries it, and a change of it is a new generation; recorded before the generation
@@ -19907,7 +20039,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // broadcast is answered: a reply arrives unicast, on the data socket, so replies are never answered
     // and two nodes cannot trade announces back and forth. At most one reply per peer per change.
     if (is_first_contact_from_sender || !node->rx_via_data_port) {
-        reply_with_own_announce(node, source, sender_ip, sender_port);
+        reply_with_own_announce(node, source, sender_ip, sender_port, tag_in);
     }
     return true;
 }
@@ -22690,19 +22822,7 @@ static void note_discovery_round_trip(struct tt_Context* node, uint8_t source, u
         if (request->attempts == 0 || request->source != source || request->generation != generation) {
             continue;
         }
-        uint64_t elapsed = tt_get_ns() - request->first_sent_ns;
-        // 1 ns at least: 0 means "not measured", and an answer delivered within the same clock reading is
-        // a measured round trip of nothing (two nodes in one process on the mock clock).
-        uint32_t sample = elapsed >= UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
-        if (sample == 0) {
-            sample = 1;
-        }
-        uint32_t srtt = node->discovery_rtt_ns[source];
-        if (srtt == 0) {
-            node->discovery_rtt_ns[source] = sample;
-        } else {
-            node->discovery_rtt_ns[source] = (uint32_t)((int64_t)srtt + (((int64_t)sample - (int64_t)srtt) / 8));
-        }
+        fold_discovery_round_trip(&node->discovery_rtt_ns[source], tt_get_ns() - request->first_sent_ns);
         return;
     }
 }
@@ -27947,10 +28067,12 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout);
 // the log's stream (stderr unless tt_log_set_output() moved it): "ESTTRACE " and key=value pairs, each line with t_ns
 // (tt_get_ns(), CLOCK_MONOTONIC on Linux), ctx (this context's id) and obj (its kind), then the object's ids and its
 // values, times in ns:
-//   obj=wproxy  a Subscriber's writer proxy: the recovery estimate and the retry interval it gives
-//               (reliable_retry_interval()), the repair transit and the time a repair is taken to be on its way
-//               (repair_in_flight_ns()); in a large-sample build the estimate over recoveries spanning a send too, and
-//               the retry cadence while the writer still sends (retry_cadence_while_sending(), at the interval).
+//   obj=wproxy  a Subscriber's writer proxy: the recovery estimate, the discovery round trip to the writer's context
+//               that stands in for it before its first sample (discovery_seed_ns, 0 if none; retry_interval_for()), the
+//               retry interval they give (reliable_retry_interval()), the repair transit and the time a repair is taken
+//               to be on its way (repair_in_flight_ns()); in a large-sample build the estimate over recoveries spanning
+//               a send too, and the retry cadence while the writer still sends (retry_cadence_while_sending(), at the
+//               interval).
 //   obj=peer    a Publisher's reader entry: in a large-sample build the large-repair timeout's srtt/rttvar and the
 //               timeout and RACK threshold the resend order reads (large_order_times()); with the hybrid transport the
 //               p that reader's node reported (hybrid_peer_p()) and n* over tt_HYBRID_N_MAX at that p.
@@ -28011,15 +28133,17 @@ static void estimator_trace_proxy(const struct tt_Context* node, const struct tt
 #endif
     char* line = estimator_trace_room(out);
     estimator_trace_wrote(
-        out, snprintf(line, sizeof(out->text) - out->used,
-                      "ESTTRACE t_ns=%llu ctx=%u obj=wproxy sub=%08x reliable=%d writer_ctx=%u writer=%08x "
-                      "recovery_srtt_ns=%u recovery_rttvar_ns=%u retry_interval_ns=%llu transit_srtt_ns=%u "
-                      "transit_rttvar_ns=%u transit_min_ns=%u repair_in_flight_ns=%llu%s\n",
-                      out->t_ns, out->ctx, (unsigned)sub->endpoint.entity_id, sub->reliable ? 1 : 0,
-                      (unsigned)proxy->context_id, (unsigned)proxy->entity_id, (unsigned)proxy->recovery_srtt_ns,
-                      (unsigned)proxy->recovery_rttvar_ns, (unsigned long long)interval,
-                      (unsigned)proxy->transit_srtt_ns, (unsigned)proxy->transit_rttvar_ns,
-                      (unsigned)proxy->transit_min_ns, (unsigned long long)repair_in_flight_ns(node, proxy), sending));
+        out,
+        snprintf(
+            line, sizeof(out->text) - out->used,
+            "ESTTRACE t_ns=%llu ctx=%u obj=wproxy sub=%08x reliable=%d writer_ctx=%u writer=%08x "
+            "recovery_srtt_ns=%u recovery_rttvar_ns=%u discovery_seed_ns=%u retry_interval_ns=%llu transit_srtt_ns=%u "
+            "transit_rttvar_ns=%u transit_min_ns=%u repair_in_flight_ns=%llu%s\n",
+            out->t_ns, out->ctx, (unsigned)sub->endpoint.entity_id, sub->reliable ? 1 : 0, (unsigned)proxy->context_id,
+            (unsigned)proxy->entity_id, (unsigned)proxy->recovery_srtt_ns, (unsigned)proxy->recovery_rttvar_ns,
+            (unsigned)discovery_seed_ns(node, proxy), (unsigned long long)interval, (unsigned)proxy->transit_srtt_ns,
+            (unsigned)proxy->transit_rttvar_ns, (unsigned)proxy->transit_min_ns,
+            (unsigned long long)repair_in_flight_ns(node, proxy), sending));
 }
 
 static void estimator_trace_peer(const struct tt_Context* node, const struct tt_Publisher* pub,

@@ -118,11 +118,16 @@ static void init_header(struct tt_Header* header, uint8_t source) {
 
 // An UpdateHeader that announces no endpoints at all - what tt_Context_destroy() broadcasts on the
 // way out.
-static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
+static uint32_t write_update_no_entities_marked(uint8_t* buf, uint64_t last_modified, uint16_t marks) {
     struct test_announce* update_header = test_announce_at(buf);
     test_announce_set_last_modified(update_header, last_modified);
     update_header->announce.entity_count = 0;
+    update_header->announce.marks = marks;
     return sizeof(struct test_announce);
+}
+
+static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
+    return write_update_no_entities_marked(buf, last_modified, 0);
 }
 
 // A remote TOPIC_SUBSCRIBER announcing the same endpoint_id as our local Publisher must be
@@ -729,6 +734,7 @@ static void test_two_publishers_created_after_the_announce_both_learn_the_peer(v
 struct duo_datagram {
     uint8_t from;
     bool unicast;
+    uint64_t due; // when it reaches the other node: sent + duo_delay
     uint32_t len;
     uint8_t bytes[tt_MAX_BUFFER_LENGTH];
     // Its discovery submessages, by what they are (duo_classify()).
@@ -750,6 +756,8 @@ static int duo_lists_unicast[3];
 static uint64_t duo_last_delivered[3];
 // Loses a datagram it returns true for, on the way to the other node. NULL loses nothing.
 static bool (*duo_drop)(const struct duo_datagram* datagram);
+// How long each datagram takes to reach the other node, one way. 0, the default, delivers it in the same pass.
+static uint64_t duo_delay;
 
 // Walks a datagram's submessages and counts the discovery ones: every body starts with the endpoint_id. Reads
 // the classic form (test_classic_form()); the datagram itself is delivered as it was sent.
@@ -778,6 +786,7 @@ static void duo_capture(const void* buf, size_t len) {
     EXPECT_TRUE(duo_count < DUO_QUEUE && len <= tt_MAX_BUFFER_LENGTH);
     struct duo_datagram* datagram = &duo_queue[duo_count++];
     datagram->from = duo_acting;
+    datagram->due = test_mock_now + duo_delay;
     datagram->unicast = test_mock_send_to_call_count != duo_seen_send_to; // tt_send_to() counted it first
     duo_seen_send_to = test_mock_send_to_call_count;
     datagram->len = (uint32_t)len;
@@ -814,8 +823,16 @@ static void duo_run_due(struct tt_Context* node) {
 }
 
 static void duo_deliver(struct tt_Context* one, struct tt_Context* two) {
+    int kept = 0;
     for (int i = 0; i < duo_count; i++) { // grows while delivering: a reply is delivered in the same pass
         struct duo_datagram* datagram = &duo_queue[i];
+        if (datagram->due > test_mock_now) { // still on its way (duo_delay)
+            if (kept != i) {
+                duo_queue[kept] = *datagram;
+            }
+            kept++;
+            continue;
+        }
         if (duo_drop != NULL && duo_drop(datagram)) {
             continue;
         }
@@ -827,7 +844,7 @@ static void duo_deliver(struct tt_Context* one, struct tt_Context* two) {
         EXPECT_TRUE(
             process_packet(to, to->rx_buffer, 0, datagram->len, 0x0a000000U + datagram->from, 8282, tt_TRANSPORT_UDP));
     }
-    duo_count = 0;
+    duo_count = kept;
 }
 
 // Runs both nodes until `until`, a scheduler entry at a time.
@@ -842,6 +859,9 @@ static void duo_run_until(struct tt_Context* one, struct tt_Context* two, uint64
             next_two += duo_late[2];
         }
         uint64_t next = next_one < next_two ? next_one : next_two;
+        for (int i = 0; i < duo_count; i++) {
+            next = duo_queue[i].due < next ? duo_queue[i].due : next;
+        }
         if (next > until) {
             test_mock_now = until;
             return;
@@ -945,6 +965,7 @@ static void duo_start(struct tt_Context* one, struct tt_Context* two) {
     duo_count = 0;
     duo_seen_send_to = 0;
     duo_drop = NULL;
+    duo_delay = 0;
     memset(duo_sent, 0, sizeof(duo_sent));
     memset(duo_late, 0, sizeof(duo_late));
     duo_reset_counts();
@@ -958,6 +979,7 @@ static void duo_start(struct tt_Context* one, struct tt_Context* two) {
 
 static void duo_stop(void) {
     duo_drop = NULL;
+    duo_delay = 0;
     test_mock_send_hook = NULL;
 }
 
@@ -1279,13 +1301,19 @@ static void run_scheduler_until(struct tt_Context* node, uint64_t until) {
     test_mock_now = until;
 }
 
-// `source`'s list of generation `generation` arrives, empty: what applies it is all that matters here.
-static void apply_list(struct tt_Context* node, uint8_t source, uint32_t generation) {
+// `source`'s list of generation `generation` arrives, empty, on the data socket (unicast) or the well-known one: what
+// applies it is all that matters here.
+static void deliver_list(struct tt_Context* node, uint8_t source, uint32_t generation, bool unicast) {
     struct tt_Header header;
     init_header(&header, source);
+    node->rx_via_data_port = unicast;
     uint32_t tail = write_update_no_entities(node->rx_buffer, generation);
     EXPECT_TRUE(process_data(node, &header, node->rx_buffer, 0, tail, 0x0a000000U + source, 8282));
     EXPECT_TRUE(node->update_seen[source] && node->update_generation[source] == generation);
+}
+
+static void apply_list(struct tt_Context* node, uint8_t source, uint32_t generation) {
+    deliver_list(node, source, generation, true);
 }
 
 // The retry delay of a list request is the round trip measured to that peer plus a flush tick
@@ -1355,6 +1383,251 @@ static void test_discovery_retry_follows_the_round_trip(void) {
     run_scheduler_until(&node, asked + tt_DISCOVERY_REQUEST_RETRY);
     EXPECT_EQ_INT(2, requests_sent);
     test_mock_send_hook = NULL;
+}
+
+// --- The discovery round trip from an announce's tag and its reply's echo (note_discovery_echo(), 2026-11-05) -------
+
+// An announce's marks: its own tag in the low byte, the tag it answers in the high one.
+#define MARKS(tag, echo) ((uint16_t)((uint16_t)(tag) | ((uint16_t)(echo) << 8)))
+
+// `source`'s announce of `generation` arrives with these marks, on the data socket (unicast) or the well-known one.
+static void deliver_marked(struct tt_Context* node, uint8_t source, uint32_t generation, bool unicast, uint16_t marks) {
+    struct tt_Header header;
+    init_header(&header, source);
+    node->rx_via_data_port = unicast;
+    uint32_t tail = write_update_no_entities_marked(node->rx_buffer, generation, marks);
+    EXPECT_TRUE(process_data(node, &header, node->rx_buffer, 0, tail, 0x0a000000U + source, 8282));
+}
+
+// This node's announce, broadcast, built and sent now as if the flush tick came at once. Returns its tag.
+static uint8_t announce_now(struct tt_Context* node) {
+    EXPECT_TRUE(build_and_send_update(node, NULL, 0));
+    flush_pending_broadcast(node);
+    return node->announce_tag_out;
+}
+
+// A reply that echoes an announce's tag is that announce's round trip, from when it was built to the reply arriving,
+// and every peer a broadcast reaches gets its own sample from it.
+static void test_an_echo_times_the_announce_it_names(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    const uint64_t sent = test_mock_now;
+    const uint8_t tag = announce_now(&node);
+    EXPECT_TRUE(tag != 0);
+
+    test_mock_now = sent + (200 * tt_MILLISECOND);
+    deliver_marked(&node, 3, 7, true, MARKS(5, tag));
+    EXPECT_EQ_U32(200 * tt_MILLISECOND, node.announce_rtt_ns[3]);
+    test_mock_now = sent + (150 * tt_MILLISECOND);
+    deliver_marked(&node, 4, 7, true, MARKS(6, tag)); // the same broadcast, answered by another peer
+    EXPECT_EQ_U32(150 * tt_MILLISECOND, node.announce_rtt_ns[4]);
+    EXPECT_EQ_U32(200 * tt_MILLISECOND, node.announce_rtt_ns[3]); // untouched
+
+    // A later announce, echoed by peer 3 after 120 ms: smoothed in, gain 1/8.
+    test_mock_now = sent + tt_SECOND;
+    const uint8_t again = announce_now(&node);
+    EXPECT_TRUE(again != tag);
+    test_mock_now += 120 * tt_MILLISECOND;
+    deliver_marked(&node, 3, 8, true, MARKS(7, again));
+    EXPECT_EQ_U32((200 * tt_MILLISECOND) + (((120 * tt_MILLISECOND) - (200 * tt_MILLISECOND)) / 8),
+                  node.announce_rtt_ns[3]);
+}
+
+// The point of the echo: several announces outstanding at once - at 100 ms each way one goes out every ~100 ms - and
+// the reply names which it answers, so it is timed from that one, not from the oldest or the newest.
+static void test_an_echo_names_one_of_several_outstanding_announces(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    const uint64_t first = test_mock_now;
+    announce_now(&node);
+    test_mock_now += 10 * tt_MILLISECOND;
+    const uint8_t second = announce_now(&node);
+    test_mock_now += 10 * tt_MILLISECOND;
+    announce_now(&node);
+
+    test_mock_now = first + (200 * tt_MILLISECOND);
+    deliver_marked(&node, 3, 7, true, MARKS(5, second));
+    EXPECT_EQ_U32(190 * tt_MILLISECOND, node.announce_rtt_ns[3]); // from the second's build, 10 ms after the first
+}
+
+// No sample from a reply that echoes nothing (an older build, or an answer to a request), from a tag that is not one of
+// the last tt_DISCOVERY_ECHO_SLOTS announces or never was ours, or from one older than DISCOVERY_ECHO_WINDOW_NS.
+static void test_a_missing_unknown_or_stale_echo_times_nothing(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    const uint64_t sent = test_mock_now;
+    const uint8_t tag = announce_now(&node);
+
+    test_mock_now = sent + (100 * tt_MILLISECOND);
+    deliver_marked(&node, 3, 7, true, MARKS(5, 0)); // nothing echoed
+    EXPECT_EQ_U32(0, node.announce_rtt_ns[3]);
+    deliver_marked(&node, 4, 7, true, MARKS(5, (uint8_t)(tag + 100))); // a tag we never sent
+    EXPECT_EQ_U32(0, node.announce_rtt_ns[4]);
+
+    // Exactly the window old is too late; one nanosecond younger is not.
+    test_mock_now = sent + DISCOVERY_ECHO_WINDOW_NS;
+    deliver_marked(&node, 5, 7, true, MARKS(5, tag));
+    EXPECT_EQ_U32(0, node.announce_rtt_ns[5]);
+    test_mock_now = sent + DISCOVERY_ECHO_WINDOW_NS - 1;
+    deliver_marked(&node, 6, 7, true, MARKS(5, tag));
+    EXPECT_EQ_U32(UINT32_MAX, node.announce_rtt_ns[6]); // timed, and clamped: the field is 32 bits (4.29 s)
+
+    // The ninth announce overwrites the first's slot: its echo is no longer known.
+    for (int i = 0; i < tt_DISCOVERY_ECHO_SLOTS; i++) {
+        announce_now(&node);
+    }
+    deliver_marked(&node, 7, 7, true, MARKS(5, tag));
+    EXPECT_EQ_U32(0, node.announce_rtt_ns[7]);
+}
+
+// A reply that arrives within the same clock reading as the announce is a measured round trip of nothing: stored as 1
+// ns, because 0 means "not measured" (two nodes in one process on the mock clock).
+static void test_an_echo_in_the_same_instant_is_a_round_trip_of_nothing(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    const uint8_t tag = announce_now(&node);
+    deliver_marked(&node, 3, 7, true, MARKS(5, tag));
+    EXPECT_EQ_U32(1, node.announce_rtt_ns[3]);
+}
+
+static uint16_t sent_marks;
+static int sent_announces;
+
+static void capture_marks(const void* buf, size_t len) {
+    if (len < sizeof(struct tt_Header)) {
+        return;
+    }
+    const uint8_t* bytes = buf;
+    bool single = bytes[0] == tt_SINGLE_MARKER_LE || bytes[0] == tt_SINGLE_MARKER_BE;
+    uint32_t body = single ? (uint32_t)sizeof(struct tt_SingleHeader)
+                           : (uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    uint8_t type = single ? bytes[3] : bytes[sizeof(struct tt_Header)];
+    if (type != tt_SUBMESSAGE_TYPE_DATA) {
+        return;
+    }
+    uint32_t at = body + (uint32_t)sizeof(struct tt_DataHeader);
+    if (len < at + sizeof(struct tt_AnnounceHeader)) {
+        return;
+    }
+    struct tt_AnnounceHeader wire;
+    memcpy(&wire, bytes + at, sizeof(wire));
+    sent_marks = wire.marks;
+    sent_announces++;
+}
+
+// A reply carries the tag of the announce it answers; an announce that answers nothing carries no echo, so one reply's
+// echo is never the next announce's.
+static void test_a_reply_echoes_the_tag_it_answers_and_the_next_announce_does_not(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    test_mock_send_hook = capture_marks;
+    sent_marks = 0;
+    sent_announces = 0;
+
+    // Peer 2's broadcast announce, tag 9: this node's first contact with it, so it replies, unicast.
+    deliver_marked(&node, 2, 100, false, MARKS(9, 0));
+    EXPECT_EQ_INT(1, sent_announces);
+    EXPECT_EQ_U32(9, sent_marks >> 8);        // the echo is the tag it answers
+    EXPECT_TRUE((sent_marks & 0xFFU) != 0);   // and the reply has a tag of its own
+    EXPECT_EQ_U32(0, node.announce_echo_out); // cleared once built
+
+    announce_now(&node);
+    EXPECT_EQ_INT(2, sent_announces);
+    EXPECT_EQ_U32(0, sent_marks >> 8); // a plain announce echoes nothing
+
+    // A peer that sent no tag (an older build) is answered with no echo.
+    deliver_marked(&node, 3, 100, false, MARKS(0, 0));
+    EXPECT_EQ_INT(3, sent_announces);
+    EXPECT_EQ_U32(0, sent_marks >> 8);
+    test_mock_send_hook = NULL;
+}
+
+// Tags run 1-255 and wrap past 0 to 1: 0 means "none" on the wire, and an older build sends it.
+static void test_tags_are_never_zero_and_wrap(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    static struct tt_Context node;
+    init_node(&node);
+    uint8_t previous = 0;
+    for (int i = 0; i < 600; i++) {
+        uint8_t tag = announce_now(&node);
+        EXPECT_TRUE(tag != 0);
+        if (previous == 255) {
+            EXPECT_EQ_U32(1, tag);
+        } else if (previous != 0) {
+            EXPECT_EQ_U32((uint32_t)previous + 1U, tag);
+        }
+        previous = tag;
+    }
+}
+
+static uint64_t duo_join_at;
+
+// Everything sent before duo_join_at is lost: until then node 1 is not there.
+static bool drop_before_join(const struct duo_datagram* datagram) {
+    return datagram->due - duo_delay < duo_join_at;
+}
+
+// Two nodes over a path of `delay` each way, node 1 joining at duo_join_at with a Publisher whose Subscriber node 2
+// has: the startup exchange as it happens (announce, reply, first-contact reply, summaries and requests). Every sample
+// either takes is at least the true round trip, 2 x delay - never shorter. Returns how many of the two took one.
+static int startup_exchange(uint64_t delay, uint64_t join_offset) {
+    static struct tt_Context one;
+    static struct tt_Context two;
+    duo_start(&one, &two);
+    duo_delay = delay;
+    duo_join_at = (3 * tt_SECOND) + join_offset;
+    duo_drop = drop_before_join;
+    struct tt_Subscriber sub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(
+                                 tt_Context_default_node(&two), &sub, &duo_sub_topic, "duo_ep", &TEST_QOS_UNRELIABLE,
+                                 &(struct tt_SubscriberOptions) {.callback = duo_on_data}, NULL, 0));
+    duo_run_until(&one, &two, duo_join_at);
+    // Node 1's own startup: nothing it sent got anywhere, and it has heard nothing - as if it started now.
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(tt_Context_default_node(&one), &pub, &duo_pub_topic, "duo_ep",
+                                                      &TEST_QOS_UNRELIABLE, NULL, NULL, 0));
+    duo_run_until(&one, &two, duo_join_at + (5 * tt_SECOND));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // control: they did discover each other
+    uint32_t one_rtt = one.announce_rtt_ns[2];
+    uint32_t two_rtt = two.announce_rtt_ns[1];
+    EXPECT_TRUE(one_rtt == 0 || one_rtt >= 2 * delay);
+    EXPECT_TRUE(two_rtt == 0 || two_rtt >= 2 * delay);
+    if ((one_rtt != 0 && one_rtt < 2 * delay) || (two_rtt != 0 && two_rtt < 2 * delay)) {
+        printf("  short sample: delay %llu ns, join +%llu ns: node 1 %u, node 2 %u\n", (unsigned long long)delay,
+               (unsigned long long)join_offset, one_rtt, two_rtt);
+    }
+    duo_stop();
+    return (one_rtt != 0 ? 1 : 0) + (two_rtt != 0 ? 1 : 0);
+}
+
+// The property the seed rests on (retry_interval_for()): over the startup flows - which node hears which first, the
+// summaries' phase against the join - and at 1, 50 and 100 ms each way, no sample comes out shorter than the round trip
+// it times, and both nodes take one every time: node 1 from its own broadcast, node 2 from the reply it sent to
+// node 1's, which node 1's first-contact reply echoes. The first version of this rule took a sample at 1 ms and none
+// at 100 ms (2026-11-05): this test runs the delays the seed is for.
+static void test_the_startup_round_trip_is_never_short_and_always_taken(void) {
+    const uint64_t delays[] = {tt_MILLISECOND, 50 * tt_MILLISECOND, 100 * tt_MILLISECOND};
+    int sampled = 0;
+    int trials = 0;
+    for (size_t d = 0; d < sizeof(delays) / sizeof(delays[0]); d++) {
+        for (uint64_t offset = 0; offset < tt_SECOND; offset += 77 * tt_MILLISECOND) {
+            sampled += startup_exchange(delays[d], offset);
+            trials++;
+        }
+    }
+    printf("  startup round trips: %d of %d possible samples taken\n", sampled, 2 * trials);
+    EXPECT_EQ_INT(2 * trials, sampled);
 }
 
 // Node 2's view of node 1 over 6 s after `lost` of node 1's summaries are lost in a row, over 20 trials
@@ -1802,6 +2075,13 @@ int main(void) {
     test_a_lost_answer_is_asked_for_again_at_once();
     test_a_summary_while_a_request_is_open_sends_nothing_more();
     test_discovery_retry_follows_the_round_trip();
+    test_an_echo_times_the_announce_it_names();
+    test_an_echo_names_one_of_several_outstanding_announces();
+    test_a_missing_unknown_or_stale_echo_times_nothing();
+    test_an_echo_in_the_same_instant_is_a_round_trip_of_nothing();
+    test_a_reply_echoes_the_tag_it_answers_and_the_next_announce_does_not();
+    test_tags_are_never_zero_and_wrap();
+    test_the_startup_round_trip_is_never_short_and_always_taken();
     test_two_lost_summaries_never_presume_a_node_dead();
     test_an_automatic_lease_runs_from_the_data_and_lapses_on_time();
     test_a_manual_lease_is_not_kept_by_other_topics_data();
