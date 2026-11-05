@@ -8047,6 +8047,7 @@ static bool names_any_open(const struct tt_WriterProxy* proxy, int high_bit, con
                            int skip_count);
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
+static uint64_t reliable_first_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 static uint64_t reliable_retry_configured(const struct tt_Context* node);
 static uint64_t reliable_retry_interval_publisher(const struct tt_Context* node);
 static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now);
@@ -16920,6 +16921,15 @@ static uint64_t reliable_retry_interval(const struct tt_Context* node, const str
                               discovery_seed_ns(node, proxy), proxy);
 }
 
+// The wait before the FIRST timed retry of a gap, which follows the immediate request: the path's interval without the
+// discovery seed (retry_interval_for() with none). The seed lengthens the waits after it only - a request or repair
+// lost at that first ask is then asked for again at once, not one round trip later: seeded from the first retry, 20 ms
+// each way lost a fragment's second ask 40 ms (OWD p99 64 -> 125 ms, v3 A/B 2026-11-05).
+static uint64_t reliable_first_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    return retry_interval_for(reliable_opts(node), reliable_retry_configured(node), reliable_retry_granularity(node), 0,
+                              proxy);
+}
+
 #if tt_LARGE_SAMPLES
 // How often a retry may ask while the writer's large sample still arrives: the interval over every recovery, those
 // spanning a send included (tt_WriterProxy.sending_srtt_ns) - what the one estimate gave before 2026-10-16 - when that
@@ -17353,7 +17363,7 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
-        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_first_retry_interval(node, proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -21379,7 +21389,7 @@ static void note_unrecorded(struct tt_Context* node, struct tt_WriterProxy* prox
     proxy->sender_ip = sender_ip;
     proxy->sender_port = sender_port;
     if (!proxy->acknack_scheduled) {
-        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_first_retry_interval(node, proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
             proxy->retry = 0;
         } else {

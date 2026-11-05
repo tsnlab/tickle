@@ -680,6 +680,44 @@ static void test_reliable_acknack_retry_uses_reliable_retry_interval(void) {
     EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + TEST_RETRY_INTERVAL);
 }
 
+// The discovery seed lengthens the waits AFTER a gap's first timed retry, not that one (v4, 2026-11-05): the first ask
+// is immediate, the first timer asks again at the plain interval, so a request or repair lost at the first ask is
+// repeated at once - seeded from the first timer, a fragment lost at 20 ms each way waited 40 ms (OWD p99 64 -> 125 ms,
+// v3 A/B). From the second timer on the wait is the seed's round trip plus a tick, which ends the 1 ms storm at 50 and
+// 100 ms each way.
+static void test_the_seed_lengthens_the_waits_after_the_first_timed_retry(void) {
+    test_mock_reset();
+    _Static_assert(tt_RELIABLE_DEADLINE == 0, "this test assumes no tt_RELIABLE_DEADLINE override");
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    const uint64_t seed = 200 * tt_MILLISECOND;
+    node.announce_rtt_ns[proxy->context_id] = (uint32_t)seed;
+    const uint64_t seeded = seed + reliable_retry_granularity(&node);
+
+    tail = write_data(&node, 3, 300, 3); // gap at 2: the immediate ask, and the first timer
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + TEST_RETRY_INTERVAL);
+
+    test_mock_now += TEST_RETRY_INTERVAL; // the first timer fires; the gap is still open
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + seeded); // the second wait is the seed's
+}
+
 // Milestone 60 (rmw_tickle/PLAN.md) - receive-side de-duplication regression: TickLE Plan's own
 // real HIL finding (history_depth_burst_loss/lifespan_expiry scenarios, recv > sent) traced to
 // deliver_data_to_subscriber() invoking the application callback unconditionally, with no seq_no-
@@ -5446,6 +5484,7 @@ int main(void) {
     test_reliable_subscribe_gap_then_close();
     test_reliable_new_gap_while_armed_gets_immediate_narrow_nack();
     test_reliable_acknack_retry_uses_reliable_retry_interval();
+    test_the_seed_lengthens_the_waits_after_the_first_timed_retry();
     test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
     test_reliable_delivers_in_order_with_buffer();
     test_reliable_delivers_in_order_without_buffer();
