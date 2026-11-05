@@ -10,6 +10,12 @@
 # from a discovery round trip (announce -> unicast reply) while the recovery estimate is 0; real samples replace it.
 # Seed interval = srtt + 4 rttvar with rttvar = srtt / 2, i.e. ~3 round trips (capped by max_srtt_multiple).
 #
+# TWO RULE SETS (2026-11-05). v2 ran b6cffab5 against 88bb34e0 (seed interval 3 round trips): P1 PASS, P2 FAIL on tail
+# latency (rel_small OWD p99 150 -> 295..390 ms at 50 ms), read under DSEED_RULES=v2 (the default; OUT
+# 20261105-121643). The user then chose a seed interval of one round trip plus a flush tick (v3); its P2 allows the cost
+# that remains, one link round trip of tail latency, and is registered in dseed_ab_read.py before the v3 run: run it with
+# DSEED_RULES=v3 in the environment (the reader runs at the end of this script and reads it).
+#
 # ARMS. Three trees, given as paths; each invocation runs the tree's OWN copy of time_varying_netns.sh (and so builds
 # that tree's core and bench nodes):
 #   A  = <base_tree>  the base.

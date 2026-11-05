@@ -62,6 +62,23 @@ P2_DELIVERY_TOL = 0.001  # DELIVERY WORSE: A - B > max(|A2 - A|, 0.1 point)
 AA_VOID_REL = 0.10  # |median(A2) - median(A)| over this x |median(A)|: the metric at the point is noise, VOID
 P2_MAX_NOISE_VOID_FRAC = 0.5  # over this share of P2's comparisons voided as noise: P2 itself is VOID
 LATENCY_METRICS = ("OWD_P99", "RTT_P99")
+
+# --- the v3 registration (2026-11-05, written before the v3 run; DSEED_RULES=v3) ---------------------------------------
+# v2's run (b6cffab5 against 88bb34e0, seed interval = 3 x the round trip) took P1 and failed P2 on tail latency: a lost
+# request or repair is asked for again 3 round trips later where the base asked every millisecond (rel_small OWD p99
+# 150 -> 295..390 ms at 50 ms). The user chose, with that in front of them, a seed interval of one round trip plus a
+# flush tick (v3): the earliest an answer can have arrived. The cost that remains is one round trip of tail latency for a
+# sample whose first request or repair is lost, so v3 reads P2 against that allowance instead of "no cost anywhere":
+#   latency (OWD p99, RTT p99): WORSE only if B - A exceeds max(|A2 - A|, 10% of A, N x the link's round trip 2 x D), with
+#     N = P2_OWD_RTTS for OWD (the data stream's one recovery) and P2_RTT_RTTS for RTT (both streams of a round trip);
+#   delivery: WORSE only if A - B exceeds max(|A2 - A|, 0.1 point), or 0.5 point at the history-limited delays (D >= 50
+#     ms, where KEEP_LAST 10 at 100 Hz spans 100 ms and a later request finds the sample evicted).
+# Expected before the run: P1 PASS with B near 1 request a gap; every P2 comparison inside its allowance. P1 is unchanged.
+RULES = os.environ.get("DSEED_RULES", "v2")  # "v2": the 2026-11-04 rules above, as run; "v3": the allowance below
+P2_OWD_RTTS = 1.5
+P2_RTT_RTTS = 3.0
+P2_DELIVERY_HIST_TOL = 0.005
+HIST_MIN_DELAY_MS = 50
 OUT_RE = re.compile(r"^(A2|A|B)-r([0-9]+)$")
 FMT = {"TIMER_PER_GAP": "f2", "OWD_P99": "ms", "RTT_P99": "ms", "DELIVERY": "pct"}
 METRIC_FN = {m[0]: m[2] for m in tvr.X1_METRICS}
@@ -252,6 +269,8 @@ def trace_report(data, emit):
 
 def p2(data, emit):
     """P2 at every point, both cells. Returns (verdict, WORSE list, noise-VOID list)."""
+    emit(f"--- P2 rules {RULES}" + (f" (latency allowance {P2_OWD_RTTS:g} / {P2_RTT_RTTS:g} link round trips for OWD / RTT; "
+                                   f"delivery {100 * P2_DELIVERY_HIST_TOL:g} point from {HIST_MIN_DELAY_MS} ms)" if RULES == "v3" else ""))
     emit(f"--- P2 (no cost): B WORSE when its median is worse than A's by more than max(|A2 - A|, "
          f"{P2_REL_TOL:.0%} of A) (latency) / max(|A2 - A|, {100 * P2_DELIVERY_TOL:g} point) (DELIVERY); "
          f"|A2 - A| > {AA_VOID_REL:.0%} of A voids the metric there")
@@ -281,11 +300,17 @@ def p2(data, emit):
                          f"{txt}")
                     continue
                 if m == "DELIVERY":
-                    tol = max(aa, P2_DELIVERY_TOL)
+                    floor = P2_DELIVERY_TOL
+                    if RULES == "v3" and p[0] >= HIST_MIN_DELAY_MS:
+                        floor = P2_DELIVERY_HIST_TOL
+                    tol = max(aa, floor)
                     bad = ma - mb > tol
                     delta = f"B - A {100 * (mb - ma):+.2f} points, tolerance {100 * tol:.2f}"
                 else:
-                    tol = max(aa, P2_REL_TOL * ma)
+                    allow = 0.0
+                    if RULES == "v3":
+                        allow = (P2_OWD_RTTS if m == "OWD_P99" else P2_RTT_RTTS) * 2.0 * p[0]
+                    tol = max(aa, P2_REL_TOL * ma, allow)
                     bad = mb - ma > tol
                     delta = f"B - A {mb - ma:+.2f} ms, tolerance {tol:.2f}"
                 st = "WORSE" if bad else "ok"
@@ -330,7 +355,7 @@ def evaluate(data):
         r1 = p1(data, emit)
         trace_report(data, emit)
         r2, _, _ = p2(data, emit)
-    emit(f"VERDICT P1={r1} P2={r2}")
+    emit(f"VERDICT P1={r1} P2={r2} RULES={RULES}")
     claim = ("seeding the retry interval from a discovery round trip ends the retry-timer storm at 50/100 ms "
              "(P1) at no cost in latency or delivery anywhere (P2)")
     if r1 == "FAIL" or r2 == "FAIL":
@@ -379,8 +404,8 @@ def st_data(tweak=None, reps=3):
 def self_test():
     cases = []
 
-    def case(name, data, p1_want, p2_want, extra=None):
-        cases.append((name, data, p1_want, p2_want, extra))
+    def case(name, data, p1_want, p2_want, extra=None, rules="v2"):
+        cases.append((name, data, p1_want, p2_want, extra, rules))
 
     case("baseline: B removes the storm, no cost", st_data(), "PASS", "PASS")
 
@@ -459,9 +484,36 @@ def self_test():
          lambda lines: any(x.startswith("P2 20ms/10%") and "OWD_P99" in x and "values" in x for x in lines)
          and any(x.startswith("P2 20ms/10%") and "DELIVERY" in x and " ok " in x for x in lines))
 
+    # v3: the allowance of one link round trip.
+    def rtt_more(rtts, cell="rel_small", point=(50, 2)):
+        def tweak(a, c, p, i, rep):
+            if a == TREAT and c == cell and p == point:
+                rep["vals"]["OWD_P99"] += rtts * 2.0 * point[0]
+        return tweak
+    case("v2 rules: B one round trip of OWD p99 over A at 50 ms is WORSE", st_data(rtt_more(1.0)), "PASS", "FAIL")
+    case("v3 rules: B one round trip over A is inside the allowance", st_data(rtt_more(1.0)), "PASS", "PASS", None, "v3")
+    case("v3 rules: B four round trips over A is WORSE", st_data(rtt_more(4.0)), "PASS", "FAIL",
+         lambda lines: any(x.startswith("P2 WORSE 50ms/2% rel_small OWD_P99") for x in lines), "v3")
+
+    def deliv_hist(delta, point):
+        def tweak(a, c, p, i, rep):
+            if a == TREAT and c == "rel_small" and p == point:
+                rep["vals"]["DELIVERY"] -= delta
+        return tweak
+    case("v3 rules: 0.4 point of delivery lost at a history-limited delay is allowed",
+         st_data(deliv_hist(0.004, (100, 2))), "PASS", "PASS", None, "v3")
+    case("v3 rules: 0.6 point lost at a history-limited delay is WORSE",
+         st_data(deliv_hist(0.006, (100, 2))), "PASS", "FAIL", None, "v3")
+    case("v3 rules: 0.4 point lost at 20 ms is WORSE (not history-limited)",
+         st_data(deliv_hist(0.004, (20, 10))), "PASS", "FAIL", None, "v3")
+
+    global RULES
+    saved_rules = RULES
     failed = total = 0
-    for i, (name, data, w1, w2, extra) in enumerate(cases):
+    for i, (name, data, w1, w2, extra, rules) in enumerate(cases):
+        RULES = rules
         lines, r1, r2 = evaluate(data)
+        RULES = saved_rules
         print(f"--- self-test {i + 1}: {name}")
         checks = [(f"P1={w1}", r1 == w1), (f"P2={w2}", r2 == w2)]
         if extra is not None:
