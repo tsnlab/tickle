@@ -24,7 +24,7 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   A first version that timed "the one outstanding announce" measured nothing at 100 ms, where two to four are always
   outstanding. The seed lengthens the waits after a gap's first timed retry, not that one (`reliable_first_retry_interval()`):
   seeded from the first timer, a fragment lost at 20 ms each way waited 40 ms (OWD p99 64 -> 125 ms; v3 A/B 2026-11-05: P1
-  8/8, P2 failed at 20 ms/1% and 20 ms/10%). A/B of this version pending (`dseed_ab.sh`).
+  8/8, P2 failed at 20 ms/1% and 20 ms/10%). The large-sample retry pacing in `acknack_retry()` does not read it either (v4 A/B: rel_large OWD p99 +87 ms at 20 ms/1%, +37 ms at 1 ms/10%). A/B of this version pending (`dseed_ab.sh`).
 
 - **RSTATS: late originals that fill a gap** (reorder hold-off stage S0, instrumentation only, `-Dtt_RELIABLE_STATS`).
   A reader counts a gap filled by the writer's first transmission rather than a repair (`reorder_fill_original`),
