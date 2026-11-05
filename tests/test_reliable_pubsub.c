@@ -1800,15 +1800,15 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
 }
 
 // The discovery seed (tt_Context.announce_rtt_ns, 2026-11-04): until this proxy has a recovery sample of its own, the
-// discovery round trip to its writer's context lengthens retry_initial to the interval it gives as srtt (rttvar =
-// srtt / 2) - and only lengthens it. Once a recovery is timed, that alone counts; a configured interval still wins;
+// announce round trip to its writer's context lengthens retry_initial to one round trip plus a flush tick - and only
+// lengthens it. Once a recovery is timed, that alone counts; a configured interval still wins;
 // no seed is retry_initial as before.
 static void test_retry_interval_falls_back_to_the_discovery_seed(void) {
     struct tt_WriterProxy proxy;
     memset(&proxy, 0, sizeof(proxy));
     const uint32_t seed = 200 * tt_MILLISECOND; // a 100 ms each-way path
-    // seed + max(G, 4 * seed / 2): 600 ms, where retry_initial asked every 1 ms for the whole round trip.
-    EXPECT_EQ_U64(3ULL * seed, retry_interval_for(&reliable_defaults, 0, COLD_G, seed, &proxy));
+    // seed + G: where retry_initial asked every 1 ms for the whole round trip, one request a round trip.
+    EXPECT_EQ_U64((uint64_t)seed + COLD_G, retry_interval_for(&reliable_defaults, 0, COLD_G, seed, &proxy));
     EXPECT_EQ_U32(0, proxy.recovery_srtt_ns); // a fallback: the estimate itself is not written
     // Control: no seed is retry_initial, as before.
     EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(&reliable_defaults, 0, COLD_G, 0, &proxy));
@@ -1840,7 +1840,7 @@ static void test_the_reader_reads_the_seed_of_its_writers_context(void) {
     node.announce_rtt_ns[8] = 200 * tt_MILLISECOND; // another context's
     EXPECT_EQ_U64(initial, reliable_retry_interval(&node, &proxy));
     node.announce_rtt_ns[7] = 200 * tt_MILLISECOND;
-    EXPECT_EQ_U64(600 * tt_MILLISECOND, reliable_retry_interval(&node, &proxy));
+    EXPECT_EQ_U64((200 * tt_MILLISECOND) + reliable_retry_granularity(&node), reliable_retry_interval(&node, &proxy));
     EXPECT_EQ_U64(initial, repair_in_flight_ns(&node, &proxy)); // the seed is not read here
     // A transit sample of its own is what it reads.
     proxy.transit_srtt_ns = 10 * tt_MILLISECOND;

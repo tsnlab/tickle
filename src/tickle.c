@@ -16855,12 +16855,15 @@ static uint64_t reliable_retry_configured(const struct tt_Context* node) {
 // bounds are relative and why the one absolute term remains.
 //
 // Until that first sample, `seed_ns` - the announce round trip to the writer's context (tt_Context.announce_rtt_ns,
-// 0 if none) - lengthens retry_initial to the interval it gives as srtt with rttvar = srtt / 2, RFC 6298's first
-// sample, when that is longer. 50 and 100 ms each way (2026-11-04): a lost sample was evicted by its KEEP_LAST 10
-// writer before the request reached it, so no recovery was ever timed, and at 1 ms the reader asked 24-56 times a gap
-// for the whole 200 ms round trip. Only ever longer, never shorter than retry_initial: before any recovery statistics,
-// nothing asks more aggressively than it always has. A fallback only - recovery_srtt_ns stays 0 - so the first real
-// recovery is still timed as the seed (repair_timing_times()) and replaces it outright.
+// 0 if none) - lengthens retry_initial to one round trip plus a flush tick (`granularity`), when that is longer: the
+// earliest an answer to the request just sent can have arrived, so the next request is not sent before it could be
+// moot. 50 and 100 ms each way (2026-11-04): a lost sample was evicted by its KEEP_LAST 10 writer before the request
+// reached it, so no recovery was ever timed, and at 1 ms the reader asked 24-56 times a gap for the whole 200 ms round
+// trip. Not srtt + 4 rttvar (3 round trips, RFC 6298's first sample): that was the first version, 88bb34e0, which ended
+// the storm and made a sample whose request or repair was lost wait three round trips for the next one, where the base
+// asked every millisecond - OWD p99 150 -> 295..390 ms at 50 ms (A/B 2026-11-05). One round trip costs one. Only ever
+// longer, never shorter than retry_initial. A fallback only - recovery_srtt_ns stays 0 - so the first real recovery is
+// still timed as the seed (repair_timing_times()) and replaces it outright.
 //
 // The configured value and the seed are parameters rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
@@ -16877,7 +16880,7 @@ static uint64_t retry_interval_for(const struct tt_ReliableOptions* reliable, ui
         return reliable->retry_initial;
     }
     if (proxy->recovery_srtt_ns == 0 && seed_ns != 0) {
-        uint64_t seeded = retry_interval_of(reliable, granularity, seed_ns, seed_ns / 2U);
+        uint64_t seeded = (uint64_t)seed_ns + granularity;
         return seeded > reliable->retry_initial ? seeded : reliable->retry_initial;
     }
     return retry_interval_of(reliable, granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);

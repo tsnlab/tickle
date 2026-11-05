@@ -17,8 +17,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   announce carries a tag and a reply echoes the tag it answers, in the 2 bytes of `tt_AnnounceHeader` that were zero and
   read by no build (`marks`; DESIGN.md section 3). The announce's sender times the round trip exactly
   (`tt_Context.announce_rtt_ns`, smoothed), skipping a reply that spans the peer sending it a large sample (a busy writer
-  answers when its send ends). A reliable reader with no recovery sample yet bases its retry interval on it instead of
-  `retry_initial`, only while it has none and never below `retry_initial` (`retry_interval_for()`). Why: at 50-100 ms
+  answers when its send ends). A reliable reader with no recovery sample yet retries one round trip plus a flush tick after its request instead of
+  every `retry_initial`, only while it has none and never below `retry_initial` (`retry_interval_for()`). Why: at 50-100 ms
   each way the writer evicts a lost sample before the request arrives, no recovery is ever timed, and the reader asked
   24-56 times a gap at 1 ms for the whole round trip (X1, 2026-11-04). `ESTIMATOR_TRACE` prints `discovery_seed_ns`.
   A first version that timed "the one outstanding announce" measured nothing at 100 ms, where two to four are always
