@@ -2,13 +2,37 @@
 
 **TL;DR**
 - **Done 2026-10-19:** QoS reshaped like rmw (DESIGN 9, RMW.md); KEEP_LAST rows and L4 latency re-scored by round trip.
-- **Now:** what is left of items 0 and 5a of the user's list of 2026-10-05.
+- **Done 2026-11-06:** discovery-seeded retry interval landed (`e42185f1`, RESULTS `DSE`).
+- **Now:** wireless stage, on simulation only (the user, 2026-11-06).
 - **Release order (the user, 2026-11-01):** performance work done -> v2.1; wireless + wire changes; time-varying
   networks -> v2.2; Security -> v3.0. Each stage starts on the user's go.
 
 Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git show 3c0c505b:<path>` (DESIGN.md section 16).
 
 ## Now
+
+### Wireless stage (started 2026-11-06)
+
+- **Environment: T1 only** (the user, 2026-11-06): `mac80211_hwsim` + `wmediumd` on the dev PC.
+  Simulation only, no real Wi-Fi. T0 (netem) is the earlier baseline.
+- **Tooling:** `wmediumd` 0.3.1 + a local Gilbert-Elliott patch (per-link burst loss, `model.ge`);
+  `t1_topo.sh up N` builds N lanes of 3 nodes (AP + 2 stations). Not in the repo yet.
+- **Done:** association, per-link loss, burst loss, one `be_small` smoke run, 2 lanes up.
+- **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
+  before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
+- **Candidates:** run header merge, FEC, range NACK, request serial echo, slow-reader flow control
+  (`c7-wire-room`), `ab/evict-seed` (+4 B). Order set after the T0 comparison.
+
+### Discovery seed: landed
+
+- 2026-11-06 (`e42185f1`, `5dfb8030`; RESULTS `DSE`): the first announce echo seeds the retry timer;
+  timer ACKNACKs per gap 25-58 -> 0.5-1.0 at the 8 treatment points.
+- Registered A/B verdict stays FAIL (1 of 70 cells WORSE: 50 ms/2% delivery -0.90 pt);
+  a 15-rep rerun of that cell is equal.
+- `ab/evict-seed` parked to the wireless stage. S3 hold-off: every verdict VOID;
+  reopen only on the user's go.
+
+### Earlier items
 
 - **0. A fair testbed.** Done 2026-10-19: `s6_transport_cells.sh` rotates the framework order per rep (`b83e2513`),
   and the same-host rows were re-measured that way (`60f49f6a`, RESULTS `SB`). S9c re-run the same night (`SB9`).
@@ -122,9 +146,10 @@ wireless").
 
 - **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27), last, for v3.0 (the user, 2026-11-01).
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
-- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): next after v2.1 (the user, 2026-11-01).
+- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): started 2026-11-06, see Now.
+  Internet and congestion control not started.
 - **Wire changes** (run header merge, FEC, range NACK): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
-  `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on real Wi-Fi hardware; slow-reader
+  `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on T1 (simulation only, the user 2026-11-06); slow-reader
   flow control (`C7W`) waits for that or the 32-Pi testbed (the user, 2026-11-02).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
   decided on the 32-Raspberry-Pi testbed once it is built (the user, 2026-10-16).
