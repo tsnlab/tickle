@@ -125,7 +125,7 @@ say "=== x2_step_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFILE=$P
         "node_env='${NODE_ENV:-}'"
     echo "small_bytes=$SMALL_BYTES small_hz=$SMALL_HZ large_bytes=$LARGE_BYTES large_hz=$LARGE_HZ nproc=$(nproc)"
     echo "est_trace=$EST_TRACE"
-    echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS${TRACE_DEF:+ ${TRACE_DEF[*]}}"
+    echo "build_small=cc -O2 -DNDEBUG -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${EXTRA_CC:-}${TRACE_DEF:+ ${TRACE_DEF[*]}}"
     echo "build_large=cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" \
         "-Dtt_RELIABLE_STATS -DR4_TRACE${TRACE_DEF:+ ${TRACE_DEF[*]}}"
 } >>"$OUT/provenance.txt"
@@ -133,7 +133,8 @@ say "=== x2_step_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFILE=$P
 # --- build: both binaries from this tree, and the monotonic stamp (as time_varying_netns.sh) ---------------------------
 CORE=("$REPO/src/tickle.c" "$REPO/src/encoding.c" "$REPO/src/log.c" "$REPO/src/hal_linux.c")
 export TMPDIR=$HOME/tmp_build
-if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS "${TRACE_DEF[@]}" -I"$REPO/include" \
+# EXTRA_CC: extra compiler words for the small-sample node only (an A/B of one -D option), e.g. EXTRA_CC=-Dtt_RELIABLE_RETRY=1
+if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${EXTRA_CC:-} "${TRACE_DEF[@]}" -I"$REPO/include" \
     -I"$REPO/src" \
     -I"$REPO/examples/perf_hil/tickle/common" -o "$WORK/node" "$HERE/wifi_link_node.c" "${CORE[@]}" -lpthread -lm \
     >"$WORK/build.log" 2>&1; then
