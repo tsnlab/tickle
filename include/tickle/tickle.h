@@ -3879,13 +3879,6 @@ struct tt_WriterProxy {
     // 0.35ms.
     uint32_t recovery_srtt_ns;
     uint32_t recovery_rttvar_ns;
-    // Karn stall (ab/karn-persist-backoff): +1 for each recovery that needed a retry and so was not timed, -1 for each
-    // clean one that was; the dynamic retry interval doubles that many times (RFC 6298 5.5), so a path whose delay rose
-    // past the estimate is asked at a pace that lets a request be answered unretried, and then timed.
-    uint8_t karn_stall;
-    // The last stalled, retried recovery's time from its first request (0 = none): the next one folds in the lesser of
-    // the two, so a lost first request (a sample inflated by waits) does not enter the estimate but a slow path does.
-    uint32_t stall_took_ns;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
     // A large sample's original fragments arrived from this writer while the probe was out (2026-10-16): the writer
@@ -3919,6 +3912,16 @@ struct tt_WriterProxy {
     // proxy)), so the callback needs a way back to sub->node/sub->endpoint - same {owner, self}
     // pattern struct server_cache_clean_config already uses for an identical reason.
     struct tt_Subscriber* sub;
+    // The Karn stall fields (ab/karn-persist-backoff) sit last so no earlier field changes its offset. Placed among the
+    // recovery fields they shifted the rest, and the rig campaign karnF (2026-11-10) read +0.04% to +0.12% executed
+    // instructions per sample on the receive path - the move is the hypothesis for that, tested by the next campaign.
+    // Karn stall: +1 for each recovery that needed a retry and so was not timed, -1 for each clean one that was; the
+    // dynamic retry interval doubles that many times (RFC 6298 5.5), so a path whose delay rose past the estimate is
+    // asked at a pace that lets a request be answered unretried, and then timed.
+    uint8_t karn_stall;
+    // The last stalled, retried recovery's time from its first request (0 = none): the next one folds in the lesser of
+    // the two, so a lost first request (a sample inflated by waits) does not enter the estimate but a slow path does.
+    uint32_t stall_took_ns;
 };
 
 // g13 (rmw_tickle/RMW_GAPS_PLAN.md) - flow control, the reader's half. Consulted for one arriving
