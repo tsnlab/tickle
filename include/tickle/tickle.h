@@ -3883,6 +3883,9 @@ struct tt_WriterProxy {
     // clean one that was; the dynamic retry interval doubles that many times (RFC 6298 5.5), so a path whose delay rose
     // past the estimate is asked at a pace that lets a request be answered unretried, and then timed.
     uint8_t karn_stall;
+    // The last stalled, retried recovery's time from its first request (0 = none): the next one folds in the lesser of
+    // the two, so a lost first request (a sample inflated by waits) does not enter the estimate but a slow path does.
+    uint32_t stall_took_ns;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
     // A large sample's original fragments arrived from this writer while the probe was out (2026-10-16): the writer

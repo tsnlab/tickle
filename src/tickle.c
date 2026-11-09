@@ -16520,6 +16520,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->recovery_srtt_ns = 0;
             proxy->recovery_rttvar_ns = 0;
             proxy->karn_stall = 0;
+            proxy->stall_took_ns = 0;
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
             proxy->probe_busy = false;
@@ -17036,6 +17037,30 @@ static uint64_t path_recovery_sample(const struct tt_WriterProxy* proxy, uint64_
     return took < proxy->transit_min_ns ? proxy->transit_min_ns : took;
 }
 
+// The Karn stall of a recovery that was not timed as the path (see end_watermark_probe()). Only one the back-off
+// reached counts: a lost retransmit costs a retry or two on any lossy link and says nothing of the path, a delay that
+// rose past the estimate costs a dozen. Such a recovery also teaches the estimate (Karn deadlock): its first copy
+// answers the first request, so the time from the first request is the path's round trip unless that request was lost -
+// two in a row, the lesser of the two goes in.
+static void note_karn_stall(const struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    if (proxy->retry > node->opts.reliable.retry) {
+        if (proxy->karn_stall < 4U) {
+            proxy->karn_stall++;
+        }
+        uint64_t took = tt_get_ns() - proxy->probe_ns;
+        uint32_t cur = took < UINT32_MAX ? (uint32_t)took : UINT32_MAX;
+        if (proxy->stall_took_ns != 0) {
+            note_recovery_sample(proxy, cur < proxy->stall_took_ns ? cur : proxy->stall_took_ns);
+        }
+        proxy->stall_took_ns = cur;
+    } else if (proxy->retry == 0) {
+        proxy->stall_took_ns = 0;
+        if (proxy->karn_stall != 0) {
+            proxy->karn_stall--;
+        }
+    }
+}
+
 static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
         return;
@@ -17049,13 +17074,7 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     stalls = stalls && proxy->large_arrival_ns == 0;
 #endif
     if (stalls) {
-        // Only a recovery the back-off reached: a lost retransmit costs a retry or two on any lossy link and says
-        // nothing of the path, a delay that rose past the estimate costs a dozen.
-        if (proxy->retry > node->opts.reliable.retry && proxy->karn_stall < 4U) {
-            proxy->karn_stall++;
-        } else if (proxy->retry == 0 && proxy->karn_stall != 0) {
-            proxy->karn_stall--;
-        }
+        note_karn_stall(node, proxy);
     }
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
