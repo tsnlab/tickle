@@ -16519,6 +16519,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // may be on a different path entirely.
             proxy->recovery_srtt_ns = 0;
             proxy->recovery_rttvar_ns = 0;
+            proxy->karn_stall = 0;
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
             proxy->probe_busy = false;
@@ -16884,7 +16885,8 @@ static uint64_t retry_interval_for(const struct tt_ReliableOptions* reliable, ui
         uint64_t seeded = (uint64_t)seed_ns + granularity;
         return seeded > reliable->retry_initial ? seeded : reliable->retry_initial;
     }
-    return retry_interval_of(reliable, granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);
+    return retry_interval_of(reliable, granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns)
+           << proxy->karn_stall;
 }
 
 // srtt + max(G, 4 * rttvar), at most max_srtt_multiple * max(srtt, G); retry_initial with no sample (srtt 0).
@@ -17040,6 +17042,21 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     }
     bool plain = proxy->retry <= node->opts.reliable.retry;
     bool path = repair_timing_times(node, proxy);
+    bool stalls = node->rx_targeted && proxy->recovery_srtt_ns != 0 && !proxy->probe_busy;
+#if tt_LARGE_SAMPLES
+    // A writer of large samples keeps the default rule (repair_timing_times()): its gaps wait behind the rest of the
+    // sample, so a retry there says nothing about the path.
+    stalls = stalls && proxy->large_arrival_ns == 0;
+#endif
+    if (stalls) {
+        // Only a recovery the back-off reached: a lost retransmit costs a retry or two on any lossy link and says
+        // nothing of the path, a delay that rose past the estimate costs a dozen.
+        if (proxy->retry > node->opts.reliable.retry && proxy->karn_stall < 4U) {
+            proxy->karn_stall++;
+        } else if (proxy->retry == 0 && proxy->karn_stall != 0) {
+            proxy->karn_stall--;
+        }
+    }
     if (node->rx_targeted && (plain || path)) {
         uint64_t took = tt_get_ns() - proxy->probe_ns;
         if (path && !proxy->probe_busy) {

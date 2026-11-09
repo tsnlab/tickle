@@ -19,7 +19,8 @@
 // count (its suppression), and a lost tail with its HEARTBEATs lost, found by the idle HEARTBEAT.
 //
 //   - the golden, tests/wire_identity/reliable_parent.bin, is the parent's capture (580a5ec8, before the group), re-
-//     captured 2026-11-03 when Karn's rule for the recovery estimate on every link changed the scenario's retries;
+//     captured 2026-11-03 when Karn's rule for the recovery estimate on every link changed the scenario's retries, and
+//     2026-11-09 when the Karn stall (a recovery the back-off reached lengthens the next intervals) did;
 //   - this tree's capture with the defaults (tt_InitOptions_default()) and with every field set explicitly to its
 //     config.h constant must both equal it.
 // tests/wire_identity_initoptions_reliable.sh rebuilds the golden from the parent, checks the parent against itself,

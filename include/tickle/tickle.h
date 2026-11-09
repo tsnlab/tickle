@@ -3879,6 +3879,10 @@ struct tt_WriterProxy {
     // 0.35ms.
     uint32_t recovery_srtt_ns;
     uint32_t recovery_rttvar_ns;
+    // Karn stall (ab/karn-persist-backoff): +1 for each recovery that needed a retry and so was not timed, -1 for each
+    // clean one that was; the dynamic retry interval doubles that many times (RFC 6298 5.5), so a path whose delay rose
+    // past the estimate is asked at a pace that lets a request be answered unretried, and then timed.
+    uint8_t karn_stall;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
     // A large sample's original fragments arrived from this writer while the probe was out (2026-10-16): the writer
