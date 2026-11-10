@@ -15,8 +15,8 @@
 # the prio bands as the netem harness (broadcast band 10, unicast band 20; counters.txt p = client Pi, e = server Pi); the nodes are built on each Pi (-O2, the same
 # words) from the tree in SRC, which is copied there, so the Pis' ~/tickle checkout is not touched; no CPU pin list
 # (ping on CPU 2 of the client, echo on CPU 2 and idle on CPU 3 of the server); the families are D and LB (J is not run
-# on the rig: its reorder behaviour depends on netem on one box); cells be_small and rel_small (rel_large's 1 MiB
-# broadcast needs its own rig harness).
+# on the rig: its reorder behaviour depends on netem on one box); cells be_small, rel_small and rel_large (1 MiB at 5 Hz,
+# large_sample_bench pub on the client Pi and sub on the server Pi, as the netns harness).
 #
 # Usage (detached, from the harness checkout; SRC = the tree to measure, default this checkout):
 #   TS=$(date +%Y%m%d-%H%M%S); setsid nohup env SRC=<tree> OUT=$HOME/rig_results_safe/time_varying/x2rig_$TS \
@@ -49,7 +49,9 @@ SERVER=10.1.1.213
 RD=/tmp/x2rig
 [[ $HOLD =~ ^[0-9]+$ && $LEAD =~ ^[0-9]+$ && $REPS =~ ^[0-9]+$ ]] || { echo "HOLD, LEAD, REPS are integers" >&2; exit 2; }
 case "$EST_TRACE" in 0 | 1) ;; *) echo "EST_TRACE must be 0 or 1" >&2; exit 2 ;; esac
-for c in $CELLS; do case "$c" in be_small | rel_small) ;; *) echo "cell $c is not run on the rig" >&2; exit 2 ;; esac; done
+for c in $CELLS; do case "$c" in be_small | rel_small | rel_large) ;; *) echo "unknown cell $c" >&2; exit 2 ;; esac; done
+LARGE_BYTES=1048576
+LARGE_HZ=${LARGE_HZ:-5}
 DUR=$((3 * HOLD + LEAD))
 TRACE_DEF=""
 [ "$EST_TRACE" = 1 ] && TRACE_DEF="-Dtt_ESTIMATOR_TRACE"
@@ -146,10 +148,10 @@ EOF
 build_on() {
     local h=$1
     sh_ "$h" "rm -rf $RD && mkdir -p $RD/src $RD/runs" || return 1
-    tar -C "$SRC" -cf - src include examples/perf_hil/tickle/common examples/perf_hil/experiments/wifi_link_node.c |
+    tar -C "$SRC" -cf - src include examples/perf_hil/tickle/common examples/perf_hil/experiments/wifi_link_node.c examples/perf_hil/experiments/large_sample_bench.c |
         ssh -i "$K" -o BatchMode=yes "ci@$h" "tar -C $RD/src -xf -" || return 1
     scp -q -i "$K" -o BatchMode=yes "$OUT/mono.c" "ci@$h:$RD/mono.c" || return 1
-    sh_ "$h" "cd $RD/src && cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${EXTRA_CC:-} $TRACE_DEF -Iinclude -Isrc -Iexamples/perf_hil/tickle/common -o $RD/node examples/perf_hil/experiments/wifi_link_node.c src/tickle.c src/encoding.c src/log.c src/hal_linux.c -lpthread -lm && cc -O2 -o $RD/mono $RD/mono.c"
+    sh_ "$h" "cd $RD/src && cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${EXTRA_CC:-} $TRACE_DEF -Iinclude -Isrc -Iexamples/perf_hil/tickle/common -o $RD/node examples/perf_hil/experiments/wifi_link_node.c src/tickle.c src/encoding.c src/log.c src/hal_linux.c -lpthread -lm && cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS -DR4_TRACE $TRACE_DEF -Iinclude -Isrc -Iexamples/perf_hil/tickle/common -o $RD/large examples/perf_hil/experiments/large_sample_bench.c src/tickle.c src/encoding.c src/log.c src/hal_linux.c -lpthread -lm && cc -O2 -o $RD/mono $RD/mono.c"
 }
 build_on "$CLIENT" >"$OUT/build_client.log" 2>&1 &
 b1=$!
@@ -246,9 +248,17 @@ run_one() { # ARM CELL REP
     local trace_e="" trace_p=""
     [ "$EST_TRACE" = 1 ] && { trace_e="2>$RD/echo.err"; trace_p="2>$RD/ping.err"; }
     # server: echo (CPU 2) and idle (CPU 3), each under its pid file; -q is the stop file the nodes poll
+    local echo_cmd="$RD/node echo -c 2 -d $((DUR + 60)) -m $mode -s $SMALL_BYTES -r $SMALL_HZ -l $RD/owd_us.txt -t $RD/trace_echo.txt -b $BCAST -p $PROFILE -q $RD/stop"
+    local ping_cmd="$RD/node ping -c 1 -d $DUR -m $mode -s $SMALL_BYTES -r $SMALL_HZ -l $RD/rtt_us.txt -t $RD/trace_ping.txt -b $BCAST -p $PROFILE -q $RD/stop"
+    if [ "$cell" = rel_large ]; then
+        echo_cmd="$RD/large sub -s $LARGE_BYTES -d $((DUR + 8)) -R -b $BCAST"
+        ping_cmd="$RD/large pub -s $LARGE_BYTES -r $LARGE_HZ -d $DUR -R -b $BCAST"
+        trace_e="2>$RD/echo.err"
+        trace_p="2>$RD/ping.err"
+    fi
     sh_ "$SERVER" "rm -f $RD/stop $RD/*.pid $RD/*.log $RD/*.err $RD/*.txt; \
         setsid nohup taskset -c 3 $RD/node idle -c 3 -d $((DUR + 60)) -b $BCAST -p $PROFILE -q $RD/stop >$RD/idle.log 2>$RD/idle.err </dev/null & echo \$! >$RD/idle.pid; \
-        setsid nohup taskset -c 2 $RD/node echo -c 2 -d $((DUR + 60)) -m $mode -s $SMALL_BYTES -r $SMALL_HZ -l $RD/owd_us.txt -t $RD/trace_echo.txt -b $BCAST -p $PROFILE -q $RD/stop >$RD/echo.log ${trace_e:-2>&1} </dev/null & echo \$! >$RD/echo.pid; true" ||
+        setsid nohup taskset -c 2 $echo_cmd >$RD/echo.log ${trace_e:-2>&1} </dev/null & echo \$! >$RD/echo.pid; true" ||
         { say "VOID  $run: cannot start the server nodes"; return 1; }
     sleep 3
     sh_ "$CLIENT" "rm -f $RD/*.log $RD/*.err $RD/*.txt $RD/stop" >/dev/null
@@ -256,7 +266,7 @@ run_one() { # ARM CELL REP
     echo "PHASE idx=0 key=$SHAPE_PHASE t_before_ns=$t0 t_after_ns=$t0 ok=1" >"$RUN_DIR/phases.txt"
     CH_PID=""
     [ "$tv" = 1 ] && { step_changer & CH_PID=$!; }
-    sh_ "$CLIENT" "taskset -c 2 $RD/node ping -c 1 -d $DUR -m $mode -s $SMALL_BYTES -r $SMALL_HZ -l $RD/rtt_us.txt -t $RD/trace_ping.txt -b $BCAST -p $PROFILE -q $RD/stop >$RD/ping.log ${trace_p:-2>&1}"
+    sh_ "$CLIENT" "taskset -c 2 $ping_cmd >$RD/ping.log ${trace_p:-2>&1}"
     sleep 1
     if [ -n "$CH_PID" ]; then
         wait "$CH_PID" 2>/dev/null
@@ -265,6 +275,9 @@ run_one() { # ARM CELL REP
     : >"$RUN_DIR/counters.txt"
     counters p "$CLIENT"
     counters e "$SERVER"
+    if [ "$cell" = rel_large ]; then
+        sh_ "$SERVER" "p=\$(cat $RD/echo.pid); n=0; while [ -d /proc/\$p ] && [ \$n -lt 30 ]; do sleep 1; n=\$((n+1)); done; true" >/dev/null
+    fi
     sh_ "$SERVER" "touch $RD/stop" >/dev/null
     sleep 2
     sh_ "$SERVER" "for f in $RD/*.pid; do p=\$(cat \$f); case \"\$(readlink /proc/\$p/exe 2>/dev/null)\" in $RD/*) kill -INT \$p ;; esac; done; true" >/dev/null
