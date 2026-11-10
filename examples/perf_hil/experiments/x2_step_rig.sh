@@ -40,6 +40,7 @@ CELLS=${CELLS:-"be_small rel_small"}
 PROFILE=${PROFILE:-ethernet}
 D_BG_LOSS=${D_BG_LOSS:-2}
 EST_TRACE=${EST_TRACE:-1}
+NODE_ENV=${NODE_ENV-TT_UDP_OFFLOAD=0} # one datagram per skb, as x2_step_netns.sh: the qdisc counters then count what the NIC sends
 SMALL_HZ=100
 SMALL_BYTES=100
 BCAST=192.168.10.255
@@ -257,8 +258,8 @@ run_one() { # ARM CELL REP
         trace_p="2>$RD/ping.err"
     fi
     sh_ "$SERVER" "rm -f $RD/stop $RD/*.pid $RD/*.log $RD/*.err $RD/*.txt; \
-        setsid nohup taskset -c 3 $RD/node idle -c 3 -d $((DUR + 60)) -b $BCAST -p $PROFILE -q $RD/stop >$RD/idle.log 2>$RD/idle.err </dev/null & echo \$! >$RD/idle.pid; \
-        setsid nohup taskset -c 2 $echo_cmd >$RD/echo.log ${trace_e:-2>&1} </dev/null & echo \$! >$RD/echo.pid; true" ||
+        setsid nohup env $NODE_ENV taskset -c 3 $RD/node idle -c 3 -d $((DUR + 60)) -b $BCAST -p $PROFILE -q $RD/stop >$RD/idle.log 2>$RD/idle.err </dev/null & echo \$! >$RD/idle.pid; \
+        setsid nohup env $NODE_ENV taskset -c 2 $echo_cmd >$RD/echo.log ${trace_e:-2>&1} </dev/null & echo \$! >$RD/echo.pid; true" ||
         { say "VOID  $run: cannot start the server nodes"; return 1; }
     sleep 3
     sh_ "$CLIENT" "rm -f $RD/*.log $RD/*.err $RD/*.txt $RD/stop" >/dev/null
@@ -266,7 +267,7 @@ run_one() { # ARM CELL REP
     echo "PHASE idx=0 key=$SHAPE_PHASE t_before_ns=$t0 t_after_ns=$t0 ok=1" >"$RUN_DIR/phases.txt"
     CH_PID=""
     [ "$tv" = 1 ] && { step_changer & CH_PID=$!; }
-    sh_ "$CLIENT" "taskset -c 2 $ping_cmd >$RD/ping.log ${trace_p:-2>&1}"
+    sh_ "$CLIENT" "env $NODE_ENV taskset -c 2 $ping_cmd >$RD/ping.log ${trace_p:-2>&1}"
     sleep 1
     if [ -n "$CH_PID" ]; then
         wait "$CH_PID" 2>/dev/null
