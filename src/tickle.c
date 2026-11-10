@@ -17067,7 +17067,10 @@ static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterP
     }
     bool plain = proxy->retry <= node->opts.reliable.retry;
     bool path = repair_timing_times(node, proxy);
-    bool stalls = node->rx_targeted && proxy->recovery_srtt_ns != 0 && !proxy->probe_busy;
+    // The common recovery (retry 0, no stall state) leaves the Karn stall alone, so it is tested first and cheapest.
+    bool stalls = (proxy->retry > node->opts.reliable.retry ||
+                   (proxy->retry == 0 && (proxy->karn_stall | proxy->stall_took_ns) != 0)) &&
+                  node->rx_targeted && proxy->recovery_srtt_ns != 0 && !proxy->probe_busy;
 #if tt_LARGE_SAMPLES
     // A writer of large samples keeps the default rule (repair_timing_times()): its gaps wait behind the rest of the
     // sample, so a retry there says nothing about the path.
