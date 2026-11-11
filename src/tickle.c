@@ -20568,6 +20568,9 @@ static uint32_t reorder_salt(uint8_t node_id, uint32_t entity_id) {
     return (entity_id * entity_spread) ^ ((uint32_t)node_id * node_spread);
 }
 
+static uint32_t reorder_spread_slot(const struct tt_Subscriber* sub, const struct tt_WriterProxy* proxy,
+                                    uint8_t node_id, uint32_t entity_id, uint32_t seq_no);
+
 // The slot a writer's seq_no maps to. Before the writer's first contact (proxy NULL), its salted key modulo the slots,
 // (seq_no + salt) % slots; from then on (seq_no - reorder_pivot + reorder_base) % slots, where the first contact puts
 // the pivot on that seq_no and the base on that same slot (reorder_place_pivot()). One writer's held datagrams lie
@@ -20583,17 +20586,61 @@ static struct tt_ReorderSlot* reorder_writer_slot(struct tt_Subscriber* sub, con
                                                   uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
     uint32_t slots = sub->reorder_slots;
     if (proxy == NULL) {
-        return reorder_slot_at(sub, (uint16_t)((seq_no + reorder_salt(node_id, entity_id)) % slots));
+        return reorder_slot_at(sub, (uint16_t)reorder_spread_slot(sub, NULL, node_id, entity_id, seq_no));
     }
     return reorder_slot_at(sub, (uint16_t)((seq_no - proxy->reorder_pivot + proxy->reorder_base) % slots));
 }
 
-// Puts proxy's reorder pivot on seq_no, at the slot its salted key gives it - where a sample stored before the proxy
-// existed already is (reorder_writer_slot()). At first contact, when nothing of the writer's is held.
+// Where the ring's slot for `proxy`'s own seq_no should sit so that it is as far as can be from the slots the other
+// writers of `sub` are at now: the middle of the widest gap between their positions (the slot each one's watermark maps
+// to, reorder_writer_slot()). Writers advance at about one rate, so offsets set apart stay apart, where salted ones
+// (reorder_salt()) meet by chance - each held run is a window long, and with no more slots than a window two writers'
+// runs overlap wherever the salts fall near. The first writer has no one to keep apart from and takes its salted slot.
+static uint32_t reorder_watermark_slot(const struct tt_WriterProxy* writer, uint32_t slots) {
+    return (writer->ack_seq_no - writer->reorder_pivot + writer->reorder_base) % slots;
+}
+
+static uint32_t reorder_spread_slot(const struct tt_Subscriber* sub, const struct tt_WriterProxy* proxy,
+                                    uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
+    const uint32_t slots = sub->reorder_slots;
+    const int limit = sub->node != NULL ? (int)sub->node->opts.capacity.peers : tt_MAX_PEER_COUNT;
+    uint32_t widest = 0;
+    uint32_t widest_start = 0;
+    bool others = false;
+    for (int first = 0; first < limit; first++) {
+        const struct tt_WriterProxy* from = &sub->writers[first];
+        if (from == proxy || from->context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        const uint32_t start = reorder_watermark_slot(from, slots);
+        uint32_t gap = slots; // to the next position clockwise; the whole ring if there is none
+        for (int next = 0; next < limit; next++) {
+            const struct tt_WriterProxy* other = &sub->writers[next];
+            if (next == first || other == proxy || other->context_id == tt_CONTEXT_ID_INVALID) {
+                continue;
+            }
+            const uint32_t distance = (reorder_watermark_slot(other, slots) + slots - start) % slots;
+            gap = distance < gap ? distance : gap;
+        }
+        if (!others || gap > widest) {
+            widest = gap;
+            widest_start = start;
+            others = true;
+        }
+    }
+    if (!others) {
+        return (seq_no + reorder_salt(node_id, entity_id)) % slots;
+    }
+    return (widest_start + widest / 2U) % slots;
+}
+
+// Puts proxy's reorder pivot on seq_no, at the slot reorder_spread_slot() gives it - where a sample stored before the
+// proxy existed already is (reorder_writer_slot() with no proxy asks the same question of the same writers). At first
+// contact, when nothing of the writer's is held.
 static void reorder_place_pivot(const struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq_no) {
     proxy->reorder_pivot = seq_no;
     proxy->reorder_base =
-        sub->reorder_slots != 0 ? (seq_no + reorder_salt(proxy->context_id, proxy->entity_id)) % sub->reorder_slots : 0;
+        sub->reorder_slots != 0 ? reorder_spread_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq_no) : 0;
 }
 
 // How far from the pivot a seq_no may be held before the pivot moves (2^30), and how far behind that seq_no it goes
