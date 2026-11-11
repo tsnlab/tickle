@@ -8866,6 +8866,21 @@ static uint32_t qos_window_bits(uint16_t tracking_words) {
     return (uint32_t)tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
 }
 
+// The reorder slots a RELIABLE Subscriber gets when it asks for 0: four windows' worth, so that several writers sharing
+// the ring find fewer slots taken by one another (tests/test_reorder_window.c, 4 writers at 20% loss), but no more than
+// 4,096 unless the window is wider than that - then the window. Experiment ab/ring-A: the default was the window.
+#define QOS_DEFAULT_REORDER_WINDOWS 4U
+#define QOS_DEFAULT_REORDER_CAP 4096U
+
+static uint32_t qos_default_reorder_slots(uint16_t tracking_words) {
+    const uint32_t window = qos_window_bits(tracking_words);
+    uint32_t slots = window * QOS_DEFAULT_REORDER_WINDOWS;
+    if (slots > QOS_DEFAULT_REORDER_CAP) {
+        slots = QOS_DEFAULT_REORDER_CAP;
+    }
+    return slots > window ? slots : window;
+}
+
 // Whether `slots` reorder slots are too few for a window of tracking_words: fewer than the window less one, and not
 // tt_QOS_REORDER_NONE. A writer's held samples lie 1 to window - 1 past its watermark (the watermark itself is the gap,
 // never held), each in its own slot only while there are that many slots. With fewer, a sample can be neither held
@@ -8916,7 +8931,7 @@ static tt_ret_t qos_resolve_reliability(const struct tt_QosReliability* requeste
         out->tracking_words = (uint16_t)qos_or_default(requested->tracking_words, tt_RELIABLE_BITMAP_WORDS);
     }
     if (subscriber && reliable) {
-        uint32_t slots = qos_or_default(requested->reorder_slots, qos_window_bits(out->tracking_words));
+        uint32_t slots = qos_or_default(requested->reorder_slots, qos_default_reorder_slots(out->tracking_words));
         if (qos_reorder_too_narrow(slots, out->tracking_words)) {
             return tt_RET_INVALID_ARGUMENT;
         }
