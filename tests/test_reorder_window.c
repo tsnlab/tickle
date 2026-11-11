@@ -457,6 +457,16 @@ static bool accepted(uint16_t slots, uint16_t words) {
     return slots == tt_QOS_REORDER_NONE || slots == 0 || (uint32_t)slots + 1U >= window_of(words);
 }
 
+// What 0 resolves to: four windows (ab/ring-A), at most 4,096 unless the window is wider.
+static uint32_t default_slots_of(uint16_t words) {
+    uint32_t window = window_of(words);
+    uint32_t slots = 4U * window;
+    if (slots > 4096U) {
+        slots = 4096U;
+    }
+    return slots > window ? slots : window;
+}
+
 static void test_zero_slots_resolve_to_the_window(void) {
     static const uint16_t words[] = {0, 1, 4, WIDE_WORDS};
     for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
@@ -465,14 +475,14 @@ static void test_zero_slots_resolve_to_the_window(void) {
         request.reliability.tracking_words = words[i];
         struct tt_QosProfile actual;
         EXPECT_EQ_INT(tt_RET_OK, tt_QosProfile_resolve(&request, tt_KIND_TOPIC_SUBSCRIBER, NULL, &actual));
-        EXPECT_EQ_U32(window_of(words[i]), actual.reliability.reorder_slots);
+        EXPECT_EQ_U32(default_slots_of(words[i]), actual.reliability.reorder_slots);
         struct tt_QosProfile again; // an actual profile resolves to itself
         EXPECT_EQ_INT(tt_RET_OK, tt_QosProfile_resolve(&actual, tt_KIND_TOPIC_SUBSCRIBER, NULL, &again));
         EXPECT_TRUE(tt_QosProfile_equal(&actual, &again));
     }
     struct tt_QosProfile actual;
     EXPECT_EQ_INT(tt_RET_OK, tt_QosProfile_resolve(NULL, tt_KIND_TOPIC_SUBSCRIBER, NULL, &actual));
-    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_BITS, actual.reliability.reorder_slots);
+    EXPECT_EQ_U32(default_slots_of(0), actual.reliability.reorder_slots);
 }
 
 static void test_too_few_slots_are_refused_at_the_boundary(void) {
@@ -637,7 +647,7 @@ static void test_several_writers_share_the_buffer(void) {
         uint32_t overflow;
     } after[] = {
         {1, 50, 2120, 120, 0}, {1, 200, 2517, 408, 0},  {2, 50, 4230, 234, 0}, {2, 200, 5028, 967, 0},
-        {3, 50, 6344, 344, 0}, {3, 200, 7539, 1524, 0}, {4, 50, 8468, 461, 0}, {4, 200, 11142, 2548, 831},
+        {3, 50, 6344, 344, 0}, {3, 200, 7539, 1524, 0}, {4, 50, 8468, 461, 0}, {4, 200, 10465, 2149, 325},
     };
     for (size_t i = 0; i < sizeof(after) / sizeof(after[0]); i++) {
         struct run_result r = sim_run_writers(after[i].writers, 0, 0, SAMPLES, after[i].loss, 10 * tt_SECOND);

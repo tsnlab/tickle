@@ -72,11 +72,11 @@ struct row {
     {.history = RESOLVED_HISTORY,                                                                             \
      .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE, .max_blocking_ns = tt_QOS_MAX_BLOCKING_DEFAULT_NS}, \
      RESOLVED_TAIL}
-#define SUB_DEFAULT                                              \
-    {.history = RESOLVED_HISTORY,                                \
-     .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,        \
-                     .tracking_words = tt_RELIABLE_BITMAP_WORDS, \
-                     .reorder_slots = tt_RELIABLE_BITMAP_BITS},  \
+#define SUB_DEFAULT                                                  \
+    {.history = RESOLVED_HISTORY,                                    \
+     .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,            \
+                     .tracking_words = tt_RELIABLE_BITMAP_WORDS,     \
+                     .reorder_slots = 4U * tt_RELIABLE_BITMAP_BITS}, \
      RESOLVED_TAIL}
 #define SERVICE_DEFAULT \
     {.history = RESOLVED_HISTORY, .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE}, RESOLVED_TAIL}
@@ -196,7 +196,7 @@ static const struct row rows[] = {
      {.history = RESOLVED_HISTORY,
       .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
                       .tracking_words = tt_RELIABLE_BITMAP_WORDS,
-                      .reorder_slots = tt_RELIABLE_BITMAP_BITS},
+                      .reorder_slots = 4U * tt_RELIABLE_BITMAP_BITS},
       STRICT_TAIL(MS(50), MS(900))}},
     {"best available subscriber, loose peers",
      SUB,
@@ -214,7 +214,7 @@ static const struct row rows[] = {
      {.history = RESOLVED_HISTORY,
       .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
                       .tracking_words = tt_RELIABLE_BITMAP_WORDS,
-                      .reorder_slots = tt_RELIABLE_BITMAP_BITS},
+                      .reorder_slots = 4U * tt_RELIABLE_BITMAP_BITS},
       STRICT_TAIL(INF, INF)}},
     {"best available subscriber, no discovery",
      SUB,
@@ -224,7 +224,7 @@ static const struct row rows[] = {
      {.history = RESOLVED_HISTORY,
       .reliability = {.kind = tt_QOS_RELIABILITY_RELIABLE,
                       .tracking_words = tt_RELIABLE_BITMAP_WORDS,
-                      .reorder_slots = tt_RELIABLE_BITMAP_BITS},
+                      .reorder_slots = 4U * tt_RELIABLE_BITMAP_BITS},
       STRICT_TAIL(INF, INF)}},
 
     // Refused, never adjusted.
