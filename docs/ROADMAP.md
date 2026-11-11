@@ -28,6 +28,11 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   the AP's broadcast path carries about 0.6 Mbit/s, so `rel_large` runs only at 128 KiB and 0.25 Hz. Noise: best-effort
   cell 0.4-1.6%; reliable cell 2-3% with seed, pinning and retries (p90 and retransmissions only for >3x differences).
   `ab/evict-seed`: no gain (-0.5% delivered) twice; latency comparisons VOID.
+- **Data sources:** the Gilbert-Elliott profiles (`ug`, `library`, `psu_cs`, `pioneer`) were fitted to the PSU (Portland
+  State University) wlan_pcap traces of the CRAWDAD dataset pdx/vwave (v. 2009-07-04; VeriWave WT20 sniffer, Portland, 2006)
+  by Caleb Phillips and Suresh Singh. The dataset's README states "This work was partly funded by NSF 0435328." Cite as:
+  Caleb Phillips, Suresh Singh, pdx/vwave, https://doi.org/10.15783/C7C303 (CRAWDAD; licence CC BY 4.0, per
+  https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
 - **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
   before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
 - **Candidates:** run header merge, FEC, range NACK, request serial echo, slow-reader flow control
