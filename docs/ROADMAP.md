@@ -35,7 +35,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
 - **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
   before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
-- **Candidates:** run header merge, FEC, range NACK, request serial echo, slow-reader flow control
+- **Candidates:** run header merge, FEC, request serial echo, slow-reader flow control
   (`c7-wire-room`). `ab/evict-seed` is closed (no gain). Order set after the T0 comparison.
 
 ### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
@@ -44,6 +44,17 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
 - Tooling already on main: `time_varying_netns.sh` and `time_varying_read.py` (V1/V2/V4 fail only beyond the A/A spread;
   D/LD need 8 reps), `trace_replay_mm.sh` (Mahimahi cellular trace replay), `-Dtt_ESTIMATOR_TRACE` (X0d).
+
+### Time-varying stage results, 2026-11-10/11 (rig, simulation otherwise)
+
+- Karn deadlock fix landed on main (`933da69a`, 4 commits). Rig X2 `rel_small`: V1 and NOFALSE FAIL -> PASS; `rel_large`:
+  V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%, no regression. The rig runs used the `ethernet` profile.
+- Down-step srtt converges slowly by design (gain 1/8; about 12 s after a 20 ms -> 1 ms step it reads 4-14 ms). Not a bug;
+  a faster down gain is a stability trade-off and was left as is (the user, 2026-11-11).
+- range NACK stopped at stage 0 (T1 broadcast cells, `RANGE_NACK_DESIGN_2026-11-11.md`): ACKNACK bytes are 0.31-1.05% of
+  forward bytes in all 12 loss runs, requests are mostly one bitmap word. Not pursued.
+- Shared reorder ring over-send with 4 writers at 20% loss (+10.8% DATA): two variants (ring x4, even placement) did not
+  meet the registered bar; neither merged. Setting `reorder_slots` to 1,024-2,048 for multi-writer topics cuts it with no code change.
 
 ### Discovery seed: landed
 
