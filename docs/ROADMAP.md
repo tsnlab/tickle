@@ -36,7 +36,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
 - **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
   before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
-- **Candidates:** run header merge, request serial echo, slow-reader flow control
+- **Candidates:** request serial echo, slow-reader flow control (run header merge stopped at stage 0, 2026-11-11)
   (`c7-wire-room`). `ab/evict-seed` is closed (no gain). Order set after the T0 comparison.
 
 ### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
@@ -54,6 +54,11 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   a faster down gain is a stability trade-off and was left as is (the user, 2026-11-11).
 - range NACK stopped at stage 0 (T1 broadcast cells, `RANGE_NACK_DESIGN_2026-11-11.md`): ACKNACK bytes are 0.31-1.05% of
   forward bytes in all 12 loss runs, requests are mostly one bitmap word. Not pursued.
+- Run header merge stopped at stage 0 (`RUN_HEADER_MERGE_STAGE0_2026-11-11.md`; encoder in a scratch program, no wire capture):
+  the hybrid transport already carries up to 45 units under one FRAG_RUN_L header, so a merge could still remove at most 0.03% of
+  forward bytes (0.084% with Ethernet framing) against the 2% bar; all header bytes together are 1.4-3.0% of the wire. The older
+  "about 18 B per unit, 1.2% of the wire" is the MTU-mode cost that hybrid already removed. Small-sample batching is a different
+  candidate and is not covered.
 - Shared reorder ring over-send with 4 writers at 20% loss (+10.8% DATA): two variants (ring x4, even placement) did not
   meet the registered bar; neither merged. Setting `reorder_slots` to 1,024-2,048 for multi-writer topics cuts it with no code change.
   Stage 0 loss sweep (1-20%, 1-8 writers, 3 seeds, in-process): no over-send at 5% or less (0 overflow in 36 runs), a trace at 10%
@@ -183,7 +188,7 @@ wireless").
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
 - **Wireless** (correlated loss, Wi-Fi, internet, congestion control): started 2026-11-06, see Now.
   Internet and congestion control not started.
-- **Wire changes** (run header merge; FEC dropped by the user, 2026-11-11; range NACK stopped at stage 0, 2026-11-11): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
+- **Wire changes** (run header merge and range NACK stopped at stage 0, 2026-11-11; FEC dropped by the user, 2026-11-11): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
   `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on T1 (simulation only, the user 2026-11-06; no real Wi-Fi hardware, the user 2026-11-08); slow-reader
   flow control (`C7W`) is judged on T1 and the 32-Pi testbed (the user, 2026-11-02, 2026-11-08).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
