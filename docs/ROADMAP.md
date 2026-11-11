@@ -18,7 +18,8 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   Simulation only, no real Wi-Fi, now and later (the user, 2026-11-08: real wireless hardware is not used). T1 is read
   as a relative A/B instrument; no T1 figure is quoted as Wi-Fi performance. T0 (netem) is the earlier baseline.
 - **Tooling:** `wmediumd` 0.3.1 + a local Gilbert-Elliott patch (per-link burst loss, `model.ge`);
-  `t1_topo.sh up N` builds N lanes of 3 nodes (AP + 2 stations). Not in the repo yet.
+  `t1_topo.sh up N` builds N lanes of 3 nodes (AP + 2 stations). Scripts, the wmediumd patch and a README (what T1 is and
+  is not, rules, known limits) are in `examples/perf_hil/experiments/t1/`.
 - **Done:** association, per-link loss, burst loss, one `be_small` smoke run, 2 lanes up. 2026-11-07/08: per-attempt MAC
   retries in `wmediumd` (`model.retry`; the stock `prob` model drew one random value per frame, so retries never helped),
   a Gilbert-Elliott model with a slow quiet/busy envelope fitted to the PSU sniffer traces, a seeded schedule
