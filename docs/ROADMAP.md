@@ -55,6 +55,8 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   forward bytes in all 12 loss runs, requests are mostly one bitmap word. Not pursued.
 - Shared reorder ring over-send with 4 writers at 20% loss (+10.8% DATA): two variants (ring x4, even placement) did not
   meet the registered bar; neither merged. Setting `reorder_slots` to 1,024-2,048 for multi-writer topics cuts it with no code change.
+  Stage 0 loss sweep (1-20%, 1-8 writers, 3 seeds, in-process): no over-send at 5% or less (0 overflow in 36 runs), a trace at 10%
+  (overflow in 4 of 12 runs at 4-8 writers, DATA within 1%), real only at 20%. Closed (the user, 2026-11-11); advice only.
 
 ### Discovery seed: landed
 
