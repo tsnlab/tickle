@@ -35,7 +35,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
 - **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
   before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
-- **Candidates:** run header merge, FEC, request serial echo, slow-reader flow control
+- **Candidates:** run header merge, request serial echo, slow-reader flow control
   (`c7-wire-room`). `ab/evict-seed` is closed (no gain). Order set after the T0 comparison.
 
 ### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
@@ -180,7 +180,7 @@ wireless").
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
 - **Wireless** (correlated loss, Wi-Fi, internet, congestion control): started 2026-11-06, see Now.
   Internet and congestion control not started.
-- **Wire changes** (run header merge, FEC, range NACK): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
+- **Wire changes** (run header merge; FEC dropped by the user, 2026-11-11; range NACK stopped at stage 0, 2026-11-11): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
   `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on T1 (simulation only, the user 2026-11-06; no real Wi-Fi hardware, the user 2026-11-08); slow-reader
   flow control (`C7W`) is judged on T1 and the 32-Pi testbed (the user, 2026-11-02, 2026-11-08).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
