@@ -607,6 +607,20 @@ static void print_writers_run(const char* label, uint16_t slots, uint32_t loss, 
 // skipped, or sends 3 DATA a sample or more. None of 1 to 4 writers at 5% or 20% loss may storm. The reader must have
 // heard each writer from (nearly) its first sample, or "every sample owed" would be a vacuous count.
 //
+// What the DATA count should be (measured 2026-11-11 on main 933da69a): a datagram is lost with probability p each way,
+// so a sample needs 1/(1-p) DATA sends on average (1.25 at 20%). Every DATA that arrives after its sample was already
+// delivered is a wasted arrival and costs a further 1/(1-p) sends, and nearly all of them are reorder_overflow
+// un-receives (a collision in the ring the writers share), not ACKs lost or timers firing early:
+//     DATA ~ samples / (1 - p) + reorder_overflow / (1 - p)      (1.25 x reorder_overflow at 20%)
+// 20% loss, 2,000 samples a writer, slots = the window:
+//     writers  DATA    a sample  arrived  wasted  overflow
+//        1     2,517   1.26      2,002      2        0
+//        2     5,028   1.26      4,003      3        0
+//        3     7,539   1.26      6,004      5        0
+//        4    11,142   1.39      8,860    861      831
+// 1 to 3 writers sit 0.7% over 1.25 (loss draws); the 4-writer excess, +1,090 DATA (+10.8%) over the 3-writer rate, is
+// 831 overflows x 1.25 = 1,039 plus the draws. The "under 3 DATA a sample" rule below is a storm detector, not this
+// figure.
 // The control, which the change cannot touch: with no reorder buffer (tt_QOS_REORDER_NONE) no slot is ever taken, so
 // no collision is ever marked, and each run sends exactly what it sent before the change.
 static void test_several_writers_share_the_buffer(void) {
