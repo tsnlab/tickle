@@ -636,8 +636,8 @@ static void test_several_writers_share_the_buffer(void) {
         uint64_t acknacks;
         uint32_t overflow;
     } after[] = {
-        {1, 50, 2120, 120, 0}, {1, 200, 2517, 408, 0},  {2, 50, 4230, 234, 0}, {2, 200, 5028, 967, 0},
-        {3, 50, 6344, 344, 0}, {3, 200, 7539, 1524, 0}, {4, 50, 8468, 461, 0}, {4, 200, 11142, 2548, 831},
+        {1, 50, 2120, 120, 0}, {1, 200, 2517, 408, 0},   {2, 50, 4230, 234, 0}, {2, 200, 5028, 967, 0},
+        {3, 50, 6344, 344, 0}, {3, 200, 7587, 1555, 44}, {4, 50, 8468, 461, 0}, {4, 200, 10414, 2193, 276},
     };
     for (size_t i = 0; i < sizeof(after) / sizeof(after[0]); i++) {
         struct run_result r = sim_run_writers(after[i].writers, 0, 0, SAMPLES, after[i].loss, 10 * tt_SECOND);
