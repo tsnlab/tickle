@@ -134,6 +134,7 @@ say "=== x2_step_netns $(date -Is): tree=$TREE_SHA dirty_paths=$DIRTY PROFILE=$P
 CORE=("$REPO/src/tickle.c" "$REPO/src/encoding.c" "$REPO/src/log.c" "$REPO/src/hal_linux.c")
 export TMPDIR=$HOME/tmp_build
 # EXTRA_CC: extra compiler words for the small-sample node only (an A/B of one -D option), e.g. EXTRA_CC=-Dtt_RELIABLE_RETRY=1
+# shellcheck disable=SC2086 # EXTRA_CC is a list of compiler words, split on purpose
 if ! cc -O2 -DNDEBUG -Wall -Wextra -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS ${EXTRA_CC:-} "${TRACE_DEF[@]}" -I"$REPO/include" \
     -I"$REPO/src" \
     -I"$REPO/examples/perf_hil/tickle/common" -o "$WORK/node" "$HERE/wifi_link_node.c" "${CORE[@]}" -lpthread -lm \
