@@ -21,9 +21,20 @@
 # Usage (detached, from the harness checkout; SRC = the tree to measure, default this checkout):
 #   TS=$(date +%Y%m%d-%H%M%S); setsid nohup env SRC=<tree> OUT=$HOME/rig_results_safe/time_varying/x2rig_$TS \
 #       examples/perf_hil/experiments/x2_step_rig.sh > $HOME/rig_results_safe/x2rig_$TS.launch.log 2>&1 </dev/null &
-# Env: HOLD=10 LEAD=2 REPS=8 FAMILIES="D LB" CELLS="be_small rel_small" D_BG_LOSS=2 EST_TRACE=1 EXTRA_CC= PROFILE=ethernet
-# Duration with the defaults: about 75 min (96 runs of ~45 s). The rig lock is taken here; the EXIT trap removes both
-# Pis' qdiscs and stops the nodes this script started.
+# Env (all optional; defaults shown): HOLD=10 LEAD=2 REPS=8 FAMILIES="D LB" CELLS="be_small rel_small" (or add rel_large)
+#   D_BG_LOSS=2 (constant random loss % in family D) EST_TRACE=1 (estimator trace on) EXTRA_CC= (extra compiler words for
+#   the nodes) PROFILE=ethernet SRC=<tree to measure> OUT=<result dir> READ_ONLY=1 (re-read a finished OUT) NODE_ENV (env
+#   words for every node; default TT_UDP_OFFLOAD=0, set NODE_ENV= to run with offload).
+# Testbed config, overridable: SSH_KEY (default $HOME/.ssh/tickle_ci_ed25519), RPI_CLIENT (default 10.1.1.214), RPI_SERVER
+#   (default 10.1.1.213); the login is ci@. Same defaults as the other rig scripts in this directory.
+# Duration with the defaults: about 75 min (96 runs of ~45 s). The EXIT trap removes both Pis' qdiscs and stops the nodes
+# this script started.
+# Lessons (read before the first run):
+#   - The script takes the rig lock itself (rig_lock.sh, scope hil); do not wrap it in another lock.
+#   - Offload must be disabled on the rig nodes (NODE_ENV default TT_UDP_OFFLOAD=0). With offload on, the realized loss
+#     is far below the nominal netem loss (one skb carries many datagrams), so the loss arms do not test what they name.
+#   - Do a smoke run first (REPS=1, one family, one cell) and read the reader's VOID reasons in summary.txt before the full
+#     run: a VOID that is a setup fault (build, shaping, unreachable Pi) repeats in every run and wastes the 75 min.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
@@ -44,9 +55,9 @@ NODE_ENV=${NODE_ENV-TT_UDP_OFFLOAD=0} # one datagram per skb, as x2_step_netns.s
 SMALL_HZ=100
 SMALL_BYTES=100
 BCAST=192.168.10.255
-K=$HOME/.ssh/tickle_ci_ed25519
-CLIENT=10.1.1.214
-SERVER=10.1.1.213
+K=${SSH_KEY:-$HOME/.ssh/tickle_ci_ed25519} # testbed config, env-overridable
+CLIENT=${RPI_CLIENT:-10.1.1.214}
+SERVER=${RPI_SERVER:-10.1.1.213}
 RD=/tmp/x2rig
 [[ $HOLD =~ ^[0-9]+$ && $LEAD =~ ^[0-9]+$ && $REPS =~ ^[0-9]+$ ]] || { echo "HOLD, LEAD, REPS are integers" >&2; exit 2; }
 case "$EST_TRACE" in 0 | 1) ;; *) echo "EST_TRACE must be 0 or 1" >&2; exit 2 ;; esac
