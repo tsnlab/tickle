@@ -1,0 +1,193 @@
+diff --git a/wmediumd/config.c b/wmediumd/config.c
+index c9a6f5c..48417de 100644
+--- a/wmediumd/config.c
++++ b/wmediumd/config.c
+@@ -67,6 +67,120 @@ static double _get_error_prob_from_snr(struct wmediumd *ctx, double snr,
+ 	return get_error_prob_from_snr(snr, rate_idx, freq, frame_len);
+ }
+ 
++/*
++ * Gilbert-Elliott overlay (local patch, for TickLE wireless T1 only).
++ * WM_GE="good_ms,bad_ms,good_p": every directed link flips independently between a
++ * GOOD state (error probability good_p) and a BAD state (the link value in the
++ * config). Sojourn times are exponential with the given means. Unset: no overlay.
++ */
++#include <time.h>
++struct ge_state { int bad; double until_ms; int busy; double env_until_ms; unsigned short xs[3]; };
++/* WM_SEED set: every link draws its sojourns from its own generator (seeded from WM_SEED and the link) and all links count
++ * time from the first frame of at least 150 bytes (the benchmark payload), so two runs with the same seed see the same
++ * good/bad schedule whatever the order of the queries. */
++static int ge_seeded = -1;
++static long ge_seed;
++static double ge_origin_ms;
++static struct ge_state *ge_st;
++static double ge_good_ms, ge_bad_ms, ge_good_p;
++static double ge_quiet_s, ge_busy_s, ge_busy_k = 1.0; /* optional slow envelope */
++static int ge_on = -1;
++
++double wm_attempt_ms; /* simulated time already spent on the frame being decided (set by wmediumd.c) */
++static int wm_per_attempt = -1;
++int wm_attempt_mode(void)
++{
++	if (wm_per_attempt < 0) {
++		const char *e = getenv("WM_RETRY");
++		wm_per_attempt = e && *e == '1';
++	}
++	return wm_per_attempt;
++}
++
++static double ge_now_ms(void)
++{
++	struct timespec t;
++	clock_gettime(CLOCK_MONOTONIC, &t);
++	return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
++}
++
++static double ge_exp(struct ge_state *g, double mean)
++{
++	return -mean * log(1.0 - (ge_seeded > 0 ? erand48(g->xs) : drand48()));
++}
++
++int wm_frame_len;
++static double ge_overlay(struct wmediumd *ctx, int s, int d, double bad_p)
++{
++	struct ge_state *g;
++	double now;
++
++	if (ge_on < 0) {
++		const char *e = getenv("WM_GE");
++		int n = e ? sscanf(e, "%lf,%lf,%lf,%lf,%lf,%lf", &ge_good_ms, &ge_bad_ms, &ge_good_p,
++				   &ge_quiet_s, &ge_busy_s, &ge_busy_k) : 0;
++		ge_on = n == 3 || n == 6;
++		if (n == 3)
++			ge_quiet_s = 0;
++		if (ge_on)
++			ge_st = calloc(ctx->num_stas * ctx->num_stas, sizeof(*ge_st));
++	}
++	if (!ge_on)
++		return bad_p;
++	if (ge_seeded < 0) {
++		const char *e = getenv("WM_SEED");
++		ge_seed = e ? atol(e) : 0;
++		ge_seeded = ge_seed > 0;
++	}
++	if (ge_seeded > 0 && ge_origin_ms == 0) {
++		if (wm_frame_len < 150)
++			return ge_good_p; /* before the payload starts: good state, nothing scheduled yet */
++		ge_origin_ms = ge_now_ms();
++	}
++	g = &ge_st[ctx->num_stas * s + d];
++	now = (ge_seeded > 0 ? ge_now_ms() - ge_origin_ms + 1.0 : ge_now_ms()) + wm_attempt_ms;
++	if (g->until_ms == 0) {
++		g->bad = 0;
++		if (ge_seeded > 0) {
++			g->xs[0] = (unsigned short)(ge_seed & 0xffff);
++			g->xs[1] = (unsigned short)((ge_seed >> 16) & 0xffff);
++			g->xs[2] = (unsigned short)(s * 64 + d + 1);
++		}
++		g->until_ms = now + ge_exp(g, ge_good_ms);
++		if (ge_quiet_s > 0) {
++			g->busy = 0;
++			g->env_until_ms = now + ge_exp(g, ge_quiet_s * 1000.0);
++		}
++	}
++	while (ge_quiet_s > 0 && now >= g->env_until_ms) {
++		g->busy = !g->busy;
++		g->env_until_ms += ge_exp(g, (g->busy ? ge_busy_s : ge_quiet_s) * 1000.0);
++	}
++	while (now >= g->until_ms) {
++		g->bad = !g->bad;
++		g->until_ms += ge_exp(g, g->bad ? ge_bad_ms : (g->busy ? ge_good_ms / ge_busy_k : ge_good_ms));
++	}
++	return g->bad ? bad_p : ge_good_p;
++}
++
++static FILE *tr_f;
++static int tr_on = -1;
++static void tr_log(int s, int d, int len, double p)
++{
++	if (tr_on < 0) {
++		const char *e = getenv("WM_TRACE");
++		tr_on = e && *e;
++		if (tr_on)
++			tr_f = fopen(e, "w");
++		if (!tr_f)
++			tr_on = 0;
++	}
++	if (tr_on) {
++		fprintf(tr_f, "%.3f %d %d %d %.3f\n", ge_now_ms(), s, d, len, p);
++		fflush(tr_f);
++	}
++}
++
+ static double get_error_prob_from_matrix(struct wmediumd *ctx, double snr,
+ 					 unsigned int rate_idx, u32 freq,
+ 					 int frame_len, struct station *src,
+@@ -75,12 +189,19 @@ static double get_error_prob_from_matrix(struct wmediumd *ctx, double snr,
+ 	if (dst == NULL) // dst is multicast. returned value will not be used.
+ 		return 0.0;
+ 
+-	return ctx->error_prob_matrix[ctx->num_stas * src->index + dst->index];
++	double bad = ctx->error_prob_matrix[ctx->num_stas * src->index + dst->index];
++	{
++		double pe;
++		wm_frame_len = frame_len;
++		pe = ge_overlay(ctx, src->index, dst->index, bad);
++		tr_log(src->index, dst->index, frame_len, pe);
++		return pe;
++	}
+ }
+ 
+ int use_fixed_random_value(struct wmediumd *ctx)
+ {
+-	return ctx->error_prob_matrix != NULL;
++	return ctx->error_prob_matrix != NULL && !wm_attempt_mode();
+ }
+ 
+ #define FREQ_1CH (2.412e9)		// [Hz]
+@@ -513,6 +634,17 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
+ 			} else if (memcmp("prob", model_type_str,
+ 				strlen("prob")) == 0) {
+ 				error_probs = config_lookup(cf, "model.links");
++				{
++					const char *ge;
++					if (config_lookup_string(cf, "model.ge", &ge))
++						setenv("WM_GE", ge, 1);
++					if (config_lookup_string(cf, "model.trace", &ge))
++						setenv("WM_TRACE", ge, 1);
++					if (config_lookup_string(cf, "model.retry", &ge))
++						setenv("WM_RETRY", ge, 1);
++					if (config_lookup_string(cf, "model.seed", &ge))
++						setenv("WM_SEED", ge, 1);
++				}
+ 			} else if (memcmp("path_loss", model_type_str,
+ 				strlen("path_loss")) == 0) {
+ 				/* calculate signal from positions */
+diff --git a/wmediumd/wmediumd.c b/wmediumd/wmediumd.c
+index 3b4aed3..455b8fe 100644
+--- a/wmediumd/wmediumd.c
++++ b/wmediumd/wmediumd.c
+@@ -44,6 +44,8 @@
+ #include <usfstl/uds.h>
+ 
+ #include "wmediumd.h"
++extern double wm_attempt_ms;
++int wm_attempt_mode(void);
+ #include "ieee80211.h"
+ #include "config.h"
+ #include "api.h"
+@@ -448,6 +450,14 @@ static void queue_frame(struct wmediumd *ctx, struct station *station,
+ 
+ 			send_time += ack_time_usec;
+ 
++			if (wm_attempt_mode()) {
++				/* per-attempt model: ask again at the time this attempt happens */
++				wm_attempt_ms = send_time / 1000.0;
++				error_prob = ctx->get_error_prob(ctx, snr, rate_idx, frame->freq, frame->data_len,
++								 station, deststa);
++				wm_attempt_ms = 0;
++			}
++
+ 			if (choice > error_prob) {
+ 				is_acked = true;
+ 				break;
