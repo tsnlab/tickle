@@ -352,6 +352,54 @@ static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_thresh
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
 }
 
+// A batching Publisher's samples must all go where node_flush() sends them, however the buffer is emptied. Two samples
+// that do not fit one datagram (here 1000 B each, the stage-0 batching run's 1 kHz cell): the second publish finds the
+// first in tx_buffer, flushes it to make room, and leaves itself for node_flush(). The room-making flush used to
+// broadcast the first (no destination was passed to it) while node_flush() unicast the second, so one stream left on
+// both of the receiver's sockets, which are not read in arrival order, and the receiver's BEST_EFFORT ordering threw
+// the older sample away: perf_client -B -s 994 at 1 kHz delivered 50.0% on the rig (batch_stage0 1000 B 1 kHz cell).
+static int32_t big_data_encode_size(struct tt_Data* data) {
+    (void)data;
+    return 1000;
+}
+
+static int32_t big_data_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    if (len < 1000) {
+        return -1;
+    }
+    memset(payload, 0, 1000);
+    memcpy(payload, data, sizeof(uint32_t));
+    return 1000;
+}
+
+static void test_batched_samples_that_do_not_share_a_datagram_all_go_to_the_flush_destination(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+    node.control_max = (uint32_t)tt_CONTROL_MAX_LENGTH;
+    init_publisher(&pub, &node, &topic);
+    pub.batch = true;
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    uint32_t value = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // batched
+    value = 2;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // one datagram each: they do not fit together
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // and both to the peer, none broadcast
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+}
+
 // More known peers than tt_UNICAST_PEER_THRESHOLD must fall back to broadcast instead of
 // unicasting to all of them.
 static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
@@ -1065,6 +1113,7 @@ int main(void) {
     test_publish_flushes_a_pending_broadcast_then_unicasts();
     test_node_flush_sends_nothing_with_no_known_peers();
     test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
+    test_batched_samples_that_do_not_share_a_datagram_all_go_to_the_flush_destination();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();
     test_node_flush_broadcasts_when_update_is_pending();
     test_node_flush_broadcasts_when_multiple_publishers_on_node();
