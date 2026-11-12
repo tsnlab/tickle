@@ -1,0 +1,394 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
+/* batch_paced_client.c - batch_stage0.sh's paced sender. A copy of examples/linux/perf/perf_client.c (origin/main) with
+ * ONE change, run_send_loop(): perf_client's -i does not pace (2026-11-12 smoke on the rig: -i 0.0001 without -B sent
+ * 26 samples in 4 s, because poll(-1) sleeps until some event; with -B it sends one sample per 1 ms tick, so 1 kHz at
+ * most). Here a sample is published for every interval that has come due (catch-up), tt_Context_poll(node, 0) runs the
+ * scheduler (the -B flush tick) and drains the receive side, and the thread then sleeps to the next due time with
+ * clock_nanosleep (absolute, CLOCK_MONOTONIC = tt_get_ns()). The same code runs for both arms; -B is the only
+ * difference between them. No library code is changed. Built by batch_stage0.sh against the Pi's libtickle.a.
+ */
+#define _POSIX_C_SOURCE 200809L // NOLINT(bugprone-reserved-identifier,readability-identifier-naming)
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <tickle/config.h>
+#include <tickle/hal.h>
+#include <tickle/log.h>
+#include <tickle/tickle.h>
+
+#include "../../format.h"
+#include "../../linux/common/cli_opts.h"
+#include "../../perf/Bulk.h"
+
+// DEFAULT_MESSAGE_SIZE fills one standard (1500-byte MTU) Ethernet frame as full as this
+// protocol allows, so every packet carries the most payload it can without IP fragmentation.
+// See "Message size: filling an Ethernet frame" in README.md for the derivation.
+#define DEFAULT_MESSAGE_SIZE BULKDATA__PAYLOAD_CAPACITY
+
+// DEFAULT_INTERVAL_SECONDS of 0 means no send interval at all: publish as fast as poll()
+// allows, which is what a throughput benchmark should default to. Pass -i to rate-limit to a
+// specific interval instead (e.g. to target a specific Mbps for a given -s).
+#define DEFAULT_INTERVAL_SECONDS 0.0
+
+static volatile sig_atomic_t g_interrupted = 0; // a stop trigger fired (duration elapsed, or Ctrl+C)
+static volatile sig_atomic_t g_exit_now = 0;    // the main loop's actual exit condition
+
+static bool stopping = false;
+static uint64_t stop_time = 0; // when stopping began - print_summary()'s own "elapsed" anchor,
+                               // so shutdown_grace_s's drain doesn't dilute the reported avg Mbps
+
+// RELIABLE's own retransmission (QoS roadmap #5) needs this Publisher to still be around to
+// respond to a Subscriber's ACKNACK for one of the last few messages sent - tt_Context_destroy()
+// right when sending stops used to tear it down immediately, silently dropping any
+// then-still-recovering loss near the end of *every* run regardless of tc's own configured loss
+// rate. Found via run_perf.sh's real loss-injection scenarios: reliable's own loss_pct plateaued
+// well above the p^(tt_RELIABLE_RETRY + 1) theoretical model even after every other known bug
+// (rmw_tickle/PLAN.md, Milestone 18) was fixed, and landed on the *same* value at two different
+// loss levels - a fixed few tail-end losses per run, independent of p, matched a shutdown race far
+// better than anything left in tickle.c's own RELIABLE logic. tt_RELIABLE_RETRY full give-up
+// cycles (tt_CALL_RETRY_INTERVAL apart) fit comfortably inside this with room for real RTT.
+// 0 for BEST_EFFORT - costs nothing, matches the exit-immediately behavior it always had.
+#define RELIABLE_SHUTDOWN_GRACE_SEC 1.0
+static double shutdown_grace_s = 0.0;
+
+static void finish_grace_period(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    g_exit_now = 1;
+}
+
+// Stops sending immediately but - unlike the exit-right-away behavior this used to have - only
+// actually exits after shutdown_grace_s more (0 for BEST_EFFORT, so this is a no-op change for
+// it). Idempotent, and safe to call from either a scheduled callback (handle_duration_elapsed,
+// which has `node`/`time` on hand) or the main loop noticing g_interrupted after a signal handler
+// set it (which doesn't - signal handlers may only touch a volatile sig_atomic_t, not call this).
+static void begin_stopping(struct tt_Context* node, uint64_t time) {
+    if (stopping) {
+        return;
+    }
+    stopping = true;
+    g_interrupted = 1;
+    stop_time = time;
+    if (shutdown_grace_s <= 0.0) {
+        g_exit_now = 1;
+        return;
+    }
+    tt_Context_schedule(node, time + (uint64_t)(shutdown_grace_s * (double)tt_SECOND), finish_grace_period, NULL);
+}
+
+static void handle_sigint(int sig) {
+    (void)sig;
+    g_interrupted = 1; // begin_stopping() itself needs `node` - the main loop calls it instead
+}
+
+static void handle_duration_elapsed(struct tt_Context* node, uint64_t time, void* param) {
+    (void)param;
+    begin_stopping(node, time);
+}
+
+static struct BulkData bulk = {0}; // static: zero-initialized, reused for every publish
+
+// -K's ceiling: the Publisher's retained-sample depth with -R. Its storage (the cache, its index ring and its byte
+// arena, tt_Publisher_storage_size()) is malloc()ed once at startup for the depth asked - malloc() in an example is
+// fine, the no-malloc rule is TickLE core's own (DESIGN.md), not its callers'.
+#define MAX_RELIABLE_DEPTH 8192
+static void* pub_storage = NULL;
+
+static uint64_t total_sent_msgs = 0;
+static uint64_t total_sent_bytes = 0;
+static uint64_t total_buffer_full = 0;
+static uint64_t resyncs = 0; // times the sender fell more than 100 ms behind and restarted its schedule
+
+static uint64_t interval_sent_msgs = 0;
+static uint64_t interval_sent_bytes = 0;
+
+static void report(struct tt_Context* node, uint64_t time, void* param) {
+    (void)param;
+
+    char sent_buf[TT_GROUPED_BUF_LEN];
+    char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char mbps_buf[TT_GROUPED_F3_BUF_LEN];
+    const double bytes_per_mb = 1e6;
+    double megabytes = (double)interval_sent_bytes / bytes_per_mb;
+    double mbps = ((double)interval_sent_bytes * 8) / bytes_per_mb;
+    printf("sent %s msgs, %s MB, %s Mbps this interval (%s buffer-full so far)\n",
+           tt_format_grouped(interval_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
+
+    interval_sent_msgs = 0;
+    interval_sent_bytes = 0;
+
+    tt_Context_schedule(node, time + tt_SECOND, report, NULL);
+}
+
+// Throughput is what this pair measures, so - like ping.c's print_statistics() - RESULT reports
+// the numbers themselves rather than a pass/fail verdict; perf_server.c's own RESULT line is the
+// authoritative side (it can see loss, this side can't), this one's just for visibility into
+// what the sender itself achieved.
+// The segment counters go on the RESULT line and not only in the traffic line, for a reason measured
+// on 2026-09-30: a CI run lost 1,258,780 of 20,487,230 samples with the module on while the shm-off
+// arm beside it lost none, and the cause had to be INFERRED as a full ring because the row did not
+// say so. The traffic line carries shm_full_dropped; this tier parses the RESULT line. A row that
+// carries its own evidence is the whole argument SHM_PLAN makes for the by-reason counters, and it
+// stops one observation needing a second run to become a measurement.
+static void print_summary(const struct tt_Context* node, uint64_t start_time) {
+    char sent_buf[TT_GROUPED_BUF_LEN];
+    char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char avg_mbps_buf[TT_GROUPED_F3_BUF_LEN];
+    const double bytes_per_mb = 1e6;
+    // stop_time (when sending stopped), not tt_get_ns() (now) - shutdown_grace_s's own drain
+    // period runs between those two and sends nothing, so using "now" here would dilute avg_mbps
+    // by however long that drain took, understating reported RELIABLE throughput for no reason.
+    double elapsed_s = (double)(stop_time - start_time) / (double)tt_SECOND;
+    double megabytes = (double)total_sent_bytes / bytes_per_mb;
+    double avg_mbps = elapsed_s > 0.0 ? ((double)total_sent_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
+
+    printf("\n--- bulk_topic send statistics ---\n");
+    printf("%s messages sent, %s MB, %.3f sec, avg %s Mbps, %s times tx buffer was full\n",
+           tt_format_grouped(total_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf), elapsed_s,
+           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("RESULT: sent=%s avg_mbps=%s buffer_full=%s tx_shm=%lu tx_udp=%lu shm_full_dropped=%lu resyncs=%lu\n",
+           tt_format_grouped(total_sent_msgs, sent_buf), tt_format_grouped_f3(avg_mbps, avg_mbps_buf),
+           tt_format_grouped(total_buffer_full, buffer_full_buf),
+           (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP], (unsigned long)node->segment_full_dropped,
+           (unsigned long)resyncs);
+}
+
+static void print_usage(const char* prog) {
+    fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n", prog);
+    fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
+    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R] [-K reliable_cache_depth]\n");
+    fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
+    fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
+    fprintf(stderr, "  -s  payload bytes per message (default/max %d: fills one Ethernet frame)\n",
+            DEFAULT_MESSAGE_SIZE);
+    fprintf(stderr, "  -i  seconds between sends (default %g = as fast as poll() allows)\n", DEFAULT_INTERVAL_SECONDS);
+    fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
+    fprintf(stderr, "  -n  topic name to publish on (default bulk_topic)\n");
+    fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
+    fprintf(stderr, "  -B  batch sends instead of flushing each one immediately (default: flush immediately -\n"
+                    "      pass -B for the old always-batch behavior, worth it when -i 0 floods many small\n"
+                    "      messages back-to-back - see DESIGN.md's \"RPC and Publish flush immediately by\n"
+                    "      default; batching is opt-in\")\n");
+    fprintf(stderr, "  -R  RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, rmw_tickle/PLAN.md) -\n"
+                    "      retains published samples for retransmission on a Subscriber's ACKNACK\n");
+    fprintf(stderr,
+            "  -K  reliable cache depth, requires -R (default: tt_MAX_RELIABLE_HISTORY=%d) -\n"
+            "      the real, freely-configurable retention window (struct tt_ReliableCache.\n"
+            "      depth), up to this build's own MAX_RELIABLE_DEPTH=%d, independent of a\n"
+            "      rebuild\n",
+            tt_MAX_RELIABLE_HISTORY, MAX_RELIABLE_DEPTH);
+}
+
+static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
+    opts->broadcast = "192.168.10.255";
+    opts->port = 0;
+    opts->bind_addr = NULL;
+    opts->context_id = 0;
+    opts->message_size = DEFAULT_MESSAGE_SIZE;
+    opts->interval_s = DEFAULT_INTERVAL_SECONDS;
+    opts->duration_s = 0.0;
+    opts->name = "bulk_topic";
+    opts->log_level = TT_LOG_INFO;
+    opts->log_level_set = false;
+    opts->batch = false;
+    opts->reliable = false;
+    opts->reliable_depth = 0;
+
+    return tt_example_parse_args(argc, argv, opts,
+                                 TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE |
+                                     TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE | TT_EXAMPLE_OPT_RELIABLE_DEPTH);
+}
+
+// Split out of main() purely to keep that function's own cognitive complexity under clang-tidy's
+// threshold - adding !stopping/g_interrupted handling for shutdown_grace_s (see its own doc
+// comment) tipped main() over once combined with its already-substantial setup sequence.
+// A sender this far behind its schedule restarts it (a stall must not turn into a burst).
+#define RESYNC_AFTER_NS (100ULL * tt_MILLISECOND)
+
+// Publishes every sample that has come due, `*next_send_time` advancing by one interval each. Flood (interval 0): one.
+static void publish_due(struct tt_Publisher* pub, uint64_t now, uint64_t* next_send_time, uint64_t send_interval_ns) {
+    if (send_interval_ns != 0 && now > *next_send_time + RESYNC_AFTER_NS) {
+        *next_send_time = now;
+        resyncs++;
+    }
+    while (now >= *next_send_time) {
+        tt_ret_t pub_ret = tt_Publisher_publish(pub, (struct tt_Data*)&bulk);
+        if (pub_ret == tt_RET_OK) {
+            bulk.seq++;
+            total_sent_msgs++;
+            total_sent_bytes += bulk.payload_count;
+            interval_sent_msgs++;
+            interval_sent_bytes += bulk.payload_count;
+        } else if (pub_ret == tt_RET_OUT_OF_BUFFER) {
+            total_buffer_full++;
+        }
+        *next_send_time += send_interval_ns;
+        if (send_interval_ns == 0) {
+            break;
+        }
+    }
+}
+
+static void sleep_until_ns(uint64_t when_ns) {
+    struct timespec ts = {.tv_sec = (time_t)(when_ns / tt_SECOND), .tv_nsec = (long)(when_ns % tt_SECOND)};
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL); // NOLINT(misc-include-cleaner) - from <time.h>
+}
+
+static void run_send_loop(struct tt_Context* node, struct tt_Publisher* pub, uint64_t next_send_time,
+                          uint64_t send_interval_ns, int64_t poll_timeout) {
+    (void)poll_timeout;
+    tt_ret_t ret = tt_RET_OK;
+    while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        if (!stopping) {
+            publish_due(pub, tt_get_ns(), &next_send_time, send_interval_ns);
+        }
+        ret = tt_Context_poll(node, 0);
+        if (g_interrupted && !stopping) {
+            begin_stopping(node, tt_get_ns());
+        }
+        if (!stopping && send_interval_ns != 0) {
+            sleep_until_ns(next_send_time);
+        }
+    }
+}
+
+int main(int argc, char** argv) {
+    struct tt_example_cli_options opts;
+    if (parse_args(argc, argv, &opts) != 0) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    if (opts.message_size > BULKDATA__PAYLOAD_CAPACITY) {
+        printf("Requested message size %u exceeds the max %d; clamping.\n", opts.message_size,
+               BULKDATA__PAYLOAD_CAPACITY);
+        opts.message_size = BULKDATA__PAYLOAD_CAPACITY;
+    }
+    bulk.payload_count = opts.message_size;
+
+    uint64_t send_interval_ns = opts.interval_s > 0.0 ? (uint64_t)(opts.interval_s * (double)tt_SECOND) : 0;
+
+    _tt_CONFIG.broadcast = opts.broadcast;
+    if (opts.port != 0) {
+        _tt_CONFIG.port = opts.port;
+    }
+    if (opts.bind_addr != NULL) {
+        _tt_CONFIG.addr = opts.bind_addr;
+    }
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
+    }
+    if (opts.log_level_set) {
+        tt_log_set_level(opts.log_level);
+    }
+
+    // sigaction (not signal()) so SA_RESTART is off: an interrupted blocking recv
+    // returns immediately instead of silently restarting with the same wait.
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
+
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
+    if (ret != 0) {
+        printf("Cannot create node: %d\n", ret);
+        return ret;
+    }
+
+    printf("Node created(#%d)\n", node.id);
+
+    struct tt_Publisher pub;
+    uint32_t depth = opts.reliable_depth != 0 ? opts.reliable_depth : (uint32_t)tt_MAX_RELIABLE_HISTORY;
+    if (depth > (uint32_t)MAX_RELIABLE_DEPTH) {
+        if (opts.reliable) {
+            printf("Requested reliable cache depth %u exceeds this build's own MAX_RELIABLE_DEPTH (%d); clamping.\n",
+                   depth, MAX_RELIABLE_DEPTH);
+        }
+        depth = (uint32_t)MAX_RELIABLE_DEPTH;
+    }
+    // BEST_EFFORT unless -R (the zeroed profile would be RELIABLE). With -R: KEEP_LAST `depth` samples, with no byte
+    // cap on them (history.bytes UINT32_MAX), so -K is the depth kept whatever the payload.
+    struct tt_QosProfile qos = {
+        .history = {.kind = tt_QOS_HISTORY_KEEP_LAST, .depth = depth, .bytes = UINT32_MAX},
+        .reliability = {.kind = opts.reliable ? tt_QOS_RELIABILITY_RELIABLE : tt_QOS_RELIABILITY_BEST_EFFORT},
+        .durability = {.kind = tt_QOS_DURABILITY_VOLATILE},
+        .liveliness = {.kind = tt_QOS_LIVELINESS_AUTOMATIC},
+    };
+    struct tt_PublisherOptions pub_options = {.batch = opts.batch}; // -B - see tt_Publisher.batch (tickle.h)
+    size_t storage_size = tt_Publisher_storage_size(&BulkTopic, &qos);
+    if (storage_size != 0) {
+        pub_storage = malloc(storage_size); // 8-aligned, as malloc() always is
+        if (pub_storage == NULL) {
+            printf("Cannot allocate a %zu-byte reliable cache\n", storage_size);
+            return 1;
+        }
+    }
+    ret = tt_Node_create_publisher(tt_Context_default_node(&node), &pub, &BulkTopic, opts.name, &qos, &pub_options,
+                                   pub_storage, storage_size);
+    if (ret != 0) {
+        printf("Cannot create publisher: %d\n", ret);
+        return ret;
+    }
+    if (opts.batch) {
+        printf("Batching sends (node_flush()'s own tt_CONTEXT_TX_INTERVAL cadence), not flushing "
+               "each one immediately\n");
+    }
+    if (opts.reliable) {
+        shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
+        printf("RELIABLE delivery (retained-sample cache depth %u)\n", depth);
+    }
+
+    const double bytes_per_mb = 1e6;
+    double target_mbps = opts.interval_s > 0.0 ? ((double)opts.message_size * 8) / bytes_per_mb / opts.interval_s : 0.0;
+    if (opts.interval_s > 0.0) {
+        printf("Sending %u-byte messages every %g sec (target %.3f Mbps)\n", opts.message_size, opts.interval_s,
+               target_mbps);
+    } else {
+        printf("Sending %u-byte messages as fast as poll() allows\n", opts.message_size);
+    }
+
+    uint64_t start_time = tt_get_ns();
+    uint64_t next_send_time = start_time;
+    tt_Context_schedule(&node, start_time + tt_SECOND, report, NULL);
+    if (opts.duration_s > 0.0) {
+        tt_Context_schedule(&node, start_time + (uint64_t)(opts.duration_s * (double)tt_SECOND),
+                            handle_duration_elapsed, NULL);
+    }
+
+    // In "as fast as poll() allows" mode (-i 0), pass 0 for a non-blocking poll pass between
+    // sends (run due scheduler work + drain RX, no wait). Anything else - even a nominal 1ns -
+    // rounds up to a full 1ms poll() wait, which throttled send rate ~40x once the Publisher
+    // started unicasting to its lone discovered Subscriber and stopped seeing its own broadcast
+    // loop back to keep that wait short. A rate-limited run (-i > 0) keeps -1: it's genuinely
+    // idle between sends, so the wait lets it service inbound traffic without spinning a core.
+    const int64_t poll_timeout = send_interval_ns == 0 ? 0 : -1;
+
+    run_send_loop(&node, &pub, next_send_time, send_interval_ns, poll_timeout);
+
+    print_summary(&node, start_time);
+
+    tt_Context_destroy(&node);
+    free(pub_storage); // NULL unless -R was passed; free(NULL) is a no-op
+
+    return 0;
+}
