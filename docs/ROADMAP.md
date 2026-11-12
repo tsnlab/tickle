@@ -35,9 +35,11 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   Caleb Phillips, Suresh Singh, pdx/vwave, https://doi.org/10.15783/C7C303 (CRAWDAD; licence CC BY 4.0, per
   https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
 - **Done:** T1 harness (`be_small`, `rel_small`, `rel_large`), rules and A/A control registered before runs, parallel-lane
-  calibration (L1 failed at 2-3 lanes, so one lane is used). **Next:** T0 comparison, then the remaining candidates below.
-- **Candidates:** request serial echo, slow-reader flow control (run header merge stopped at stage 0, 2026-11-11)
-  (`c7-wire-room`). `ab/evict-seed` is closed (no gain). Order set after the T0 comparison.
+  calibration (L1 failed at 2-3 lanes, so one lane is used), the T0 comparison (C1 note, 2026-11-07), burst length, per-receiver
+  loss and time-varying runs. **No wireless-stage task is open.**
+- **Candidates:** all closed. Run header merge and range NACK stopped at stage 0 (2026-11-11), FEC dropped (the user,
+  2026-11-11), request serial echo dropped (2026-11-02), `ab/evict-seed` no gain. Slow-reader flow control (`c7-wire-room`,
+  `C7W`) is parked for the 32-Pi testbed. Small-sample batching is an untested idea, started only on the user's go.
 
 ### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
 
