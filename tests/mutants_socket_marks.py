@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mutant sweep for traffic classes and send time (network profiles items D and E; DESIGN.md section 2, "Traffic
 classes and send time"): tt_tx_class() and the resend marks in src/tickle.c, the socket and per-send marks in
-src/hal_linux.c, and the options' defaults and checks.
+src/hal_linux.c, the send window's time of each datagram (network profiles phase 2, "Send windows"), and the options'
+defaults and checks.
 
 Each mutant breaks one decision and must turn tests/test_tx_class.c (mock HAL: what core sends is of which class, and
 publish_at's time) or tests/test_socket_marks.c (the real HAL: what reaches setsockopt() and each send's control
@@ -157,12 +158,45 @@ MUTANTS = [
      "    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_TXTIME, &txtime, sizeof(txtime)) == 0) {",
      "    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_TXTIME, &txtime, sizeof(txtime)) == 0 || true) {"),
     ("txtime: the time not sent", HAL,
-     "    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && node->tx_time_ns != 0) {", "    if (false) {"),
+     "    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && tx_time != 0) {", "    if (false) {"),
     ("txtime: a time of 0 sent", HAL,
-     "    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && node->tx_time_ns != 0) {",
+     "    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && tx_time != 0) {",
      "    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0) {"),
     ("txtime: CLOCK_MONOTONIC", HAL, "    struct sock_txtime txtime = {.clockid = CLOCK_TAI, .flags = 0};",
      "    struct sock_txtime txtime = {.clockid = CLOCK_MONOTONIC, .flags = 0};"),
+    # ---- hal_linux.c: send windows (network profiles phase 2, "Send windows").
+    ("window: never marked", HAL, "            node->hal.tx_marks |= TT_TX_MARK_WINDOW;", "            (void)0;"),
+    ("window: marked without one", HAL, "        if (node->tx_window.cycle_ns != 0) {", "        if (true) {"),
+    ("window: a time of the publish's own overridden", HAL,
+     "    if (tx_time == 0 && (hal->tx_marks & TT_TX_MARK_WINDOW) != 0) {",
+     "    if ((hal->tx_marks & TT_TX_MARK_WINDOW) != 0) {"),
+    ("window: asked without the mark", HAL,
+     "    if (tx_time == 0 && (hal->tx_marks & TT_TX_MARK_WINDOW) != 0) {", "    if (tx_time == 0) {"),
+    ("window: every datagram by DATA's priority", HAL,
+     "        tx_time = tx_window_time(node, hal->tx_priority[tx_class]);",
+     "        tx_time = tx_window_time(node, hal->tx_priority[0]);"),
+    ("window: the time at the opening itself", HAL, "#define TT_TX_WINDOW_INSIDE_NS 1U",
+     "#define TT_TX_WINDOW_INSIDE_NS 0U"),
+    ("window: no lead", HAL, "(uint64_t)now.tv_nsec + window->lead_ns;", "(uint64_t)now.tv_nsec;"),
+    ("window: CLOCK_REALTIME", HAL, "    clock_gettime(CLOCK_TAI, &now); // NOLINT(misc-include-cleaner) - CLOCK_TAI",
+     "    clock_gettime(CLOCK_REALTIME, &now); // NOLINT(misc-include-cleaner) - CLOCK_TAI"),
+    ("window: no offset", HAL, "+ window->offset_ns + TT_TX_WINDOW_INSIDE_NS;", "+ TT_TX_WINDOW_INSIDE_NS;"),
+    ("window: DATA at a passed opening", HAL, "        return opens >= earliest ? opens : opens + window->cycle_ns;",
+     "        return opens;"),
+    ("window: DATA always a cycle on", HAL, "        return opens >= earliest ? opens : opens + window->cycle_ns;",
+     "        return opens + window->cycle_ns;"),
+    ("window: every class at the opening", HAL, "    if (priority == node->hal.tx_priority[tt_TX_CLASS_DATA]) {",
+     "    if (true) {"),
+    ("window: DATA outside the window", HAL, "    if (priority == node->hal.tx_priority[tt_TX_CLASS_DATA]) {",
+     "    if (false) {"),
+    ("window: another class inside the window", HAL,
+     "    return earliest + TT_TX_WINDOW_INSIDE_NS >= opens && earliest <= closes ? closes + TT_TX_WINDOW_INSIDE_NS",
+     "    return false ? closes + TT_TX_WINDOW_INSIDE_NS"),
+    ("window: another class always after the close", HAL,
+     "    return earliest + TT_TX_WINDOW_INSIDE_NS >= opens && earliest <= closes ? closes + TT_TX_WINDOW_INSIDE_NS",
+     "    return true ? closes + TT_TX_WINDOW_INSIDE_NS"),
+    ("window: no length", HAL, "    const uint64_t closes = opens - TT_TX_WINDOW_INSIDE_NS + window->length_ns;",
+     "    const uint64_t closes = opens - TT_TX_WINDOW_INSIDE_NS;"),
 ]
 
 

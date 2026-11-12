@@ -1246,6 +1246,13 @@ static __attribute__((cold, noinline)) int32_t sendmsg_again(const struct tt_Sen
 // CLOCK_TAI time as monotonic: do not put the two together). ETF drops a datagram of an SO_TXTIME socket that has no
 // time or a past one, so only datagrams sent with a time may be classified into an ETF queue - by the class
 // priorities above and the qdisc's priority map.
+//
+// Send windows (network profiles phase 2, docs/DESIGN.md section 2 "Send windows"): with a window
+// (struct tt_Context.tx_window) and SO_TXTIME taken, every datagram that carries no time of its own gets one
+// (tx_window_time()). A taprio qdisc takes from an SO_TXTIME socket only a datagram whose time lies inside an interval
+// in which its traffic class's gate is open - an untimed one, or one timed into a closed gate, it drops (measured on
+// Linux 7.0, examples/perf_hil/experiments/tsn_profile_netns.sh) - so the classes that do not share DATA's priority
+// are timed too, outside the window.
 static_assert(TT_HAL_TX_CLASSES == tt_TX_CLASS_COUNT, "struct tt_hal's per-class arrays (hal_linux.h)");
 // The kernel's MSG_PROBE (include/linux/socket.h): the send is checked - its control messages, its route - and nothing
 // is sent. glibc names the same bit MSG_PROXY and has no MSG_PROBE.
@@ -1340,12 +1347,35 @@ static void tx_marks_txtime(struct tt_Context* node) {
     // NOLINTNEXTLINE(misc-include-cleaner) - SO_TXTIME: glibc-private header behind <sys/socket.h>
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_TXTIME, &txtime, sizeof(txtime)) == 0) {
         node->hal.tx_marks |= TT_TX_MARK_TIME;
+        if (node->tx_window.cycle_ns != 0) {
+            node->hal.tx_marks |= TT_TX_MARK_WINDOW;
+        }
         return;
     }
     const int refused = errno;
     // NOLINTNEXTLINE(misc-include-cleaner) - EPERM: glibc-private header
     TT_LOG_WARNING("SO_TXTIME (CLOCK_TAI) refused (%s%s) - this context sends without send times", strerror(refused),
                    refused == EPERM ? ": needs CAP_NET_ADMIN" : "");
+}
+
+// taprio counts a time as inside an interval only after the interval's start, so a window's time is this past it.
+#define TT_TX_WINDOW_INSIDE_NS 1U
+
+// A datagram's send time under the context's window (TT_TX_MARK_WINDOW), lead_ns from now at the least, in CLOCK_TAI
+// ns: one of the DATA class's priority at the next opening of the window; any other where it would go, unless that is
+// inside the window, then just after the window closes. The cycles count from the TAI epoch.
+static uint64_t tx_window_time(const struct tt_Context* node, uint32_t priority) {
+    const struct tt_TxWindow* window = &node->tx_window;
+    struct timespec now;
+    clock_gettime(CLOCK_TAI, &now); // NOLINT(misc-include-cleaner) - CLOCK_TAI: <time.h>'s Linux part
+    const uint64_t earliest = ((uint64_t)now.tv_sec * tt_SECOND) + (uint64_t)now.tv_nsec + window->lead_ns;
+    const uint64_t opens = earliest - (earliest % window->cycle_ns) + window->offset_ns + TT_TX_WINDOW_INSIDE_NS;
+    if (priority == node->hal.tx_priority[tt_TX_CLASS_DATA]) {
+        return opens >= earliest ? opens : opens + window->cycle_ns;
+    }
+    const uint64_t closes = opens - TT_TX_WINDOW_INSIDE_NS + window->length_ns;
+    return earliest + TT_TX_WINDOW_INSIDE_NS >= opens && earliest <= closes ? closes + TT_TX_WINDOW_INSIDE_NS
+                                                                            : earliest;
 }
 
 // The classes' marks and the send time, from opts.socket (tt_bind(), once the data socket exists).
@@ -1407,9 +1437,13 @@ static void tx_marks_put(struct tt_Context* node, struct msghdr* msg, char* cont
         }
     }
     hal->tx_class_datagrams[tx_class] += datagrams;
-    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && node->tx_time_ns != 0) {
+    uint64_t tx_time = node->tx_time_ns;
+    if (tx_time == 0 && (hal->tx_marks & TT_TX_MARK_WINDOW) != 0) {
+        tx_time = tx_window_time(node, hal->tx_priority[tx_class]);
+    }
+    if ((hal->tx_marks & TT_TX_MARK_TIME) != 0 && tx_time != 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - SCM_TXTIME: glibc-private header behind <sys/socket.h>
-        end = tx_cmsg_put(control, end, SOL_SOCKET, SCM_TXTIME, &node->tx_time_ns, sizeof(uint64_t));
+        end = tx_cmsg_put(control, end, SOL_SOCKET, SCM_TXTIME, &tx_time, sizeof(uint64_t));
         hal->tx_timed_datagrams += datagrams;
     }
     msg->msg_control = end != 0 ? control : NULL;

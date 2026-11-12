@@ -870,7 +870,23 @@ struct tt_LinkOptions {
     // The idle HEARTBEAT period (reliable.idle_heartbeat_period), ns; 0 = the profile's (T1S 1 s, the rest the
     // context's). tt_QOS_DURATION_INFINITE = off.
     uint64_t idle_heartbeat_ns;
+    // The DATA class's send window on this link (network profiles phase 2, docs/DESIGN.md section 2 "Send windows"):
+    // the link's Qbv gate schedule as the DATA class's priority sees it, in ns. window_cycle_ns: the schedule's cycle
+    // (taprio's cycle-time), 0 = no window. window_offset_ns: where in each cycle the window opens, counted from the
+    // CLOCK_TAI epoch (a taprio base-time that is a whole number of cycles), below the cycle. window_length_ns: how
+    // long it stays open, at least 1 and, with the offset, at most the cycle. window_lead_ns: the least a send time
+    // lies ahead of its send, 0 = tt_LINK_WINDOW_LEAD_NS. With a window, the context turns SO_TXTIME on
+    // (opts.socket.txtime, its default OFF counting as not set) and sends every datagram with a send time: one of the
+    // DATA class's priority at the next window's opening, any other outside the window - the rest of the cycle is
+    // taken as open to the other classes. Every link with a window must give the same cycle, offset and length: a
+    // datagram is sent once for all the links it goes to. The other fields at 0 without a cycle.
+    uint32_t window_cycle_ns;
+    uint32_t window_offset_ns;
+    uint32_t window_length_ns;
+    uint32_t window_lead_ns;
 };
+#define tt_LINK_TSN_DATA_PRIORITY 6U   // a TSN link's DATA-class SO_PRIORITY (socket.tx_class[]), where it is left 0
+#define tt_LINK_WINDOW_LEAD_NS 100000U // tt_LinkOptions.window_lead_ns's default: 100 us
 #define tt_UNICAST_ALWAYS_BROADCAST UINT8_MAX // tt_LinkOptions.unicast_threshold: a threshold of zero peers
 #define tt_IP_REASSEMBLY_NONE UINT16_MAX      // tt_NetOptions.ip_reassembly_max: accept no IP-reassembled datagram
 
@@ -1157,6 +1173,14 @@ struct tt_InitOptions {
         hybrid_transport; // not `hybrid`: struct tt_Context.hybrid is its state (check_context_reset.py)
     struct tt_SegmentOptions segment;
     struct tt_Capacity capacity;
+};
+
+// The send window a context's links set (tt_LinkOptions.window_*), resolved: struct tt_Context.tx_window.
+struct tt_TxWindow {
+    uint32_t cycle_ns; // 0 = none
+    uint32_t offset_ns;
+    uint32_t length_ns;
+    uint32_t lead_ns;
 };
 
 struct tt_Context {
@@ -1955,6 +1979,10 @@ struct tt_Context {
     // (tt_Publisher_publish_at()), 0 for none.
     uint8_t tx_class;
     uint64_t tx_time_ns;
+    // The send window the context's links set (tt_LinkOptions.window_*; docs/DESIGN.md section 2 "Send windows"),
+    // resolved at creation: cycle_ns 0 = none. The Linux HAL times a datagram by it where the socket took SO_TXTIME
+    // and the datagram carries no time of its own (tx_time_ns).
+    struct tt_TxWindow tx_window;
 #if tt_LARGE_SHM
     // Large-message step B (DESIGN.md section 8), last: it came after everything above.
     struct tt_LargeRefState large_ref;

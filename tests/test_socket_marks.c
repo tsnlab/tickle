@@ -700,6 +700,129 @@ static void test_txtime(void) {
     fake_txtime = false;
 }
 
+// ---- Send windows (network profiles phase 2, "Send windows"): with SO_TXTIME taken and a window, a datagram with no
+// time of its own goes with one - DATA's priority at the next opening, any other outside the window.
+#define WINDOW_CYCLE_NS 1000000U
+#define WINDOW_LEAD_NS 100000U
+#define WINDOW_SENDS 40 // per arm: phases of the clock the sends happen to fall on
+
+static uint64_t tai_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_TAI, &now);
+    return ((uint64_t)now.tv_sec * tt_SECOND) + (uint64_t)now.tv_nsec;
+}
+
+// The send time the last send carried (-1: none), and the TAI clock just before and after it.
+static int64_t window_send(const void* datagram, size_t len, uint64_t* before, uint64_t* after) {
+    reset_calls();
+    *before = tai_now();
+    int32_t sent = send_to_receiver(datagram, len);
+    *after = tai_now();
+    (void)received_tos();
+    const struct call_seen* call = last_send();
+    if (sent <= 0 || call == NULL || call->kind != CALL_SENDMSG) {
+        return -1;
+    }
+    return cmsg_value(call->cmsgs, call->cmsg_count, SOL_SOCKET, SCM_TXTIME);
+}
+
+// A context whose window is (offset, length) of WINDOW_CYCLE_NS, as link_tx_window_apply() would leave it, and its
+// SO_TXTIME set up again with it (tt_bind() did it before the window was there: the test's contexts have no links).
+static void create_windowed(struct tt_InitOptions* opts, uint32_t offset, uint32_t length) {
+    EXPECT_EQ_INT(tt_RET_OK, create(opts));
+    ctx.tx_window = (struct tt_TxWindow) {.cycle_ns = WINDOW_CYCLE_NS,
+                                          .offset_ns = offset,
+                                          .length_ns = length,
+                                          .lead_ns = WINDOW_LEAD_NS};
+    ctx.hal.tx_marks &= (uint8_t)~TT_TX_MARK_TIME;
+    tx_marks_txtime(&ctx);
+}
+
+// Every DATA send at the window's next opening (just inside it), lead_ns ahead at least and at most a cycle more.
+static void expect_data_at_openings(uint32_t offset) {
+    for (int i = 0; i < WINDOW_SENDS; i++) {
+        uint64_t before = 0;
+        uint64_t after = 0;
+        int64_t at = window_send(user_data, sizeof(user_data), &before, &after);
+        EXPECT_TRUE(at > 0);
+        uint64_t time = (uint64_t)at;
+        EXPECT_EQ_U64(offset + 1U, time % WINDOW_CYCLE_NS); // 1 ns inside: taprio's start is not in it
+        EXPECT_TRUE(time >= before + WINDOW_LEAD_NS);
+        EXPECT_TRUE(time <= after + WINDOW_LEAD_NS + WINDOW_CYCLE_NS);
+        (void)usleep(37); // another phase
+    }
+}
+
+// Every HEARTBEAT (CONTROL, another priority) outside the window: at its earliest, or just after the window closes.
+static void expect_control_outside(uint32_t offset, uint32_t length) {
+    for (int i = 0; i < WINDOW_SENDS; i++) {
+        uint64_t before = 0;
+        uint64_t after = 0;
+        int64_t at = window_send(heartbeat, sizeof(heartbeat), &before, &after);
+        EXPECT_TRUE(at > 0);
+        uint64_t time = (uint64_t)at;
+        uint64_t phase = time % WINDOW_CYCLE_NS;
+        EXPECT_TRUE(phase < offset || phase > (uint64_t)offset + length);
+        EXPECT_TRUE(time >= before + WINDOW_LEAD_NS);
+        EXPECT_TRUE(time <= after + WINDOW_LEAD_NS + length + 1U);
+        (void)usleep(37);
+    }
+}
+
+static void test_send_window(void) {
+    fake_txtime = true;
+    struct tt_InitOptions opts = defaults();
+    opts.socket.txtime = tt_SWITCH_ON;
+    set_class(&opts, tt_TX_CLASS_DATA, 5, 0); // CONTROL and REPAIR at 0: another priority
+    // A window nearly the whole cycle: a HEARTBEAT nearly always waits for it to close.
+    create_windowed(&opts, 0, WINDOW_CYCLE_NS - 2000U);
+    EXPECT_EQ_INT(TT_TX_MARK_CLASS | TT_TX_MARK_TIME | TT_TX_MARK_WINDOW, ctx.hal.tx_marks);
+    expect_data_at_openings(0);
+    expect_control_outside(0, WINDOW_CYCLE_NS - 2000U);
+    // A short one, past the cycle's start: a HEARTBEAT nearly always goes at its earliest, and DATA nearly always
+    // waits for the next cycle's opening.
+    destroy();
+    create_windowed(&opts, 400000U, 2000U);
+    expect_data_at_openings(400000U);
+    expect_control_outside(400000U, 2000U);
+    // A time of the publish's own (tt_Publisher_publish_at()) wins.
+    ctx.tx_time_ns = SEND_TIME;
+    uint64_t before = 0;
+    uint64_t after = 0;
+    EXPECT_EQ_U64(SEND_TIME, (uint64_t)window_send(user_data, sizeof(user_data), &before, &after));
+    EXPECT_EQ_U64(SEND_TIME, (uint64_t)window_send(heartbeat, sizeof(heartbeat), &before, &after));
+    ctx.tx_time_ns = 0;
+    destroy();
+
+    // Classes that agree: every datagram has DATA's priority, so a HEARTBEAT goes at the opening too.
+    opts = defaults();
+    opts.socket.txtime = tt_SWITCH_ON;
+    create_windowed(&opts, 400000U, 2000U);
+    EXPECT_EQ_INT(TT_TX_MARK_TIME | TT_TX_MARK_WINDOW, ctx.hal.tx_marks);
+    int64_t at = window_send(heartbeat, sizeof(heartbeat), &before, &after);
+    EXPECT_EQ_U64(400000U + 1U, (uint64_t)at % WINDOW_CYCLE_NS);
+    destroy();
+
+    // SO_TXTIME refused (the kernel's own answer here, without CAP_NET_ADMIN): no window either, no time.
+    fake_txtime = false;
+    create_windowed(&opts, 400000U, 2000U);
+    if (calls[index_of_setsockopt(ctx.hal.data_sock, SOL_SOCKET, SO_TXTIME)].result != 0) {
+        EXPECT_EQ_INT(0, ctx.hal.tx_marks);
+        reset_calls();
+        EXPECT_TRUE(send_to_receiver(user_data, sizeof(user_data)) > 0);
+        const struct call_seen* sent = last_send();
+        EXPECT_TRUE(sent != NULL && sent->kind == CALL_SENDTO);
+        (void)received_tos();
+    }
+    destroy();
+    // No window: the time only while the context holds one (test_txtime()), and no window mark.
+    fake_txtime = true;
+    EXPECT_EQ_INT(tt_RET_OK, create(&opts));
+    EXPECT_EQ_INT(TT_TX_MARK_TIME, ctx.hal.tx_marks);
+    destroy();
+    fake_txtime = false;
+}
+
 // ---- The checks.
 static void test_validation(void) {
     struct tt_InitOptions opts = defaults();
@@ -723,6 +846,7 @@ int main(void) {
     test_classes_that_differ_go_per_datagram();
     test_what_the_kernel_will_not_take();
     test_txtime();
+    test_send_window();
     test_validation();
     if (test_result() != 0) {
         return 1;

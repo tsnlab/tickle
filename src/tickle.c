@@ -998,6 +998,35 @@ static bool link_contradicts(uint64_t link_value, uint64_t context_value, uint64
     return link_value != 0 && context_value_set(context_value, context_default) && link_value != context_value;
 }
 
+// ---- TSN links and send windows (network profiles phase 2; docs/DESIGN.md section 2 "Send windows"). The context has
+// one data socket, so what a TSN link or a window asks of it is context-wide, filled where the caller left it: a TSN
+// link's DATA-class priority (the other classes stay at 0, best effort), and SO_TXTIME on where a link has a window
+// (txtime's default, OFF, counting as not set, as context_value_set() counts every default). Each window's lead 0 is
+// tt_LINK_WINDOW_LEAD_NS. Before the socket group resolves.
+static void resolve_link_tx(struct tt_InitOptions* opts) {
+    struct tt_NetOptions* net = &opts->net;
+    uint8_t count = net->link_count < tt_MAX_LINK_COUNT ? net->link_count : (uint8_t)tt_MAX_LINK_COUNT;
+    bool tsn = false;
+    bool window = false;
+    for (uint8_t i = 0; i < count; i++) {
+        struct tt_LinkOptions* link = &net->links[i];
+        tsn = tsn || link->profile == tt_LINK_PROFILE_TSN;
+        if (link->window_cycle_ns != 0) {
+            window = true;
+            if (link->window_lead_ns == 0) {
+                link->window_lead_ns = tt_LINK_WINDOW_LEAD_NS;
+            }
+        }
+    }
+    struct tt_TxClassOptions* data = &opts->socket.tx_class[tt_TX_CLASS_DATA];
+    if (tsn && data->priority == 0) {
+        data->priority = tt_LINK_TSN_DATA_PRIORITY;
+    }
+    if (window && !context_value_set(opts->socket.txtime, tt_SWITCH_OFF)) {
+        opts->socket.txtime = tt_SWITCH_ON;
+    }
+}
+
 static tt_ret_t reject_option(const char* field, const char* why);
 
 // What a link sets that the context also sets, differently: the caller's two answers to one question. Checked on the
@@ -1024,6 +1053,7 @@ static tt_ret_t validate_link_conflicts(const struct tt_InitOptions* opts) {
 
 static void resolve_init_options(struct tt_InitOptions* opts) {
     resolve_link_profiles(opts);
+    resolve_link_tx(opts);
     resolve_net_options(&opts->net);
     resolve_discovery_options(&opts->discovery);
     resolve_reliable_options(&opts->reliable);
@@ -1120,6 +1150,48 @@ static tt_ret_t validate_link_profile(const struct tt_LinkOptions* link) {
     return tt_RET_OK;
 }
 
+// A link's send window (validate_link_options()): none, every field 0 but the filled lead; or a window inside its
+// cycle.
+static tt_ret_t validate_link_window(const struct tt_LinkOptions* link) {
+    if (link->window_cycle_ns == 0) {
+        if (link->window_offset_ns != 0 || link->window_length_ns != 0 || link->window_lead_ns != 0) {
+            return reject_option("net.links[].window_cycle_ns", "is 0, and a window offset, length or lead is set");
+        }
+        return tt_RET_OK;
+    }
+    if (link->window_offset_ns >= link->window_cycle_ns) {
+        return reject_option("net.links[].window_offset_ns", "is not below window_cycle_ns");
+    }
+    if (link->window_length_ns == 0) {
+        return reject_option("net.links[].window_length_ns", "is 0 with a cycle: the window is never open");
+    }
+    if (link->window_length_ns > link->window_cycle_ns - link->window_offset_ns) {
+        return reject_option("net.links[].window_length_ns", "with window_offset_ns runs past window_cycle_ns");
+    }
+    return tt_RET_OK;
+}
+
+// The links' windows against each other (validate_net_options()): a datagram is sent once, with one send time, for
+// every link it goes to, so every link with a window gives the same one. Leads may differ: the longest is taken.
+static tt_ret_t validate_link_windows(const struct tt_NetOptions* net) {
+    const struct tt_LinkOptions* first = NULL;
+    for (uint8_t i = 0; i < net->link_count && i < tt_MAX_LINK_COUNT; i++) {
+        const struct tt_LinkOptions* link = &net->links[i];
+        if (link->window_cycle_ns == 0) {
+            continue;
+        }
+        if (first == NULL) {
+            first = link;
+        } else if (link->window_cycle_ns != first->window_cycle_ns ||
+                   link->window_offset_ns != first->window_offset_ns ||
+                   link->window_length_ns != first->window_length_ns) {
+            return reject_option("net.links[].window_cycle_ns",
+                                 "with its offset and length differs from another link's window");
+        }
+    }
+    return tt_RET_OK;
+}
+
 // One link's settings (validate_net_options()).
 static tt_ret_t validate_link_options(const struct tt_LinkOptions* link) {
     uint32_t ip = 0;
@@ -1139,6 +1211,10 @@ static tt_ret_t validate_link_options(const struct tt_LinkOptions* link) {
     // already implies broadcasting (tt_MAX_PEER_COUNT's own comment).
     if (link->unicast_threshold != tt_UNICAST_ALWAYS_BROADCAST && link->unicast_threshold >= tt_MAX_PEER_COUNT) {
         return reject_option("net.links[].unicast_threshold", "is not below tt_MAX_PEER_COUNT");
+    }
+    tt_ret_t window = validate_link_window(link);
+    if (window != tt_RET_OK) {
+        return window;
     }
     return validate_link_profile(link);
 }
@@ -1162,6 +1238,10 @@ static tt_ret_t validate_net_options(const struct tt_NetOptions* net) {
         if (link != tt_RET_OK) {
             return link;
         }
+    }
+    tt_ret_t windows = validate_link_windows(net);
+    if (windows != tt_RET_OK) {
+        return windows;
     }
     if (net->discovery_range > tt_DISCOVERY_RANGE_OFF) {
         return reject_option("net.discovery_range", "is not a tt_DISCOVERY_RANGE_* value");
@@ -1831,6 +1911,24 @@ static void link_profiles_apply(struct tt_Context* node) {
         TT_LOG_INFO("Datagrams of more than one submessage, announce parts and fragments cut to %u bytes for the "
                     "smallest link MTU",
                     (unsigned)control);
+    }
+}
+
+// The context's send window from its links (struct tt_Context.tx_window; validate_link_windows() made them agree), at
+// the longest lead. None without a link that has one. Read by the Linux HAL's sends ("Send windows").
+static void link_tx_window_apply(struct tt_Context* node) {
+    const struct tt_NetOptions* net = &node->opts.net;
+    for (uint8_t i = 0; i < net->link_count && i < tt_MAX_LINK_COUNT; i++) {
+        const struct tt_LinkOptions* link = &net->links[i];
+        if (link->window_cycle_ns == 0) {
+            continue;
+        }
+        node->tx_window.cycle_ns = link->window_cycle_ns;
+        node->tx_window.offset_ns = link->window_offset_ns;
+        node->tx_window.length_ns = link->window_length_ns;
+        if (link->window_lead_ns > node->tx_window.lead_ns) {
+            node->tx_window.lead_ns = link->window_lead_ns;
+        }
     }
 }
 
@@ -7527,8 +7625,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->udp_gro_off8 = 0;
     node->udp_gso_sends = 0;
     node->udp_gso_datagrams = 0;
-    node->tx_class = tt_TX_CLASS_DATA; // not resending
-    node->tx_time_ns = 0;              // no send time
+    node->tx_class = tt_TX_CLASS_DATA;          // not resending
+    node->tx_time_ns = 0;                       // no send time
+    node->tx_window = (struct tt_TxWindow) {0}; // none until link_tx_window_apply()
 
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
@@ -7825,6 +7924,7 @@ tt_ret_t tt_Context_create_with(struct tt_Context* node, const struct tt_InitOpt
         return link_ret;
     }
     link_profiles_apply(node);
+    link_tx_window_apply(node);
 
     node->entity_id_base = (uint32_t)tt_get_wall_ns();
 

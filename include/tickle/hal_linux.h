@@ -274,6 +274,7 @@ static inline void tt_thread_yield(void) {
 #define TT_HAL_TX_CLASSES 3
 #define TT_TX_MARK_CLASS 1U // struct tt_hal.tx_marks
 #define TT_TX_MARK_TIME 2U
+#define TT_TX_MARK_WINDOW 4U // the context's send window times what carries no time ("Send windows")
 
 struct tt_hal {
     // The well-known port (opts.net.port), shared with every other node on this host via
@@ -598,7 +599,8 @@ struct tt_hal {
     // Traffic classes and send time (hal_linux.c "Traffic classes and send time"; network profiles items D and E),
     // last, so nothing above moves. tx_marks: what a send adds as control messages - TT_TX_MARK_CLASS when a class's
     // TOS or priority differs from the data socket's own (the DATA class's, set on the socket by tt_bind()),
-    // TT_TX_MARK_TIME when the socket took SO_TXTIME; 0 with every default, and then no send changes. Per class
+    // TT_TX_MARK_TIME when the socket took SO_TXTIME, TT_TX_MARK_WINDOW with it when the context has a send window
+    // (struct tt_Context.tx_window); 0 with every default, and then no send changes. Per class
     // (tt_TX_CLASS_*): tx_tos, the TOS byte; tx_priority; tx_differs, whether its datagrams carry the two as control
     // messages. tx_priority_cmsg: the kernel takes SO_PRIORITY as a control message (Linux 6.14) - without it a class
     // keeps the socket's priority and only its TOS differs. tx_class_datagrams: datagrams sent per class while tx_marks
