@@ -34,8 +34,8 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   by Caleb Phillips and Suresh Singh. The dataset's README states "This work was partly funded by NSF 0435328." Cite as:
   Caleb Phillips, Suresh Singh, pdx/vwave, https://doi.org/10.15783/C7C303 (CRAWDAD; licence CC BY 4.0, per
   https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
-- **Next:** T1 harness (`be_small`, `rel_small`, `rel_large`); rules and A/A control registered
-  before runs; T0 comparison; parallel-lane calibration (1, 2, 4 lanes against one alone).
+- **Done:** T1 harness (`be_small`, `rel_small`, `rel_large`), rules and A/A control registered before runs, parallel-lane
+  calibration (L1 failed at 2-3 lanes, so one lane is used). **Next:** T0 comparison, then the remaining candidates below.
 - **Candidates:** request serial echo, slow-reader flow control (run header merge stopped at stage 0, 2026-11-11)
   (`c7-wire-room`). `ab/evict-seed` is closed (no gain). Order set after the T0 comparison.
 
