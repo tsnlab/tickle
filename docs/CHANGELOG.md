@@ -37,6 +37,15 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **Batching publisher: the flush that makes room goes where its tick sends** (`tt_VERSION` unchanged; RESULTS `BF`). A
+  publisher with `batch` on, whose next sample did not fit the datagram, flushed the buffer to make room with no
+  destination, so it was broadcast, while the tick sent the next sample by unicast to the known peer. One stream left by
+  two paths onto the receiver's two sockets, which are not read in arrival order, and BEST_EFFORT discards a sample at or
+  below the last delivered: 1000 B at 1 kHz delivered 50.0% on the rig (10 kHz 90%, flood 98.6%). The flush now goes
+  where `node_flush()` sends the same buffer (`batched_flush_peers()`), decided only on the room-making branches.
+  Default behaviour (batching off) is unchanged; rig core gate v2: PASS, 0 of 158 comparisons WORSE (a first version that
+  computed the flag on every encode read +0.09% to +0.34% user instructions and was reworked).
+
 - **RELIABLE: the reader learns a new path delay after an upward step (Karn deadlock)** (`tt_VERSION` unchanged; RESULTS
   `KS`). After a delay step up (1 -> 20 ms) every request was retried at the old `srtt + 4 rttvar`, so the recoveries
   that the back-off reached were never timed (Karn's rule) and `recovery_srtt_ns` never rose: a copy followed every
