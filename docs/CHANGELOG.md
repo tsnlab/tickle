@@ -11,6 +11,37 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-13
+
+The wireless and time-varying stage of the user's release order (2026-11-01), on simulation and the two-Pi rig: no real
+wireless hardware is used at any stage. Compatible with 2.1.0 on the wire: `tt_VERSION` stays 14 (checked 2026-11-12:
+2.1.0 and this release interoperate in both directions, 76 runs). The 2 bytes of `tt_AnnounceHeader` that were zero now
+carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a node without echoes falls back to
+`retry_initial`.
+
+### Highlights
+
+- **Retry timing that follows the path**: the reader's first retry interval is seeded by the announce round trip
+  (RESULTS `DSE`: timer requests per gap 25-58 -> 0.51-1.00 at 50 and 100 ms each way); the repair-request storm on
+  long paths is gone (`ESD`: copies after delivery 24.1-37.2% -> 0.70-0.91%); a delay step up is learned instead of
+  deadlocking Karn's rule (`KS`: V1 FAIL -> PASS on the rig).
+- **Hybrid transport**: a reordering is no longer counted as loss.
+- **Batching**: a publisher with `batch` on no longer splits a stream over broadcast and unicast (`BF`: 1000 B at 1 kHz
+  delivered 50.0% before, about 100% after; batching stays off by default).
+- **Tooling** (simulation): the T1 wireless harness (`mac80211_hwsim` + `wmediumd`, Gilbert-Elliott patch, CRAWDAD
+  pdx/vwave credit), the time-varying harnesses (netns, rig, trace replay) and `-Dtt_ESTIMATOR_TRACE`. T1 is a relative
+  A/B instrument; no T1 figure is Wi-Fi performance.
+- **Against DDS** (rig, `KS`): core T/L/S cells WIN 136, TIE 14, LOSE 0; rmw cross-host round trip fastest in all 8
+  combinations measured.
+- Closed without landing: FEC (dropped), range NACK and run header merge (stopped at stage 0), shared reorder buffer
+  over-send (advice only: `reorder_slots` 1,024-2,048 for 4 or more writers above about 10% loss), small-sample batching
+  (stage 0 did not meet its bar; the opt-in stays), slow-reader flow control (`C7W`, parked).
+- Trade-offs shipped on the user's overall judgement: `ESD` one Wi-Fi-like cell one-way p99 57.6 -> 65.7 ms; `DSE`'s
+  registered verdict stays FAIL (1 of 70 cells, a 15-rep rerun equal).
+- Every change below, in detail.
+
+### Detailed changes since 2.1.0
+
 ### Added
 
 - **Announce round trip from a tag and its echo, and the reader's first retry interval** (`tt_VERSION` unchanged). Every
