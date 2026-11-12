@@ -181,7 +181,10 @@ def main(d):
     P("LATENCY COST of B (one-way ms from perf_server; only B minus A is meaningful, clock offset cancels; never a criterion)")
     for c in cells:
         A, B = stats[(c, "A")], stats[(c, "B")]
-        if A and B:
+        if A and B and (med(A, "lat_max") == 0 or med(B, "lat_max") == 0):
+            P(f"  {c:12s} NOT MEASURED: perf_server drops every sample whose sender timestamp is not behind its own clock"
+              f" (clock skew guard), so min/avg/max read 0.000 in an arm")
+        elif A and B:
             P(f"  {c:12s} A avg {med(A, 'lat_avg'):8.3f} (max {med(A, 'lat_max'):8.3f})  B avg {med(B, 'lat_avg'):8.3f}"
               f" (max {med(B, 'lat_max'):8.3f})  B-A {med(B, 'lat_avg') - med(A, 'lat_avg'):+8.3f} ms")
     P("")
