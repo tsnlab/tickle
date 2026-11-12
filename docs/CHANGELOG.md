@@ -37,6 +37,20 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **RELIABLE: the reader learns a new path delay after an upward step (Karn deadlock)** (`tt_VERSION` unchanged; RESULTS
+  `KS`). After a delay step up (1 -> 20 ms) every request was retried at the old `srtt + 4 rttvar`, so the recoveries
+  that the back-off reached were never timed (Karn's rule) and `recovery_srtt_ns` never rose: a copy followed every
+  request for the whole phase (6.45-6.72% of samples copied after delivery, X2 `rel_small`). Now a recovery the back-off
+  reached (retry past `tt_RELIABLE_RETRY`, not a writer of large samples) raises a per-writer stall count (at most 4;
+  the retry interval is shifted left by it, RFC 6298 5.5) and feeds the estimate: the time from its first request,
+  where two in a row put the lesser in, so one inflated sample never does (`note_karn_stall()`; `tt_WriterProxy.karn_stall`,
+  `stall_took_ns`, placed last so the earlier offsets stay). Rig X2 (ethernet), `rel_small`, 8 reps: copies after delivery
+  over the worst static phase 6.45% -> **0.63%** (V1 FAIL -> PASS), NOFALSE 2.90 -> 0.31 (FAIL -> PASS), V2, DOWNGOOD
+  and V3 PASS before and after; `rel_large` V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%. The
+  estimate falls back slowly after a step down (about 12 s from 20 to 1 ms, gain 1/8): by design, unchanged. Cost:
+  c4 server instructions per sample +0.10% (inside the accepted scope). `test_reorder_window` counts re-pinned and
+  `tests/wire_identity/reliable_parent.bin` re-captured (its lossy scenario retries past the back-off).
+
 - **Hybrid transport: reordering is no longer counted as loss.** A reader counted a gap the moment a later datagram
   arrived and kept it when the missing first transmission came late: on a link with +-5 ms jitter and no loss its p
   read 0.98 and the writer sent every large sample as MTU units, at ~4x the sender's CPU (netns T1 at dc45d3d9, arm
