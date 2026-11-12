@@ -29,11 +29,11 @@
         "branch": "main",
         "commit": "8ee88bff218a052f7fe63d64703f2b2802fe9ab3",
         "commit_short": "8ee88bf",
-        "date": "2026-11-11T14:38Z",
+        "date": "2026-11-12T01:07Z",
         "rows": {
           "freertos": {
-            "build": "skipped",
-            "integration": "skipped",
+            "build": "pass",
+            "integration": "pass",
             "unit": "n/a"
           },
           "linux": {
@@ -2401,5 +2401,5 @@
       "date": "2026-10-22T11:06Z"
     }
   ],
-  "updated": "2026-11-11 14:39 UTC"
+  "updated": "2026-11-12 01:08 UTC"
 }
