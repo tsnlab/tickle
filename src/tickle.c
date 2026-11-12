@@ -5993,6 +5993,9 @@ static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_Su
 // a batched submessage waits exactly as long as it did before: 0 to one interval, not a full interval.
 static void node_flush(struct tt_Context* node, uint64_t time, void* param);
 static void flush_batched(struct tt_Context* node);
+static uint8_t batched_flush_peers(const struct tt_Context* node, const struct tt_Peer** peers);
+static void flush_to_batch_destination(const struct tt_Context* node, bool caller_flushes, const struct tt_Peer** peers,
+                                       uint8_t* peer_count);
 static uint8_t heartbeat_unicast_count(struct tt_Context* node, const struct tt_Publisher* pub);
 
 static void ensure_flush_scheduled(struct tt_Context* node) {
@@ -6034,7 +6037,6 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     // submessage by default, unless a branch below decides this submessage doesn't fit and
     // must be deferred, in which case it's overridden to `base` (everything before it).
     uint32_t flush_len;
-
     // How large the datagram carrying this submessage may grow: the full tt_MAX_BUFFER_LENGTH only
     // for a submessage that is on its own in the buffer, control_max once it shares one (tt_CONTROL_MAX_LENGTH, or
     // less under a smaller link MTU). Identical to before whenever the two are equal, which is core's default.
@@ -6068,6 +6070,7 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
         flush_len = node->tx_tail;
     } else if (node->tx_tail <= limit && node->tx_tail + roundup > limit) { // tail exceeds buffer if roundup
         submessage_header->length = length;
+        flush_to_batch_destination(node, is_flush, &peers, &peer_count);
         is_flush = true;
         flush_len = base;
     } else { // tail exceeds buffer: this submessage alone (or with roundup) already overshoots
@@ -6075,6 +6078,7 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
              // as the previous case, instead of trying to flush past flush_tx()'s own limit.
         submessage_header->length = length + roundup;
         node->tx_tail += roundup;
+        flush_to_batch_destination(node, is_flush, &peers, &peer_count);
         is_flush = true;
         flush_len = base;
     }
@@ -19475,31 +19479,52 @@ static void node_flush(struct tt_Context* node, uint64_t time, void* param) {
     ensure_flush_scheduled(node);
 }
 
+// Where node_flush() sends what is batched in tx_buffer: the sole publisher's peers when it has between one and
+// tt_UNICAST_PEER_THRESHOLD of them and no announce is batched there (it must reach the whole segment), else nobody in
+// particular (0: broadcast). Also where end_encode() sends the content it flushes to make room for a batching caller.
+__attribute__((noinline)) static uint8_t batched_flush_peers(const struct tt_Context* node,
+                                                             const struct tt_Peer** peers) {
+    *peers = NULL;
+    if (node->tx_has_pending_update) {
+        return 0;
+    }
+    const struct tt_Publisher* sole_publisher = NULL;
+    uint32_t publisher_count = 0;
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+            sole_publisher = (const struct tt_Publisher*)endpoint;
+            publisher_count++;
+        }
+    }
+    if (publisher_count != 1) {
+        return 0;
+    }
+    uint8_t count = count_peers(sole_publisher->peers);
+    if (count < 1 || count > tt_UNICAST_PEER_THRESHOLD) {
+        return 0;
+    }
+    *peers = sole_publisher->peers;
+    return count;
+}
+
+// A caller that batches (it does not flush, and names no destination) is flushed in end_encode() only to make room, and
+// that flush must go where node_flush() would send the same buffer. Otherwise one batching publisher's stream leaves
+// partly by broadcast, partly by unicast, onto the receiver's two sockets, which it does not read in arrival order, and
+// its BEST_EFFORT ordering discards the older sample (batch_stage0, 1000 B at 1 kHz: 50.0% delivered). Called only on
+// the room-making branches, so a publish that fits (the common one) pays nothing for it.
+__attribute__((noinline)) static void flush_to_batch_destination(const struct tt_Context* node, bool caller_flushes,
+                                                                 const struct tt_Peer** peers, uint8_t* peer_count) {
+    if (!caller_flushes && *peer_count == 0) {
+        *peer_count = batched_flush_peers(node, peers);
+    }
+}
+
 // node_flush()'s send without its tick: whatever is batched in tx_buffer goes now, where the tick would send it. Also
 // what heartbeat_unicast_count() sends ahead of a HEARTBEAT; the tick, still armed, then finds nothing to send.
 static void flush_batched(struct tt_Context* node) {
     const struct tt_Peer* peers = NULL;
-    uint8_t peer_count = 0;
-
-    if (!node->tx_has_pending_update) {
-        struct tt_Publisher* sole_publisher = NULL;
-        uint32_t publisher_count = 0;
-        for (uint32_t i = 0; i < node->endpoint_count; i++) {
-            struct tt_Endpoint* endpoint = node->endpoints[i];
-            if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
-                sole_publisher = (struct tt_Publisher*)endpoint;
-                publisher_count++;
-            }
-        }
-
-        if (publisher_count == 1) {
-            uint8_t count = count_peers(sole_publisher->peers);
-            if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD) {
-                peers = sole_publisher->peers;
-                peer_count = count;
-            }
-        }
-    }
+    uint8_t peer_count = batched_flush_peers(node, &peers);
 
     // flush_tx() already logs its own reason on failure, so nothing to add here.
     flush_tx(node, node->tx_tail, peers, peer_count);
