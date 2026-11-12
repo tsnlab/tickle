@@ -400,6 +400,52 @@ static void test_batched_samples_that_do_not_share_a_datagram_all_go_to_the_flus
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
 }
 
+// The same stream, the other way a batching Publisher's samples can leave by two paths: the node's periodic discovery
+// content (the summary, an announce) goes into tx_buffer behind a batched sample, or a sample is batched behind it, and
+// node_flush() then broadcasts the whole buffer, samples included, because an update must reach the whole segment. The
+// receiver reads its well-known socket (the broadcast) apart from its data socket (the unicast samples), not in
+// arrival order, so after it has been stopped for a while the sample that arrived by broadcast is delivered first and
+// BEST_EFFORT discards every older sample waiting on the data socket: perf_client -B -s 994 at 1 kHz, server stopped
+// for 1 s, 878 samples discarded though nothing was lost. The update must go alone and the samples where they go.
+static void check_update_leaves_batched_samples_to_the_flush_destination(bool announce) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    pub.batch = true;
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    uint32_t value = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // batched
+    if (announce) {
+        EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
+    } else {
+        node_update(&node, 0, NULL);
+    }
+    value = 2;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_call_count);    // sample 1, the update, sample 2
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // both samples to the peer; only the update broadcast
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+    EXPECT_TRUE(!node.tx_has_pending_update);
+}
+
+static void test_batched_samples_do_not_ride_a_summary_broadcast(void) {
+    check_update_leaves_batched_samples_to_the_flush_destination(false);
+}
+
+static void test_batched_samples_do_not_ride_an_announce_broadcast(void) {
+    check_update_leaves_batched_samples_to_the_flush_destination(true);
+}
+
 // More known peers than tt_UNICAST_PEER_THRESHOLD must fall back to broadcast instead of
 // unicasting to all of them.
 static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
@@ -1114,6 +1160,8 @@ int main(void) {
     test_node_flush_sends_nothing_with_no_known_peers();
     test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
     test_batched_samples_that_do_not_share_a_datagram_all_go_to_the_flush_destination();
+    test_batched_samples_do_not_ride_a_summary_broadcast();
+    test_batched_samples_do_not_ride_an_announce_broadcast();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();
     test_node_flush_broadcasts_when_update_is_pending();
     test_node_flush_broadcasts_when_multiple_publishers_on_node();
