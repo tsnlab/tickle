@@ -77,6 +77,15 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
   Default behaviour (batching off) is unchanged; rig core gate v2: PASS, 0 of 158 comparisons WORSE (a first version that
   computed the flag on every encode read +0.09% to +0.34% user instructions and was reworked).
 
+- **Batching publisher: a discovery summary or announce no longer carries its samples** (`tt_VERSION` unchanged). With
+  `batch` on, the periodic summary or announce shared `tx_buffer` with batched samples and `node_flush()` broadcast the
+  whole buffer, samples included, to the receiver's well-known socket while the rest went unicast. A reader that had been
+  stopped read that broadcast sample first and BEST_EFFORT discarded every older sample on the data socket (rig, 1 s
+  server stall at 1 kHz: 164 and 197 discarded in two of three runs, 2 in the third; loopback 878). The batched samples are
+  now flushed first and the update goes out alone: one extra datagram per summary interval, batching publishers only, no
+  wire, API or default change. Rig: 0 discarded in 3 of 3 runs; core gate v2 PASS, 0 of 158 deciding comparisons WORSE.
+  What remains after a stall is kernel rx-buffer overflow, expected and unchanged.
+
 - **RELIABLE: the reader learns a new path delay after an upward step (Karn deadlock)** (`tt_VERSION` unchanged; RESULTS
   `KS`). After a delay step up (1 -> 20 ms) every request was retried at the old `srtt + 4 rttvar`, so the recoveries
   that the back-off reached were never timed (Karn's rule) and `recovery_srtt_ns` never rose: a copy followed every
