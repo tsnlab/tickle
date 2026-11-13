@@ -69,8 +69,11 @@ Terse digest of [README](../README.md), [DESIGN](DESIGN.md), [ROADMAP](ROADMAP.m
 
 ## Results (RESULTS.md)
 
-- Across the network: 139 wins, 11 draws, 0 losses in 150 cells vs DDS; through ROS 2 wins all 52 same-host rows.
-- 2.2.0 rig (`KS`): core T/L/S cells WIN 136, TIE 14, LOSE 0; rmw cross-host round trip fastest in all 8 combinations measured.
+- Across the network: 139 wins, 11 draws, 0 losses in 150 cells vs DDS (October campaign, `09a0437d` to `d58873cf`,
+  RESULTS tables); through ROS 2 wins all 52 same-host rows.
+- Rerun against DDS on 2026-11-10 (rig, 3 reps, RESULTS `KS`): main `d2de7c3d` WIN 136, TIE 14, LOSE 0 of 150; `836665bb`
+  (the branch that became `933da69a`) WIN 137, TIE 13, LOSE 0; rmw cross-host round trip fastest in all 8 combinations measured.
+  The two counts are different campaigns, not a regression: the draws are not from the change (`d2de7c3d` has more).
 - Still lost: subscriber CPU per MB vs FastDDS at 4 MB / 15 Hz (+4.5%); one 100 us poll round trip vs CycloneDDS via ROS 2 (+1.2%, row 63c).
 - Trade-offs shipped: `ESD` one Wi-Fi-like cell one-way p99 57.6 -> 65.7 ms; `DSE` registered verdict stays FAIL (1 of 70 cells).
 
