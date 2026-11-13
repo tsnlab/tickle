@@ -133,3 +133,24 @@ Definitions `gate_v2_lib.sh`, reading `gate_v2.py`; `GATE=v1` repeats an old run
   threshold **and** `|P - A|` for that metric and cell. No P arm, or a named metric unmeasured = NO VERDICT.
 - Throughput-cell counts move with timing (P's floor absorbs it); a latency-cell instruction WORSE is real work.
 - Validated on the rig at `5263213e` (A vs P, A vs A at 256: 0 of 88 rows WORSE each; `rig_queue_gate_xval.sh`).
+
+## 7. Release 2.2.0 test results
+
+Taken 2026-11-13 on the release branch head (`tickle.c: comment named cache_durable_sample(), which does not exist`),
+which has no code change against the head the rig gate below measured. Figures: [RESULTS.md](RESULTS.md); the wireless
+indicators are in [RESULTS.md section 5](RESULTS.md#5-wireless-segment-220-simulation-only) and are simulation only.
+
+| check | result | source |
+|---|---|---|
+| `make check-gates` (16 rows) | 13 PASS, 1 FAIL (`lint-shell`, known: no shellcheck on the PC), 2 SKIP (`lint-freertos-hal` and `build freertos`: FreeRTOS/lwIP submodules not checked out); the exit is non-zero only because of those three | run of 2026-11-13 on this branch |
+| `make test` | exit 0 (all unit tests passed, mock HAL) | same run |
+| `make test-linux` | exit 0 (two nodes in two netns: ping and pong round trips, offload, rx-direct, sched-wake, discovery-reply checks PASS; one round-trip run recv=300 of 300 sent, loss 0%) | same run |
+| rig core gate v2, `refac220` (the release head, with its two last commits (three unused macros dropped, a comment fixed), against its parent `CHANGELOG: batching summary/announce no longer carries samples`; 3 reps, A P B B P A, started 2026-11-13 11:58) | **PASS**, 0 of 158 deciding comparisons WORSE (0 better, 158 held); secondary (never decide) 3 better, 124 held, 5 WORSE of 132 | `~/rig_results_safe/refac220_compare.txt`, `refac220_chain.log` |
+| rig core gate v2, `stallfix` (the batching summary/announce stall fix (CHANGELOG 2.2.0) against main `fc8fb1c4`; same design, started 2026-11-13 09:10) | **PASS**, 0 of 158 WORSE | `/tmp/stallfix_compare.txt` (PC), `~/rig_results_safe/stallfix_chain.log`, `stallfix_rig/` |
+| rig core gate v2, `batchfix2` (the room-making flush fix against main `019e36d7`; same design, started 2026-11-12 22:01) | **PASS**, 0 of 158 WORSE. The first version (`batchfix_v1`) read 13 WORSE and was reworked | `/tmp/batchfix2_compare.txt` (PC), `~/rig_results_safe/batchfix2_chain.log`, `batchfix_v1/batchfix_compare.txt`; RESULTS `BF` |
+| wire interop, v2.1.0 (tag, `819b051e`) against main `ae79c2f1`, both `tt_VERSION` 14, 4 pairings (old-old, new-new, old-new, new-old) x discovery, BEST_EFFORT flood, RELIABLE flood, service call, 5% loss, netns, 76 runs | **PASS**: delivery 100% in D, B, R; 99.996% (old to new) and 99.992% (new to old) at 5% loss against 100% for the controls; service 20 / 20 in every run; discovery median 25-27 ms against 27 ms; no crash, no version or refusal line | `~/claude_reports/INTEROP_V2_1_0_VS_MAIN_2026-11-12.md` |
+| DDS comparison, core, cross-host (rig, two Pis) | **no LOSE**: October campaign WIN 139 / DRAW 11 / LOSE 0 of 150; rerun 2026-11-10 (3 reps) main `d2de7c3d` 136 / 14 / 0 and `836665bb` 137 / 13 / 0 of 150; campaign T 25 / 5 / 0 and 27 / 3 / 0 of 30 | RESULTS TL;DR and `KS`; `~/rig_results_safe/cmp_dds_20261110/` |
+| DDS comparison, rmw and large messages | cross-host rmw WIN 21 / DRAW 6 / LOSE 1 of 28 (row 63c); same host 52 / 52; round trip fastest in all 8 combinations of the 2026-11-10 rerun; large messages (L4) WIN 58 / DRAW 21 / LOSE 1 of 80 (I4 best effort CPU per MB, +4.5%). The two LOSE rows are documented, none new in 2.2.0 | RESULTS TL;DR, `KS`, "Every LOSE" |
+
+Known and unchanged: `lint-shell` fails on the PC for lack of shellcheck, and the two FreeRTOS rows SKIP; neither is a
+regression. The `refac220` secondary WORSE rows are witnesses and never decide under gate v2 (section 6.1).
