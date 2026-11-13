@@ -2,9 +2,12 @@
 
 **TL;DR.** TickLE against FastDDS and CycloneDDS on two Raspberry Pi 5s; zenoh is reference only and never scored.
 - Core, cross-host: WIN 139, DRAW 11, LOSE 0 of 150. Core, same host: WIN 18 of 18.
+  (October campaign, `09a0437d` to `d58873cf`, The 2026-11-10 rerun, 3 reps: main `d2de7c3d` 136 / 14 / 0, `836665bb`
+  137 / 13 / 0, also 150 cells, no LOSE; row `KS`.)
 - ROS 2 (rmw), cross-host: WIN 21, DRAW 6, LOSE 1 of 28 (row 63c). Same host: WIN 52 of 52.
 - Large messages (L4): WIN 58, DRAW 21, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
 - Latency is measured from creation time, throughput is goodput, and nothing is pinned.
+- Wireless segment (2.2.0): simulation only (mac80211_hwsim + wmediumd, netem), relative A/B figures, never Wi-Fi performance; no real wireless hardware was used. Table: [section 5](#5-wireless-segment-220-simulation-only).
 
 Full text before this shortening (per-run histories, traces, every rule's reading): `git show e6b23b63:docs/RESULTS.md`.
 Older still (provenance prose, pinned figures, zenoh columns): `git show a89aefe2:docs/RESULTS.md`.
@@ -525,5 +528,63 @@ each code's full reading is in the pre-shortening text (top of this file).
 | S1R | Shared-memory module on but unused, cross-host: no client cell WORSE (-0.2..+1.7%); server +0.98% at p4 only (a candidate); publisher +330-530 user instructions a sample | `132548dd` | 2026-10-22 | `s1kh/132548dd_20261022-230208/` |
 | ESD | ETHERNET repair-request storm on long paths: the reader's recovery estimate timed from the profile's seed by Karn's rule on every link. 6-rep A/B, `s_d20` rel_small: copies after delivery 24.1-37.2% -> **0.70-0.91%**, timer requests per gap 15.1 -> 0.4; round trips completed PASS. One registered FAIL of 48: `wbe_small` ge5b4 rel_small one-way p99 57.6 (A) / 57.7 (A2) -> 65.7 ms, a steady-state trade (B's recoveries 8-32 ms where A re-asked every 1 ms), not warm-up. Landed 2026-11-03 on the overall judgement | `b88fb5a9` | 2026-11-03 | `~/rig_results_safe/ethernet_seed/karn6_20261103-082236/` |
 | DSE | Discovery-seeded first retry interval (the announce round trip from a tag and its echo, `tt_AnnounceHeader.marks`): ETHERNET netns, 8 treatment points (50 and 100 ms each way x 1/2/5/10% loss) + 6 controls (1, 5, 20 ms), rel_small and rel_large, `dseed_ab.sh` 3 rounds of A / B / A2 (A/A noise control), EST_TRACE. Four registered runs: v2 (3 round trips) P1 PASS / P2 FAIL on tail latency (OWD p99 150 -> 295..390 ms at 50 ms); v3 (one round trip + a flush tick) P1 8/8, P2 FAIL at two 20 ms controls (the seeded first timer delayed a lost fragment's second ask 40 ms); v4 (first timer unseeded) P1 8/8, P2 FAIL on large-sample retry pacing reading the seed (+87 ms rel_large OWD p99 at 20 ms/1%, +37 ms at 1 ms/10%); **v5** P1 8/8 (timer requests per gap 25-58 -> **0.51-1.00**), P2 70 comparisons, 1 WORSE, 10 noise VOID: 50 ms/2% rel_small DELIVERY A 98.31 / B 97.41 / A2 97.76 (-0.90 point, tolerance 0.55). That cell re-run, registered first: 15 reps per arm, A 98.00 / B 98.00 / A2 98.03 median, PASS (the v5 verdict stays FAIL as registered). Delivery at 50 and 100 ms and 20 ms/10% stays history-limited, alike in A and B: a repair outliving the writer's KEEP_LAST 10 history (100 ms at 100 Hz) is lost whatever the retry interval (50 ms/10% rel_small A 90.03 / B 90.17). Landed 2026-11-06 on the overall judgement | `e42185f1` | 2026-11-06 | `~/rig_results_safe/dseed_ab/20261105-223239/`, `~/rig_results_safe/dseed_conf50/` |
-| KS | Karn deadlock after a delay step, rig (two Pis), ethernet profile, X2 step harness (`x2_step_rig.sh`), 8 reps, A = `d2de7c3d` (before), B = `933da69a` (after). `rel_small` (family D): copies after delivery over the worst static phase 6.45% -> **0.63%** (V1 FAIL -> PASS), NOFALSE FAIL -> PASS, V2, DOWNGOOD, V3 PASS in both; `rel_large` (1 MiB, 5 Hz, `TT_UDP_OFFLOAD=0`): V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%, control 0 resends; CONV (report only) outside its band by phase end in both arms. Down-step: A never follows the 20 ms step (srtt stuck at 2.2 ms), B peaks 34-38 ms and reads 4.0-14.2 ms 12.5 s after the step back to 1 ms (gain 1/8; kept, the user 2026-11-11). Core gate: c4 server instructions per sample +0.10%, c15 gone (the user's accepted scope). Against DDS on the same builds (3 reps; 836665bb for the branch file): core T/L/S cells WIN 136, TIE 14, LOSE 0; rmw cross-host RTT (`V` rows) tickle fastest in all 8 combinations (e.g. bench BEST_EFFORT avg 0.238 vs CycloneDDS 0.275 vs FastDDS 0.318 ms). Landed 2026-11-10 | `933da69a` | 2026-11-10 | `~/rig_results_safe/time_varying/x2rigR_{A,B}/`, `x2rigL2_{A,B}/`, `~/rig_results_safe/cmp_dds_20261110/` |
+| KS | Karn deadlock after a delay step, rig (two Pis), ethernet profile, X2 step harness (`x2_step_rig.sh`), 8 reps, A = `d2de7c3d` (before), B = `933da69a` (after). `rel_small` (family D): copies after delivery over the worst static phase 6.45% -> **0.63%** (V1 FAIL -> PASS), NOFALSE FAIL -> PASS, V2, DOWNGOOD, V3 PASS in both; `rel_large` (1 MiB, 5 Hz, `TT_UDP_OFFLOAD=0`): V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%, control 0 resends; CONV (report only) outside its band by phase end in both arms. Down-step: A never follows the 20 ms step (srtt stuck at 2.2 ms), B peaks 34-38 ms and reads 4.0-14.2 ms 12.5 s after the step back to 1 ms (gain 1/8; kept, the user 2026-11-11). Core gate: c4 server instructions per sample +0.10%, c15 gone (the user's accepted scope). Against DDS (rig, 3 reps, `campaign_summary.py` totals over comparable metric-cells, 2026-11-10): campaign A main `d2de7c3d` WIN 136, TIE 14, LOSE 0 of 150 and `836665bb` (the branch file; `933da69a` itself was not run against DDS) WIN 137, TIE 13, LOSE 0 of 150; campaign T (FastDDS 1472) 25 / 5 / 0 and 27 / 3 / 0 of 30 (an earlier text of this row gave 136 / 14 for the branch: that is the main arm); rmw cross-host RTT (`V` rows) tickle fastest in all 8 combinations (e.g. bench BEST_EFFORT avg 0.238 vs CycloneDDS 0.275 vs FastDDS 0.318 ms). Landed 2026-11-10 | `933da69a` | 2026-11-10 | `~/rig_results_safe/time_varying/x2rigR_{A,B}/`, `x2rigL2_{A,B}/`, `~/rig_results_safe/cmp_dds_20261110/` |
 | BF | Batching publisher's room-making flush, found by the small-sample batching stage 0 (rig, `perf_client -B` and a paced copy, best effort, 1000 B, 5 reps): delivery 98.6% (flood), 90.0% (10 kHz), 50.0% (1 kHz) with `batch` on, clean with it off; the server received every datagram (`rx_udp` 20,028 for 20,001 sent) but discarded the older sample of each broadcast/unicast pair (delivered 3002, `out_of_order_discarded` 2995). Cause and fix: CHANGELOG Fixed. Rig diagnostic after the fix (one 6 s run, not an A/B): 5,997 of 6,001 delivered at 1 kHz. Core gate v2 (`campaign_ab_chain.sh`, A `019e36d7`, B = this fix before its rebase, source-identical, 3 reps, 158 comparisons): **PASS**; the first version, which computed a flag on every encode, read 13 WORSE, +0.09% to +0.34% user instructions a sample, and was reworked. The stage 0 verdict (small-sample batching FAIL, 2 of 6 cells) was measured on the buggy path; its flood delivery (90.4% at 16 B, 95.9% at 100 B) and 1000 B cells are not re-measured. Open, separate: a 1 s server stall still discards about 877 samples with every datagram unicast | `d66a60e4` | 2026-11-13 | `~/rig_results_safe/batchfix_v1/`, `~/rig_results_safe/batchfix2_chain.log`, `~/rig_results_safe/batch_stage0_20261112/` |
+
+## 5. Wireless segment, 2.2.0 (simulation only)
+
+**Read this first.** No real wireless hardware was used, now or later (the user, 2026-11-08). Every figure in the first
+table is from `mac80211_hwsim` + a patched `wmediumd` (T1, `examples/perf_hil/experiments/t1/README.md`) on the dev PC,
+or from netem (T0). They are relative A/B instruments: absolute delivery and latency describe the simulation model,
+**not Wi-Fi performance**, and none may be quoted as such. hwsim has no real airtime contention and no congestion
+control; broadcast frames get one attempt, unicast gets per-attempt MAC retries (`RETRY=1`); only one lane passes the
+parallel-lane rule (L1). Cells: `be_small` / `rel_small` = 100 B at 100 Hz, one lane (60 s = 5,900 scored, 120 s = 11,900,
+20 s = 1,900), `rel_large` = 128 KiB at 0.25 Hz. Latency is one-way (`be_small`) or as the harness reads it; "retx" =
+retransmitted datagrams. Raw directories are under `~/rig_results_safe/`; the readings are in the PC-local
+`~/claude_reports/T1_PLAN.md` (dated sections). The T1 runs have no row in section 4 because they decided no landing
+(the candidates they judged are `KR`, `ESD`, `DSE`, and `ab/evict-seed`, "no gain" twice); the ids W1 to W12 below are
+this table's own.
+
+### Wireless-segment indicators (T1 simulation; T0 where marked)
+
+| id | what | delivery | latency | retx | raw directory (date) |
+|---|---|---|---|---|---|
+| W1 | T1, no loss, `be_small` 20 s, before the retry model | 1,900 / 1,900 (100%) in 3 of 3 reps; rule V1 PASS | one-way p50 1.3-2.1 ms, p99 2.8-3.6 ms | n/a | `t1_v1/20261107-001401` |
+| W2 | T1, uniform link error p = 0 / 0.1 / 0.3, retry model, `be_small` 20 s | 1,900 / 1,900 at every p | p50 1.3 / 1.3-2.1 / 1.9-4.7 ms; p99 2.8-2.9 / 3.1-4.7 / 5.5-13.8 ms | n/a | `t1_v1b` (2026-11-07) |
+| W3 | same, `rel_small` | 1,900 / 1,900 at every p | p50 1.3-2.7 / 1.3-2.1 / 3.4-6.0 ms; p99 2.8-7.2 / 3.1-4.3 / 13-17 ms | not recorded | `t1_v1r` (2026-11-07) |
+| W4 | T1, quiet-link profiles `ug`, `library`, `psu_cs`, `pioneer` (fitted to CRAWDAD pdx/vwave), retry model, `be_small` 60 s | 5,900 / 5,900 in every run | p50 1.3-3.5 ms, p99 3-6 ms | n/a | `t1_ge2r` (2026-11-07) |
+| W5 | T1, `psu_cs`, retry model, seeded and pinned, `rel_small` 120 s, 6 reps | 11,900 / 11,900 | p50 1.27-1.31 ms, p99 4.0-4.4 ms | 0 | `t1_ge2rel_r1` (2026-11-07) |
+| W6 | T1, loss model **o60** (bad state 60 ms at 0.9), retry model, seeded and pinned, `rel_small` 120 s, 6 reps | 11,614-11,857 of 11,900 (97.6-99.6%) | p90 367-842 ms | 625-1,552 | `t1_ge2rel_r1` |
+| W7 | T1, loss model **o200** (bad state 200 ms at 0.9), same, `rel_small` 120 s, 4 reps | 11,543-11,678 (97.0-98.1%) | p90 0.93-1.11 s | 1,280-2,017 | `t1_ge2rel_r2` (2026-11-07) |
+| W8 | T1, o60 and o200, same, `be_small` 120 s, 4 reps (best effort, no repair) | o60 11,275-11,456 (94.8-96.3%); o200 11,244-11,284 (94.5-94.8%) | o60 p90 116-130 ms, p99 247-353 ms; o200 p90 119-126 ms, p99 445-521 ms | n/a | `t1_ge2be_r1` (2026-11-07) |
+| W9 | T1, unseeded stress, `rel_small` 60 s, 2 reps each | o20 5,734 / 5,900; o60 5,610 / 5,723; o200 5,685 / 5,487 of 5,900 | p90 o20 1.01 / 0.15 s, o60 1.6 / 1.0 s, o200 1.2 / 1.5 s | o20 1,211 / 106; o60 2,016 / 1,233; o200 2,513 / 1,479 | `t1_stress` (2026-11-07) |
+| W10 | T1, broadcast leg (a node built with `tt_UNICAST_PEER_THRESHOLD=0`: AP rebroadcast, one attempt, no retry), `be_small` 60 s, 2 reps | ug 5,690 / 5,585; psu_cs 5,466 / 5,479; o60 5,030 / 5,006 of 5,900 (84.8-96.4%) | p90 ug 6-8 ms, psu_cs 7 ms, o60 86-93 ms | n/a | `t1_bc1` (2026-11-08) |
+| W11 | T1, `rel_large` 128 KiB at 0.25 Hz, 15 samples a run, retry model; load must stay under the AP broadcast path's ~0.6 Mbit/s (55-60 datagrams/s) | delivered of 15: ctl 15, 14; psu_cs 15, 13; o60 15, 13; o200 14, 13 | median 11-13 s (queue-bound, a model figure) | 3.7k-7k | `t1_large4` (2026-11-07/08, run overnight) |
+| W12 | T1, range-NACK stage 0 on broadcast cells (12 loss runs, main `ae3a5f85`) | not a delivery test | n/a | ACKNACK bytes 0.31-1.05% of forward bytes; STOP | `range_nack_s0_*` (2026-11-11) |
+
+### Wireless-segment noise floors, the A/B rules and the time-varying stage (T1 and netem)
+
+| id | what | result | raw directory / row |
+|---|---|---|---|
+| N1 | T1 noise, retry model, seeded, pinned, 120 s | `rel_small` o60: delivered spread 2.1%, p90 2.3x, retx 2.5x; o200 delivered 1.2%; `be_small` o60 1.6%, o200 0.4%. Delivered usable at ~3%; p90 and retx only for >3x differences | `t1_ge2rel_r1`, `t1_ge2rel_r2`, `t1_ge2be_r1` |
+| N2 | T1 noise, quiet profile `psu_cs`, retry model, 12 runs | delivered 5,900 / 5,900 in all; p50 1.28-3.49 ms (x2.7, a phase effect), p99 3.6-9.3 ms | `t1_noise2` |
+| N3 | T1 A/A control inside `ab/evict-seed` on o60 `rel_small` (6 rounds) | delivered A 11,873 / A2 11,801 (0.6%, valid) / B 11,814 (-0.5%: no gain); retx A 649 / A2 1,028 and p90 A 383 / A2 469 ms: A/A differs 58% and 23%, both VOID | `t1_abs_o60s` (2026-11-07) |
+| N4 | T1 lanes (rule L1), steady link error 0.012, `be_small`, old single-draw model | alone 1,809-1,813 / 1,900, p50 3.0-12.1 ms, p99 207-260 ms; 2 lanes 1.2-4.1 pt lower, p50 35-65 ms: L1 FAILS, one lane only | `t1_lanes/20261107-041115` |
+| N5 | CRAWDAD pdx/vwave sniffer fit (downlink MAC attempts per frame, real data, not a T1 output) | mean attempts 1.02 (ug), 1.09 (library), 1.23 (pioneer), 1.09 (psu_cs); fitted model 1.021 / 1.086 / 1.223 / 1.083 | `T1_PLAN.md` "CRAWDAD pdx/vwave" |
+| N6 | Wi-Fi-like loss, netem (T0), ETHERNET and WIFI profiles, 3 reps, main `200eefc6` | WIFI: R1, R3, R6 PASS; R4 ge10b4 `rel_large` p50 57.79 ms against its 74.24 ms bound; R7 3.7%; ETHERNET R4 ge10b4 121.3 ms, R5 and R7 FAIL | row `WB2` (2026-11-02) |
+| N7 | Wi-Fi-like loss, netem (T0): repair timing and discovery | WIFI discovery false peer deaths 81 -> 0 (`WW`); resends per lost datagram 2.2-2.9 -> 0.93-1.07, `tv` copies after delivery 12.7% -> 2.5% (`WR`) | rows `WW`, `WR` |
+| N8 | Time-varying, netem netns harness `time_varying_netns.sh` at `dc45d3d9`, ETHERNET, 270 runs, 5 reps (thresholds a DRAFT then) | V3 (goodput in the first 2 s after each loss step) PASS: `LB` rel_small 100.00% and rel_large 100.00%; `LD` p2 rel_small 98.36%, rel_large 100.00%; V4 `J` rel_small PASS; V2 VOID in 3 of 4 (too few samples after a step); two `LG_p10` V3 VOID | `time_varying/t1_dc45d3d9_20261102-1906` (the directory name is `t1_`, the run is netns, no `wmediumd`) |
+| N9 | Time-varying, a time-varying `wmediumd` schedule | **no result recorded**: the ROADMAP named it a plan; every recorded time-varying run is netem (N8) or the rig (R1 to R3) | none |
+
+### Rig (two Raspberry Pi 5, wired 1 GbE, ethernet profile): kept separate, not wireless
+
+| id | what | result | row / directory |
+|---|---|---|---|
+| R1 | Karn deadlock after a delay step, `rel_small`, 8 reps, A `d2de7c3d` -> B `933da69a` | copies after delivery over the worst static phase 6.45% -> 0.63% (V1 FAIL -> PASS), NOFALSE FAIL -> PASS | `KS` |
+| R2 | same, `rel_large` (1 MiB, 5 Hz, `TT_UDP_OFFLOAD=0`) | V1 0.48% -> 0.64% (limit 1.00%, A/A 0.45-0.90%), V3 100% | `KS` |
+| R3 | down-step estimate (20 ms -> 1 ms) | A never follows the up-step (srtt stuck 2.2 ms); B reads 4.0-14.2 ms 12.5 s after the step back (gain 1/8, kept) | `KS` |
+| R4 | repair-request storm on long paths, netns (ETHERNET) | copies after delivery 24.1-37.2% -> 0.70-0.91%; one registered FAIL: `wbe_small` ge5b4 one-way p99 57.6 -> 65.7 ms, shipped on the user's judgement | `ESD` |
+| R5 | discovery-seeded first retry (50 and 100 ms each way), netns | timer requests per gap 25-58 -> 0.51-1.00; registered verdict FAIL (1 of 70 cells: 50 ms / 2% delivery 98.31 -> 97.41%); the 15-rep rerun is equal | `DSE` |
+| R6 | Wi-Fi `tv` storms, rig | collapsed-timeout reps 25/60 -> 0/30; core gate v2 PASS 0/88 | `TVS` |
+
+All R rows are TickLE against TickLE or against its own earlier build; nothing in this section is scored against DDS.

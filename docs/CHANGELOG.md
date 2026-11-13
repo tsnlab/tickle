@@ -31,8 +31,9 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
 - **Tooling** (simulation): the T1 wireless harness (`mac80211_hwsim` + `wmediumd`, Gilbert-Elliott patch, CRAWDAD
   pdx/vwave credit), the time-varying harnesses (netns, rig, trace replay) and `-Dtt_ESTIMATOR_TRACE`. T1 is a relative
   A/B instrument; no T1 figure is Wi-Fi performance.
-- **Against DDS** (rig, `KS`): core T/L/S cells WIN 136, TIE 14, LOSE 0; rmw cross-host round trip fastest in all 8
-  combinations measured.
+- **Against DDS** (rig, `KS`, rerun 2026-11-10, 3 reps): core cells WIN 136, TIE 14, LOSE 0 of 150 on main `d2de7c3d`
+  and WIN 137, TIE 13, LOSE 0 on `836665bb`; rmw cross-host round trip fastest in all 8 combinations measured. The
+  139 / 11 / 0 above is the October campaign (RESULTS tables).
 - Closed without landing: FEC (dropped), range NACK and run header merge (stopped at stage 0), shared reorder buffer
   over-send (advice only: `reorder_slots` 1,024-2,048 for 4 or more writers above about 10% loss), small-sample batching
   (stage 0 did not meet its bar; the opt-in stays), slow-reader flow control (`C7W`, parked).
