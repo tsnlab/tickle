@@ -442,6 +442,29 @@ static void test_batched_samples_do_not_ride_a_summary_broadcast(void) {
     check_update_leaves_batched_samples_to_the_flush_destination(false);
 }
 
+// And the sample published after an update that has nothing batched ahead of it: it goes to the peer, the update alone.
+static void test_a_sample_batched_after_a_summary_does_not_ride_its_broadcast(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    pub.batch = true;
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    node_update(&node, 0, NULL);
+    uint32_t value = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // the summary, the sample
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the sample to the peer
+}
+
 static void test_batched_samples_do_not_ride_an_announce_broadcast(void) {
     check_update_leaves_batched_samples_to_the_flush_destination(true);
 }
@@ -1162,6 +1185,7 @@ int main(void) {
     test_batched_samples_that_do_not_share_a_datagram_all_go_to_the_flush_destination();
     test_batched_samples_do_not_ride_a_summary_broadcast();
     test_batched_samples_do_not_ride_an_announce_broadcast();
+    test_a_sample_batched_after_a_summary_does_not_ride_its_broadcast();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();
     test_node_flush_broadcasts_when_update_is_pending();
     test_node_flush_broadcasts_when_multiple_publishers_on_node();
