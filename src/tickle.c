@@ -64,15 +64,16 @@ _Static_assert(tt_LARGE_CDR_OFFSET % 8 == 4, "a large sample's CDR no longer lan
 #undef TT_FRAMING_HDR
 #if tt_FRAG_ENABLED
 _Static_assert(sizeof(struct tt_DataHeader) == tt_FRAG_DATA_HEADER_LENGTH, "tt_FRAG_DATA_HEADER_LENGTH is stale");
-_Static_assert(sizeof(struct tt_FragFirstHeader) == sizeof(struct tt_DataHeader) + 1 &&
-                   sizeof(struct tt_FragContHeader) == (2 * sizeof(uint32_t)) + 2,
-               "fragment headers are unpadded by design - see DATAFRAG_PLAN.md section 6.3");
+_Static_assert(
+    sizeof(struct tt_FragFirstHeader) == sizeof(struct tt_DataHeader) + 1 &&
+        sizeof(struct tt_FragContHeader) == (2 * sizeof(uint32_t)) + 2,
+    "fragment headers are unpadded by design - see git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 6.3");
 #endif
 // The default Publisher cache depth must fit the Subscriber's tt_RELIABLE_BITMAP_BITS-wide
 // tracking window (struct tt_WriterProxy.received_bitmap): a gap further back than the window can
 // never be named in an ACKNACK, so retaining more than that by default buys no recovery (Phase 1-c
 // removed the other user of this constant, skip_unrecoverable_backlog()'s compile-time depth guess;
-// rmw_tickle/PLAN.md's Phase 3 KEEP_ALL rule - unacked samples <= the window - rests on the same
+// The Phase 3 KEEP_ALL rule (git show 3c0c505b:rmw_tickle/PLAN.md) - unacked samples <= the window - rests on the same
 // bound).
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
@@ -2142,8 +2143,8 @@ static void note_reached_armed(struct tt_Context* node, const struct tt_Peer* pe
     }
 }
 
-// The gate, inline at every send (OPTIMIZATION_PLAN.md 11.5, D5): unarmed - every node without short leases - a send
-// pays one load and a branch, where an out-of-line call cost the Pi 4-6 ns a sample.
+// The gate, inline at every send (git show 3c0c505b:examples/perf_hil/OPTIMIZATION_PLAN.md 11.5, D5): unarmed - every
+// node without short leases - a send pays one load and a branch, where an out-of-line call cost the Pi 4-6 ns a sample.
 static inline void note_reached(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
     if (node->summary_skip_armed) {
         note_reached_armed(node, peers, peer_count);
@@ -2151,9 +2152,9 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 }
 
 // ---------------------------------------------------------------------------------------------
-// The transport seam (SHM_PLAN.md stage 0). Every datagram core sends leaves through one of these
-// four, and every datagram it receives is counted in one place, so "which transport carried this"
-// is asked and answered where the bytes actually move.
+// The transport seam (git show 3c0c505b:rmw_tickle/SHM_PLAN.md stage 0). Every datagram core sends leaves through one
+// of these four, and every datagram it receives is counted in one place, so "which transport carried this" is asked and
+// answered where the bytes actually move.
 //
 // Stage 0 puts UDP behind all of them and adds nothing else: the wire is byte-identical to the
 // build before the seam, which is the claim that carries this stage. What the seam buys now is the
@@ -2360,7 +2361,7 @@ static inline uint32_t frag_whole_limit(const struct tt_Context* node) {
 static bool valid_slot_bytes(uint32_t slot_bytes) {
     // Below a datagram header nothing can be placed at all. The ceiling is a datagram's worth rather than
     // tt_MAX_SAMPLE_LENGTH, because a slot larger than a datagram is only useful for carrying a record whole
-    // - SHM_PLAN 6e(a).
+    // - git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(a).
     //
     // THE MEASUREMENT THIS CEILING WAS PUT HERE FOR WAS MEASURING A BUG, and is corrected in place
     // rather than deleted because the reading drawn from it was published too. It said: "2713 Mbps
@@ -2406,13 +2407,14 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 // Safe because a slot is not published until the release store of `sequence` below: a reader cannot see a
 // half-written record whether it was written in one memcpy or two.
 //
-// Split into a claim and a publish (SHM_PLAN 6e(b), 2026-10-06) so that a publisher can encode a sample straight
-// into the slot between the two, rather than into tx_buffer and then copying it here. THE RULE THAT SPLIT CREATES:
-// a claimed slot must be published, whatever happens in between. The ring has many writers, so a claim cannot be
-// taken back - write_index has already moved past it and another writer may have claimed the next one - and the
-// single reader takes records in index order, so an index claimed and never published stops the segment for every
-// writer (segment_head_stalls). A writer with nothing to put in it publishes a zero-length record, which the reader
-// releases like any other and the receive path drops before parsing (process_datagram_locked(): len 0 is a doorbell).
+// Split into a claim and a publish (git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(b), 2026-10-06) so that a publisher can
+// encode a sample straight into the slot between the two, rather than into tx_buffer and then copying it here. THE RULE
+// THAT SPLIT CREATES: a claimed slot must be published, whatever happens in between. The ring has many writers, so a
+// claim cannot be taken back - write_index has already moved past it and another writer may have claimed the next one -
+// and the single reader takes records in index order, so an index claimed and never published stops the segment for
+// every writer (segment_head_stalls). A writer with nothing to put in it publishes a zero-length record, which the
+// reader releases like any other and the receive path drops before parsing (process_datagram_locked(): len 0 is a
+// doorbell).
 
 // HELD SLOTS ARE SKIPPED (2026-10-20). A slot whose bytes someone still uses after its record was read - a sample the
 // owner retained (tt_Sample_retain()) - used to keep the sequence that says "published", which no writer claims, so the
@@ -3281,14 +3283,14 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
     node->lend.segment_release_deferred = false; // a same-host peer again: the segment is wanted after all
 #endif
     // And let a cached "no" about this peer expire now rather than after segment.attach_retry_ns (it was
-    // tt_SEGMENT_ATTACH_RETRY_SENDS sends when this was written). Measured 2026-10-02 (COMPARISON 2.2c): in a same-host
-    // ping/pong every repetition read shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach
-    // lost a race with the peer building its own segment, and the countdown then held the answer for 256 more sends. An
-    // exchange shorter than that never used shared memory at all, which is the shape of a request/reply
-    // service. The countdown is right for the case it was built for, a peer on another host that will
-    // never have a segment; it is wrong here, because this function is reached only for a peer at our
-    // own address, which is exactly the peer about to have one. Discovery already knew what the sender
-    // was waiting for and had no way to say it.
+    // tt_SEGMENT_ATTACH_RETRY_SENDS sends when this was written). Measured 2026-10-02 (git show
+    // 3c0c505b:rmw_tickle/COMPARISON.md 2.2c): in a same-host ping/pong every repetition read shm_attach_absent=1,
+    // tx_udp_unattached=257, shm_attach_ok=1 - the first attach lost a race with the peer building its own segment, and
+    // the countdown then held the answer for 256 more sends. An exchange shorter than that never used shared memory at
+    // all, which is the shape of a request/reply service. The countdown is right for the case it was built for, a peer
+    // on another host that will never have a segment; it is wrong here, because this function is reached only for a
+    // peer at our own address, which is exactly the peer about to have one. Discovery already knew what the sender was
+    // waiting for and had no way to say it.
     //
     // Only the negative answer. A "yes" expires for its own reason - an owner that was killed leaves
     // the mapping intact and only asking the name again can tell - and clearing that here would make
@@ -3577,7 +3579,7 @@ static void count_tx(struct tt_Context* node, enum tt_Transport transport, uint3
 
 // Why a datagram went over UDP although the module is built in. Every UDP datagram has exactly one
 // of these, which is what makes tx_udp == the sum of the four by-reason counters an invariant
-// rather than a hope (SHM_PLAN.md's S2 asserts the same thing end to end).
+// rather than a hope (S2 in git show 3c0c505b:rmw_tickle/SHM_PLAN.md asserts the same thing end to end).
 enum udp_reason {
     UDP_BECAUSE_BROADCAST, // no single peer, so no name: by design
     UDP_BECAUSE_OVERSIZED, // larger than a slot: a service, which does not fragment
@@ -4247,8 +4249,8 @@ static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgr
 static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);
 
 // The largest record this particular send may carry: a datagram's worth, unless every destination is a
-// same-host peer whose segment can take more (SHM_PLAN 6e(a)). Asked at each send site with THAT send's
-// destinations rather than computed once and passed down, because the destinations differ between a
+// same-host peer whose segment can take more (git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(a)). Asked at each send site
+// with THAT send's destinations rather than computed once and passed down, because the destinations differ between a
 // publish and the retransmission of the same sample to the one node that asked for it - a single threaded
 // value would be right for one of them and wrong for the other.
 static uint32_t record_size_limit(struct tt_Context* node, uint32_t floor, const struct tt_Peer* peers,
@@ -4258,7 +4260,7 @@ static uint32_t record_size_limit(struct tt_Context* node, uint32_t floor, const
     // the largest slot this context has ever attached to. When that is no more than the floor - every peer at the
     // default slot of one datagram - the answer is the floor whatever the destinations are, and the walk is skipped.
     // It was four walks per publish; skipping them measured -1.5% publisher CPU on p3 (2026-10-05, 6 reps per arm,
-    // ranges separate), small and just above the ~1% layout floor of WIRE_PLAN 10.4.
+    // ranges separate), small and just above the ~1% layout floor of git show 3c0c505b:rmw_tickle/WIRE_PLAN.md 10.4.
     if (node->segment_slot_ceiling <= floor) {
         return floor;
     }
@@ -4414,8 +4416,8 @@ static uint32_t frag_payload_length(const struct tt_Context* node, uint32_t inde
 
 // Writes fragment `index` of the sample data_header names - its submessage header and fragment header,
 // not its payload - at out, and returns how many bytes that is. Every datagram of a sample takes its own
-// seq_no (DATAFRAG_PLAN.md section 13): fragment i is data_header->seq_no + i, which is what lets the
-// ordinary ACKNACK name, and the writer resend, exactly the datagram that was lost.
+// seq_no (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13): fragment i is data_header->seq_no + i, which is
+// what lets the ordinary ACKNACK name, and the writer resend, exactly the datagram that was lost.
 static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data_header, uint32_t index, uint32_t count,
                                   uint32_t payload_length, uint8_t receiver) {
     struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)out;
@@ -5806,8 +5808,8 @@ hybrid_send_destination(struct tt_Context* node, struct tt_Publisher* pub, const
 //
 // All of a sample's fragments to one destination go in one seam_send_batch() - one sendmmsg() on Linux -
 // which is what returns a fragmented sample to the single send system call it cost before it had to be
-// fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
-// fragments back to back.
+// fragmented (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver
+// gets a sample's fragments back to back.
 //
 // `pub` is the Publisher whose sample this is when this is its first transmission, which may then go as runs
 // (hybrid transport, DESIGN.md section 8); NULL for a retransmission or a backlog, which are always MTU units. Always
@@ -6174,7 +6176,7 @@ static inline uint32_t endpoint_index_ready(struct tt_Context* node) {
     return mask;
 }
 
-// Milestone 35 (rmw_tickle/PLAN.md) - more than one local endpoint may now share a (kind, id)
+// Milestone 35 (git show 3c0c505b:rmw_tickle/PLAN.md) - more than one local endpoint may now share a (kind, id)
 // pair (add_endpoint_to_node() no longer rejects it, see its own doc comment), so this returns
 // only the FIRST one found by probe order, not necessarily "the" one a caller might have meant.
 // Probe order is deterministic (rebuild_endpoint_index() always walks endpoints[] in registration
@@ -6572,7 +6574,7 @@ static bool match_point_owed(const struct tt_Publisher* pub, uint32_t* owed) {
 // forget_peer() itself about peer_acks[], since that table only exists on struct tt_Publisher
 // (tt_Client's own identically-shaped peers[] has no ack-aggregation concept to reset).
 //
-// preserve_ack distinguishes the two callers (Phase 3 prerequisite (c), rmw_tickle/PLAN.md): a
+// preserve_ack distinguishes the two callers (Phase 3 prerequisite (c), git show 3c0c505b:rmw_tickle/PLAN.md): a
 // fresh announce from a still-present node forgets its peer slots only so decode_update_entities()
 // can re-add whatever it still lists, and its ack state must survive that round trip untouched -
 // Phase 3's KEEP_ALL blocking waits on exactly that state, and any remote node changing any
@@ -6587,7 +6589,7 @@ static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, boo
 // Drops (node_id) from the peer and ack sets of every local Publisher sharing `endpoint_id` - the
 // per-entity counterpart to forget_peers_from_source(), used when one remote Subscriber is
 // presumed dead by its own liveliness lease while its node is otherwise still alive and
-// announcing (Phase 3 prerequisite (a), rmw_tickle/PLAN.md).
+// announcing (Phase 3 prerequisite (a), git show 3c0c505b:rmw_tickle/PLAN.md).
 static void forget_publisher_peers_for_endpoint(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
@@ -6614,7 +6616,7 @@ static void forget_publisher_acks_for_entity(struct tt_Context* node, uint32_t e
 // Clears the ack state of every local Publisher that `node_id` is no longer a matched peer of -
 // process_announce()'s own companion to forget_peers_from_source(..., preserve_ack=true), run once
 // decode_update_entities() has re-added whatever the fresh announce still lists (Phase 3
-// prerequisite (c), rmw_tickle/PLAN.md). A Publisher this node is still matched to keeps its ack
+// prerequisite (c), git show 3c0c505b:rmw_tickle/PLAN.md). A Publisher this node is still matched to keeps its ack
 // watermark untouched across the announce.
 static void drop_ack_state_for_unmatched_source(struct tt_Context* node, uint8_t node_id) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
@@ -6667,8 +6669,9 @@ static const struct tt_DiscoveredEntity* discovery_find_kind(const struct tt_Dis
                                                              uint32_t endpoint_id, uint8_t kind);
 
 #if tt_DISCOVERY_INDEXED
-// The discovery table's index (struct tt_Discovery.index, CONTEXT_NODE_PLAN.md 4b): open addressing, linear probing.
-// The context id spread by the golden-ratio constant, then murmur3's 32-bit finaliser steps (multiplier, shifts).
+// The discovery table's index (struct tt_Discovery.index, git show 3c0c505b:rmw_tickle/CONTEXT_NODE_PLAN.md 4b): open
+// addressing, linear probing. The context id spread by the golden-ratio constant, then murmur3's 32-bit finaliser steps
+// (multiplier, shifts).
 #define DISCOVERY_HASH_GOLDEN 0x9E3779B1U
 #define DISCOVERY_HASH_MIX 0x85EBCA6BU
 #define DISCOVERY_HASH_SHIFT_HIGH 16U
@@ -6779,8 +6782,8 @@ static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* disc
 }
 
 #endif
-// Records one remote entity into node->discovery (tt_Context_set_discovery(), rmw_tickle/PLAN.md's
-// Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
+// Records one remote entity into node->discovery (tt_Context_set_discovery(), Milestone 0(c) in
+// git show 3c0c505b:rmw_tickle/PLAN.md), refreshing its existing slot or claiming the first empty one, then fires the
 // appear/refresh callback. An entity is its (context_id, entity_id): two publishers of one topic in one
 // remote process share the endpoint_id, and keyed on that the second overwrote the first, so the graph
 // listed one of them and every count came out short (2026-10-08). No-op (not even the callback) if no discovery cache
@@ -7191,7 +7194,7 @@ static void forget_discovered_entities_from_source(struct tt_Context* node, uint
 // check_liveliness()'s own counterpart to forget_discovered_entities_from_source() just above -
 // same trigger (a source presumed dead) but tombstones instead of freeing the slot (alive =
 // false, entity otherwise left intact) so QoS roadmap #3's own RMW_EVENT_LIVELINESS_CHANGED.
-// not_alive_count (a live snapshot, rmw_tickle/PLAN.md) has a real "known but not currently alive"
+// not_alive_count (a live snapshot, git show 3c0c505b:rmw_tickle/PLAN.md) has a real "known but not currently alive"
 // set to count instead of always reporting 0. Still fires the discovery callback with
 // departed=true - an existing plain appear/depart consumer doesn't need to know about the
 // tombstone distinction, only rmw_tickle_c's own count_not_alive_matching_locked() (rmw_graph.c)
@@ -7237,9 +7240,9 @@ static uint32_t announced_nodes(struct tt_Context* context, struct tt_Endpoint**
     return count;
 }
 
-// Milestone 35 (rmw_tickle/PLAN.md) - deliberately does NOT reject a second endpoint sharing an
+// Milestone 35 (git show 3c0c505b:rmw_tickle/PLAN.md) - deliberately does NOT reject a second endpoint sharing an
 // already-registered (kind, id): real DDS lets multiple independent entities (Publishers,
-// Subscribers, Clients, or Servers) share one topic/service name, and rmw_tickle/PLAN.md's own
+// Subscribers, Clients, or Servers) share one topic/service name, and git show 3c0c505b:rmw_tickle/PLAN.md, its own
 // Milestone 34 (multiple ROS 2 nodes per process, sharing one tt_Context) made this reachable within
 // a single process for the first time - two rmw nodes in one process each creating a Publisher
 // for the same topic, or a Server for the same service, is a normal pattern this used to reject
@@ -8040,7 +8043,7 @@ static void clear_service_endpoint(struct tt_Endpoint* endpoint) {
 }
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 static bool server_cache_live(struct tt_Server* server, int slot, uint64_t now);
-// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
+// QoS roadmap #5 (RELIABILITY/RELIABLE, git show 3c0c505b:rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
 struct acknack_skip;
 #if tt_LARGE_SAMPLES
@@ -8102,7 +8105,7 @@ static inline void idle_heartbeat_note_publish(struct tt_Publisher* pub, uint64_
 static void send_ack_solicit(struct tt_Context* node, uint64_t time, void* param);
 static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
-// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
+// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, git show 3c0c505b:rmw_tickle/PLAN.md) - see its own definition's comment.
 static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
 // The date's distance from the monotonic clock (struct tt_Context.wall_offset_ns): two clock reads, once a second.
@@ -8224,7 +8227,7 @@ static void reset_node_state(struct tt_Context* node) {
     // is rebuilt - the slots it will use NULLed first - before any lookup reads it (endpoint_index_ready()).
     node->endpoint_count = 0;
     node->endpoint_index_mask = 0;
-    // No nodes hosted, and the default node not in use (CONTEXT_NODE_PLAN.md stage 2).
+    // No nodes hosted, and the default node not in use (git show 3c0c505b:rmw_tickle/CONTEXT_NODE_PLAN.md stage 2).
     for (int i = 0; i < tt_MAX_NODES; i++) {
         node->nodes[i] = NULL;
     }
@@ -8262,7 +8265,7 @@ static void reset_node_state(struct tt_Context* node) {
     // that really sent 949,078 datagrams reported tx_udp=140723338891185, a stack address). tt_Context is caller-owned
     // and this function initialises field by field rather than memset-ing, so a new field that is only ever incremented
     // is never zero - and a counter that starts from garbage cannot be told from one the seam failed to reach, which is
-    // exactly the false negative SHM_PLAN's S2 exists to catch.
+    // exactly the false negative S2 in git show 3c0c505b:rmw_tickle/SHM_PLAN.md exists to catch.
     for (int transport = 0; transport < tt_TRANSPORT_COUNT; transport++) {
         node->tx_datagrams_by_transport[transport] = 0;
         node->rx_datagrams_by_transport[transport] = 0;
@@ -9586,7 +9589,7 @@ tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscri
     return result;
 }
 
-// ---- Nodes (CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node (tickle.h).
+// ---- Nodes (git show 3c0c505b:rmw_tickle/CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node (tickle.h).
 
 // A node's announce entry (struct tt_Node.entry, stage 3): its identity on the wire, set as it comes into use - its
 // own entity id from the context's sequence, as an endpoint's is - and the announce armed, as for an endpoint.
@@ -10335,8 +10338,8 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     return result;
 }
 
-// A DATA's timestamp on the wire (tt_VERSION 10, WIRE_PLAN.md W2): the low 32 bits of the date
-// (tt_get_wall_ns(), not the monotonic clock every deadline runs on) in microseconds - see struct
+// A DATA's timestamp on the wire (tt_VERSION 10, git show 3c0c505b:rmw_tickle/WIRE_PLAN.md W2): the low 32 bits of the
+// date (tt_get_wall_ns(), not the monotonic clock every deadline runs on) in microseconds - see struct
 // tt_DataHeader.timestamp.
 static uint32_t timestamp_to_wire(uint64_t wall_ns) {
     return (uint32_t)(wall_ns / tt_MICROSECOND);
@@ -10345,9 +10348,10 @@ static uint32_t timestamp_to_wire(uint64_t wall_ns) {
 // ... and back, in nanoseconds of the date: the sender's microseconds taken as the ones nearest the receiver's
 // date, within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the epoch.
 // The receiver's date is the running poll's reading (tt_Context.rx_clock_ns) moved by wall_offset_ns: a clock
-// read per received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
-// The receive path's "now": the running poll's reading (tt_Context.rx_clock_ns), which the poll refreshes when
-// a wait returns and every tt_RX_CLOCK_REFRESH datagrams of a drain, or the clock itself outside a poll.
+// read per received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (git show
+// 3c0c505b:rmw_tickle/WIRE_PLAN.md 8). The receive path's "now": the running poll's reading (tt_Context.rx_clock_ns),
+// which the poll refreshes when a wait returns and every tt_RX_CLOCK_REFRESH datagrams of a drain, or the clock itself
+// outside a poll.
 static uint64_t rx_now(const struct tt_Context* node) {
     return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
 }
@@ -10504,7 +10508,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) / #4 (DURABILITY/TRANSIENT_LOCAL) - snapshot the
 // just-encoded DATA submessage (header through CDR) into the ring before end_encode() below, same
-// Phase 3 prerequisite (d), rmw_tickle/PLAN.md - the lowest cumulative ack across every currently
+// Phase 3 prerequisite (d), git show 3c0c505b:rmw_tickle/PLAN.md - the lowest cumulative ack across every currently
 // matched peer, i.e. how far *all* of them have got, serially (seq_delta()). A matched peer that has never sent an
 // ACKNACK counts at its tt_PeerAck.ack_seq_no from the match, where the Publisher's history began; with none
 // matched, the Publisher's own history start (publisher_unacked_from()) - nothing acknowledged either way.
@@ -10544,7 +10548,7 @@ static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     return peer_ack_lowest(pub, &lowest) ? lowest : publisher_unacked_from(pub);
 }
 
-// Phase 3 (rmw_tickle/PLAN.md) - how many samples this Publisher may hold unacknowledged: its own
+// Phase 3 (git show 3c0c505b:rmw_tickle/PLAN.md) - how many samples this Publisher may hold unacknowledged: its own
 // retained depth, or the narrowest RELIABLE tracking window any matched Subscriber announced,
 // whichever is smaller. A Subscriber cannot ask about a gap older than its own window, so an
 // unacknowledged run deeper than that can never be recovered however much is retained here
@@ -10638,7 +10642,7 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
     // a measurement, and only the counter tells them apart.
     //
     // Not observed in practice: across 24 HIL runs at 20% and 50% injected loss the matched-peer
-    // count never once fell to zero (rmw_tickle/PLAN.md Phase 3 step 4). This exists so that if it
+    // count never once fell to zero (git show 3c0c505b:rmw_tickle/PLAN.md Phase 3 step 4). This exists so that if it
     // ever does - a real partition, a liveliness timeout under sustained loss - it shows up in a
     // measurement already being taken rather than as an unexplained absence of back-pressure.
     if (!any_peer_ack_matched(pub)) {
@@ -10716,7 +10720,7 @@ static void keep_all_resolicit(struct tt_Context* node, uint64_t time, void* par
 // A KEEP_ALL Publisher is not optional about this, which is the whole point: it stops publishing
 // when unacked reaches keep_all_bound(), and a Subscriber only ACKNACKs when it sees a gap, so on a
 // clean link nothing would ever advance the acknowledgement and the Publisher would stall at the
-// window and never recover. Measured on real hardware (rmw_tickle/PLAN.md Phase 3 step 4): a
+// window and never recover. Measured on real hardware (git show 3c0c505b:rmw_tickle/PLAN.md Phase 3 step 4): a
 // lossless 5-second run sent exactly its 1024-sample window and then nothing at all, 0.125 Mbps
 // against the 109 Mbps the same run reaches once acknowledgements flow. Zero loss is the worst
 // case here, not the easy one, which is why nothing caught it before KEEP_ALL made blocking depend
@@ -10772,7 +10776,7 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
     solicit_ack_throttled(pub);
 }
 
-// B1 (rmw_tickle/PLAN.md) - the in-use ring size, or 0 when this cache isn't usable at all (no
+// B1 (git show 3c0c505b:rmw_tickle/PLAN.md) - the in-use ring size, or 0 when this cache isn't usable at all (no
 // index, no arena, or capacity 0 - struct tt_ReliableCache's own "nothing usable yet" state). The
 // single place the old `(depth > 0 && depth <= capacity) ? depth : capacity` clamp expression,
 // once repeated at every call site, now lives.
@@ -10884,8 +10888,8 @@ static uint32_t keep_all_acked_through(const struct tt_Publisher* pub) {
 }
 
 // Evicts the oldest retained sample - every datagram of it. A fragmented sample is cached one record per
-// datagram (each its own seq_no, DATAFRAG_PLAN.md section 13), and evicting only its first would leave
-// continuations no subscriber can use under a sequence range the Heartbeat would still advertise, so the
+// datagram (each its own seq_no, git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13), and evicting only its first
+// would leave continuations no subscriber can use under a sequence range the Heartbeat would still advertise, so the
 // oldest retained record is always the first datagram of a sample.
 static void reliable_cache_evict_oldest(struct tt_ReliableCache* cache, uint16_t depth) {
     reliable_cache_evict_one(cache, depth);
@@ -10949,10 +10953,11 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 //
 // The raw length is passed in rather than derived from node->tx_tail, which is what this did until
 // 2026-10-02. "The distance from this submessage to tx_buffer's current end" is only the sample's length
-// while the sample is the last thing in tx_buffer - true today and the first thing SHM_PLAN 6e breaks, since
-// its encoder writes into a segment slot where that subtraction is between two unrelated addresses. The
-// equivalence was checked before the derivation was removed: a temporary assert compared the two on every
-// path the suite walks, 44 tests green, and a mutant four bytes out failed it in test_data_frag.
+// while the sample is the last thing in tx_buffer - true today and the first thing git show
+// 3c0c505b:rmw_tickle/SHM_PLAN.md 6e breaks, since its encoder writes into a segment slot where that subtraction is
+// between two unrelated addresses. The equivalence was checked before the derivation was removed: a temporary assert
+// compared the two on every path the suite walks, 44 tests green, and a mutant four bytes out failed it in
+// test_data_frag.
 static uint32_t record_length_checked(const struct tt_Context* node,
                                       const struct tt_SubmessageHeader* submessage_header, uint32_t raw_len) {
     (void)node;
@@ -11192,7 +11197,7 @@ static bool reliable_cache_entry_expired(const struct tt_ReliableCacheIndex* ent
     return lifespan_duration_ns != 0 && (tt_get_ns() - entry->timestamp) >= lifespan_duration_ns;
 }
 
-// Milestone 58 (rmw_tickle/PLAN.md) - true if durable_delivered[] already records this exact
+// Milestone 58 (git show 3c0c505b:rmw_tickle/PLAN.md) - true if durable_delivered[] already records this exact
 // (node_id, announce generation) pair, i.e. this announce is a re-announce from a peer that already has
 // this Publisher's current backlog, not a genuinely new match. See struct tt_DurableDeliveryRecord's
 // own doc comment (tickle.h) for why the generation, not node_id alone, is the right key.
@@ -11273,7 +11278,7 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 }
 
 // How many seq_no - and datagrams - the encoded DATA submessage at submessage_header takes: 1, or one
-// per fragment when no datagram can carry it (DATAFRAG_PLAN.md section 13).
+// per fragment when no datagram can carry it (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13).
 // The peers this publish will unicast to, or none when it will broadcast - mirrors tt_Client_call()'s own peer
 // decision. Unicast only when there is a small enough known count AND nothing else is already sitting unflushed
 // ahead of this DATA submessage, since unicasting would reach these peers and not whatever else needs the whole
@@ -11368,9 +11373,9 @@ static uint8_t unicast_destinations_for(struct tt_Context* node, const struct tt
 
 // The largest record every destination of this send could take whole, or 0 when any of them could not.
 //
-// SHM_PLAN 6e(a): a sample bound only for shared memory need not be split, because a segment has no MTU. The
-// conditions are all necessary and each rules out a way of producing a record with nowhere to go - an
-// unfragmented record is larger than one datagram by construction, so UDP is not a fallback for it:
+// git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(a): a sample bound only for shared memory need not be split, because a
+// segment has no MTU. The conditions are all necessary and each rules out a way of producing a record with nowhere to
+// go - an unfragmented record is larger than one datagram by construction, so UDP is not a fallback for it:
 //
 //   peer_count == 0   a broadcast, whose destinations are not known here and include every remote node.
 //   not attached      we have no segment for that peer, so its datagrams take the socket.
@@ -11450,7 +11455,8 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
 
 // How many datagrams this encoded sample goes as. `raw_len` is the length the encode produced, passed in for
 // the same reason record_length_checked() takes it: deriving it from tx_tail is only the sample's length while
-// the sample is the last thing in tx_buffer, and SHM_PLAN 6e's encoder step puts it somewhere else.
+// the sample is the last thing in tx_buffer, and git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e's encoder step puts it
+// somewhere else.
 //
 // This one was missed by the pass that fixed the cache's consumers, and it is the one that matters most to 6e:
 // the fragmentation decision is what 6e changes for an all-local publish, so a length derived from the send
@@ -11545,10 +11551,10 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_C
 
 #if tt_FRAG_ENABLED
 // Retains a fragmented sample one record per datagram, each under its own seq_no and exactly as it is
-// sent, so an ACKNACK naming one datagram resends that datagram and nothing else (DATAFRAG_PLAN.md
-// section 13). A sample with more fragments than the cache has index slots, or more bytes than its
-// arena, is sent and not retained: its seq_no are left as tombstones, which an ACKNACK is answered for
-// with the eviction Heartbeat. Keeping part of a sample would advertise datagrams no reader could use.
+// sent, so an ACKNACK naming one datagram resends that datagram and nothing else (git show
+// 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13). A sample with more fragments than the cache has index slots, or
+// more bytes than its arena, is sent and not retained: its seq_no are left as tombstones, which an ACKNACK is answered
+// for with the eviction Heartbeat. Keeping part of a sample would advertise datagrams no reader could use.
 static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCache* cache, uint32_t raw_len,
                                    uint32_t whole_limit, struct tt_SubmessageHeader* submessage_header,
                                    uint32_t first_seq_no, uint32_t count) {
@@ -11757,8 +11763,8 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_Publisher* pub,
     // The length the encode produced, passed rather than reached for - the last site that still derived it
     // as "the distance from this submessage to tx_buffer's current end". record_length_checked() stopped
     // doing that on 2026-10-02 for the reason its comment gives: the subtraction mixes tx_buffer's base
-    // with a submessage_header that SHM_PLAN 6e's encoder puts in a segment slot, where the two are
-    // unrelated addresses. It is also the reason to pass it rather than recompute it here - this decision
+    // with a submessage_header that git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e's encoder puts in a segment slot, where
+    // the two are unrelated addresses. It is also the reason to pass it rather than recompute it here - this decision
     // and sample_datagram_count()'s must not be able to disagree about one sample's length.
     size_t length = record_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) >
@@ -11778,9 +11784,10 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_Publisher* pub,
 
 static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub);
 #if tt_SEGMENT_ENABLED && tt_SEGMENT_ENCODE_IN_SLOT
-// SHM_PLAN 6e(b), "encode into the slot": the one destination this publish has, when it would go as a DATA alone in its
-// datagram to a single same-host peer - the only shape whose bytes in the slot are a function of this sample alone.
-// False for anything else, and the staging path below then runs exactly as it did before 6e(b):
+// git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(b), "encode into the slot": the one destination this publish has, when it
+// would go as a DATA alone in its datagram to a single same-host peer - the only shape whose bytes in the slot are a
+// function of this sample alone. False for anything else, and the staging path below then runs exactly as it did before
+// 6e(b):
 //   batch                a batching publisher leaves the send to node_flush(), with whatever else is in tx_buffer.
 //   tx_buffer not empty  something is already waiting ahead of this DATA and would share its datagram.
 //   summary skip armed   flush_tx() may send a summary just ahead of the datagram (note_reached_armed()).
@@ -13891,7 +13898,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 #endif
     uint32_t old_tx_tail = node->tx_tail;
 
-    // Phase 3 (rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
+    // Phase 3 (git show 3c0c505b:rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
     // nobody has acknowledged. Checked before anything is encoded, so a refused publish sends
     // nothing, caches nothing and doesn't advance seq_no; the caller retries once
     // tt_Publisher_writable() is true (or its writable_callback fires).
@@ -14011,10 +14018,10 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // fragment path's padding needs it unrounded.
     uint32_t record_len = node->tx_tail - data_tail;
     // The size a sample may reach before it has to be split. One datagram's worth today, for every path;
-    // SHM_PLAN 6e(a) raises it to the destination's slot when every destination is a same-host peer whose
-    // segment is already attached, which is the only case where an unfragmented record - larger than the
-    // MTU by construction - has somewhere to go. Passed rather than reached for, so the cache's footprint
-    // and the sent datagram count cannot disagree about it.
+    // git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e(a) raises it to the destination's slot when every destination is a
+    // same-host peer whose segment is already attached, which is the only case where an unfragmented record - larger
+    // than the MTU by construction - has somewhere to go. Passed rather than reached for, so the cache's footprint and
+    // the sent datagram count cannot disagree about it.
     uint32_t whole_limit = frag_whole_limit(node);
     // Hoisted above the datagram count, which used to be decided before it. 6e(a) needs to know WHERE this
     // sample is going before it can say how many pieces it goes in, and deciding the destination twice is how
@@ -14029,13 +14036,13 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
     // The sample's SEQ SPAN: how many seq_nos it consumes. Counted against the NETWORK form -
     // frag_whole_limit(), not whole_limit - so it is the same number whatever path the sample takes
-    // (SHM_PLAN 6e). Until 2026-10-03 this used whole_limit, which comes from the destinations, so a
-    // publisher's seq_no advanced at a rate that depended on who was listening and whether their segment
-    // happened to be attached: the same sample consumed one seq_no for an all-local publisher and two
-    // when a remote subscriber was present. That is why 6e(a) had to forbid mixed destinations, and the
-    // prohibition was not even sufficient - it is evaluated at publish while retransmission happens
-    // later, so a segment detaching in between left a whole record that had to go out over UDP, where it
-    // exceeds a datagram by construction and was dropped (the measured tx_dropped_oversize).
+    // (git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e). Until 2026-10-03 this used whole_limit, which comes from the
+    // destinations, so a publisher's seq_no advanced at a rate that depended on who was listening and whether their
+    // segment happened to be attached: the same sample consumed one seq_no for an all-local publisher and two when a
+    // remote subscriber was present. That is why 6e(a) had to forbid mixed destinations, and the prohibition was not
+    // even sufficient - it is evaluated at publish while retransmission happens later, so a segment detaching in
+    // between left a whole record that had to go out over UDP, where it exceeds a datagram by construction and was
+    // dropped (the measured tx_dropped_oversize).
     uint32_t seq_span = sample_datagram_count(node, submessage_header, record_len, frag_whole_limit(node));
     if (!check_and_cache_sample(node, pub, submessage_header, record_len, whole_limit)) {
         rollback(node, old_tx_tail);
@@ -14589,9 +14596,9 @@ static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publish
                            flags);
 }
 
-// Whether any of this Publisher's peers has an attached segment (SHM_PLAN 6e): a record bound only for segments may
-// be larger than a datagram, and only one alone in tx_buffer is granted that (end_encode()), so the match Heartbeat
-// goes as its own datagram there rather than ahead of the DATA.
+// Whether any of this Publisher's peers has an attached segment (git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e): a record
+// bound only for segments may be larger than a datagram, and only one alone in tx_buffer is granted that
+// (end_encode()), so the match Heartbeat goes as its own datagram there rather than ahead of the DATA.
 static bool any_peer_on_segment(const struct tt_Context* node, const struct tt_Publisher* pub) {
 #if tt_SEGMENT_ENABLED
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -15192,7 +15199,7 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
 // peer/WriterProxy state disappear promptly on the *receiving* side once this arrives - narrowing,
 // not eliminating, the overlap window a not-yet-departed writer could still be confused with a
 // newly-arrived one under (real DDS's own lease-expiry-based cleanup has the identical residual
-// gap for an ungraceful shutdown - see rmw_tickle/PLAN.md's own Milestone 47 for the full
+// gap for an ungraceful shutdown - see git show 3c0c505b:rmw_tickle/PLAN.md, Milestone 47, for the full
 // writeup). Calls build_and_send_update() directly, not node_update() (which would also re-arm
 // its own periodic reschedule on top of the one already pending - safe inside tt_Context_destroy()
 // only because that function wipes the whole scheduler right after, not true for a per-entity
@@ -16222,18 +16229,18 @@ tt_ret_t tt_Server_get_actual_qos(const struct tt_Server* server, struct tt_QosP
     return result;
 }
 
-// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - encodes and unicasts one ACKNACK
+// QoS roadmap #5 (RELIABILITY/RELIABLE, git show 3c0c505b:rmw_tickle/PLAN.md) - encodes and unicasts one ACKNACK
 // submessage back to proxy->sender_*, reporting proxy->ack_seq_no/received_bitmap. Not
 // fatal on failure, same philosophy as resend_call_request()'s own comment: whichever caller
 // armed a retry (update_reliable_ack()/acknack_retry()) will just try again.
 // tt_RELIABLE_BITMAP_WORDS-word bitmap operations (config.h's own doc comment on that constant) -
 // the small, fixed set struct tt_WriterProxy.received_bitmap/struct tt_AckNackHeader.bitmap (both
 // tickle.h) need, each replacing exactly one single-word uint64_t expression this file used before
-// the widening (rmw_tickle/PLAN.md's "TickLE-native performance" plan) - not a generic bitset
+// the widening (git show 3c0c505b:rmw_tickle/PLAN.md, "TickLE-native performance" plan) - not a generic bitset
 // library. Every one of these (except bitmap_shift_right(), which needs a genuine cross-word
 // carry) is O(word-count), not O(bit-count), by construction.
 
-// Phase 2 (rmw_tickle/PLAN.md) - how wide this Subscriber's own per-writer tracking window is, in
+// Phase 2 (git show 3c0c505b:rmw_tickle/PLAN.md) - how wide this Subscriber's own per-writer tracking window is, in
 // 64-bit words. The caller-provided buffer's width when it gave one (clamped to
 // tt_RELIABLE_BITMAP_MAX_WORDS, config.h - core never trusts a caller's count any more than a
 // wire peer's), otherwise the embedded-first tt_RELIABLE_BITMAP_WORDS default.
@@ -16409,7 +16416,7 @@ static int proxy_highest_received(const struct tt_WriterProxy* proxy) {
     return bitmap_highest_bit(proxy->received_bitmap, proxy->received_words);
 }
 
-// Phase 3 (rmw_tickle/PLAN.md) - did this remote writer's own last announce set
+// Phase 3 (git show 3c0c505b:rmw_tickle/PLAN.md) - did this remote writer's own last announce set
 // tt_UPDATE_QOS_KEEP_ALL? Read once, when a WriterProxy is claimed; an announce arriving later
 // refreshes the cached answer directly (update_writer_proxies_keep_all()).
 //
@@ -17402,10 +17409,10 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
         // ACKNACKs/sec from one WriterProxy, vs. a handful from the actual 5ms retry timer) that
         // starved both ends' own CPU/network budget - the real root cause of reliable_throughput's
         // own newly-severe loss regression once RELIABLE tracking became genuinely active (see
-        // PLAN.md). Send exactly once here, on first detecting a new gap - every subsequent
-        // update while this proxy already has a retry armed relies purely on acknack_retry()'s own
-        // periodic re-send (which already re-reads the current bitmap state fresh each tick, so
-        // nothing about a widened gap goes unreported, just delayed by at most one interval).
+        // git show 3c0c505b:rmw_tickle/PLAN.md). Send exactly once here, on first detecting a new gap - every
+        // subsequent update while this proxy already has a retry armed relies purely on acknack_retry()'s own periodic
+        // re-send (which already re-reads the current bitmap state fresh each tick, so nothing about a widened gap goes
+        // unreported, just delayed by at most one interval).
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
@@ -17420,7 +17427,7 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
 
 // Jumps proxy's own baseline straight to seq_no instead of trying to track anything below it -
 // shared by update_reliable_ack()'s own oversized-DATA-gap branch and process_heartbeat()'s own
-// oversized-Heartbeat-gap case (PLAN.md's Milestone 20 and its own Heartbeat follow-up
+// oversized-Heartbeat-gap case (Milestone 20 in git show 3c0c505b:rmw_tickle/PLAN.md and its own Heartbeat follow-up
 // respectively): an offset >= tt_RELIABLE_BITMAP_BITS can never be named in a tt_AckNackHeader.
 // bitmap at all (tt_RELIABLE_BITMAP_BITS bits wide on the wire, config.h), so nothing genuinely
 // recoverable is given up on by not tracking it - see update_reliable_ack()'s own call site for
@@ -17472,10 +17479,10 @@ struct new_gap_range {
 // received_bitmap and reports any gap it newly opened via *new_gap. Returns false for a duplicate
 // (its bit was already set), true otherwise.
 // The seq_nos a whole record's span covers beyond its own. A sample consumes the number of seq_nos
-// its NETWORK form would need whatever path it takes (SHM_PLAN 6e), so a record that travelled
-// whole over shared memory leaves the positions after its own permanently empty: the publisher
-// allocated them to this same sample and no datagram will ever carry them. The reader has to stop
-// waiting for them, and this is the only thing it may do with them.
+// its NETWORK form would need whatever path it takes (git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e), so a record that
+// travelled whole over shared memory leaves the positions after its own permanently empty: the publisher allocated them
+// to this same sample and no datagram will ever carry them. The reader has to stop waiting for them, and this is the
+// only thing it may do with them.
 //
 // Set directly rather than through record_out_of_order_arrival(), on purpose: these are not
 // arrivals. Routing them through it would move prev_highest and swallow the new_gap report for the
@@ -17686,7 +17693,7 @@ static void rstat_on_arrival(const struct tt_Context* node, const struct tt_Writ
 // its cumulative-ack watermark/out-of-order bitmap, keeping an ACKNACK flowing back to the sender
 // while a gap is open.
 //
-// Milestone 60 (rmw_tickle/PLAN.md) - returns whether seq_no was genuinely new to this Subscriber,
+// Milestone 60 (git show 3c0c505b:rmw_tickle/PLAN.md) - returns whether seq_no was genuinely new to this Subscriber,
 // so deliver_data_to_subscriber() can skip re-invoking the application callback for a sample it
 // already delivered (a legitimate ACKNACK-driven retransmit racing the original, or a stale
 // duplicate arriving again) - real DDS readers de-duplicate by (writer GUID, sequence number)
@@ -17949,7 +17956,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
             // is a fixed tt_RELIABLE_BITMAP_BITS bits wide on the wire (config.h), so no ACKNACK
             // this Subscriber could ever send has a way to name a position past the top bit in the
             // first place, regardless of what ack_seq_no does about it. Leaving ack_seq_no
-            // untouched here (this function's own behavior before PLAN.md's Milestone 20)
+            // untouched here (this function's own behavior before Milestone 20, git show 3c0c505b:rmw_tickle/PLAN.md)
             // permanently wedges it: every later arrival, however perfectly in-order from this
             // point on, has the exact same too-wide offset relative to the still-stuck ack_seq_no,
             // forever - a healthy stream never recovers. Most visible for a QoS roadmap #4
@@ -17968,7 +17975,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         }
     }
 
-    // Phase 1-a (rmw_tickle/PLAN.md, H2) - maybe_arm_acknack_retry() only sends an immediate
+    // Phase 1-a (git show 3c0c505b:rmw_tickle/PLAN.md, H2) - maybe_arm_acknack_retry() only sends an immediate
     // ACKNACK when no retry timer is armed yet; a gap that opens while one already is used to wait
     // for that timer (then tt_CALL_RETRY_INTERVAL, 5ms). At max rate the 256-sample window moves on in
     // ~1.35ms, so those gaps were always abandoned by jump_ack_baseline() before the timer fired
@@ -18463,8 +18470,8 @@ static void send_unicast_update_unless_full(struct tt_Context* node, const struc
 #endif
 }
 
-// The periodic discovery summary (tt_VERSION 8, rmw_tickle/DISCOVERY_PLAN.md): a HEARTBEAT of the built-in
-// discovery endpoint whose first and last seq_no are this node's announce generation - ~28 bytes whatever the
+// The periodic discovery summary (tt_VERSION 8, git show 3c0c505b:rmw_tickle/DISCOVERY_PLAN.md): a HEARTBEAT of the
+// built-in discovery endpoint whose first and last seq_no are this node's announce generation - ~28 bytes whatever the
 // endpoint count, where the periodic announce it replaces carried the whole endpoint list every interval. A
 // receiver that has applied this generation takes it as liveliness only; one that has not asks for the list
 // (process_discovery_summary()). The full list is still broadcast at once on every change (announce_soon(),
@@ -18574,8 +18581,9 @@ static void send_discovery_summary(struct tt_Context* node) {
 
 // How often this node's summary goes out: every tt_CONTEXT_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
 // the shortest lease any
-// of its own endpoints announces if that is sooner (LIVELINESS_PLAN.md amendment 1) - an idle node's summary
-// is its only sign of life, so it must outpace the leases peers hold it to. At least tt_CONTEXT_TX_INTERVAL.
+// of its own endpoints announces if that is sooner (git show 3c0c505b:rmw_tickle/LIVELINESS_PLAN.md amendment 1) - an
+// idle node's summary is its only sign of life, so it must outpace the leases peers hold it to. At least
+// tt_CONTEXT_TX_INTERVAL.
 static uint64_t summary_interval(const struct tt_Context* node) {
     uint64_t interval = discovery_update_interval_ns(node);
     uint64_t divisor = discovery_lease_divisor(node);
@@ -19004,9 +19012,9 @@ static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     (void)lend_finish_release(node);
 #endif
 
-    // At the short-lease cadence (LIVELINESS_PLAN.md 10) a summary is skipped when the node's own traffic
-    // has already reached every peer since the last one: under traffic the last sign of life is then the
-    // data, as with DDS, rather than a summary tens of ms after it. The tt_CONTEXT_UPDATE_INTERVAL summary, which
+    // At the short-lease cadence (git show 3c0c505b:rmw_tickle/LIVELINESS_PLAN.md 10) a summary is skipped when the
+    // node's own traffic has already reached every peer since the last one: under traffic the last sign of life is then
+    // the data, as with DDS, rather than a summary tens of ms after it. The tt_CONTEXT_UPDATE_INTERVAL summary, which
     // also carries the discovery generation, always goes.
     // That summary, when the traffic reaches every peer, rides just ahead of the next send rather than going
     // on its own, so it is not the last datagram before a node that stops.
@@ -19054,7 +19062,7 @@ static void reschedule_summary_for_leases(struct tt_Context* node, uint64_t now)
     }
 }
 
-// Phase 3 (rmw_tickle/PLAN.md) - records whether a remote writer promises KEEP_ALL on every local
+// Phase 3 (git show 3c0c505b:rmw_tickle/PLAN.md) - records whether a remote writer promises KEEP_ALL on every local
 // Subscriber already tracking it, from that writer's own announce (tt_UPDATE_QOS_KEEP_ALL). A
 // proxy claimed later reads the same thing from the discovery table at first contact, so both
 // orderings converge.
@@ -19078,7 +19086,7 @@ static void update_writer_proxies_keep_all(struct tt_Context* node, uint32_t end
     }
 }
 
-// Phase 3 (rmw_tickle/PLAN.md) - drops one remote Publisher's WriterProxy from every local
+// Phase 3 (git show 3c0c505b:rmw_tickle/PLAN.md) - drops one remote Publisher's WriterProxy from every local
 // Subscriber sharing `endpoint_id`: the Subscriber-side mirror of
 // forget_publisher_peers_for_endpoint() below, and the only thing that ends gap recovery for a
 // writer that died. entity_id 0 with match_any_entity drops every writer that node hosts for this
@@ -19133,7 +19141,8 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
     }
 }
 
-// --- LIVELINESS (rmw_tickle/LIVELINESS_PLAN.md, 2026-09-26) --------------------------------------------
+// --- LIVELINESS (git show 3c0c505b:rmw_tickle/LIVELINESS_PLAN.md, 2026-09-26)
+// --------------------------------------------
 //
 // Rule 1, the lease runs from the last sign of life: for a MANUAL_BY_TOPIC Publisher its own DATA or asserted
 // liveliness (tt_DiscoveredEntity.last_asserted_ns); for any other entity any datagram from its node.
@@ -19220,7 +19229,7 @@ static bool sibling_alive(const struct tt_Context* node, const struct tt_Discove
 // kept for it goes - for it alone, not for a sibling of its topic in the same process.
 static void lapse_entity(struct tt_Context* node, struct tt_DiscoveredEntity* entity) {
     entity->alive = false;
-    // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
+    // Phase 3 prerequisite (a), git show 3c0c505b:rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
     // own announced lease must also leave the matching local Publishers' peer/ack sets right
     // here, or under KEEP_ALL blocking a writer waiting on exactly that ack would stall. Narrow on
     // purpose: only the Publishers whose own endpoint id this entity matched, and only this node_id.
@@ -19282,7 +19291,8 @@ static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint3
         return;
     }
 #if tt_DISCOVERY_INDEXED
-    // One entry per (source, endpoint_id), found through the index (CONTEXT_NODE_PLAN.md 4b) - this runs per DATA.
+    // One entry per (source, endpoint_id), found through the index (git show 3c0c505b:rmw_tickle/CONTEXT_NODE_PLAN.md
+    // 4b) - this runs per DATA.
     int32_t slot = discovery_entity_slot_of(node->discovery, source, endpoint_id, entity_id);
     if (slot < 0) {
         return;
@@ -19571,7 +19581,7 @@ static void flush_batched(struct tt_Context* node) {
 }
 
 // Sends every currently-retained sample (oldest first) straight to a Subscriber this Publisher's
-// topic just discovered - QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md). Called
+// topic just discovered - QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, git show 3c0c505b:rmw_tickle/PLAN.md). Called
 // only from decode_update_entities() below when upsert_peer() just claimed a previously-empty
 // peer slot for this exact Publisher - a genuinely new (or forgotten-then-rejoined) peer, not
 // every periodic announce refresh. No-op unless pub->durable is set (VOLATILE, today's default) and
@@ -19612,9 +19622,9 @@ static bool send_cached_record(struct tt_Context* node, const uint8_t* record, u
 #if tt_FRAG_ENABLED
     // A whole record this destination cannot take. It was cached whole because the destination it was
     // PUBLISHED to could take it - a same-host peer with a wide enough slot - and that peer's segment
-    // may have gone since. SHM_PLAN 6e's own table says this case re-fragments; until 2026-10-03 nothing
-    // did, and end_encode() below would refuse it for ever ("the protocol does not fragment, so there is
-    // nothing else to do with it"), which is the same failure as the oversize drop in a later disguise.
+    // may have gone since. git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e's own table says this case re-fragments; until
+    // 2026-10-03 nothing did, and end_encode() below would refuse it for ever ("the protocol does not fragment, so
+    // there is nothing else to do with it"), which is the same failure as the oversize drop in a later disguise.
     //
     // Sent straight from the arena rather than through tx_buffer: send_fragments() takes pointers, so the
     // copy below is not needed, and going through send_tail_as_fragments() instead would flush whatever
@@ -19795,7 +19805,7 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
         return;
     }
 
-    // Phase 2 (rmw_tickle/PLAN.md, prerequisite (b)) - claim this Subscriber entity's own ack entry
+    // Phase 2 (git show 3c0c505b:rmw_tickle/PLAN.md, prerequisite (b)) - claim this Subscriber entity's own ack entry
     // up front, so a matched-but-still-silent Subscriber already counts as "hasn't acked anything"
     // rather than being invisible until its first ACKNACK. A full table refuses the match outright
     // (the Subscriber simply doesn't connect to this Publisher, exactly like an incompatible QoS
@@ -19995,7 +20005,8 @@ static bool update_parts_too_many(uint32_t part_count) {
 }
 
 // Which fragments of a source's announce in progress have arrived: a bitmap of tt_UPDATE_PART_WORDS words, one bit
-// per fragment (CONTEXT_NODE_PLAN.md 4a - it was one 32-bit word, which capped an announce at 32 fragments).
+// per fragment (git show 3c0c505b:rmw_tickle/CONTEXT_NODE_PLAN.md 4a - it was one 32-bit word, which capped an announce
+// at 32 fragments).
 static bool update_parts_complete(const struct tt_Context* node, uint8_t source, uint8_t part_count) {
     for (uint32_t word = 0; word < tt_UPDATE_PART_WORDS; word++) {
         uint32_t first = word * 32U;
@@ -20287,7 +20298,8 @@ struct data_delivery_ctx {
     // OWN caller (test_publish_subscribe.c's own test_process_data_decode_failure_is_reported())
     // the same way it always has, even though delivery itself now fans out to more than one match.
     bool decode_failed;
-    // A fragment's place in its sample (DATAFRAG_PLAN.md section 13), frag_count 0 for a whole DATA.
+    // A fragment's place in its sample (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13), frag_count 0 for a
+    // whole DATA.
     uint8_t frag_index;
     uint8_t frag_count;
     // A sample the node's reassembly pool put together, for best-effort Subscribers only: a reliable one
@@ -20625,8 +20637,9 @@ static struct tt_ReorderSlot* reorder_slot_at(struct tt_Subscriber* sub, uint16_
 
 // A writer's offset in the reorder ring. Every writer counts from 1, so without it two writers at similar seq_no
 // contend for the same slots - which for DATA only costs an out-of-order sample a re-request, but a fragment is held
-// even in order, until its sample is whole (DATAFRAG_PLAN.md section 13), and two writers' in-order fragments would
-// collide constantly. Knuth's multiplicative hash constants: they spread consecutive ids across the whole ring.
+// even in order, until its sample is whole (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13), and two writers'
+// in-order fragments would collide constantly. Knuth's multiplicative hash constants: they spread consecutive ids
+// across the whole ring.
 static uint32_t reorder_salt(uint8_t node_id, uint32_t entity_id) {
     const uint32_t entity_spread = 2654435761U;
     const uint32_t node_spread = 40503U;
@@ -20959,8 +20972,8 @@ static void reorder_release(struct tt_Subscriber* sub, struct tt_ReorderSlot* sl
 }
 
 // The sample whose datagram at seq_no is next in order, held in the reorder slots one datagram per slot
-// (DATAFRAG_PLAN.md section 13). Delivered once every one of its datagrams is here, put together in the
-// node's frag_scratch. Returns false to stop the drain there - a datagram of it has not arrived yet but
+// (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section 13). Delivered once every one of its datagrams is here, put
+// together in the node's frag_scratch. Returns false to stop the drain there - a datagram of it has not arrived yet but
 // still can - and otherwise sets *consumed to how many seq_no it has dealt with, from seq_no on.
 //
 // A sample that can never be whole is dropped, its held datagrams counted in reorder_abandoned: one of
@@ -21536,7 +21549,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
         return;
     }
 
-    // g13 (rmw_tickle/RMW_GAPS_PLAN.md) - flow control, and it belongs HERE, above
+    // g13 (git show 3c0c505b:rmw_tickle/RMW_GAPS_PLAN.md) - flow control, and it belongs HERE, above
     // update_reliable_ack(), for the same reason the RxO drop just above does: this is the last
     // instant at which nothing has been recorded about this sample. update_reliable_ack() advances
     // the ack watermark AND can send an ACKNACK carrying it before it returns, and an ACKNACK's
@@ -21598,7 +21611,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     }
 
     // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op (always "new") unless sub->reliable. Milestone
-    // 60 (rmw_tickle/PLAN.md) - a sample update_reliable_ack() recognizes as already delivered (a
+    // 60 (git show 3c0c505b:rmw_tickle/PLAN.md) - a sample update_reliable_ack() recognizes as already delivered (a
     // legitimate ACKNACK-driven retransmit racing the original, or a stale duplicate) is skipped
     // here instead of re-invoking the application callback a second time for it, matching real DDS
     // readers' own per-writer sequence-number de-duplication.
@@ -22165,7 +22178,7 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Context* nod
 // Encodes and caches a CallResponse for a request whose return_code/response are already known -
 // either just computed synchronously (process_callrequest() calls this straight after a non-
 // deferred tt_SERVER_CALLBACK returns), or handed to us later by tt_Server_send_response() for a
-// request whose callback returned tt_CALL_DEFERRED (Milestone 17, rmw_tickle/PLAN.md). Split out
+// request whose callback returned tt_CALL_DEFERRED (Milestone 17, git show 3c0c505b:rmw_tickle/PLAN.md). Split out
 // from what used to be one function (build_call_response()) precisely so the callback-invocation
 // half (which decides whether an answer exists *yet* at all) stays separate from this, the
 // encode-what-already-exists half - `receiver`/`response` come from a live just-decoded packet in
@@ -22229,7 +22242,7 @@ static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node,
     return submessage_header;
 }
 
-// Milestone 17 (rmw_tickle/PLAN.md): returns the index of server's own pending slot matching
+// Milestone 17 (git show 3c0c505b:rmw_tickle/PLAN.md): returns the index of server's own pending slot matching
 // (receiver, seq_no), or -1 if none. Matches a slot in *either* tt_SERVER_SLOT_PENDING or
 // tt_SERVER_SLOT_READY - a retry that arrives after tt_Server_send_response() already ran but
 // before the poll thread has flushed it out still shouldn't re-invoke the callback a second time.
@@ -22420,7 +22433,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
 
     struct tt_Server* server = (struct tt_Server*)endpoint;
 
-    // Milestone 17 (rmw_tickle/PLAN.md): a retry for a request already deferred (callback
+    // Milestone 17 (git show 3c0c505b:rmw_tickle/PLAN.md): a retry for a request already deferred (callback
     // returned tt_CALL_DEFERRED, no answer computed yet) must not re-invoke the callback a second
     // time - the real answer is already on its way, whenever tt_Server_send_response() gets
     // called. Checked before the cache lookup below since a deferred-then-answered request only
@@ -22643,7 +22656,7 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     return true;
 }
 
-// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
+// QoS roadmap #5 (RELIABILITY/RELIABLE, git show 3c0c505b:rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // arrives here at whichever local Publisher it targets. Retransmits, straight back to the
 // sender, whichever requested (bitmap bit set) samples are still in that Publisher's own
 // reliable_cache; a sample no longer there (evicted under KEEP_LAST, or aged out of LIFESPAN) is
@@ -22659,7 +22672,7 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
 // below purely to keep that function's own cognitive complexity under clang-tidy's threshold, same
 // reasoning cache_reliable_sample()/reliable_cache_oldest_seq_no() were split out for.
 //
-// Milestone 62 (rmw_tickle/PLAN.md) - direct-indexed (reliable_cache_slot(): seq_no N always lives
+// Milestone 62 (git show 3c0c505b:rmw_tickle/PLAN.md) - direct-indexed (reliable_cache_slot(): seq_no N always lives
 // at index[(N - 1) % depth]), not a linear scan over every slot, this function's own original
 // shape. Found and fixed after TickLE Plan's own real HIL re-measurement of Milestone 61
 // (caller-configurable depth) showed a deeper cache measurably *hurting* RELIABLE recovery rather
@@ -22671,7 +22684,7 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
 // rule on struct tt_ReliableCache.depth itself (tickle.h), since the write side indexes the same
 // way.
 //
-// Phase 1-c (rmw_tickle/PLAN.md, B2) - *gone is set when the NULL means the sample no longer exists
+// Phase 1-c (git show 3c0c505b:rmw_tickle/PLAN.md, B2) - *gone is set when the NULL means the sample no longer exists
 // for this Publisher at all (evicted, or aged out of LIFESPAN) - retransmit_reliable_samples()
 // answers that with an eviction Heartbeat. A NULL that is not gone is a suppressed resend (resend_suppressed()).
 // The cap removed on 2026-10-15 was also the only thing that bounded how often one datagram went again: a reader asks
@@ -22721,7 +22734,7 @@ static struct tt_ReliableCacheIndex* find_resendable_cache_entry(const struct tt
     return cache_entry;
 }
 
-// Phase 1-c (rmw_tickle/PLAN.md, B2) - the oldest seq_no this Publisher can still resend: present in
+// Phase 1-c (git show 3c0c505b:rmw_tickle/PLAN.md, B2) - the oldest seq_no this Publisher can still resend: present in
 // its slot and not aged out of LIFESPAN. Direct-indexed like find_resendable_cache_entry() above
 // (seq_no N lives at entries[(N - 1) % depth]), so it starts at the oldest seq_no the ring can
 // still hold and only walks forward past LIFESPAN-expired entries (which expire oldest-first) -
@@ -22805,7 +22818,7 @@ static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* 
     return false;
 }
 
-// Milestone 62 (rmw_tickle/PLAN.md) - the actual per-bit retransmit loop, split out of
+// Milestone 62 (git show 3c0c505b:rmw_tickle/PLAN.md) - the actual per-bit retransmit loop, split out of
 // process_acknack() below purely to keep that function's own cognitive complexity under clang-
 // tidy's threshold, same reasoning find_resendable_cache_entry() above was split out for (the new
 // pub->reliable gate this milestone added tipped it over on its own). Only ever called when pub->
@@ -22841,7 +22854,7 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
         }
     }
 
-    // Phase 1-c (rmw_tickle/PLAN.md, B2) - at least one requested sample no longer exists here:
+    // Phase 1-c (git show 3c0c505b:rmw_tickle/PLAN.md, B2) - at least one requested sample no longer exists here:
     // tell the requester where this Publisher's resendable history now starts, with one FINAL
     // Heartbeat unicast straight back (FINAL: no ACKNACK reply solicited). Its Subscriber then
     // advances past everything below first_available_seq_no at once (inform_subscriber_of_
@@ -22871,9 +22884,9 @@ static void flush_pending_broadcast(struct tt_Context* node) {
     }
 }
 
-// Asks `source` for its endpoint list (rmw_tickle/DISCOVERY_PLAN.md rule 3): an ACKNACK of the built-in
-// discovery endpoint naming the generation its summary showed, unicast. request_discovery_list() decides
-// when: on a summary showing a generation not yet applied, and again on a timer while the list is missing.
+// Asks `source` for its endpoint list (git show 3c0c505b:rmw_tickle/DISCOVERY_PLAN.md rule 3): an ACKNACK of the
+// built-in discovery endpoint naming the generation its summary showed, unicast. request_discovery_list() decides when:
+// on a summary showing a generation not yet applied, and again on a timer while the list is missing.
 static void send_discovery_request(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                    uint16_t sender_port) {
     flush_pending_broadcast(node);
@@ -23181,7 +23194,7 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // every other callback (see tt_Publisher.writable_callback's doc comment on what it may do).
     notify_writable_if_pending(pub);
 
-    // Milestone 62 (rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
+    // Milestone 62 (git show 3c0c505b:rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
     // reliable_cache != NULL: Milestone 24 unified RELIABILITY's and DURABILITY's own storage into
     // one cache, so a DURABLE-but-not-RELIABLE Publisher (TRANSIENT_LOCAL backlog offered, no
     // ongoing loss-recovery guarantee) still has reliable_cache allocated - but ACKNACK-driven
@@ -23236,7 +23249,7 @@ struct heartbeat_ctx {
     uint8_t flags; // tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment, tickle.h
 };
 
-// Phase 1-c (rmw_tickle/PLAN.md, B2) - an already-tracking proxy learns from a Heartbeat's
+// Phase 1-c (git show 3c0c505b:rmw_tickle/PLAN.md, B2) - an already-tracking proxy learns from a Heartbeat's
 // first_available_seq_no that everything below it no longer exists at the Publisher (evicted, or
 // aged out of LIFESPAN) - RTPS's own "irrelevant" range. Advance ack_seq_no straight past it
 // instead of re-requesting samples that can never come back: shift received_bitmap to the new
@@ -23305,10 +23318,10 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     if (first_contact) {
         // First-ever reliable contact from this writer: learn the *real* starting baseline
         // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
-        // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
-        // all) - the actual DDS-parity fix this whole follow-up is for.
+        // arrive first (Milestone 20's workaround for not having this signal at
+        // all; git show 3c0c505b:rmw_tickle/PLAN.md) - the actual DDS-parity fix this whole follow-up is for.
         //
-        // Milestone 60 (rmw_tickle/PLAN.md) - which baseline counts as "the real starting point"
+        // Milestone 60 (git show 3c0c505b:rmw_tickle/PLAN.md) - which baseline counts as "the real starting point"
         // depends on THIS Subscriber's own requested durability (sub->durable), not the remote
         // Publisher's offered one - DDS's own RxO (Requested vs Offered) design philosophy applies
         // to DURABILITY exactly like every other RxO QoS policy (RELIABILITY, DEADLINE, LIVELINESS,
@@ -24415,9 +24428,9 @@ static bool frag_fast_take(struct tt_Context* node, struct tt_Subscriber* sub, s
     return true;
 }
 
-// One fragment for a RELIABLE Subscriber, under its own seq_no (DATAFRAG_PLAN.md section 13): recorded in
-// the writer's tracking exactly as a DATA is, so the ordinary ACKNACK names it if it goes missing and the
-// writer resends that datagram alone.
+// One fragment for a RELIABLE Subscriber, under its own seq_no (git show 3c0c505b:rmw_tickle/DATAFRAG_PLAN.md section
+// 13): recorded in the writer's tracking exactly as a DATA is, so the ordinary ACKNACK names it if it goes missing and
+// the writer resends that datagram alone.
 //
 // Stored first, recorded second. Once a seq_no is acknowledged the writer never sends it again, so a
 // fragment must already be somewhere that keeps it by then - an acknowledged fragment discarded is a
@@ -25866,7 +25879,7 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
     // back the same way CallResponse does); process_callresponse() doesn't need them.
     //
     // self_sent (this whole packet's own header->source == node->id) only suppresses the two
-    // topic-shaped types below, not CALLREQUEST/CALLRESPONSE - rmw_tickle/PLAN.md's own Milestone
+    // topic-shaped types below, not CALLREQUEST/CALLRESPONSE - git show 3c0c505b:rmw_tickle/PLAN.md, Milestone
     // 17 finding: a client and its service can end up on the exact same tt_Context (the only
     // topology rmw_tickle's one-node-per-process model allows), and RPC has no separate in-
     // process delivery path the way "a node already has its own published data locally" is true
@@ -25913,11 +25926,11 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         return true;
     case tt_SUBMESSAGE_TYPE_SHM_DATA:
         if (transport != tt_TRANSPORT_SHM) {
-            // SHM_PLAN 6e's safety condition, which it names as not skippable. This record declares how
-            // many seq_nos it covers, which only something with write access to a segment may say; from
-            // the socket it is an injection or a bug, never a rolling upgrade. Counted apart from version
-            // skew for that reason, and dropped rather than returned as an error - the default case below
-            // explains why a peer must never be able to end a local poll loop.
+            // git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e's safety condition, which it names as not skippable. This
+            // record declares how many seq_nos it covers, which only something with write access to a segment may say;
+            // from the socket it is an injection or a bug, never a rolling upgrade. Counted apart from version skew for
+            // that reason, and dropped rather than returned as an error - the default case below explains why a peer
+            // must never be able to end a local poll loop.
             //
             // Logged at the 1st, 10th, 100th ... refusal, like the RxO drop: this is untrusted input, and a log line
             // per datagram would hand whoever can reach the port a way to fill the disk (and slow the poll loop with
@@ -25934,9 +25947,9 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
             }
             return true;
         }
-        // A segment record of this type, which nothing produces yet - SHM_PLAN 6e's span step is what
-        // will. Skipping is the honest handling until then, and it keeps "refused on the socket" apart
-        // from "this build does not read spans", which are different answers.
+        // A segment record of this type, which nothing produces yet - git show 3c0c505b:rmw_tickle/SHM_PLAN.md 6e's
+        // span step is what will. Skipping is the honest handling until then, and it keeps "refused on the socket"
+        // apart from "this build does not read spans", which are different answers.
         TT_LOG_WARNING("Shared-memory DATA record received, but this build does not read seq spans yet; skipping");
         return true;
     default:
@@ -25976,7 +25989,7 @@ static bool validate_packet_header(struct tt_Context* node, struct tt_Header* he
 
     TT_LOG_DEBUG("magic: 0x%04x (%c%c)", header->magic_value, header->magic[0], header->magic[1]);
 
-    // Phase 2 (rmw_tickle/PLAN.md) - exact match, where this used to accept anything >= our own
+    // Phase 2 (git show 3c0c505b:rmw_tickle/PLAN.md) - exact match, where this used to accept anything >= our own
     // version. That was one-directional: a newer peer's packet passed this check and was then
     // parsed with the older struct layout, silently misreading fields rather than failing. An
     // exact match refuses cleanly in both directions.
@@ -26274,9 +26287,9 @@ static tt_ret_t process_datagram_at(struct tt_Context* node, uint8_t* buffer, in
 // drain's for a record it passes over unread, so the totals agree whichever way a record was dealt with.
 static void count_arrivals(struct tt_Context* node, enum tt_Transport transport, uint32_t datagrams) {
     node->rx_datagrams += datagrams;
-    // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
-    // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
-    // beside it, so the two transports are never counted by two different rules.
+    // The receive half of the seam (git show 3c0c505b:rmw_tickle/SHM_PLAN.md stage 0). One place, because there is one
+    // place a datagram enters core - and stage 1's segment arrivals will be counted here too rather than beside it, so
+    // the two transports are never counted by two different rules.
     node->rx_datagrams_by_transport[transport] += datagrams;
     if (node->rx_via_data_port) {
         node->rx_via_data_datagrams += datagrams;
@@ -27814,12 +27827,12 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
-    // (g11, RMW_GAPS_PLAN.md) A datagram nothing could be made of is dropped and counted, never returned as an
-    // error. The loops TickLE ships - and the ones its examples teach people to write - end on anything but OK or
-    // TIMEOUT, and drain_rx() stops on the same condition, so returning an error here let any host that can reach
-    // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
-    // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
-    // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
+    // (g11, git show 3c0c505b:rmw_tickle/RMW_GAPS_PLAN.md) A datagram nothing could be made of is dropped and counted,
+    // never returned as an error. The loops TickLE ships - and the ones its examples teach people to write - end on
+    // anything but OK or TIMEOUT, and drain_rx() stops on the same condition, so returning an error here let any host
+    // that can reach the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11
+    // server on the rig, twenty seconds into its run, and voided the measurement. An error return is for this node's
+    // own failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
 #if tt_LARGE_SAMPLES
 #if LARGE_DIRECT
     large_direct_release_parked(node); // the HAL's read is over: a buffer parked during it goes back
@@ -27850,8 +27863,8 @@ static inline bool drain_clock_tick(struct tt_Context* node, uint32_t* since_clo
 }
 
 // D4: datagrams the HAL already holds are processed under one lock, up to `chunk` of them (opts.poll.rx_lock_chunk) - a
-// publishing thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4). *long_pass is set when the clock was read
-// again.
+// publishing thread waits at most one chunk (git show 3c0c505b:examples/perf_hil/OPTIMIZATION_PLAN.md 11.4). *long_pass
+// is set when the clock was read again.
 static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, uint32_t refresh, uint32_t chunk,
                                bool* long_pass) {
     tt_ret_t result = tt_RET_OK;
@@ -28652,7 +28665,7 @@ static bool node_entity_alive_locked(const struct tt_Context* node, const struct
     if (!node->update_seen[entity->context_id]) {
         return false; // never heard from this node id at all
     }
-    // The lease runs from the entity's last sign of life (LIVELINESS_PLAN.md rule 1) - see
+    // The lease runs from the entity's last sign of life (git show 3c0c505b:rmw_tickle/LIVELINESS_PLAN.md rule 1) - see
     // entity_lease_anchor().
     return entity_within_lease(node, entity, now);
 }
@@ -28976,11 +28989,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 
     // After the null check, not before it: the first version of this line dereferenced node to
     // print the counters and only then asked whether node was NULL.
-    // tx_udp/tx_shm/rx_udp/rx_shm are here as well as in the benchmark's RESULT line (SHM_PLAN
-    // stage 0) because the two instruments reach different runs: the RESULT line covers the native
-    // campaign, and this covers everything that goes through rmw - the acceptance suite runs rclpy
-    // nodes, which have no RESULT line, so without this S2 could assert on the campaign and not on
-    // the acceptance suite. Same names in both, so one grep reads either.
+    // tx_udp/tx_shm/rx_udp/rx_shm are here as well as in the benchmark's RESULT line (git show
+    // 3c0c505b:rmw_tickle/SHM_PLAN.md stage 0) because the two instruments reach different runs: the RESULT line covers
+    // the native campaign, and this covers everything that goes through rmw - the acceptance suite runs rclpy nodes,
+    // which have no RESULT line, so without this S2 could assert on the campaign and not on the acceptance suite. Same
+    // names in both, so one grep reads either.
     //
     // tx_datagrams stays alongside deliberately rather than being replaced by the split: the two
     // are produced by the same seam and must agree, so a reader who sees tx_udp + tx_shm differ

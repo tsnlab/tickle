@@ -91,7 +91,7 @@
 
 #include <sys/prctl.h> // PR_SET_TIMERSLACK (rx_timer_slack_once())
 
-// The segment's mapping (SHM_PLAN.md stage 1) and io_uring's rings are both mmap()ed.
+// The segment's mapping (git show 3c0c505b:rmw_tickle/SHM_PLAN.md stage 1) and io_uring's rings are both mmap()ed.
 #if tt_SEGMENT_ENABLED || tt_HAL_IO_URING
 #include <sys/mman.h>
 #endif
@@ -4464,7 +4464,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     // plain poll(): poll()'s own timeout is a whole millisecond int, which silently rounds any
     // shorter wait *up* to 1ms (a caller asking for a 100us slice effectively got throttled to
     // roughly 10x that instead) - found the hard way benchmarking a
-    // real publish/subscribe round trip (rmw_tickle/PLAN.md's rmw-perf.yml). ppoll() takes a real
+    // real publish/subscribe round trip (rmw-perf.yml, git show 3c0c505b:rmw_tickle/PLAN.md). ppoll() takes a real
     // struct timespec, so nothing shorter than a millisecond gets rounded at all.
     // Always poll, including for a negative timeout. Negative used to skip the poll and go
     // straight to a blocking recvfrom() on the well-known socket, which blocks exactly as
@@ -4951,9 +4951,9 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
 }
 
 #if tt_SEGMENT_ENABLED
-// The segment's platform half (SHM_PLAN.md stage 1). Only the mapping lives here: the ring, the
-// naming and the header checks are core's, so they are the same code and the same tests everywhere
-// and only the way pages are obtained differs.
+// The segment's platform half (git show 3c0c505b:rmw_tickle/SHM_PLAN.md stage 1). Only the mapping lives here: the
+// ring, the naming and the header checks are core's, so they are the same code and the same tests everywhere and only
+// the way pages are obtained differs.
 //
 // Plain open()/ftruncate()/mmap() on a /dev/shm path rather than shm_open(), matching
 // registry_path() above - same directory, same visibility across network namespaces, and one fewer
