@@ -4376,8 +4376,8 @@ struct tt_ServerOptions {
 
 uint32_t tt_hash_id(const char* type, const char* name);
 struct tt_Header;
-bool tt_is_native_endian(struct tt_Header* header);
-bool tt_is_reverse_endian(struct tt_Header* header);
+bool tt_is_native_endian(const struct tt_Header* header);
+bool tt_is_reverse_endian(const struct tt_Header* header);
 
 // Lifetime / ownership (applies to every tt_Context_create* below):
 //   - The library never allocates or copies. Every struct you pass - the tt_Context, the

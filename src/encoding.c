@@ -24,11 +24,11 @@
 #define FNV1A_PRIME 16777619U
 
 // Endian checking functions
-bool tt_is_native_endian(struct tt_Header* header) {
+bool tt_is_native_endian(const struct tt_Header* header) {
     return header->magic_value == NATIVE_MAGIC_VALUE;
 }
 
-bool tt_is_reverse_endian(struct tt_Header* header) {
+bool tt_is_reverse_endian(const struct tt_Header* header) {
     return header->magic_value == REVERSE_MAGIC_VALUE;
 }
 
