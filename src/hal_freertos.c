@@ -573,7 +573,7 @@ static int32_t send_broadcast(struct tt_Context* node, const void* const* pieces
 
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     const void* pieces[1] = {buf};
-    size_t lens[1] = {len};
+    const size_t lens[1] = {len};
     return send_broadcast(node, pieces, lens, 1);
 }
 
@@ -581,14 +581,14 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
     ip_addr_t dest;
     ip_addr_set_ip4_u32_val(dest, lwip_htonl(ip));
     const void* pieces[1] = {buf};
-    size_t lens[1] = {len};
+    const size_t lens[1] = {len};
     return send_pieces(node, pieces, lens, 1, &dest, port);
 }
 
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     const void* pieces[2] = {hdr, body};
-    size_t lens[2] = {hdr_len, body_len};
+    const size_t lens[2] = {hdr_len, body_len};
     if (ip == 0) {
         return send_broadcast(node, pieces, lens, 2);
     }
