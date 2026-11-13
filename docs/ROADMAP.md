@@ -39,7 +39,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   loss and time-varying runs. **No wireless-stage task is open.**
 - **Candidates:** all closed. Run header merge and range NACK stopped at stage 0 (2026-11-11), FEC dropped (the user,
   2026-11-11), request serial echo dropped (2026-11-02), `ab/evict-seed` no gain. Slow-reader flow control (`c7-wire-room`,
-  `C7W`) is parked for the 32-Pi testbed. Small-sample batching is an untested idea, started only on the user's go.
+  `C7W`) is parked for the 32-Pi testbed. Small-sample batching: stage 0 did not meet its bar (CHANGELOG 2.2.0); the opt-in stays.
 
 ### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
 

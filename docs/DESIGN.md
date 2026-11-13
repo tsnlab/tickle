@@ -1248,8 +1248,8 @@ acceptance path); keystore parsing in rmw.
 
 ## 14. Wireless and zenoh-pico notes
 
-- **Wireless is parked.** No congestion control, NAT traversal or encryption: no internet paths. Run-header merge, FEC
-  and range NACKs wait for the wireless stage (the user, 2026-10-15).
+- **Wireless is parked.** No congestion control, NAT traversal or encryption: no internet paths. Run-header merge and range NACKs
+  stopped at stage 0 and FEC was dropped (the user, 2026-11-11; ROADMAP "Now").
 - **zenoh-pico** does not retransmit over UDP; its reliable p2-p4 cells are not measurable.
 
 ## 15. Configuration reference

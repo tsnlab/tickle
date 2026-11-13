@@ -108,6 +108,7 @@ Tuning and how TickLE differs from DDS: [docs/RMW.md](docs/RMW.md#tuning-and-dif
 
 | | |
 |---|---|
+| [docs/SUMMARY.md](docs/SUMMARY.md) | 2.2.0 in brief: bullets of everything below. |
 | [docs/DESIGN.md](docs/DESIGN.md) | How it works and why. |
 | [docs/RESULTS.md](docs/RESULTS.md) | Every measurement. |
 | [docs/RMW.md](docs/RMW.md) | `rmw_tickle` and ROS 2. |
