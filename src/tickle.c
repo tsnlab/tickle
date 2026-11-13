@@ -18302,6 +18302,40 @@ static void note_discovery_echo(struct tt_Context* node, uint8_t source, uint8_t
     }
 }
 
+// Whether a Publisher of this node batches: its samples wait in tx_buffer for node_flush(), which sends them where the
+// tick sends them (batched_flush_peers()). Only asked when a summary or an announce is about to be put into tx_buffer.
+static bool node_has_batching_publisher(const struct tt_Context* node) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_PUBLISHER &&
+            ((const struct tt_Publisher*)endpoint)->batch) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A broadcast-only summary or announce must not share a datagram with a batching Publisher's samples. Batched
+// together, node_flush() broadcasts all of it, samples included (batched_flush_peers(): an update must reach the whole
+// segment), while the rest of that Publisher's stream goes unicast to its peer: one stream on both of the receiver's
+// sockets, which it does not read in arrival order. A receiver that was stopped for a while then delivers the sample
+// that came by broadcast first, and BEST_EFFORT discards every older one waiting on its data socket (perf_client -B -s
+// 994 at 1 kHz, server SIGSTOPped for 1 s: 878 samples discarded, none lost). So what is batched goes first, where its
+// tick would send it, and the update then goes alone (send_update_alone()). Both run on the update's own, rare path.
+static void flush_batched_samples_before_update(struct tt_Context* node) {
+    if (node->tx_tail == sizeof(struct tt_Header) || node->tx_has_pending_update ||
+        !node_has_batching_publisher(node)) {
+        return;
+    }
+    flush_batched(node);
+}
+
+static void send_update_alone(struct tt_Context* node) {
+    if (node->tx_has_pending_update && node_has_batching_publisher(node)) {
+        (void)flush_tx(node, node->tx_tail, NULL, 0);
+    }
+}
+
 // Builds this node's current announce (its own endpoint list, a DATA of the built-in discovery endpoint)
 // and sends it either way it is needed: peer_count == 0 broadcasts it, batched (is_flush=false - a change
 // pushed by announce_soon(), or a request answered in bulk, no synchronous waiter, node_flush()'s own tick
@@ -18333,6 +18367,9 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
 }
 
 static bool build_and_send_update_untagged(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
+    if (peer_count == 0) {
+        flush_batched_samples_before_update(node);
+    }
     uint32_t old_tx_tail = node->tx_tail;
 
     // start_encode()/encode() below already log their own reason when they fail (e.g. "Lack of
@@ -18399,6 +18436,7 @@ static bool build_and_send_update_untagged(struct tt_Context* node, const struct
         // broadcast-only content that must not get swept into a unicast flush; node_flush()
         // clears this once it's actually sent, see flush_tx().
         node->tx_has_pending_update = true;
+        send_update_alone(node);
     }
 
     return true;
@@ -18513,6 +18551,7 @@ static void send_summary_copies(struct tt_Context* node, uint64_t time) {
 }
 
 static void send_discovery_summary(struct tt_Context* node) {
+    flush_batched_samples_before_update(node);
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
         start_encode(node, tt_SUBMESSAGE_TYPE_HEARTBEAT, tt_SUBMESSAGE_ID_ALL);
@@ -18530,6 +18569,7 @@ static void send_discovery_summary(struct tt_Context* node) {
     node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
     bool alone = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer) == sizeof(struct tt_Header);
     node->tx_summary_alone_len = alone && node->summary_skip_armed ? node->tx_tail : 0;
+    send_update_alone(node);
 }
 
 // How often this node's summary goes out: every tt_CONTEXT_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
