@@ -14532,7 +14532,7 @@ static bool reliable_cache_oldest_seq_no(const struct tt_ReliableCache* cache, u
 // Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] to the given
 // target(s) - split out of send_heartbeat()/send_initial_heartbeat() purely to keep cognitive
 // complexity down and share the actual wire encoding between the periodic and discovery-triggered
-// paths, same reasoning cache_reliable_sample()/cache_durable_sample() were split out of tt_
+// paths, same reasoning cache_reliable_sample() was split out of tt_
 // Publisher_publish() for. peers/peer_count follow end_encode()'s own convention directly (NULL/0
 // broadcasts). flags is tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment (tickle.h); every
 // caller before tt_Publisher_request_ack() existed always passed tt_HEARTBEAT_FLAG_FINAL.
