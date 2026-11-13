@@ -3,8 +3,12 @@
 **TL;DR**
 - **Done 2026-10-19:** QoS reshaped like rmw (DESIGN 9, RMW.md); KEEP_LAST rows and L4 latency re-scored by round trip.
 - **Done 2026-11-06:** discovery-seeded retry interval landed (`e42185f1`, RESULTS `DSE`).
-- **Now:** wireless stage on simulation only, and the time-varying stage beside it, also on simulation (the user, 2026-11-06 and
-  2026-11-08). **No real wireless hardware is used at any stage** (the user, 2026-11-08).
+- **Now:** nothing is open. The wireless stage and the time-varying stage (both simulation only: the user, 2026-11-06 and
+  2026-11-08) are **closed for 2.2.0** (2026-11-13); results in RESULTS section 5 and CHANGELOG 2.2.0. **No real wireless
+  hardware is used at any stage** (the user, 2026-11-08). **Parked, only on the user's go:** the 32-Pi testbed items
+  (slow-reader flow control `C7W`; link broadcast against per-reader unicast above 2 readers), Security (v3.0), rmw_tickle
+  at REP-2004 Quality Level 2 (after Security), internet paths and congestion control (not started), rig interrupt
+  coalescing and 10BASE-T1S hardware.
 - **Release order (the user, 2026-11-01):** performance work done -> v2.1; wireless + wire changes; time-varying
   networks -> v2.2; Security -> v3.0. Each stage starts on the user's go.
 
@@ -12,7 +16,13 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ## Now
 
-### Wireless stage (started 2026-11-06)
+Nothing is open (2026-11-13). The wireless stage and the time-varying stage are closed for 2.2.0; their sections below are
+the record, not a task list. What remains is under "Parked": the 32-Pi testbed items (slow-reader flow control `C7W`,
+branch `c7-wire-room`; link broadcast against per-reader unicast above 2 readers, `tt_UNICAST_PEER_THRESHOLD`), Security
+for v3.0, rmw_tickle at REP-2004 Quality Level 2 (after Security), and the items that wait on hardware. Next release
+order: 3.0 Security, on the user's go.
+
+### Wireless stage (started 2026-11-06; closed for 2.2.0)
 
 - **Environment: T1 only** (the user, 2026-11-06): `mac80211_hwsim` + `wmediumd` on the dev PC.
   Simulation only, no real Wi-Fi, now and later (the user, 2026-11-08: real wireless hardware is not used). T1 is read
@@ -41,10 +51,10 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
   2026-11-11), request serial echo dropped (2026-11-02), `ab/evict-seed` no gain. Slow-reader flow control (`c7-wire-room`,
   `C7W`) is parked for the 32-Pi testbed. Small-sample batching: stage 0 did not meet its bar (CHANGELOG 2.2.0); the opt-in stays.
 
-### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only)
+### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only; closed for 2.2.0)
 
-- Test varying loss and delay (netem schedules and, in T1, a time-varying `wmediumd` schedule), then tune the estimator
-  (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
+- Plan, done on netem schedules and the rig (a time-varying `wmediumd` schedule in T1 is not among the recorded results,
+  RESULTS N9): test varying loss and delay, then tune the estimator (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
 - Tooling already on main: `time_varying_netns.sh` and `time_varying_read.py` (V1/V2/V4 fail only beyond the A/A spread;
   D/LD need 8 reps), `trace_replay_mm.sh` (Mahimahi cellular trace replay), `-Dtt_ESTIMATOR_TRACE` (X0d).
 
@@ -188,8 +198,8 @@ wireless").
 
 - **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27), last, for v3.0 (the user, 2026-11-01).
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
-- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): started 2026-11-06, see Now.
-  Internet and congestion control not started.
+- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): the simulation stage closed for 2.2.0 (2026-11-13,
+  see Now); real wireless hardware is not used. Internet and congestion control not started.
 - **Wire changes** (run header merge and range NACK stopped at stage 0, 2026-11-11; FEC dropped by the user, 2026-11-11): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
   `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on T1 (simulation only, the user 2026-11-06; no real Wi-Fi hardware, the user 2026-11-08); slow-reader
   flow control (`C7W`) is judged on T1 and the 32-Pi testbed (the user, 2026-11-02, 2026-11-08).
