@@ -132,6 +132,7 @@ def main():
                 m["run"] = f"{cell}/{arm}/{f[:-5]}"
                 data.setdefault((cell, arm), {}).setdefault(fw, {}).setdefault(copy, []).append(m)
     counts = {"WIN": 0, "TIE": 0, "LOSE": 0, "VOID": 0}
+    per = {}
     print("# T1 framework comparison, read by t1fw_read.py (simulation only; relative, not Wi-Fi performance)\n")
     for (cell, arm), by_fw in sorted(data.items()):
         mets = metrics_for(cell)
@@ -157,10 +158,14 @@ def main():
                 elif void["tickle"] or void[vend]:
                     vs.append("VOID")
                     counts["VOID"] += 1
+                    per.setdefault((cell, arm, vend), {}).setdefault("VOID", 0)
+                    per[(cell, arm, vend)]["VOID"] += 1
                 else:
                     r = verdict(metric, pooled["tickle"], pooled[vend])
                     vs.append(r)
                     counts[r] += 1
+                    per.setdefault((cell, arm, vend), {}).setdefault(r, 0)
+                    per[(cell, arm, vend)][r] += 1
             unit = "%" if metric == "delivery" else " ms"
             print(f"| {metric}{unit} | " + " | ".join(cols) + f" | {vs[0]} | {vs[1]} |")
         # per-run evidence line
@@ -169,6 +174,11 @@ def main():
             print(f"\n- {fw} scored/offered: " + ", ".join(x["n"] + ("" if x["matched"] == "1" else " (no match)") + (f" ({x['error']})" if x["error"] else "") for x in runs))
     print("\n## Counts (TickLE vs CycloneDDS and Fast DDS, per metric-cell-arm; zenoh-pico never scored)\n")
     print(", ".join(f"{k} {v}" for k, v in counts.items()))
+    print("\n## Per cell, arm and vendor (metric counts)\n")
+    print("| cell | arm | vs | WIN | TIE | LOSE | VOID |")
+    print("|---|---|---|---:|---:|---:|---:|")
+    for (cell, arm, vend), c in sorted(per.items()):
+        print(f"| {cell} | {arm} | {vend} | {c.get('WIN', 0)} | {c.get('TIE', 0)} | {c.get('LOSE', 0)} | {c.get('VOID', 0)} |")
     print("\nColumns: median [min..max] over the runs of a framework (A and A2 pooled); `V` = noise-VOID (|median A2 - median A| > 10% of median A).")
     if lost:
         print("\nRUNS LOST (no RESULT after 3 attempts): " + ", ".join(lost))
