@@ -35,7 +35,7 @@ def parse(path):
 
 
 def group_key(name):
-    return re.sub(r"_(A2|A)(?=_r\d+$)", "", re.sub(r"_r\d+$", "", name))
+    return re.sub(r"_r\d+$", "", re.sub(r"_(A2|A)(?=_r\d+$)", "", name))
 
 
 def load(dirs):
