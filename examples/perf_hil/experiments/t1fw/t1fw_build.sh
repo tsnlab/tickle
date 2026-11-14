@@ -20,13 +20,13 @@ T1_DIR=$BIN "$REPO/examples/perf_hil/experiments/t1/t1_build_node.sh" "$BIN"
 
 # CycloneDDS
 (cd "$BIN/gen_cyclone" && cp "$S/Blob.idl" . && "$ROS/bin/idlc" -o . Blob.idl)
-cc -O2 -I"$S" -I"$BIN/gen_cyclone" -I"$ROS/include/CycloneDDS" -o "$BIN/cyclonedds_node" "$S/cyclonedds_node.c" "$BIN/gen_cyclone/Blob.c" \
+cc -O2 -I"$S" -I"$BIN/gen_cyclone" -I"$ROS/include/CycloneDDS" -o "$BIN/cyclonedds_node" "$S/../../cyclonedds/t1_wifi_node/node.c" "$BIN/gen_cyclone/Blob.c" \
     -L"$ROS/lib/x86_64-linux-gnu" -lddsc -Wl,-rpath,"$ROS/lib/x86_64-linux-gnu"
 echo "built cyclonedds_node ($("$ROS/bin/idlc" -v 2>&1 | head -1))"
 
 # Fast DDS
 (cd "$BIN/gen_fastdds" && cp "$S/Blob.idl" . && "$FASTDDSGEN" -replace -d . Blob.idl >gen.log 2>&1)
-g++ -O2 -std=c++17 -I"$S" -I"$BIN/gen_fastdds" -I"$ROS/include/fastdds" -I"$ROS/includefastcdr" -o "$BIN/fastdds_node" "$S/fastdds_node.cpp" \
+g++ -O2 -std=c++17 -I"$S" -I"$BIN/gen_fastdds" -I"$ROS/include/fastdds" -I"$ROS/includefastcdr" -o "$BIN/fastdds_node" "$S/../../fastdds/t1_wifi_node/node.cpp" \
     "$BIN/gen_fastdds/BlobPubSubTypes.cxx" "$BIN/gen_fastdds"/BlobTypeObjectSupport.cxx -L"$ROS/lib" -L"$ROS/lib/x86_64-linux-gnu" \
     -Wl,-rpath,"$ROS/lib:$ROS/lib/x86_64-linux-gnu" -lfastdds -lfastcdr -lpthread
 echo "built fastdds_node"
@@ -41,7 +41,7 @@ if [ ! -f "$ZP_PREFIX/lib/libzenohpico.so" ]; then
     cmake --build "$ZP_SRC/build" --parallel "$(nproc)" >/dev/null
     cmake --install "$ZP_SRC/build" >/dev/null
 fi
-cc -O2 -DZENOH_LINUX=1 -I"$S" -I"$ZP_PREFIX/include" -o "$BIN/zenohpico_node" "$S/zenohpico_node.c" -L"$ZP_PREFIX/lib" -lzenohpico -lpthread -lm \
+cc -O2 -DZENOH_LINUX=1 -I"$S" -I"$ZP_PREFIX/include" -o "$BIN/zenohpico_node" "$S/../../zenohpico/t1_wifi_node/node.c" -L"$ZP_PREFIX/lib" -lzenohpico -lpthread -lm \
     -Wl,-rpath,"$ZP_PREFIX/lib"
 echo "built zenohpico_node (zenoh-pico $ZP_COMMIT)"
 echo "BUILD_OK $BIN"

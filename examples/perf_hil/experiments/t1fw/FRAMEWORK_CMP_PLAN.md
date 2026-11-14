@@ -37,7 +37,7 @@ KEEP_LAST 100 on the small cells: T1 found history 10 evicts gaps before repair 
 framework gets the same depth, so none is handed a depth handicap. The payload is 16 header bytes (send_ns, seq, reserved) plus zeros to
 the size, one sample per topic message, topics `wifi_ping` / `wifi_pong` (pong = the 16 header bytes, same reliability). No ROS 2 layer.
 
-Small cells = `wifi_link_node` semantics, re-implemented per framework (`experiments/t1fw/`): `ping` publishes at the rate for 60 s after its
+Small cells = `wifi_link_node` semantics, re-implemented per framework (`<framework>/t1_wifi_node/`, shared header and scripts in `experiments/t1fw/`): `ping` publishes at the rate for 60 s after its
 endpoints matched (seq 0..), the first second (100 samples) is warm-up and not scored; `echo` answers the first copy of each sample from inside
 the receive callback; `ping` takes the round trip from its own send stamp to the first pong naming the sample; 3 s drain. TickLE runs its own
 `wifi_link_node` (`node_d100`, depth 100) unchanged. Both DDS ping waits for BOTH of its endpoints (writer and reader) to match; TickLE's node

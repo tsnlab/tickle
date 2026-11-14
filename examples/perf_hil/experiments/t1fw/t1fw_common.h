@@ -8,9 +8,10 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Shared pieces of the T1 framework-comparison nodes (cyclonedds_node.c, fastdds_node.cpp, zenohpico_node.c): the
-// command line, the 16-byte sample header, first-copy scoring, the quantiles and the RESULT line. Plain C so both the C
-// and the C++ node include it. The roles mirror wifi_link_node.c (small cells) and large_sample_bench.c (large cell):
+// Shared pieces of the T1 framework-comparison nodes (cyclonedds/t1_wifi_node, fastdds/t1_wifi_node,
+// zenohpico/t1_wifi_node): the command line, the 16-byte sample header, first-copy scoring, the quantiles and the
+// RESULT line. Plain C so both the C and the C++ node include it. The roles mirror wifi_link_node.c (small cells) and
+// large_sample_bench.c (large cell):
 //
 //   ping  publishes SIZE-byte samples at HZ for -d seconds once matched; the first -r samples (one second at -r HZ) are
 //         warm-up and not scored; times each sample's round trip from its own send stamp to the first pong naming it;
@@ -26,6 +27,9 @@
 // Times are CLOCK_MONOTONIC (every namespace shares the host's clock). One RESULT line per role, on stdout.
 #ifndef T1FW_COMMON_H
 #define T1FW_COMMON_H
+
+// NOLINTBEGIN: a measurement instrument shared by the three vendor-API nodes (which the lint passes do not tidy,
+// Makefile LINT_TIDY_EXCLUDE_PATHS), written to read like the harnesses beside it, not to the library style.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -245,5 +249,7 @@ static inline void t1_result(const char* fw, const struct t1_opts* o, struct t1_
            s->scored > 0 ? (double)s->lat_ns[s->scored - 1U] / 1000.0 : 0.0, t1_cpu_ms(), extra != NULL ? extra : "");
     fflush(stdout);
 }
+
+// NOLINTEND
 
 #endif
