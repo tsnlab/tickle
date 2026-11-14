@@ -147,4 +147,5 @@ phy, no `t1pg*` link, `mac80211_hwsim` unloaded, `wlan0`/`eth0` as found.
    * `rel_large` is one-way across two hosts whose CLOCK_MONOTONIC differ by minutes: the offset is measured over the wired link before and after
      each run (`t1pi_clock.py`) and subtracted by the reader (the nodes print the wrapped unsigned difference).
    * Small cells: RTT at the ping only (as section 2); the delivery denominator is published - 100.
-   * Lint: the framework nodes live in `t1pi/fw/`; the Fast DDS node is `fastdds_node.cxx` because the rmw lint gate globs `*.cpp`.
+   * Lint: the framework nodes live in `examples/perf_hil/fastdds/t1pi_fw/` (all three, with the shared header), a path the clang-tidy and rmw-lint
+     gates already skip for the vendor harnesses; no gate was changed.
