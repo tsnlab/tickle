@@ -576,6 +576,33 @@ this table's own.
 | N8 | Time-varying, netem netns harness `time_varying_netns.sh` at `dc45d3d9`, ETHERNET, 270 runs, 5 reps (thresholds a DRAFT then) | V3 (goodput in the first 2 s after each loss step) PASS: `LB` rel_small 100.00% and rel_large 100.00%; `LD` p2 rel_small 98.36%, rel_large 100.00%; V4 `J` rel_small PASS; V2 VOID in 3 of 4 (too few samples after a step); two `LG_p10` V3 VOID | `time_varying/t1_dc45d3d9_20261102-1906` (the directory name is `t1_`, the run is netns, no `wmediumd`) |
 | N9 | Time-varying, a time-varying `wmediumd` schedule | **no result recorded**: the ROADMAP named it a plan; every recorded time-varying run is netem (N8) or the rig (R1 to R3) | none |
 
+### Framework comparison in T1 (TickLE, CycloneDDS, Fast DDS; zenoh-pico reference), simulation only
+
+Same T1 simulation as above (`mac80211_hwsim` + patched `wmediumd`, no real Wi-Fi): **relative comparison, not Wi-Fi performance**. TickLE, CycloneDDS
+and Fast DDS are scored with the win rule of "How to read these numbers" (WIN when every TickLE run beats every vendor run, LOSE the reverse, else TIE; VOID when the
+A/A noise rule, 10 %, fails). zenoh-pico 1.10.2 is shown, never scored ("zephyr-pico" in the request: the repository has no Zephyr build). Rules were registered before the runs
+(`examples/perf_hil/experiments/t1fw/FRAMEWORK_CMP_PLAN.md`); 216 runs, 3 cells x 3 arms (`ctl`, `o60`, `o200`) x 3 rounds x 4 frameworks x A/A2, one lane,
+no run lost, raw `~/rig_results_safe/t1_fwcmp_20261114/` (readings `reader.txt`, report `~/claude_reports/T1_FRAMEWORK_CMP_RESULTS_20261114.md`). `rel_large` runs at 128 KiB / 0.25 Hz
+because 1 MiB did not pass the TickLE pilot (0 of 15; pilot: Cyclone 7, Fast DDS 1, zenoh-pico 0). Fast DDS 3.6.2 / CycloneDDS 11.0.1 (ROS lyrical), not the rig's versions; Fast DDS
+`maxMessageSize` 1472; all other knobs in the plan.
+
+| id | cell / arm | delivery (median of 6 runs, TickLE / Cyclone / Fast DDS / zenoh-pico) | TickLE vs Cyclone / vs Fast DDS (WIN-TIE-LOSE-VOID of the 3-4 metrics) |
+|---|---|---|---|
+| F1 | `be_small` ctl | 100 / 100 / 100 / 100 % | 0-1-0-3 / 0-1-0-3 (latency VOID: phase effect) |
+| F2 | `be_small` o60 | 96.3 / 95.0 / 94.8 / 86.2 % | 3-0-0-1 / 2-0-0-2 |
+| F3 | `be_small` o200 | 93.7 / 90.0 / 87.3 / 83.7 % | 4-0-0-0 / 3-0-0-1 |
+| F4 | `rel_small` ctl | 100 / 100 / 100 / 100 % | 0-2-0-2 / 0-1-0-3 |
+| F5 | `rel_small` o60 | 98.6 / 99.7 / 92.1 / 100 % (zenoh-pico over TCP) | 0-1-0-3 / 0-1-0-3 |
+| F6 | `rel_small` o200 | 96.9 / 98.5 / 84.4 / 100 % | 0-1-0-3 / 1-0-0-3 |
+| F7 | `rel_large` 128 KiB ctl | 100 / 100 / 86.7 / 0 % | 0-1-0-2 / 0-1-0-2 |
+| F8 | `rel_large` o60 | 93.3 / 100 / 80.0 / 0 % | 0-1-1-1 / 0-2-0-1 |
+| F9 | `rel_large` o200 | 93.3 / 100 / 86.7 / 0 % | 0-1-0-2 / 0-0-0-3 |
+
+Total 13 WIN, 14 TIE, 1 LOSE, 38 VOID of 66 metric comparisons. The one LOSE is `rel_large` o60 p50 against CycloneDDS (TickLE 6.3 s, Cyclone 1.3 s; TickLE's
+`rel_large` p50 is 4.5-8.7 s against Cyclone's 1.0-1.6 s in all three arms, a TickLE observation of the T1 model, cause open). The wins are best-effort delivery and latency under loss. Most latency
+metrics are VOID: the T1 run-to-run spread (RTT p50 1.3 versus 2.7 ms phase effect, p99 under loss 2x) exceeds the 10 % rule. Recorded: zenoh-pico delivers 0 of 15 large samples in all 27 runs (default
+`FRAG_MAX_SIZE` 4096), its best-effort data crosses the single-attempt multicast leg (83.7-86.2 % under loss), its TCP RELIABLE did not collapse in T1; Fast DDS with its default `maxMessageSize` delivered 0 of 15 at 1 MiB.
+
 ### Rig (two Raspberry Pi 5, wired 1 GbE, ethernet profile): kept separate, not wireless
 
 | id | what | result | row / directory |
