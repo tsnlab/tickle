@@ -40,9 +40,9 @@ static struct t1_opts opt;
 static struct t1_score sc;
 static std::mutex score_mutex;
 static DataWriter* wr = nullptr;
-static std::atomic<int> w_matched{0};
-static std::atomic<int> r_matched{0};
-static std::atomic<uint32_t> pongs_failed{0};
+static std::atomic<int> w_matched {0};
+static std::atomic<int> r_matched {0};
+static std::atomic<uint32_t> pongs_failed {0};
 static std::vector<uint8_t> txbuf;
 static std::mutex tx_mutex;
 
@@ -55,14 +55,18 @@ static int send_sample(uint32_t len, uint64_t send_ns, uint32_t seq) {
 }
 
 class WListener : public DataWriterListener {
-public:
-    void on_publication_matched(DataWriter*, const PublicationMatchedStatus& st) override { w_matched = st.current_count; }
+  public:
+    void on_publication_matched(DataWriter*, const PublicationMatchedStatus& st) override {
+        w_matched = st.current_count;
+    }
 };
 
 class RListener : public DataReaderListener {
-public:
+  public:
     bool answer = false;
-    void on_subscription_matched(DataReader*, const SubscriptionMatchedStatus& st) override { r_matched = st.current_count; }
+    void on_subscription_matched(DataReader*, const SubscriptionMatchedStatus& st) override {
+        r_matched = st.current_count;
+    }
     void on_data_available(DataReader* reader) override {
         Blob msg;
         SampleInfo info;
@@ -88,7 +92,9 @@ public:
 
 static bool wait_match(bool need_w, bool need_r) {
     uint64_t deadline = t1_now_ns() + (uint64_t)(T1_MATCH_WAIT_S * 1e9);
-    auto ok = [&] { return (!need_w || w_matched > 0) && (!need_r || r_matched > 0); };
+    auto ok = [&] {
+        return (!need_w || w_matched > 0) && (!need_r || r_matched > 0);
+    };
     while (!ok() && t1_now_ns() < deadline) {
         t1_sleep_until(t1_now_ns() + 10000000ULL);
     }
@@ -97,7 +103,8 @@ static bool wait_match(bool need_w, bool need_r) {
 
 int main(int argc, char** argv) {
     if (t1_parse(argc, argv, &opt) != 0) {
-        fprintf(stderr, "usage: fastdds_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-K depth] [-Q s] [-B s] [-q stop] [-l file]\n");
+        fprintf(stderr, "usage: fastdds_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-K depth] [-Q s] [-B "
+                        "s] [-q stop] [-l file]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -117,10 +124,20 @@ int main(int argc, char** argv) {
     const char* wname = nullptr;
     const char* rname = nullptr;
     switch (opt.role) {
-    case T1_PING: wname = "wifi_ping"; rname = "wifi_pong"; break;
-    case T1_ECHO: wname = "wifi_pong"; rname = "wifi_ping"; break;
-    case T1_PUB: wname = "wifi_ping"; break;
-    case T1_SUB: rname = "wifi_ping"; break;
+    case T1_PING:
+        wname = "wifi_ping";
+        rname = "wifi_pong";
+        break;
+    case T1_ECHO:
+        wname = "wifi_pong";
+        rname = "wifi_ping";
+        break;
+    case T1_PUB:
+        wname = "wifi_ping";
+        break;
+    case T1_SUB:
+        rname = "wifi_ping";
+        break;
     }
     WListener wl;
     RListener rl;

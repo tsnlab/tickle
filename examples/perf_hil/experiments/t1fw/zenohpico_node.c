@@ -9,10 +9,11 @@
  */
 
 // zenoh-pico 1.10.2 node of the T1 framework comparison (roles and semantics: t1fw_common.h). REFERENCE ONLY, never
-// scored. Same transport rule as the repository's zenoh-pico harness (examples/perf_hil/zenohpico/latency_common/session.h):
-// BEST_EFFORT over UDP multicast peer mode, RELIABLE over TCP (listen on the echo / sub side, connect from the ping / pub
-// side; environment T1_ZENOH_LISTEN / T1_ZENOH_CONNECT, e.g. tcp/10.80.0.3:7447). zenoh-pico has no history QoS, no
-// matched-endpoint API without listeners: the node settles 3 s after the session opens, as the repository's harness does.
+// scored. Same transport rule as the repository's zenoh-pico harness
+// (examples/perf_hil/zenohpico/latency_common/session.h): BEST_EFFORT over UDP multicast peer mode, RELIABLE over TCP
+// (listen on the echo / sub side, connect from the ping / pub side; environment T1_ZENOH_LISTEN / T1_ZENOH_CONNECT,
+// e.g. tcp/10.80.0.3:7447). zenoh-pico has no history QoS, no matched-endpoint API without listeners: the node settles
+// 3 s after the session opens, as the repository's harness does.
 #include <pthread.h>
 #include <signal.h>
 #include <zenoh-pico.h>
@@ -60,7 +61,8 @@ static void on_sample(z_loaned_sample_t* sample, void* arg) {
 
 int main(int argc, char** argv) {
     if (t1_parse(argc, argv, &opt) != 0) {
-        fprintf(stderr, "usage: zenohpico_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-Q s] [-I iface] [-q stop] [-l file]\n");
+        fprintf(stderr, "usage: zenohpico_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-Q s] [-I iface] "
+                        "[-q stop] [-l file]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -99,10 +101,20 @@ int main(int argc, char** argv) {
     const char* wname = NULL;
     const char* rname = NULL;
     switch (opt.role) {
-    case T1_PING: wname = "t1/ping"; rname = "t1/pong"; break;
-    case T1_ECHO: wname = "t1/pong"; rname = "t1/ping"; break;
-    case T1_PUB: wname = "t1/ping"; break;
-    case T1_SUB: rname = "t1/ping"; break;
+    case T1_PING:
+        wname = "t1/ping";
+        rname = "t1/pong";
+        break;
+    case T1_ECHO:
+        wname = "t1/pong";
+        rname = "t1/ping";
+        break;
+    case T1_PUB:
+        wname = "t1/ping";
+        break;
+    case T1_SUB:
+        rname = "t1/ping";
+        break;
     }
     z_owned_subscriber_t sub;
     int have_sub = 0;
