@@ -31,7 +31,7 @@ same comparison on the PC (`T1_FRAMEWORK_CMP_PLAN.md`); it is not touched.
   created in the init namespace (`local`/`remote` bind them to eth0's addresses), then moved into namespaces. The tunnel is
   L2, so broadcast and multicast discovery (TickLE broadcast 10.90.0.255, DDS SPDP multicast) cross like on a bridged
   Wi-Fi AP. `nopmtudisc` and MTU 1500 keep the L2 MTU at the Wi-Fi 1500 (a full frame is outer-fragmented on the wire:
-  lossless, a little CPU).
+  lossless, a little CPU); see amendment 1 for the DF bit.
 * **Server side (rpi-0):** namespace `t1p_srv` with the other tunnel end (`t1pgs`, 10.90.0.3/24). The server process runs
   natively on rpi-0 (not in a VM or container); the namespace keeps it off rpi-0's `wlan0` and `eth0` so DDS and TickLE
   cannot see or use them, as the PC's private namespaces do.
@@ -121,4 +121,12 @@ Scripts under `examples/perf_hil/experiments/t1pi/` (`t1pi_topo.sh` up/down, run
 phy, no `t1pg*` link, `mac80211_hwsim` unloaded, `wlan0`/`eth0` as found.
 
 ## 8. Amendments
-(none yet)
+
+1. (2026-11-14, after the topology bring-up and before any V1 run.) The GRE tap rejects an inner packet that has the DF bit
+   set and does not fit the tunnel MTU, and UDP sockets set DF, so a 1500-byte datagram was dropped while the segment MTU was
+   1500 (seen with `ping -M do -s 1472`: 100% loss; with a 1462 MTU instead TickLE warns that its configured link MTU 1500 is
+   larger than the link). Fix, a property of the simulated segment and not of any framework: two nftables rules, in the AP
+   namespace (bridge `forward` hook) and in the server namespace (ip `output` hook), clear DF on inner packets whose frag-off is
+   exactly DF (`ip frag-off == 0x4000 ip frag-off set 0`); the outer GRE packet is fragmented on the wire. After it
+   `ping -M do -s 1472` works in both directions. nf_tables is loaded for the session and removed at the end with the other
+   modules the session loaded (nfnetlink was already loaded and in use on both Pis and stays).
