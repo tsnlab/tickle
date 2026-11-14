@@ -130,3 +130,21 @@ phy, no `t1pg*` link, `mac80211_hwsim` unloaded, `wlan0`/`eth0` as found.
    exactly DF (`ip frag-off == 0x4000 ip frag-off set 0`); the outer GRE packet is fragmented on the wire. After it
    `ping -M do -s 1472` works in both directions. nf_tables is loaded for the session and removed at the end with the other
    modules the session loaded (nfnetlink was already loaded and in use on both Pis and stays).
+
+2. (2026-11-14, after V1, the calibration, the A/A noise runs and the pilots, before any scored matrix run.) Seen first: V1 PASS 3 of 3
+   (delivery 100%, RTT p99 2.4-4.8 ms); calibration: steady p = 0.1 and 0.3 realize no loss at all (the MAC retries mask it, as on the
+   PC), `o60`/`o200` realize 2-3% `be_small` loss and 68-471 retransmissions in `rel_small`, so the arms `ctl/o60/o200` stay; A/A floors in the
+   results file. Gate of section 3 passes, so the matrix of section 6 runs. Ports and pilot findings, all harness-side:
+   * Frameworks: Fast DDS 2.14.6 and CycloneDDS 0.10.5 from the rig's ROS 2 jazzy, zenoh-pico 1.10.2 (commit 6a881c21), built natively on rpi-1.
+     The PC's nodes are used unchanged except the Fast DDS node, ported from the 3.x to the 2.14 API (`write()` returns bool there; the first
+     build compared it with RETCODE_OK and reported every write as failed; fixed before any scored run). The DDS nodes need
+     `LD_LIBRARY_PATH` for the ROS libraries (libddsc's RUNPATH does not reach libiceoryx). The Fast DDS profile uses the 2.x XML root, UDPv4 only,
+     `maxMessageSize 1472`, no interfaceWhiteList (as the PC's amendment).
+   * `rel_large` pilot (rule of the PC plan 2.1): at 1 MiB / 0.25 Hz, `ctl`, one run per framework, TickLE delivered 15 of 15 (>= 12), so
+     `rel_large` stays **1 MiB**; the PC's pilot reached 0 of 15 and went to 128 KiB. Pilot outcomes (raw `pilot_large1m`, `pilot_large128k`): at 1 MiB
+     TickLE 15, Fast DDS 15, CycloneDDS 0 (it delivers 15 at 128 KiB: the size, not the harness), zenoh-pico 0 at both sizes (reference only, never
+     scored; not debugged further). The Fast DDS default-size (65500) arm is recorded as one extra unscored run after the matrix.
+   * `rel_large` is one-way across two hosts whose CLOCK_MONOTONIC differ by minutes: the offset is measured over the wired link before and after
+     each run (`t1pi_clock.py`) and subtracted by the reader (the nodes print the wrapped unsigned difference).
+   * Small cells: RTT at the ping only (as section 2); the delivery denominator is published - 100.
+   * Lint: the framework nodes live in `t1pi/fw/`; the Fast DDS node is `fastdds_node.cxx` because the rmw lint gate globs `*.cpp`.

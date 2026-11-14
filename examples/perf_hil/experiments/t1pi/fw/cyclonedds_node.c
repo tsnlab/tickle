@@ -10,8 +10,9 @@
 
 // CycloneDDS node of the T1 framework comparison (roles and semantics: t1fw_common.h). The participant is configured
 // by CYCLONEDDS_URI (the harness sets the interface and SPDPInterval); nothing is tuned here.
-#include <dds/dds.h>
 #include <signal.h>
+
+#include <dds/dds.h>
 
 #include "Blob.h"
 #include "t1fw_common.h"
@@ -102,7 +103,8 @@ static int wait_match(dds_entity_t w, dds_entity_t r) {
 
 int main(int argc, char** argv) {
     if (t1_parse(argc, argv, &opt) != 0) {
-        fprintf(stderr, "usage: cyclonedds_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-K depth] [-Q s] [-B s] [-q stop] [-l file]\n");
+        fprintf(stderr, "usage: cyclonedds_node ping|echo|pub|sub [-d s] [-m be|rel] [-s B] [-r Hz] [-K depth] [-Q s] "
+                        "[-B s] [-q stop] [-l file]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -117,10 +119,20 @@ int main(int argc, char** argv) {
     const char* wname = NULL;
     const char* rname = NULL;
     switch (opt.role) {
-    case T1_PING: wname = "wifi_ping"; rname = "wifi_pong"; break;
-    case T1_ECHO: wname = "wifi_pong"; rname = "wifi_ping"; break;
-    case T1_PUB: wname = "wifi_ping"; break;
-    case T1_SUB: rname = "wifi_ping"; break;
+    case T1_PING:
+        wname = "wifi_ping";
+        rname = "wifi_pong";
+        break;
+    case T1_ECHO:
+        wname = "wifi_pong";
+        rname = "wifi_ping";
+        break;
+    case T1_PUB:
+        wname = "wifi_ping";
+        break;
+    case T1_SUB:
+        rname = "wifi_ping";
+        break;
     }
     if (wname != NULL) {
         dds_entity_t t = dds_create_topic(part, &Blob_desc, wname, NULL, NULL);

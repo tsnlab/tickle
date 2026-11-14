@@ -17,7 +17,8 @@
 //         then drains DRAIN_S.
 //   echo  receives ping samples, scores one-way delay (first copy only) and answers the first copy with a 16-byte pong
 //         from inside the receive callback / the receive loop. Runs -d seconds or until the -q stop file exists.
-//   pub   publishes floor(d*HZ) samples of SIZE bytes at HZ (large cell), then stays until -d + -Q seconds after its first
+//   pub   publishes floor(d*HZ) samples of SIZE bytes at HZ (large cell), then stays until -d + -Q seconds after its
+//   first
 //         publish (-Q 3, large_sample_bench's DRAIN_NS) so resends are answered.
 //   sub   receives them, scores every first copy (no warm-up), one-way latency from the send stamp. -d seconds or -q.
 //
@@ -42,17 +43,17 @@ enum t1_role { T1_PING, T1_ECHO, T1_PUB, T1_SUB };
 
 struct t1_opts {
     enum t1_role role;
-    double seconds;      // -d
-    int reliable;        // -m rel
-    uint32_t size;       // -s
-    double rate_hz;      // -r
-    uint32_t depth;      // -K
-    double drain_s;      // -Q (pub: wait after the last publish)
-    double block_s;      // -B DDS max_blocking_time, seconds
-    const char* ip;      // -i own address (interface selection)
-    const char* iface;   // -I interface name
-    const char* stop;    // -q stop file
-    const char* lat;     // -l latency file (us, sorted, one per line)
+    double seconds;    // -d
+    int reliable;      // -m rel
+    uint32_t size;     // -s
+    double rate_hz;    // -r
+    uint32_t depth;    // -K
+    double drain_s;    // -Q (pub: wait after the last publish)
+    double block_s;    // -B DDS max_blocking_time, seconds
+    const char* ip;    // -i own address (interface selection)
+    const char* iface; // -I interface name
+    const char* stop;  // -q stop file
+    const char* lat;   // -l latency file (us, sorted, one per line)
 };
 
 static inline uint64_t t1_now_ns(void) {
@@ -87,18 +88,41 @@ static inline int t1_parse(int argc, char** argv, struct t1_opts* o) {
     optind = 2;
     while ((c = getopt(argc, argv, "d:m:s:r:K:Q:B:i:I:q:l:")) != -1) {
         switch (c) {
-        case 'd': o->seconds = atof(optarg); break;
-        case 'm': o->reliable = strcmp(optarg, "rel") == 0; break;
-        case 's': o->size = (uint32_t)strtoul(optarg, NULL, 10); break;
-        case 'r': o->rate_hz = atof(optarg); break;
-        case 'K': o->depth = (uint32_t)strtoul(optarg, NULL, 10); break;
-        case 'Q': o->drain_s = atof(optarg); break;
-        case 'B': o->block_s = atof(optarg); break;
-        case 'i': o->ip = optarg; break;
-        case 'I': o->iface = optarg; break;
-        case 'q': o->stop = optarg; break;
-        case 'l': o->lat = optarg; break;
-        default: return -1;
+        case 'd':
+            o->seconds = atof(optarg);
+            break;
+        case 'm':
+            o->reliable = strcmp(optarg, "rel") == 0;
+            break;
+        case 's':
+            o->size = (uint32_t)strtoul(optarg, NULL, 10);
+            break;
+        case 'r':
+            o->rate_hz = atof(optarg);
+            break;
+        case 'K':
+            o->depth = (uint32_t)strtoul(optarg, NULL, 10);
+            break;
+        case 'Q':
+            o->drain_s = atof(optarg);
+            break;
+        case 'B':
+            o->block_s = atof(optarg);
+            break;
+        case 'i':
+            o->ip = optarg;
+            break;
+        case 'I':
+            o->iface = optarg;
+            break;
+        case 'q':
+            o->stop = optarg;
+            break;
+        case 'l':
+            o->lat = optarg;
+            break;
+        default:
+            return -1;
         }
     }
     if (o->size < T1_HDR) {
@@ -204,18 +228,21 @@ static inline void t1_sleep_until(uint64_t until_ns) {
 }
 
 // One RESULT line. matched: 1 if the role's endpoints matched; published/failed only for ping and pub.
-static inline void t1_result(const char* fw, const struct t1_opts* o, struct t1_score* s, int matched, uint32_t published,
-                             uint32_t failed, uint64_t start_ns, uint64_t end_ns, const char* extra) {
+static inline void t1_result(const char* fw, const struct t1_opts* o, struct t1_score* s, int matched,
+                             uint32_t published, uint32_t failed, uint64_t start_ns, uint64_t end_ns,
+                             const char* extra) {
     static const char* names[] = {"ping", "echo", "pub", "sub"};
     t1_sort(s);
     t1_write_lat(o, s);
-    printf("RESULT fw=%s role=%s reliable=%d size=%u rate_hz=%.3f depth=%u matched=%d start_ns=%llu end_ns=%llu published=%u "
-           "publish_failed=%u warmup=%u scored=%u received=%u duplicates=%u below_warmup=%u max_seq=%u p50_us=%.1f p90_us=%.1f "
+    printf("RESULT fw=%s role=%s reliable=%d size=%u rate_hz=%.3f depth=%u matched=%d start_ns=%llu end_ns=%llu "
+           "published=%u "
+           "publish_failed=%u warmup=%u scored=%u received=%u duplicates=%u below_warmup=%u max_seq=%u p50_us=%.1f "
+           "p90_us=%.1f "
            "p99_us=%.1f max_us=%.1f cpu_ms=%.1f %s\n",
            fw, names[o->role], o->reliable, o->size, o->rate_hz, o->depth, matched, (unsigned long long)start_ns,
-           (unsigned long long)end_ns, published, failed, s->warmup, s->scored, s->received, s->duplicates, s->below_warmup,
-           s->max_seq, t1_q_us(s, 50), t1_q_us(s, 90), t1_q_us(s, 99), s->scored > 0 ? (double)s->lat_ns[s->scored - 1U] / 1000.0 : 0.0,
-           t1_cpu_ms(), extra != NULL ? extra : "");
+           (unsigned long long)end_ns, published, failed, s->warmup, s->scored, s->received, s->duplicates,
+           s->below_warmup, s->max_seq, t1_q_us(s, 50), t1_q_us(s, 90), t1_q_us(s, 99),
+           s->scored > 0 ? (double)s->lat_ns[s->scored - 1U] / 1000.0 : 0.0, t1_cpu_ms(), extra != NULL ? extra : "");
     fflush(stdout);
 }
 

@@ -57,6 +57,12 @@ def clock_offset_ms(base):
     return (sum(vals) / len(vals)) / 1000.0 if vals else 0.0
 
 
+def unwrap_us(x):
+    """The large nodes print (receiver clock - sender clock) as an unsigned 64-bit ns count; with the server clock behind the client's it
+    wraps to about 2^64/1000 us. A value above 2^63/1000 us is a negative number."""
+    return x - 18446744073709551.616 if x > 9223372036854775.0 else x
+
+
 def run_metrics(base, cell):
     """base = path without .near/.far. Returns dict of metrics, or None if no RESULT (lost)."""
     near, far = result(base + ".near"), result(base + ".far")
@@ -70,8 +76,8 @@ def run_metrics(base, cell):
         m["n"] = f"{int(deliv)}/{int(pub)}"
         if far and deliv > 0:
             off = clock_offset_ms(base)
-            m["p50"] = num(far, "latency_median_us", num(far, "p50_us")) / 1000.0 - off
-            m["p99"] = num(far, "latency_p99_us", num(far, "p99_us")) / 1000.0 - off
+            m["p50"] = unwrap_us(num(far, "latency_median_us", num(far, "p50_us"))) / 1000.0 - off
+            m["p99"] = unwrap_us(num(far, "latency_p99_us", num(far, "p99_us"))) / 1000.0 - off
         else:
             m["p50"] = m["p99"] = INF
         return m
