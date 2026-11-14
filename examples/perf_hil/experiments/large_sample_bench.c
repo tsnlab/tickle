@@ -846,6 +846,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
     return 0;
 }
 
+#define PACED_LINK_RATE_BPS 54000000ULL // the link_rate a TT_PACING_BPS run declares (pacing_rate may not exceed it)
 // The reveal re-ask (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal", 2026-10-30) from the environment, so
 // that a harness's NODE_ENV picks it per tree: TT_REPAIR_REVEAL=off|revealed|all_missing, unset or empty = the
 // profile's (0). Anything else stops the bench: an arm must not run a treatment it did not name. The context's resolved
@@ -905,6 +906,12 @@ int main(int argc, char** argv) {
         init.net.links[0].broadcast = opts.broadcast;
         init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
         init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
+        const char* pace = getenv("TT_PACING_BPS"); // the link's send pacing (tt_LinkOptions.pacing_rate), bits per
+                                                    // second; unset: the profile's (off)
+        if (pace != NULL && pace[0] != 0) {
+            init.net.links[0].pacing_rate = strtoull(pace, NULL, 10);
+            init.net.links[0].link_rate = PACED_LINK_RATE_BPS;
+        }
         init.net.link_count = 1;
         init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
         init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;
