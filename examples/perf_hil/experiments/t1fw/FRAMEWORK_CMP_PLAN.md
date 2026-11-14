@@ -102,4 +102,13 @@ that shows 0 is debugged in the harness (interface binding, multicast route, QoS
 run in T1 at all after harness fixes (e.g. DDS discovery over the hwsim AP, zenoh-pico TCP under loss) is recorded as such in the results, with its raw output.
 
 ## 8. Amendments
-(none yet)
+### 2026-11-14 (after the pilot, before any scored run)
+Pilot raw: `~/rig_results_safe/t1_fwcmp_20261114/pilot*` (be_small and rel_small `ctl`, 20 s; rel_large `ctl`, 1 MiB and 128 KiB, 1 rep each, unscored).
+- Harness fixes found by the pilot (harness only, no library touched): `lo` is brought up in both stations for every framework (Fast DDS sets
+  IP_MULTICAST_IF to 127.0.0.1 and found no peer without it); the Fast DDS profile has **no `interfaceWhiteList`** (with it Fast DDS 3.6 never
+  discovered a peer here; each namespace only has its wlan and `lo` anyway); Cyclone's URI is a per-run file. `maxMessageSize 1472` is kept.
+- `rel_large` drain: TickLE's `large_sample_bench` pub stays 3 s (DRAIN_NS) after its publishing loop and its sub runs `-d` 68 s. Every framework
+  gets the same window (pub: 60 s + 3 s from its first publish, sub: 68 s). The "40 s drain" of section 2.1 is replaced by this.
+- Section 2.1 pilot rule applied: 1 MiB at 0.25 Hz, TickLE delivered 0 of 15 at `ctl` (the pilot table in the results lists every framework), so
+  `rel_large` is run at **128 KiB / 0.25 Hz** and the 1 MiB pilot is reported as a recorded result, not scored.
+- Delivery denominator for the small cells: published - 100 (published counted by the ping); a run that never matched has published 0 and delivery 0.
