@@ -130,3 +130,10 @@ so the PC and Pi framework tables and the rig tables name the same library versi
   fell back). Section 1 "Machine" and the section 4 raw directory are superseded: raw output goes to
   `~/rig_results_safe/t1_fwcmp_20261115_v214/`, binaries to `~/tmp_build/t1fw_v214/bin`.
 - A framework that matches nothing at the pilot is debugged in the harness, never in the library (section 7); no silent zero.
+
+### 2026-11-15 (after the pilot, before any scored run of the repeat)
+Pilot raw: `~/rig_results_safe/t1_fwcmp_20261115_v214/pilot_small` (be_small, rel_small, `ctl`, 20 s, 1 run per framework), `pilot_large1m` and
+`pilot_large128k` (rel_large `ctl`, 1 run per framework). Seen first: every framework matched and scored 1900 of 1900 in both small cells (TickLE,
+Cyclone 0.10.5, Fast DDS 2.14.6, zenoh-pico); no harness change was needed. `rel_large` at 1 MiB / 0.25 Hz: TickLE 0 of 15 (< 12), Cyclone 1, Fast DDS 0,
+zenoh-pico 0, so by the rule of 2.1 `rel_large` runs at **128 KiB / 0.25 Hz** (as in the first run); at 128 KiB the pilot delivered TickLE 14,
+Cyclone 15, Fast DDS 15, zenoh-pico 0 of 15. Matrix: `LARGE_SZ=131072`, 216 runs.
