@@ -112,3 +112,21 @@ Pilot raw: `~/rig_results_safe/t1_fwcmp_20261114/pilot*` (be_small and rel_small
 - Section 2.1 pilot rule applied: 1 MiB at 0.25 Hz, TickLE delivered 0 of 15 at `ctl` (the pilot table in the results lists every framework), so
   `rel_large` is run at **128 KiB / 0.25 Hz** and the 1 MiB pilot is reported as a recorded result, not scored.
 - Delivery denominator for the small cells: published - 100 (published counted by the ping); a run that never matched has published 0 and delivery 0.
+
+### 2026-11-15 (before any run of the repeat; the 20261114 run is finished and kept)
+Decision (user, 2026-11-15): unify the DDS versions. The first run (raw `~/rig_results_safe/t1_fwcmp_20261114/`, results
+`T1_FRAMEWORK_CMP_RESULTS_20261114.md`) used Fast DDS 3.6.2 and CycloneDDS 11.0.1 (ROS lyrical), while the Pi T1 run and the rig campaign
+(RESULTS.md section 2) use Fast DDS 2.14.6 and CycloneDDS 0.10.5 (ROS jazzy). The whole matrix is therefore repeated on the rig versions,
+so the PC and Pi framework tables and the rig tables name the same library versions (the first run is not deleted and stays a recorded result).
+- **Versions (x86_64 builds from pinned sources, `t1fw_build_deps.sh`; jazzy packages differ only in architecture):** Fast DDS v2.14.6
+  (f052f239), Fast CDR v2.2.7, foonathan_memory v0.7-3, Fast-DDS-Gen v2.3.0 (the Pis fastddsgen is 2.3.0; its output patched as
+  `examples/perf_hil/fastdds/build.sh` does), CycloneDDS 0.10.5 (2cdd114c; built without iceoryx/SHM and security: distinct namespaces cannot use
+  SHM and the arms force UDP), zenoh-pico 1.10.2 (6a881c21, unchanged). `RelWithDebInfo` (-O2 -DNDEBUG), the packages -O2.
+- **Nodes:** the PC nodes of the first run, unchanged, except the Fast DDS node, which is the Pi branch port to the 2.14 API (`ab/t1-pi`,
+  `write()` returns bool, `ReturnCode_t::RETCODE_OK`, `eprosima::fastrtps::Duration_t`; same logic). Sources: `examples/perf_hil/t1fw_vendor/`.
+  Fast DDS profile: 2.x XML root, UDPv4 only, `maxMessageSize 1472`, no interfaceWhiteList (as amended 2026-11-14).
+- **Everything else is unchanged:** topology, cells, arms, 3 rounds, A and A2, the rotated order, the metrics, the verdict and VOID rules, the
+  pilot rule of 2.1 (the 128 KiB fallback applies as written if TickLE delivers fewer than 12 of 15 at 1 MiB; the pilot decides, the first run
+  fell back). Section 1 "Machine" and the section 4 raw directory are superseded: raw output goes to
+  `~/rig_results_safe/t1_fwcmp_20261115_v214/`, binaries to `~/tmp_build/t1fw_v214/bin`.
+- A framework that matches nothing at the pilot is debugged in the harness, never in the library (section 7); no silent zero.
