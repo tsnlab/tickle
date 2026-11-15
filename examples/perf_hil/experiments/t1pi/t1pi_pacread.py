@@ -76,10 +76,13 @@ def ft(v):
 
 def main():
     args = sys.argv[1:]
+    pick = "--pick" in args
     dirs = [tuple(a.split("=", 1)) for a in args if "=" in a]
     data = load(dirs)
     sizes = sorted({k[0] for k in data})
     cfgs = sorted({k[2] for k in data}, key=lambda c: (c != "tickle", c))
+    if pick:
+        sys.stdout = open(os.devnull, "w")
     print("# T1-Pi pacing sweep, read by t1pi_pacread.py (simulation only; relative, not Wi-Fi performance)\n")
     st = {k: stats(v) for k, v in data.items()}
     for size in sizes:
@@ -149,7 +152,13 @@ def main():
         print("- NO rate is in band for all six (size, arm) pairs")
     ranked = sorted(rates, key=lambda c: (scores[c], int(c.split("-r")[1])))
     print("\n## Stage-2 choice (two lowest scores, ties to the lower rate): " + ", ".join(f"{c} ({scores[c]:.2f})" for c in ranked[:2]))
+    if pick:
+        sys.stdout = sys.__stdout__
+        num = lambda c: c.split("-r")[1]
+        inb = [c for c in ranked if inband.get(c)]
+        print(f"R1={num(ranked[0])} R2={num(ranked[1])} FINAL={num(inb[0] if inb else ranked[0])} BAND={'yes' if inb else 'no'}")
 
 
 if __name__ == "__main__":
     main()
+
