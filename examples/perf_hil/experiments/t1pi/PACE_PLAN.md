@@ -89,4 +89,29 @@ raw data `~/rig_results_safe/t1pi_pace_20261115/{stage1_1m,stage1_128k,stage2_*,
 docs: a "Wi-Fi tuning" section in `docs/DESIGN.md` (docs only).
 
 ## 8. Amendments
-(none yet)
+1. (2026-11-15, before stage 1 finished.) The diagnosis driver is a PCAP=1 option of t1pi_fw.sh run by t1pi_pace_chain.sh, not a separate t1pi_diag.sh; no rule changed.
+
+2. (2026-11-15, user decision, added while stage 1 runs; no registered rule above is changed.) The documentation will tell Wi-Fi users to set
+   `tt_LinkOptions.pacing_rate` and `pacing_burst`, with a **guideline** a user can apply from what they can know or measure. Fixed now, before any
+   sweep result is read:
+   * **Derivation rule.** The guideline is stated as a fraction of the link rate. The harness declares `link_rate` = 54 Mbit/s, so the recommended band
+     (section 3) in Mbit/s divided by 54 is the band as a fraction; the guideline fraction f = the geometric middle of the band's tested rates divided by
+     54, rounded to a simple number (a multiple of 5%). If the link rate is unknown the guideline says to measure the link's sustained UDP throughput
+     (a short unpaced flood to a receiver on the same link, counting what arrives) and use that as the rate; the lowest sustained-throughput rule and
+     any absolute fallback are taken from the stage-1 rates (a fixed Mbit/s that was in band) and stated as a fallback, not as a general value.
+     Burst advice: the default (4 frames of the MTU) unless stage 2 shows the minimum or 16-frame burst is in band where the default is not
+     (then it follows stage 2); the MTU is the interface MTU.
+   * **Literal application.** After stage 2, a further configuration `tickle-r<f x 54 rounded to an integer Mbit/s>[-b<burst by the guideline>]` is run in
+     the final comparison's cells as an extra TickLE arm ("TickLE guideline"), using only inputs a user has: the declared link rate 54 Mbit/s and the
+     MTU 1500, never the sweep's best point. It runs as a separate block (`final_*_guideline`, same arms, same A/A2 rotated rounds, 6 runs per cell) after
+     the chain, and is compared with the same vendor runs.
+   * **Check (before the arm is analysed).** The guideline arm passes if, for each of the six (size, arm) pairs, its median p50 and median delivered meet
+     the section 3 "in band" test against the sweep's best (the same noise rule) and its worst run delivers >= 12 of 15. If it fails, that is reported as
+     a failed guideline and the closest tested rate; the guideline is then not published as such.
+   * Because the final paced arm of the chain (`tickle-r$FINAL`) is chosen by the score rule, it stays as the "sweep-best" arm; the guideline arm is a
+     third TickLE row. Both are named with their exact settings.
+3. (Same date.) `docs/RESULTS.md` rows for this work state, per row, the TickLE settings (link profile, `pacing_rate`, `pacing_burst`,
+   `large_fragmentation`, `repair_reveal` where not the profile's) and the DDS settings (Fast DDS 2.14.6 XML: UDPv4 only, maxMessageSize 1472, no
+   whitelist; CycloneDDS 0.10.5 XML: interface by address, SPDPInterval 1 s), and say that the unpaced `tickle` row is the library default
+   (profile WIFI, pacing off). The WIFI-default question stays a recommendation only. Adaptive repair-burst limiting is in `docs/ROADMAP.md`
+   "Later" on `origin/ab/release-2.2.0` (4f5b0474) and is referred to, not duplicated.
