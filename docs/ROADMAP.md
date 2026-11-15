@@ -192,7 +192,12 @@ wireless").
 
 ## Later
 
-- Nothing waits here at the moment; the time-varying stage moved to Now on 2026-11-08.
+- **Adaptive repair-burst limiting** (a later version, the user, 2026-11-15). The sender estimates what the link takes and
+  limits each repair round to about what the last round delivered, so a lossy or queue-limited link (T1: a burst of 91
+  datagrams loses about 85%, repair rounds about 1 s apart) needs no hand-set `pacing_rate`. Until then Wi-Fi users set
+  `tt_LinkOptions.pacing_rate` and `pacing_burst` by the guideline in DESIGN "Wi-Fi tuning". A new rule in the
+  retransmit path: needs a burst-dropping test link and the rig core gate (no default or wire change decided yet).
+- The time-varying stage moved to Now on 2026-11-08 and is closed for 2.2.0.
 
 ## Parked (only on the user's explicit go)
 
