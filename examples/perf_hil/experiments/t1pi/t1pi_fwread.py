@@ -140,7 +140,7 @@ def main():
         for arm in sorted(os.listdir(cd)):
             ad = os.path.join(cd, arm)
             for f in sorted(os.listdir(ad)):
-                mt = re.match(r"r(\d+)_(\w+?)_(A2?)\.done$", f)
+                mt = re.match(r"r(\d+)_([\w-]+?)_(A2?)\.done$", f)
                 if not mt:
                     continue
                 rnd, fw, copy = mt.group(1), mt.group(2), mt.group(3)

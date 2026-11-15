@@ -61,9 +61,29 @@ fdds_xml() { # remote file contents of the Fast DDS 2.14 profile (UDPv4 only, ma
 XML
 }
 
+# A TickLE variant of the pacing sweep (t1pi/PACE_PLAN.md): "tickle" is the library default (as the framework comparison ran it);
+# "tickle-r<Mbit/s>[-b<bytes>][-f<ip|mtu>]" sets the link's pacing_rate, pacing_burst and large_fragmentation through the bench's
+# TT_PACING_BPS / TT_PACING_BURST environment and -F; "-roff" names an explicit unpaced arm (same as "tickle").
+# variant_env FW -> TV_ENV (env assignments) and TV_ARGS (extra arguments)
+variant_env() {
+    local part
+    TV_ENV=""
+    TV_ARGS=""
+    for part in $(echo "${1#tickle}" | tr '-' ' '); do
+        case $part in
+        roff) ;;
+        r[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#r} * 1000000))" ;;
+        b[0-9]*) TV_ENV="$TV_ENV TT_PACING_BURST=${part#b}" ;;
+        fip | fmtu) TV_ARGS="$TV_ARGS -F ${part#f}" ;;
+        *) echo "unknown variant part $part in $1" >&2; return 1 ;;
+        esac
+    done
+}
+
 # cmd_for <fw> <cell> <side: far|near> <ip> <iface> <id> -> command line for that side (paths on that Pi)
 cmd_for() {
     local fw=$1 cell=$2 side=$3 ip=$4 wl=$5 id=$6 mode role args stop_arg="" stop lat
+    case $fw in tickle-*) variant_env "$fw" || return 1; fw=tickle ;; *) TV_ENV=""; TV_ARGS="" ;; esac
     stop=$RD/$id.stop
     lat=$RD/$id.lat
     case $cell in be_small) mode=be ;; *) mode=rel ;; esac
@@ -77,14 +97,14 @@ cmd_for() {
     tickle)
         if [ "$cell" = rel_large ]; then
             if [ $role = pub ]; then
-                echo "env TT_UDP_OFFLOAD=0 $PB/large pub -s $LARGE_SZ -r $LARGE_HZ -d $DUR -R -b $BCAST -P wifi"
+                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/large pub -s $LARGE_SZ -r $LARGE_HZ -d $DUR -R -b $BCAST -P wifi$TV_ARGS"
             else
-                echo "env TT_UDP_OFFLOAD=0 $PB/large sub -s $LARGE_SZ -d $((DUR + 8)) -R -b $BCAST -P wifi"
+                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/large sub -s $LARGE_SZ -d $((DUR + 8)) -R -b $BCAST -P wifi$TV_ARGS"
             fi
         else
             local ctx=1 d=$DUR
             [ $role = echo ] && ctx=2 && d=$((DUR + 40))
-            echo "$PB/node_d100 $role -c $ctx -b $BCAST -d $d -m $mode -s 100 -r 100 -p wifi $stop_arg -l $lat.$role"
+            echo "env$TV_ENV $PB/node_d100 $role -c $ctx -b $BCAST -d $d -m $mode -s 100 -r 100 -p wifi $stop_arg -l $lat.$role"
         fi
         ;;
     cyclonedds | fastdds | zenohpico)
@@ -150,11 +170,24 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
             "$cell" "$arm" "$round" "$fw" "$copy" "$idx" "$attempt" "$(date -Is)" "$far" "$near" "$ENVS ge=$GE_ARG" "${SEED:-7}" \
             "$(cpu_state cli)" "$(cpu_state srv)" >>"$dir/$run.meta"
         local fpid
+        if [ "${PCAP:-0}" = 1 ]; then # diagnosis runs (PACE_PLAN.md section 4): headers of every frame on the STA radio and on the server's tap
+            cli "setsid nohup sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_NEAR -s 96 -B 8192 -w $RD/$id.cli.pcap >/dev/null 2>&1 </dev/null &"
+            srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_FAR -s 96 -B 8192 -w $RD/$id.srv.pcap >/dev/null 2>&1 </dev/null &"
+            sleep 1
+        fi
         fpid=$(srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 60)) $far >$RD/$id.far 2>&1 </dev/null & echo \$!")
         sleep 1
         cli "sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) $near" >"$dir/$run.near" 2>&1
         srv "touch $RD/$id.stop"
         for i in $(seq 1 40); do srv "[ -d /proc/$fpid ]" || break; sleep 0.5; done
+        if [ "${PCAP:-0}" = 1 ]; then
+            for h in cli srv; do
+                [ $h = cli ] && nsn=$NS_NEAR || nsn=$NS_FAR
+                $h "for p in \$(sudo -n ip netns pids $nsn 2>/dev/null); do [ \"\$(sudo -n cat /proc/\$p/comm 2>/dev/null)\" = tcpdump ] && sudo -n kill -INT \$p; done; sleep 2"
+            done
+            cli "cat $RD/$id.cli.pcap" >"$dir/$run.cli.pcap" 2>/dev/null
+            srv "cat $RD/$id.srv.pcap" >"$dir/$run.srv.pcap" 2>/dev/null
+        fi
         kill_ns_procs
         srv "cat $RD/$id.far" >"$dir/$run.far" 2>&1
         for role in echo sub; do srv "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done

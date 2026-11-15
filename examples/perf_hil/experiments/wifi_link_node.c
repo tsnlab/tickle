@@ -336,6 +336,16 @@ static bool create_context(void) {
     init.net.links[0].broadcast = opts.broadcast;
     init.net.links[0].profile = opts.wifi ? tt_LINK_PROFILE_WIFI : tt_LINK_PROFILE_ETHERNET;
     init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
+    const char* pace = getenv("TT_PACING_BPS"); // tt_LinkOptions.pacing_rate in bit/s; unset: the profile's (WIFI: off)
+    if (pace != NULL && pace[0] != 0) {
+        init.net.links[0].pacing_rate = strtoull(pace, NULL, 10);
+        init.net.links[0].link_rate = 54000000ULL; // pacing_rate may not exceed link_rate
+    }
+    const char* burst =
+        getenv("TT_PACING_BURST"); // tt_LinkOptions.pacing_burst in bytes on the wire; unset: the default
+    if (burst != NULL && burst[0] != 0) {
+        init.net.links[0].pacing_burst = (uint32_t)strtoul(burst, NULL, 10);
+    }
     init.net.link_count = 1;
     tt_ret_t created = tt_Context_create_with(&ctx, &init);
     if (created != tt_RET_OK) {
@@ -469,6 +479,9 @@ static void print_result(const char* role, uint64_t create_ns, const struct ping
            (unsigned long long)ctx.tx_datagrams, (unsigned long long)ctx.rx_datagrams, cpu, event_count, events_dropped,
            (unsigned)ctx.opts.discovery.miss_threshold, (unsigned long long)ctx.summary_copies_sent,
            (unsigned long long)ctx.announce_repeats_sent);
+    printf("PACING: pacing=%d pacing_rate=%llu pacing_burst=%lu pacing_waits=%lu pacing_repairs_deferred=%lu\n",
+           ctx.pacing ? 1 : 0, (unsigned long long)link->pacing_rate, (unsigned long)link->pacing_burst,
+           (unsigned long)ctx.pacing_waits, (unsigned long)ctx.pacing_repairs_deferred);
 }
 
 static const char* role_name(void) {
