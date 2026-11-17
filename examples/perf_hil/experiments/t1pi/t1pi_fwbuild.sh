@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the framework nodes of the T1-Pi comparison natively on rpi-1 (aarch64) against the rig's ROS 2 jazzy install (CycloneDDS
 # 0.10.5, Fast DDS 2.14.6 with the Pi's fastddsgen 2.3.0) and the rig's zenoh-pico 1.10.2, then copy them to rpi-0. Runs on the PC.
-# Sources: examples/perf_hil/fastdds/t1pi_fw/ (a path the tidy gate skips, like the other vendor harnesses) (the PC comparison's nodes, copied unchanged except fastdds_node.cpp, ported from the 3.x to the 2.14 API).
+# Sources: examples/perf_hil/t1fw_vendor/ (the one location of the vendor-API nodes; lint-excluded) (the PC comparison's nodes, copied unchanged except fastdds_node.cpp, ported from the 3.x to the 2.14 API).
 # It loads rpi-1's CPUs: take the rig lock (flock /tmp/rig.lock) or run it between measurements.
 set -eu
 S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -12,7 +12,7 @@ SRV=${SRV_SSH:-ci@10.1.1.213}
 # shellcheck disable=SC2086
 ssh $SSHO "$CLI" 'rm -rf t1pi_fwsrc && mkdir -p t1pi_fwsrc' </dev/null
 # shellcheck disable=SC2086
-tar -C "$S/../../fastdds/t1pi_fw" -c . | ssh $SSHO "$CLI" 'tar -x -C t1pi_fwsrc'
+tar -C "$S/../../t1fw_vendor" -c . | ssh $SSHO "$CLI" 'tar -x -C t1pi_fwsrc'
 # shellcheck disable=SC2086
 ssh $SSHO "$CLI" 'bash -s' <<'REMOTE'
 set -eu

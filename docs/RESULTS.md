@@ -624,6 +624,59 @@ Total 13 WIN, 14 TIE, 1 LOSE, 38 VOID of 66 metric comparisons. The one LOSE is 
 metrics are VOID: the T1 run-to-run spread (RTT p50 1.3 versus 2.7 ms phase effect, p99 under loss 2x) exceeds the 10 % rule. Recorded: zenoh-pico delivers 0 of 15 large samples in all 27 runs (default
 `FRAG_MAX_SIZE` 4096), its best-effort data crosses the single-attempt multicast leg (83.7-86.2 % under loss), its TCP RELIABLE did not collapse in T1; Fast DDS with its default `maxMessageSize` delivered 0 of 15 at 1 MiB.
 
+### Pacing on the Pi T1 topology (TickLE link options; simulation only)
+
+**Simulation only** (`mac80211_hwsim` + patched `wmediumd` on the two rig Raspberry Pi 5, one simulated hop, GRE tap to a wired server; no real wireless hardware, hwsim has no airtime): relative figures
+inside this model, **not Wi-Fi performance**, not comparable with the PC's two-hop tables above. Question: does the existing `tt_LinkOptions.pacing_rate` / `pacing_burst` / `large_fragmentation` make
+`rel_large` robust, and which settings would a Wi-Fi user be told? Plan registered before any run, amended before the final rows were read: `examples/perf_hil/experiments/t1pi/PACE_PLAN.md` (branch
+`ab/t1-pi-pacing`); 576 sweep runs (2 sizes x 3 arms x 16 configurations x 6) and 216 final runs, raw `~/rig_results_safe/t1pi_pace_20261115/`, report `~/claude_reports/T1_PI_PACING_RESULTS_2026-11-15.md`.
+Every `rel_large` row: 0.25 Hz, 15 samples, RELIABLE KEEP_LAST 10, publisher on the station, subscriber on the wired server, `TT_UDP_OFFLOAD=0`, TickLE on `-P wifi` = **link profile WIFI**
+(`repair_reveal` ALL_MISSING and the other WIFI values), `link_rate` declared 54 Mbit/s only where a `pacing_rate` is set (it may not exceed it); the settings of each row are in its columns. Medians of 6 runs
+(3 A, 3 A2); `V` = the 10 % A/A2 noise rule failed. **The row `tickle` (pacing off, burst default, `large_fragmentation` AUTO) is the library default and remains it.**
+
+| id | cell | what | result |
+|---|---|---|---|
+| P-diag | 1 MiB, `ctl` and `o200`, pcaps on both sides | unpaced default against 12 Mbit/s | unpaced: 47-70 % of each burst arrives, repair rounds are bursts; paced 12 Mbit/s: 722 of 722 units, 0 retransmissions, 15/15 (`ctl`); the `o200` runs that delivered 5-6 of 15 (paced or not) carried a steady ~80 datagrams/s for the whole run, below the 178/s offered: backlog at the subscriber's 8 s post-publish stop, not an abandon (`large_abandoned`, `large_no_buffer`, `large_dropped` all 0) |
+
+Sweep (p50 ms one-way with the delivered count of 15 in brackets; `pacing_burst` default = 4 frames of the MTU = 6152 B; 128 KiB then 1 MiB, arms `ctl` / `o60` / `o200`):
+
+| row | pacing_rate | pacing_burst | large_fragmentation | 128 KiB ctl / o60 / o200: p50 ms (delivered of 15), medians of 6 | 1 MiB ctl / o60 / o200 |
+|---|---|---|---|---|---|
+| P1 `tickle` | default (off) | default | AUTO | 597 (15) V / 73.92 (15) / 1164 (15) V | 6638 (11) V / 8931 (10) V / 7541 (10) V |
+| P2 `tickle-r2` | 2 Mbit/s | default 6152 B | AUTO | 1124 (15) / 532 (15) V / 531 (15) V | 14010 (2) V / 12458 (4) V / 15078 (2) V |
+| P3 `tickle-r4` | 4 Mbit/s | default 6152 B | AUTO | 702 (15) V / 266 (15) V / 11324 (11) | 12891 (8) V / 2882 (15) V / 2213 (15) |
+| P4 `tickle-r6` | 6 Mbit/s | default 6152 B | AUTO | 178 (15) / 667 (15) V / 664 (15) V | 14073 (2) / 2195 (10) V / 33194 (5) V |
+| P5 `tickle-r8` | 8 Mbit/s | default 6152 B | AUTO | 629 (15) V / 639 (15) V / 134 (15) | 13582 (2) V / 2169 (14) V / 1107 (14) |
+| P6 `tickle-r12` | 12 Mbit/s | default 6152 B | AUTO | 90.31 (15) / 90.26 (15) V / 90.40 (15) V | 738 (15) / 13631 (6) V / 4908 (13) V |
+| P7 `tickle-r16` | 16 Mbit/s | default 6152 B | AUTO | 1141 (15) V / 123 (15) V / 654 (15) V | 13810 (2) / 8520 (6) V / 7550 (8) V |
+| P8 `tickle-r24` | 24 Mbit/s | default 6152 B | AUTO | 601 (15) V / 1150 (15) / 74.05 (15) | 7676 (8) V / 14148 (4) / 3296 (4) V |
+| P9 `tickle-roff-fip` | off | default | IP | 1472 (15) / 913 (15) V / 940 (15) V | 32684 (3) V / 25836 (3) V / 30701 (2) V |
+| P10 `tickle-roff-fmtu` | off | default | MTU | 71.87 (15) / 1158 (15) V / 72.90 (15) | 12858 (7) V / 7081 (10) V / 1736 (14) V |
+| P11 `tickle-r6-b1538` | 6 Mbit/s | 1538 B | AUTO | 186 (15) / 187 (15) V / 18525 (7) V | 13603 (2) V / 16221 (6) V / 21635 (5) V |
+| P12 `tickle-r6-b24608` | 6 Mbit/s | 24608 B | AUTO | 1135 (15) / 651 (15) V / 154 (15) | 1437 (15) V / 12808 (6) V / 13233 (10) |
+| P13 `tickle-r12-b1538` | 12 Mbit/s | 1538 B | AUTO | 618 (15) V / 1156 (15) / 95.40 (15) | 748 (15) / 13500 (6) V / 759 (13) |
+| P14 `tickle-r12-b24608` | 12 Mbit/s | 24608 B | AUTO | 1141 (15) V / 157 (15) / 156 (15) | 6485 (10) V / 1357 (14) V / 7487 (9) V |
+| P15 `tickle-r12-fip` | 12 Mbit/s | default 6152 B | IP | 1110 (15) V / 446 (15) V / 1476 (15) V | none (8) V / none (0) V / 2153 (14) |
+| P16 `tickle-r12-fmtu` | 12 Mbit/s | default 6152 B | MTU | 620 (15) V / 621 (15) V / 626 (15) V | 6476 (11) V / 11863 (6) V / 13146 (6) |
+
+**Reading (registered rules).** No rate is within the noise of the best in all six (size, arm) pairs, and no 1 MiB pair has a qualifying best (median delivered >= 14, worst run >= 12): **there is no recommended
+rate band and no pacing guideline can be derived**. Results are bimodal per run (about 0.07-0.2 s or 1.1-14 s) and non-monotonic in the rate; the PC's single-run 8 Mbit/s = 0.14 s is not reproduced (8 Mbit/s,
+128 KiB `ctl`: median 629 ms, min 134). Burst and fragmentation variants widen nothing. The WIFI default stays unpaced; the recommendation is to document the options only (DESIGN section 14,
+"Wi-Fi tuning"). Adaptive repair-burst limiting: ROADMAP "Later".
+
+Final comparison, same session (WIN-TIE-LOSE-VOID over the metric comparisons of the three arms, TickLE row against CycloneDDS and Fast DDS together; rules of the framework comparison above; zenoh-pico not run):
+
+| id | cell | TickLE `tickle` (library default: WIFI, pacing off, burst default, fragmentation AUTO) | TickLE `tickle-r12` (WIFI, `pacing_rate` 12 Mbit/s, `pacing_burst` default 6152 B, fragmentation AUTO, `link_rate` 54 Mbit/s declared) |
+|---|---|---|---|
+| FP1 | `rel_large` 1 MiB, 3 arms | 0-11-0-7 | 0-5-0-13 |
+| FP2 | `rel_large` 128 KiB, 3 arms | 0-10-0-8 | 0-10-0-8 |
+| FP3 | `rel_small` 100 B / 100 Hz, 3 arms | 2-16-0-6 | 4-13-0-7 |
+
+No LOSE. At 1 MiB the 12 Mbit/s row delivered a median of 100 / 66.7 / 50 % (`ctl` / `o60` / `o200`; min 13.3 %) against the default's 100 / 100 / 96.7 %, so pacing at that rate is worse at 1 MiB; at 128 KiB `ctl` it
+cut p50 from 1121 ms to 90 ms (TIE by the all-runs rule, bimodal). `rel_small` TickLE rows are the same node, pacing does not hold small samples. Fast DDS 2.14.6 and CycloneDDS 0.10.5 settings (both rows
+and all cells): Fast DDS XML profile UDPv4 only, `maxMessageSize` 1472, built-in transports off, no interface whitelist, RELIABLE, history 10 (`rel_large`) / 100 (`rel_small`); CycloneDDS XML with the namespace
+interface by address, `SPDPInterval` 1 s, RELIABLE, history 10 / 100; otherwise vendor defaults. One lost run: `rel_large` o60 round 3, Fast DDS A (no RESULT after 3 attempts).
+
 ### Rig (two Raspberry Pi 5, wired 1 GbE, ethernet profile): kept separate, not wireless
 
 | id | what | result | row / directory |

@@ -115,3 +115,12 @@ docs: a "Wi-Fi tuning" section in `docs/DESIGN.md` (docs only).
    whitelist; CycloneDDS 0.10.5 XML: interface by address, SPDPInterval 1 s), and say that the unpaced `tickle` row is the library default
    (profile WIFI, pacing off). The WIFI-default question stays a recommendation only. Adaptive repair-burst limiting is in `docs/ROADMAP.md`
    "Later" on `origin/ab/release-2.2.0` (4f5b0474) and is referred to, not duplicated.
+4. (2026-11-17, after CHAIN_DONE, before any final row was analysed.) Stage 1 and stage 2 were read with the registered rules: **no rate is in band
+   for all six (size, arm) pairs** (no 1 MiB pair has a qualifying best at all), so the amendment-2 derivation has no band to take a fraction of.
+   The guideline arm (`final_*_guideline`) is therefore **not run**: a guideline cannot be derived from this sweep, and none is published as
+   recommended. Not a failed check of a guideline but no guideline; the reason and the evidence are in the results file and docs. The final
+   comparison keeps the three registered rows' two TickLE arms that exist: default (`tickle`) and sweep-best (`tickle-r12`, chosen by the score rule).
+   The harness fault rule applied to the final run `rel_large/o60/r3_fastdds_A` (no RESULT after 3 attempts: a lost run, counted as lost). The Fast DDS
+   node sources moved to `examples/perf_hil/t1fw_vendor/` (merge of `origin/ab/t1-fw-versions`); `t1pi_fwbuild.sh` builds from there; the
+   `examples/perf_hil/fastdds/t1pi_fw/` copy is removed (byte-identical sources).
+
