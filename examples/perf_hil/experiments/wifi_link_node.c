@@ -328,6 +328,7 @@ static void print_repair_reveal(const struct tt_Context* node) {
            (unsigned)node->repair_reveal_pace_ns, value != NULL ? value : "-");
 }
 
+#define PACED_LINK_RATE_BPS 54000000ULL // the link_rate a TT_PACING_BPS run declares (as large_sample_bench.c)
 static bool create_context(void) {
     struct tt_InitOptions init;
     memset(&init, 0, sizeof(init));
@@ -339,7 +340,7 @@ static bool create_context(void) {
     const char* pace = getenv("TT_PACING_BPS"); // tt_LinkOptions.pacing_rate in bit/s; unset: the profile's (WIFI: off)
     if (pace != NULL && pace[0] != 0) {
         init.net.links[0].pacing_rate = strtoull(pace, NULL, 10);
-        init.net.links[0].link_rate = 54000000ULL; // pacing_rate may not exceed link_rate
+        init.net.links[0].link_rate = PACED_LINK_RATE_BPS; // pacing_rate may not exceed link_rate
     }
     const char* burst =
         getenv("TT_PACING_BURST"); // tt_LinkOptions.pacing_burst in bytes on the wire; unset: the default
