@@ -552,7 +552,11 @@ LINT_EXCLUDE_RE = ^(third_party|platform/freertos|examples/freertos)/|hal_freert
 #
 #   examples/perf_hil/experiments/rmw_loan_bench.c, deadline_insn.c - rmw API code, needing ROS's headers: lint_rmw.sh
 #                  tidies them against conv_cost's compile database, where CMake builds them for that purpose (and CI's).
-LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|examples/perf_hil/experiments/(rmw_loan_bench|deadline_insn)\.c
+#   NOT_PRODUCT_DIRS - harness sources that are NOT TickLE product code and are not lint targets for clang-tidy or rmw-lint
+#                  (clang-format still covers them): the T1 framework-comparison nodes, written against the vendors' APIs
+#                  (CycloneDDS, Fast DDS, zenoh-pico). One directory, listed once here; lint_rmw.sh reads this line.
+NOT_PRODUCT_DIRS = examples/perf_hil/t1fw_vendor
+LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|$(NOT_PRODUCT_DIRS)|examples/perf_hil/experiments/(rmw_loan_bench|deadline_insn)\.c
 
 # rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
 # cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),

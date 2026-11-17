@@ -1,0 +1,4 @@
+// One sample of the T1 framework comparison: the 16 header bytes (send_ns, seq, reserved) and zeros up to the size.
+struct Blob {
+    sequence<octet> data;
+};

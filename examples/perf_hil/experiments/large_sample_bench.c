@@ -310,6 +310,11 @@ static double cpu_ms(long* peak_rss_kb) {
 static void print_discovery(const struct tt_Context* node) {
     printf(" miss_threshold=%u summary_copies=%lu announce_repeats=%lu", (unsigned)node->opts.discovery.miss_threshold,
            (unsigned long)node->summary_copies_sent, (unsigned long)node->announce_repeats_sent);
+    // The send pacing as it ran (TT_PACING_BPS / TT_PACING_BURST): the resolved rate and burst, and what it did.
+    printf(" pacing=%d pacing_rate=%llu pacing_burst=%lu pacing_waits=%lu pacing_repairs_deferred=%lu",
+           node->pacing ? 1 : 0, (unsigned long long)node->opts.net.links[0].pacing_rate,
+           (unsigned long)node->opts.net.links[0].pacing_burst, (unsigned long)node->pacing_waits,
+           (unsigned long)node->pacing_repairs_deferred);
 }
 
 static void print_large(const struct tt_Context* node) {
@@ -846,6 +851,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
     return 0;
 }
 
+#define PACED_LINK_RATE_BPS 54000000ULL // the link_rate a TT_PACING_BPS run declares (pacing_rate may not exceed it)
 // The reveal re-ask (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal", 2026-10-30) from the environment, so
 // that a harness's NODE_ENV picks it per tree: TT_REPAIR_REVEAL=off|revealed|all_missing, unset or empty = the
 // profile's (0). Anything else stops the bench: an arm must not run a treatment it did not name. The context's resolved
@@ -905,6 +911,17 @@ int main(int argc, char** argv) {
         init.net.links[0].broadcast = opts.broadcast;
         init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
         init.net.links[0].repair_reveal = repair_reveal_from_env(); // TT_REPAIR_REVEAL
+        const char* pace = getenv("TT_PACING_BPS"); // the link's send pacing (tt_LinkOptions.pacing_rate), bits per
+                                                    // second; unset: the profile's (off)
+        if (pace != NULL && pace[0] != 0) {
+            init.net.links[0].pacing_rate = strtoull(pace, NULL, 10);
+            init.net.links[0].link_rate = PACED_LINK_RATE_BPS;
+        }
+        const char* burst =
+            getenv("TT_PACING_BURST"); // tt_LinkOptions.pacing_burst, bytes on the wire; unset: the default
+        if (burst != NULL && burst[0] != 0) {
+            init.net.links[0].pacing_burst = (uint32_t)strtoul(burst, NULL, 10);
+        }
         init.net.link_count = 1;
         init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
         init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;

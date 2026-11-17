@@ -1252,6 +1252,41 @@ acceptance path); keystore parsing in rmw.
   stopped at stage 0 and FEC was dropped (the user, 2026-11-11; ROADMAP "Now").
 - **zenoh-pico** does not retransmit over UDP; its reliable p2-p4 cells are not measurable.
 
+### Wi-Fi tuning (link options; simulation evidence only)
+
+The options already exist and change no default: `tt_LinkOptions.pacing_rate` (bit/s on the wire, at least `tt_LINK_RATE_MIN`, at most `link_rate`;
+`tt_PACING_OFF` = off, the WIFI profile's value), `pacing_burst` (bucket depth in bytes on the wire, at least `tt_PACING_BURST_MIN`; 0 = 4 frames of
+the MTU) and `large_fragmentation` (`tt_LARGE_FRAGMENTATION_AUTO`, `_IP`, `_MTU`). Set them on the link ("Send pacing", "Link profiles" in section 2):
+
+```c
+struct tt_InitOptions init = {0};
+init.net.links[0].broadcast = "192.168.1.255";
+init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
+init.net.links[0].link_rate = 54000000;      // pacing_rate may not exceed it; the link's nominal or measured rate, bit/s
+init.net.links[0].pacing_rate = 12000000;    // bit/s; see below for how to choose
+init.net.links[0].pacing_burst = 0;          // 0 = 4 frames of the MTU
+init.net.link_count = 1;
+tt_Context_create_with(&ctx, &init);
+```
+
+What was measured (T1-Pi: `mac80211_hwsim` + `wmediumd` on two Raspberry Pi 5, one simulated hop; **simulation only, hwsim has no airtime, no real
+wireless hardware was used (the user, 2026-11-08); every figure is a T1 finding to be re-checked on a real link**; RESULTS section 5 "Pacing on the
+Pi T1 topology", plan `examples/perf_hil/experiments/t1pi/PACE_PLAN.md`):
+
+- On a link that tail-drops back-to-back bursts, an unpaced large sample is sent as one burst and every repair round is another: pcaps of a 1 MiB
+  `ctl` run show 47-70% of each burst arriving; the same run paced at 12 Mbit/s delivered every unit once (722 of 722, 0 retransmissions, 15 of 15).
+- **The sweep did not find a robust rate band.** With `pacing_rate` 2-24 Mbit/s, 6 runs per cell, 128 KiB and 1 MiB, arms `ctl`/`o60`/`o200`, no
+  rate stayed within the noise of the best in all six (size, arm) pairs, and at 1 MiB no configuration had a qualifying best. Per-run results are
+  bimodal (a run is either near 0.07-0.2 s or near 1.1-14 s), the same rate wins in one arm and loses in the next, and at 1 MiB pacing delivered
+  2-15 of 15. 12 Mbit/s was the best 128 KiB rate (90 ms p50 in all three arms, 15 of 15), but at 1 MiB it delivered 15, 6 and 13 of 15 (medians).
+- **So this document gives no pacing rate as a recommended value, and the WIFI profile stays unpaced.** If you set one anyway: choose it below the
+  link's sustained throughput (measure it with an unpaced UDP flood that you count at the receiver, take well under that; the link's nominal PHY rate is
+  an upper bound, not a target), keep `pacing_burst` at the default unless you measure otherwise (the sweep's 1538 B and 24608 B bursts did not widen
+  anything), leave `large_fragmentation` at AUTO (IP and MTU modes were each worse in some cells), and test your own link at your own sample size.
+  A rate above what the link carries, or a link whose carried rate drops (the 1 MiB runs that delivered 5-6 of 15 carried a steady ~80 datagrams/s,
+  below the 178/s that 1 MiB at 0.25 Hz offers), cannot be rescued by pacing.
+- Adaptive repair-burst limiting (the sender estimating what the link takes) is a roadmap item, `docs/ROADMAP.md` "Later".
+
 ## 15. Configuration reference
 
 Compile-time `-D` overrides unless noted; blank rmw column = core default. The reliability timing

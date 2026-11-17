@@ -221,7 +221,10 @@ c_files=(rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle
 for h in include/tickle/*.h; do
     [ "$h" = include/tickle/hal_freertos.h ] || c_files+=("$h")
 done
-mapfile -t cpp_files < <(git ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev '^(third_party|examples/perf_hil/fastdds)/')
+# NOT_PRODUCT_DIRS (platform/linux/Makefile, the one place): harness sources that are not TickLE product code, not lint targets.
+not_product=$(sed -n 's/^NOT_PRODUCT_DIRS *= *//p' platform/linux/Makefile)
+[ -n "$not_product" ] || { echo "lint_rmw: NOT_PRODUCT_DIRS not found in platform/linux/Makefile" >&2; exit 1; }
+mapfile -t cpp_files < <(git ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev "^(third_party|examples/perf_hil/fastdds|$not_product)/")
 # Files whose own CMake requires C++20, so CI compiles them at 20 as well - exempt from the C++17
 # compile below. Keep in step with every `CMAKE_CXX_STANDARD 20` / `cxx_std_20` in the tree.
 CXX20_TARGETS="examples/perf_hil/experiments/conv_cost/conv_cost.cpp"
