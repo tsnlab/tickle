@@ -53,3 +53,6 @@ separation is claimed, not a p-value. The minstrel hypothesis is judged by wheth
 size the data supports and the wired metric it could touch. No criterion of a lever is "validated" here: levers are hypotheses with expected effect from the timeline, to be tested in phase 2.
 Raw data `~/rig_results_safe/wifi_diag_20261117/`. Scripts under `examples/perf_hil/experiments/t1pi/`. A run that loses its RESULT after 3 attempts is reported as lost, never replaced silently.
 All Pi jobs run under `flock /tmp/rig.lock` + `rig_lock.sh`, detached, one at a time.
+
+## 6. Amendments
+1. (2026-11-17 14:35, after the first chain finished and its grid was read, before the extras ran.) The sampler showed the STA rate state (1.0M "slow" or MCS8+ "fast") fixes the capacity, so (a) is read split by that state, and two extras were added: `MODE=big` (single bursts of 128-1024 datagrams, 5 reps x 3 arms: queue limit) and `VARIANT=prime` (a multicast join from the STA namespace before the cells, 12 ctl topologies: does a STA-originated multicast frame change the rate state, as the DDS start-up does). Scripts: `t1pi_cap.sh` (modes), `t1pi_wdiag_chain2.sh`. No registered rule changed; the rate-state split is a readout, not a selection.

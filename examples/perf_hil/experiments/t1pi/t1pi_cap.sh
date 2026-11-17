@@ -3,6 +3,8 @@
 #   MODE=grid   a1: per (arm, rep) one topology, CELLS in random order (seeded), 5 s each
 #   MODE=fresh  a2: per (arm, rep, cell) a fresh topology, one cell
 #   MODE=ctrl   a3: per rep one topology of the ctl arm with VARIANT=wire (sender in the AP namespace: no wmediumd, no hwsim) or VARIANT=fix54 (STA rate set to 54M)
+#   MODE=big    queue-limit test: single bursts of 128..1024 datagrams (ctl, o60, o200)
+#   VARIANT=prime (with MODE=ctrl): a multicast join from the STA before the cells
 #   OUT=$HOME/rig_results_safe/wifi_diag_20261117/cap  ARMS="ctl o60 o200" REPS=5 DUR=5
 set -u
 S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -27,6 +29,7 @@ GRIDCELLS() { # B R SIZE per line
     echo "91 23 1472"; echo "91 91 1472"; echo "91 182 1472"
     for sz in 100 700; do for b in 1 16; do for r in 80 400; do echo "$b $r $sz"; done; done; done
 }
+BIGCELLS() { echo "128 64 1472"; echo "256 128 1472"; echo "512 256 1472"; echo "723 362 1472"; echo "1024 512 1472"; }
 FRESHCELLS() { echo "16 400 1472"; echo "91 91 1472"; echo "1 200 1472"; }
 
 push_tools() {
@@ -69,6 +72,7 @@ for rep in $(seq 1 "$REPS"); do
         case $MODE in
         grid) cells=$(GRIDCELLS | python3 -c "import sys,random;L=sys.stdin.read().split('\n')[:-1];random.Random('$SEEDSTR$arm$rep').shuffle(L);print('\n'.join(L[:int('${LIMIT:-1000}')]))") ;;
         ctrl) cells=$(FRESHCELLS) ;;
+        big) cells=$(BIGCELLS) ;;
         fresh) cells=$(FRESHCELLS) ;;
         esac
         if [ $MODE = fresh ]; then groups=3; else groups=1; fi
@@ -87,6 +91,10 @@ for rep in $(seq 1 "$REPS"); do
             push_tools
             start_sampler "$arm"
             sleep 2
+            if [ "$VARIANT" = prime ]; then # a multicast group join in the STA namespace (IGMP report from the STA), as the DDS nodes do at start; TickLE does not
+                cli "sudo -n ip netns exec t1p_sta python3 -c \"import socket,struct,time;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,struct.pack('4s4s',socket.inet_aton('239.255.0.1'),socket.inet_aton('10.90.0.2')));time.sleep(1.5)\"" >"$run.prime.txt" 2>&1
+                sleep 2
+            fi
             if [ $MODE = fresh ]; then clist=$(echo "$cells" | sed -n "${g}p"); else clist="$cells"; fi
             echo "$clist" | while read -r b r sz; do
                 [ -z "$b" ] && continue
