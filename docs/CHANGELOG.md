@@ -13,8 +13,8 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ## [2.2.0] - 2026-11-13
 
-The wireless and time-varying stage of the user's release order (2026-11-01), on simulation and the two-Pi rig: no real
-wireless hardware is used at any stage. Compatible with 2.1.0 on the wire: `tt_VERSION` stays 14 (checked 2026-11-12:
+The wireless and time-varying stage of the user's release order (2026-11-01), on emulated links (netem, `tc`) and the two-Pi
+rig: no real wireless hardware is used at any stage. Compatible with 2.1.0 on the wire: `tt_VERSION` stays 14 (checked 2026-11-12:
 2.1.0 and this release interoperate in both directions, 76 runs). The 2 bytes of `tt_AnnounceHeader` that were zero now
 carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a node without echoes falls back to
 `retry_initial`.
@@ -28,18 +28,21 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
 - **Hybrid transport**: a reordering is no longer counted as loss.
 - **Batching**: a publisher with `batch` on no longer splits a stream over broadcast and unicast (`BF`: 1000 B at 1 kHz
   delivered 50.0% before, about 100% after; batching stays off by default).
-- **Tooling** (simulation): the T1 wireless harness (`mac80211_hwsim` + `wmediumd`, Gilbert-Elliott patch, CRAWDAD
-  pdx/vwave credit), the time-varying harnesses (netns, rig, trace replay) and `-Dtt_ESTIMATOR_TRACE`. T1 is a relative
-  A/B instrument; no T1 figure is Wi-Fi performance.
+- **Tooling**: the time-varying harnesses (netns, rig, trace replay) and `-Dtt_ESTIMATOR_TRACE`.
 - **Against DDS** (rig, `KS`, rerun 2026-11-10, 3 reps): core cells WIN 136, TIE 14, LOSE 0 of 150 on main `d2de7c3d`
   and WIN 137, TIE 13, LOSE 0 on `836665bb`; rmw cross-host round trip fastest in all 8 combinations measured. The
   139 / 11 / 0 above is the October campaign (RESULTS tables).
-- **Wi-Fi (T1 simulation, relative A/B, not Wi-Fi performance)**: TickLE against CycloneDDS 0.10.5 and Fast DDS 2.14.6
-  (zenoh-pico 1.10.2 reference, not scored) on the Pi rig (one simulated hop): no LOSE, most cells TIE or VOID; on the PC
-  (two hops): 25 WIN, 20 TIE, 1 LOSE (128 KiB, o200 p99 against Cyclone), 20 VOID. Large samples are TickLE's gap: the
-  simulated link tail-drops back-to-back bursts and repair rounds are about 1 s apart. `pacing_rate` has no robust band
-  (RESULTS section 5, DESIGN "Wi-Fi tuning"); the library default is unchanged and adaptive repair-burst limiting is a
-  later-version item (ROADMAP).
+- **Wi-Fi comparison against CycloneDDS and Fast DDS: results pending.** The comparison is done on a link emulated with
+  `tc`/netem on the two-Pi rig (delay, burst loss, rate limit, a short queue; an emulation, not Wi-Fi performance and no real
+  wireless hardware). RESULTS section 5 holds a marked placeholder until those runs finish; no figure is quoted before.
+  Large samples on a link that drops back-to-back bursts are the area to watch: `tt_LinkOptions.pacing_rate`,
+  `pacing_burst` and `large_fragmentation` exist and are documented in DESIGN "Wi-Fi tuning" (measure your own link; no
+  recommended value); adaptive repair-burst limiting is a later-version item (ROADMAP).
+- **Decision (the user, 2026-11-17): the `mac80211_hwsim` + `wmediumd` simulation is not used for any 2.2.0 figure.** Its
+  link starts in one of two rate states chosen at bring-up, not by the application (72 of 157 topologies slow at 1.0 Mbit/s,
+  85 fast), and the DDS stacks' start-up frames flip a slow link to fast while TickLE's do not, so a scored comparison was
+  not state-fair. The tables, rows and conclusions that rested on it were removed from the documents; the harness stays in
+  `examples/perf_hil/experiments/` as tooling.
 - Closed without landing: FEC (dropped), range NACK and run header merge (stopped at stage 0), shared reorder buffer
   over-send (advice only: `reorder_slots` 1,024-2,048 for 4 or more writers above about 10% loss), small-sample batching
   (stage 0 did not meet its bar; the opt-in stays), slow-reader flow control (`C7W`, parked).

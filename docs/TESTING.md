@@ -137,8 +137,9 @@ Definitions `gate_v2_lib.sh`, reading `gate_v2.py`; `GATE=v1` repeats an old run
 ## 7. Release 2.2.0 test results
 
 Taken 2026-11-13 on the release branch head (`tickle.c: comment named cache_durable_sample(), which does not exist`),
-which has no code change against the head the rig gate below measured. Figures: [RESULTS.md](RESULTS.md); the wireless
-indicators are in [RESULTS.md section 5](RESULTS.md#5-wireless-segment-220-simulation-only) and are simulation only.
+which has no code change against the head the rig gate below measured. Figures: [RESULTS.md](RESULTS.md); the wireless-like
+(`tc`/netem) indicators are in [RESULTS.md section 5](RESULTS.md#5-wireless-like-links-220-emulation-only) and are emulation only; the Wi-Fi
+comparison rows are pending there.
 
 | check | result | source |
 |---|---|---|

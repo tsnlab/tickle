@@ -3,8 +3,9 @@
 **TL;DR**
 - **Done 2026-10-19:** QoS reshaped like rmw (DESIGN 9, RMW.md); KEEP_LAST rows and L4 latency re-scored by round trip.
 - **Done 2026-11-06:** discovery-seeded retry interval landed (`e42185f1`, RESULTS `DSE`).
-- **Now:** nothing is open. The wireless stage and the time-varying stage (both simulation only: the user, 2026-11-06 and
-  2026-11-08) are **closed for 2.2.0** (2026-11-13); results in RESULTS section 5 and CHANGELOG 2.2.0. **No real wireless
+- **Now:** the Wi-Fi comparison against CycloneDDS and Fast DDS on a `tc`/netem link (two-Pi rig) is running; its results go
+  to RESULTS section 5 (the user, 2026-11-17). The wireless and time-varying stages (emulated links only: the user, 2026-11-06
+  and 2026-11-08) are otherwise **closed for 2.2.0** (2026-11-13); results in RESULTS section 5 and CHANGELOG 2.2.0. **No real wireless
   hardware is used at any stage** (the user, 2026-11-08). **Parked, only on the user's go:** the 32-Pi testbed items
   (slow-reader flow control `C7W`; link broadcast against per-reader unicast above 2 readers), Security (v3.0), rmw_tickle
   at REP-2004 Quality Level 2 (after Security), internet paths and congestion control (not started), rig interrupt
@@ -16,7 +17,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ## Now
 
-Nothing is open (2026-11-13). The wireless stage and the time-varying stage are closed for 2.2.0; their sections below are
+Open: the Wi-Fi comparison on a `tc`/netem link (RESULTS section 5, pending). Otherwise the wireless stage and the time-varying stage are closed for 2.2.0; their sections below are
 the record, not a task list. What remains is under "Parked": the 32-Pi testbed items (slow-reader flow control `C7W`,
 branch `c7-wire-room`; link broadcast against per-reader unicast above 2 readers, `tt_UNICAST_PEER_THRESHOLD`), Security
 for v3.0, rmw_tickle at REP-2004 Quality Level 2 (after Security), and the items that wait on hardware. Next release
@@ -24,47 +25,28 @@ order: 3.0 Security, on the user's go.
 
 ### Wireless stage (started 2026-11-06; closed for 2.2.0)
 
-- **Environment: T1 only** (the user, 2026-11-06): `mac80211_hwsim` + `wmediumd` on the dev PC.
-  Simulation only, no real Wi-Fi, now and later (the user, 2026-11-08: real wireless hardware is not used). T1 is read
-  as a relative A/B instrument; no T1 figure is quoted as Wi-Fi performance. T0 (netem) is the earlier baseline.
-- **Tooling:** `wmediumd` 0.3.1 + a local Gilbert-Elliott patch (per-link burst loss, `model.ge`);
-  `t1_topo.sh up N` builds N lanes of 3 nodes (AP + 2 stations). Scripts, the wmediumd patch and a README (what T1 is and
-  is not, rules, known limits) are in `examples/perf_hil/experiments/t1/`.
-- **Done:** association, per-link loss, burst loss, one `be_small` smoke run, 2 lanes up. 2026-11-07/08: per-attempt MAC
-  retries in `wmediumd` (`model.retry`; the stock `prob` model drew one random value per frame, so retries never helped),
-  a Gilbert-Elliott model with a slow quiet/busy envelope fitted to the PSU sniffer traces, a seeded schedule
-  (`model.seed`; reproduced on long bursts, not shown on 2 ms ones), per-receiver loss shown independent, CPU pinning.
-  Findings: with retries a unicast frame survives bursts shorter than a few ms (residual about p^7, as in the real traces),
-  so only long bursts at high loss (`o60`: 60 ms at 0.9, `o200`) lose frames; broadcast gets one attempt and no retry;
-  the AP's broadcast path carries about 0.6 Mbit/s, so `rel_large` runs only at 128 KiB and 0.25 Hz. Noise: best-effort
-  cell 0.4-1.6%; reliable cell 2-3% with seed, pinning and retries (p90 and retransmissions only for >3x differences).
-  `ab/evict-seed`: no gain (-0.5% delivered) twice; latency comparisons VOID.
-- **Data sources:** the Gilbert-Elliott profiles (`ug`, `library`, `psu_cs`, `pioneer`) were fitted to the PSU (Portland
-  State University) wlan_pcap traces of the CRAWDAD dataset pdx/vwave (v. 2009-07-04; VeriWave WT20 sniffer, Portland, 2006)
-  by Caleb Phillips and Suresh Singh. The dataset's README states "This work was partly funded by NSF 0435328." Cite as:
-  Caleb Phillips, Suresh Singh, pdx/vwave, https://doi.org/10.15783/C7C303 (CRAWDAD; licence CC BY 4.0, per
-  https://ieee-dataport.org/open-access/crawdad-pdxvwave-v-2009-07-04).
-- **Done:** T1 harness (`be_small`, `rel_small`, `rel_large`), rules and A/A control registered before runs, parallel-lane
-  calibration (L1 failed at 2-3 lanes, so one lane is used), the T0 comparison (C1 note, 2026-11-07), burst length, per-receiver
-  loss and time-varying runs. **No wireless-stage task is open.**
+- **Environment: emulated links only** (the user, 2026-11-06, 2026-11-17): `tc`/netem on a namespace or the two-Pi rig. No
+  real Wi-Fi, now and later (the user, 2026-11-08). Figures are relative A/B; none is quoted as Wi-Fi performance. An
+  earlier simulated link was dropped on 2026-11-17 (CHANGELOG 2.2.0, Decision); its harness stays in
+  `examples/perf_hil/experiments/` as tooling.
+- **Done:** netem baselines (`WB2`, `KR`), rules and A/A control registered before runs, the time-varying runs.
 - **Candidates:** all closed. Run header merge and range NACK stopped at stage 0 (2026-11-11), FEC dropped (the user,
   2026-11-11), request serial echo dropped (2026-11-02), `ab/evict-seed` no gain. Slow-reader flow control (`c7-wire-room`,
   `C7W`) is parked for the 32-Pi testbed. Small-sample batching: stage 0 did not meet its bar (CHANGELOG 2.2.0); the opt-in stays.
 
-### Time-varying stage (started 2026-11-08, beside the wireless stage; simulation only; closed for 2.2.0)
+### Time-varying stage (started 2026-11-08, beside the wireless stage; netem and the rig; closed for 2.2.0)
 
-- Plan, done on netem schedules and the rig (a time-varying `wmediumd` schedule in T1 is not among the recorded results,
-  RESULTS N9): test varying loss and delay, then tune the estimator (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
+- Plan, done on netem schedules and the rig: test varying loss and delay, then tune the estimator (EWMA, windowed loss and RTT, jitter). Until then the hybrid loss windows halve at `tt_HYBRID_WINDOW_FRAMES`.
 - Tooling already on main: `time_varying_netns.sh` and `time_varying_read.py` (V1/V2/V4 fail only beyond the A/A spread;
   D/LD need 8 reps), `trace_replay_mm.sh` (Mahimahi cellular trace replay), `-Dtt_ESTIMATOR_TRACE` (X0d).
 
-### Time-varying stage results, 2026-11-10/11 (rig, simulation otherwise)
+### Time-varying stage results, 2026-11-10/11 (rig, netem otherwise)
 
 - Karn deadlock fix landed on main (`933da69a`, 4 commits). Rig X2 `rel_small`: V1 and NOFALSE FAIL -> PASS; `rel_large`:
   V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%, no regression. The rig runs used the `ethernet` profile.
 - Down-step srtt converges slowly by design (gain 1/8; about 12 s after a 20 ms -> 1 ms step it reads 4-14 ms). Not a bug;
   a faster down gain is a stability trade-off and was left as is (the user, 2026-11-11).
-- range NACK stopped at stage 0 (T1 broadcast cells, `RANGE_NACK_DESIGN_2026-11-11.md`): ACKNACK bytes are 0.31-1.05% of
+- range NACK stopped at stage 0 (broadcast cells, design note 2026-11-11): ACKNACK bytes are 0.31-1.05% of
   forward bytes in all 12 loss runs, requests are mostly one bitmap word. Not pursued.
 - Run header merge stopped at stage 0 (`RUN_HEADER_MERGE_STAGE0_2026-11-11.md`; encoder in a scratch program, no wire capture):
   the hybrid transport already carries up to 45 units under one FRAG_RUN_L header, so a merge could still remove at most 0.03% of
@@ -193,27 +175,22 @@ wireless").
 ## Later
 
 - **Adaptive repair-burst limiting** (a later version, the user, 2026-11-15). The sender estimates what the link takes and
-  limits each repair round to about what the last round delivered, so a lossy or queue-limited link (T1: a burst of 91
-  datagrams loses about 85%, repair rounds about 1 s apart) needs no hand-set `pacing_rate`. Until then Wi-Fi users set
-  `tt_LinkOptions.pacing_rate` and `pacing_burst` by the guideline in DESIGN "Wi-Fi tuning". A new rule in the
-  retransmit path: needs a burst-dropping test link and the rig core gate (no default or wire change decided yet).
-- **Wi-Fi large samples, the "drip" state** (open, the user, 2026-11-17). Some T1 runs carry a steady 80 datagrams/s for the
-  whole run; a 1 MiB sample every 4 s needs about 178/s, so the backlog never clears and 5 to 6 of 15 samples arrive.
-  Fast DDS delivers 15/15 in the same cells. Why a run enters this state (peer re-registrations 11 against 3 in one pair
-  is the lead) and what DDS does differently are not known; the diagnosis (Pi rig, T1) comes first, then the levers in
-  `~/claude_reports/WIFI_STRATEGY_2026-11-17.md`: repair cadence, adaptive repair-burst limiting, slow start of a large
-  sample's first send, all scoped to the WIFI profile.
+  limits each repair round to about what the last round delivered, so a link or queue that drops back-to-back bursts needs no
+  hand-set `pacing_rate`. Until then Wi-Fi users set `tt_LinkOptions.pacing_rate` and `pacing_burst` by the guideline in
+  DESIGN "Wi-Fi tuning". A new rule in the retransmit path: needs a burst-dropping test link (`tc`/netem with a short queue)
+  and the rig core gate (no default or wire change decided yet). Whether it is worth it depends on the pending Wi-Fi
+  comparison (RESULTS section 5).
 - The time-varying stage moved to Now on 2026-11-08 and is closed for 2.2.0.
 
 ## Parked (only on the user's explicit go)
 
 - **Security**: SROS2-file-compatible security on MACsec (parked 2026-09-27), last, for v3.0 (the user, 2026-11-01).
   Only g7 is done: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`. Five open questions at `git show 0a7926a0:docs/ROADMAP.md`.
-- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): the simulation stage closed for 2.2.0 (2026-11-13,
+- **Wireless** (correlated loss, Wi-Fi, internet, congestion control): the emulated-link stage closed for 2.2.0 (2026-11-13,
   see Now); real wireless hardware is not used. Internet and congestion control not started.
 - **Wire changes** (run header merge and range NACK stopped at stage 0, 2026-11-11; FEC dropped by the user, 2026-11-11): at the wireless stage (the user, 2026-10-15). On netem (RESULTS
-  `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on T1 (simulation only, the user 2026-11-06; no real Wi-Fi hardware, the user 2026-11-08); slow-reader
-  flow control (`C7W`) is judged on T1 and the 32-Pi testbed (the user, 2026-11-02, 2026-11-08).
+  `WB2`, `KR`, 2026-11-02) none is lifted: R4 and R2 pass on WIFI without them. Revisit on emulated links (the user 2026-11-06; no real Wi-Fi hardware, the user 2026-11-08); slow-reader
+  flow control (`C7W`) is judged there and on the 32-Pi testbed (the user, 2026-11-02, 2026-11-08).
 - **More than two known readers: link broadcast or per-reader unicast** (`tt_UNICAST_PEER_THRESHOLD` 2): measured and
   decided on the 32-Raspberry-Pi testbed once it is built (the user, 2026-10-16).
 - **rmw_tickle at REP-2004 Quality Level 2**, after Security: pull requests with DCO and required CI (the user's

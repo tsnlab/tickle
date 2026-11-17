@@ -7,7 +7,7 @@
 - ROS 2 (rmw), cross-host: WIN 21, DRAW 6, LOSE 1 of 28 (row 63c). Same host: WIN 52 of 52.
 - Large messages (L4): WIN 58, DRAW 21, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
 - Latency is measured from creation time, throughput is goodput, and nothing is pinned.
-- Wireless segment (2.2.0): simulation only (mac80211_hwsim + wmediumd, netem), relative A/B figures, never Wi-Fi performance; no real wireless hardware was used. Table: [section 5](#5-wireless-segment-220-simulation-only).
+- Wireless-like links (2.2.0): emulation only (`tc`/netem), never Wi-Fi performance; no real wireless hardware was used. Wi-Fi comparison against the DDS stacks: pending. Table: [section 5](#5-wireless-like-links-220-emulation-only).
 
 Full text before this shortening (per-run histories, traces, every rule's reading): `git show e6b23b63:docs/RESULTS.md`.
 Older still (provenance prose, pinned figures, zenoh columns): `git show a89aefe2:docs/RESULTS.md`.
@@ -500,7 +500,7 @@ each code's full reading is in the pre-shortening text (top of this file).
 | R4K | Not landed. R4's excess at ge10b4 is the reader's retry interval (37 ms on a 6.9 ms RTT). Karn's rule for large writers too (K) cut p50 100.8-104.1 -> 74.2-74.7 ms, only at the limit; K's ge5b2 reps at ~2x resends recur | `b434f649`, `1a7b5376` | 2026-10-25 | `~/r4_results/` |
 | K5 | Not landed. K's 2x reps: a seed probe faster than any repair (its unit named before), so the interval locks low. Floor fixes stop it (clamp 0/80 against 5/80, p 0.03) but lose K's ge5b2 tail (p99 247 against 177-193 ms). Real fix: the repair echoes its request's serial, a wire change, parked | `06d23f21` | 2026-10-26 | `~/k5_results/` |
 | WB2 | Wi-Fi baseline again on main before the wireless stage's wire changes, ETHERNET and WIFI profiles, 3 reps (rel_large with `TT_UDP_OFFLOAD=0`). WIFI: R1, R3, R6 PASS; R4 ge10b4 rel_large p50 57.79 ms against its 74.24 bound (FAILED in `WR` / `R4K`), reverse bytes 0.24% -> no range NACK lift; R2 ge5b2 43.03 against 42.95 ms, then 5 repetitions of that cell all PASS (39.20-42.26 against 43.10-43.20; pre-registered NO_LIFT) -> no FEC lift; R5 one false death (an idle node: netem counts a burst in its few packets, seconds of silence); R7 3.7%. ETHERNET as before (R4 ge10b4 121.3 ms, R5, R7 FAIL) | `200eefc6` | 2026-11-02 | `~/rig_results_safe/wifi_baseline/m1_200eefc6_20261101-2345/*_merged/`, `m2a_200eefc6_20261102-0206/` |
-| KR | K re-checked on main before W1 (the repair echoing its request serial, which only K's 2x-resend reps needed): WIFI rel_large, 20 reps, main / main again (A/A) / main+K. `NO_GAIN`: no lossy arm has K beyond 2 SE of both main trees (p50 differences < 1 ms; K's p99 lowest but inside the A/A's own spread, which reaches 35 ms at ge5b4); 2x-resend reps 0/20 in every tree; R4 PASS on all three. K and W1 are dropped: the wireless stage lands no wire change on netem evidence (the user, 2026-11-02) | `200eefc6`; K and its harness on branch `ab/k-recheck` (local) | 2026-11-02 | `~/rig_results_safe/k_recheck/k_recheck_20261102-153727/` |
+| KR | K re-checked on main before the wireless stage's wire changes (the repair echoing its request serial, which only K's 2x-resend reps needed): WIFI rel_large, 20 reps, main / main again (A/A) / main+K. `NO_GAIN`: no lossy arm has K beyond 2 SE of both main trees (p50 differences < 1 ms; K's p99 lowest but inside the A/A's own spread, which reaches 35 ms at ge5b4); 2x-resend reps 0/20 in every tree; R4 PASS on all three. K and W1 are dropped: the wireless stage lands no wire change on netem evidence (the user, 2026-11-02) | `200eefc6`; K and its harness on branch `ab/k-recheck` (local) | 2026-11-02 | `~/rig_results_safe/k_recheck/k_recheck_20261102-153727/` |
 | LRF | HEARTBEAT fix's follow-ups. (b) not shown. (c) `request_ack` sent batched broadcast-only content to its peers: real, rare; fixed, landed 2026-10-24 (rig gate PASS 0/88). (a) large-sample repair storm on ETHERNET at 1%: one rep of 3 resent 251,028 units; fixed by `LRO` | ab/large-repair-followups(-c) | 2026-10-23, -24 | `large_repair/` |
 | LRO | Large-sample resend order: a resent unit goes again only once shown lost or a repair timeout passed. Sim queued path 259,042 -> 9,541 resent; netns 0.1% storms 3 of 11 -> 0 of 12. Cost: ge1b1 median rep p99 11.0 -> 17.2 ms (see `LRT`) | P `896d4a29` | 2026-10-24 | `large_repair/ab_order_*` |
 | LRT | RACK's time rule for the order's tail: ge1b1 p99 19.6 -> 14.1 ms (0.66 of the cost back). Rig, 12 reps (`LRTR`): tail against main +0.4-0.8 ms at 1%; landed on the user's call | `53ed4e1f` (base), `d6231dd4` (tail), main `36700555` | 2026-10-24 | `large_repair/ab_tail_ed46*`, `hmr_1m_20261024-192010.txt` |
@@ -531,151 +531,26 @@ each code's full reading is in the pre-shortening text (top of this file).
 | KS | Karn deadlock after a delay step, rig (two Pis), ethernet profile, X2 step harness (`x2_step_rig.sh`), 8 reps, A = `d2de7c3d` (before), B = `933da69a` (after). `rel_small` (family D): copies after delivery over the worst static phase 6.45% -> **0.63%** (V1 FAIL -> PASS), NOFALSE FAIL -> PASS, V2, DOWNGOOD, V3 PASS in both; `rel_large` (1 MiB, 5 Hz, `TT_UDP_OFFLOAD=0`): V1 0.48% -> 0.64% (limit 1.00%, A/A spread 0.45-0.90%), V3 100%, control 0 resends; CONV (report only) outside its band by phase end in both arms. Down-step: A never follows the 20 ms step (srtt stuck at 2.2 ms), B peaks 34-38 ms and reads 4.0-14.2 ms 12.5 s after the step back to 1 ms (gain 1/8; kept, the user 2026-11-11). Core gate: c4 server instructions per sample +0.10%, c15 gone (the user's accepted scope). Against DDS (rig, 3 reps, `campaign_summary.py` totals over comparable metric-cells, 2026-11-10): campaign A main `d2de7c3d` WIN 136, TIE 14, LOSE 0 of 150 and `836665bb` (the branch file; `933da69a` itself was not run against DDS) WIN 137, TIE 13, LOSE 0 of 150; campaign T (FastDDS 1472) 25 / 5 / 0 and 27 / 3 / 0 of 30 (an earlier text of this row gave 136 / 14 for the branch: that is the main arm); rmw cross-host RTT (`V` rows) tickle fastest in all 8 combinations (e.g. bench BEST_EFFORT avg 0.238 vs CycloneDDS 0.275 vs FastDDS 0.318 ms). Landed 2026-11-10 | `933da69a` | 2026-11-10 | `~/rig_results_safe/time_varying/x2rigR_{A,B}/`, `x2rigL2_{A,B}/`, `~/rig_results_safe/cmp_dds_20261110/` |
 | BF | Batching publisher's room-making flush, found by the small-sample batching stage 0 (rig, `perf_client -B` and a paced copy, best effort, 1000 B, 5 reps): delivery 98.6% (flood), 90.0% (10 kHz), 50.0% (1 kHz) with `batch` on, clean with it off; the server received every datagram (`rx_udp` 20,028 for 20,001 sent) but discarded the older sample of each broadcast/unicast pair (delivered 3002, `out_of_order_discarded` 2995). Cause and fix: CHANGELOG Fixed. Rig diagnostic after the fix (one 6 s run, not an A/B): 5,997 of 6,001 delivered at 1 kHz. Core gate v2 (`campaign_ab_chain.sh`, A `019e36d7`, B = this fix before its rebase, source-identical, 3 reps, 158 comparisons): **PASS**; the first version, which computed a flag on every encode, read 13 WORSE, +0.09% to +0.34% user instructions a sample, and was reworked. The stage 0 verdict (small-sample batching FAIL, 2 of 6 cells) was measured on the buggy path; its flood delivery (90.4% at 16 B, 95.9% at 100 B) and 1000 B cells are not re-measured. Open, separate: a 1 s server stall still discards about 877 samples with every datagram unicast | `d66a60e4` | 2026-11-13 | `~/rig_results_safe/batchfix_v1/`, `~/rig_results_safe/batchfix2_chain.log`, `~/rig_results_safe/batch_stage0_20261112/` |
 
-## 5. Wireless segment, 2.2.0 (simulation only)
+## 5. Wireless-like links, 2.2.0 (emulation only)
 
-**Read this first.** No real wireless hardware was used, now or later (the user, 2026-11-08). Every figure in the first
-table is from `mac80211_hwsim` + a patched `wmediumd` (T1, `examples/perf_hil/experiments/t1/README.md`) on the dev PC,
-or from netem (T0). They are relative A/B instruments: absolute delivery and latency describe the simulation model,
-**not Wi-Fi performance**, and none may be quoted as such. hwsim has no real airtime contention and no congestion
-control; broadcast frames get one attempt, unicast gets per-attempt MAC retries (`RETRY=1`); only one lane passes the
-parallel-lane rule (L1). Cells: `be_small` / `rel_small` = 100 B at 100 Hz, one lane (60 s = 5,900 scored, 120 s = 11,900,
-20 s = 1,900), `rel_large` = 128 KiB at 0.25 Hz. Latency is one-way (`be_small`) or as the harness reads it; "retx" =
-retransmitted datagrams. Raw directories are under `~/rig_results_safe/`; the readings are in the PC-local
-`~/claude_reports/T1_PLAN.md` (dated sections). The T1 runs have no row in section 4 because they decided no landing
-(the candidates they judged are `KR`, `ESD`, `DSE`, and `ab/evict-seed`, "no gain" twice); the ids W1 to W12 below are
-this table's own.
+**Read this first.** No real wireless hardware was used, now or later (the user, 2026-11-08). Every figure here comes from a link
+emulated with `tc`/netem (delay, loss, rate, queue limit) in a network namespace or on the two-Pi rig. They are relative A/B figures:
+absolute delivery and latency describe the emulation, **not Wi-Fi performance**, and none may be quoted as such. Netem has no airtime
+contention, no MAC retries and no congestion control.
 
-### Wireless-segment indicators (T1 simulation; T0 where marked)
+### Wi-Fi comparison against CycloneDDS and Fast DDS (zenoh-pico reference, not scored): RESULTS PENDING
 
-| id | what | delivery | latency | retx | raw directory (date) |
-|---|---|---|---|---|---|
-| W1 | T1, no loss, `be_small` 20 s, before the retry model | 1,900 / 1,900 (100%) in 3 of 3 reps; rule V1 PASS | one-way p50 1.3-2.1 ms, p99 2.8-3.6 ms | n/a | `t1_v1/20261107-001401` |
-| W2 | T1, uniform link error p = 0 / 0.1 / 0.3, retry model, `be_small` 20 s | 1,900 / 1,900 at every p | p50 1.3 / 1.3-2.1 / 1.9-4.7 ms; p99 2.8-2.9 / 3.1-4.7 / 5.5-13.8 ms | n/a | `t1_v1b` (2026-11-07) |
-| W3 | same, `rel_small` | 1,900 / 1,900 at every p | p50 1.3-2.7 / 1.3-2.1 / 3.4-6.0 ms; p99 2.8-7.2 / 3.1-4.3 / 13-17 ms | not recorded | `t1_v1r` (2026-11-07) |
-| W4 | T1, quiet-link profiles `ug`, `library`, `psu_cs`, `pioneer` (fitted to CRAWDAD pdx/vwave), retry model, `be_small` 60 s | 5,900 / 5,900 in every run | p50 1.3-3.5 ms, p99 3-6 ms | n/a | `t1_ge2r` (2026-11-07) |
-| W5 | T1, `psu_cs`, retry model, seeded and pinned, `rel_small` 120 s, 6 reps | 11,900 / 11,900 | p50 1.27-1.31 ms, p99 4.0-4.4 ms | 0 | `t1_ge2rel_r1` (2026-11-07) |
-| W6 | T1, loss model **o60** (bad state 60 ms at 0.9), retry model, seeded and pinned, `rel_small` 120 s, 6 reps | 11,614-11,857 of 11,900 (97.6-99.6%) | p90 367-842 ms | 625-1,552 | `t1_ge2rel_r1` |
-| W7 | T1, loss model **o200** (bad state 200 ms at 0.9), same, `rel_small` 120 s, 4 reps | 11,543-11,678 (97.0-98.1%) | p90 0.93-1.11 s | 1,280-2,017 | `t1_ge2rel_r2` (2026-11-07) |
-| W8 | T1, o60 and o200, same, `be_small` 120 s, 4 reps (best effort, no repair) | o60 11,275-11,456 (94.8-96.3%); o200 11,244-11,284 (94.5-94.8%) | o60 p90 116-130 ms, p99 247-353 ms; o200 p90 119-126 ms, p99 445-521 ms | n/a | `t1_ge2be_r1` (2026-11-07) |
-| W9 | T1, unseeded stress, `rel_small` 60 s, 2 reps each | o20 5,734 / 5,900; o60 5,610 / 5,723; o200 5,685 / 5,487 of 5,900 | p90 o20 1.01 / 0.15 s, o60 1.6 / 1.0 s, o200 1.2 / 1.5 s | o20 1,211 / 106; o60 2,016 / 1,233; o200 2,513 / 1,479 | `t1_stress` (2026-11-07) |
-| W10 | T1, broadcast leg (a node built with `tt_UNICAST_PEER_THRESHOLD=0`: AP rebroadcast, one attempt, no retry), `be_small` 60 s, 2 reps | ug 5,690 / 5,585; psu_cs 5,466 / 5,479; o60 5,030 / 5,006 of 5,900 (84.8-96.4%) | p90 ug 6-8 ms, psu_cs 7 ms, o60 86-93 ms | n/a | `t1_bc1` (2026-11-08) |
-| W11 | T1, `rel_large` 128 KiB at 0.25 Hz, 15 samples a run, retry model; load must stay under the AP broadcast path's ~0.6 Mbit/s (55-60 datagrams/s) | delivered of 15: ctl 15, 14; psu_cs 15, 13; o60 15, 13; o200 14, 13 | median 11-13 s (queue-bound, a model figure) | 3.7k-7k | `t1_large4` (2026-11-07/08, run overnight) |
-| W12 | T1, range-NACK stage 0 on broadcast cells (12 loss runs, main `ae3a5f85`) | not a delivery test | n/a | ACKNACK bytes 0.31-1.05% of forward bytes; STOP | `range_nack_s0_*` (2026-11-11) |
+**No figure yet.** The comparison runs on the two-Pi rig over a `tc`/netem link (profiles, repetitions and the verdict rule are registered
+in a plan before the first run). This subsection is filled when those runs finish; until then nothing in this document claims a Wi-Fi
+win, tie or loss against either DDS.
 
-### Wireless-segment noise floors, the A/B rules and the time-varying stage (T1 and netem)
+### Wi-Fi-like loss and the time-varying stage (netem)
 
 | id | what | result | raw directory / row |
 |---|---|---|---|
-| N1 | T1 noise, retry model, seeded, pinned, 120 s | `rel_small` o60: delivered spread 2.1%, p90 2.3x, retx 2.5x; o200 delivered 1.2%; `be_small` o60 1.6%, o200 0.4%. Delivered usable at ~3%; p90 and retx only for >3x differences | `t1_ge2rel_r1`, `t1_ge2rel_r2`, `t1_ge2be_r1` |
-| N2 | T1 noise, quiet profile `psu_cs`, retry model, 12 runs | delivered 5,900 / 5,900 in all; p50 1.28-3.49 ms (x2.7, a phase effect), p99 3.6-9.3 ms | `t1_noise2` |
-| N3 | T1 A/A control inside `ab/evict-seed` on o60 `rel_small` (6 rounds) | delivered A 11,873 / A2 11,801 (0.6%, valid) / B 11,814 (-0.5%: no gain); retx A 649 / A2 1,028 and p90 A 383 / A2 469 ms: A/A differs 58% and 23%, both VOID | `t1_abs_o60s` (2026-11-07) |
-| N4 | T1 lanes (rule L1), steady link error 0.012, `be_small`, old single-draw model | alone 1,809-1,813 / 1,900, p50 3.0-12.1 ms, p99 207-260 ms; 2 lanes 1.2-4.1 pt lower, p50 35-65 ms: L1 FAILS, one lane only | `t1_lanes/20261107-041115` |
-| N5 | CRAWDAD pdx/vwave sniffer fit (downlink MAC attempts per frame, real data, not a T1 output) | mean attempts 1.02 (ug), 1.09 (library), 1.23 (pioneer), 1.09 (psu_cs); fitted model 1.021 / 1.086 / 1.223 / 1.083 | `T1_PLAN.md` "CRAWDAD pdx/vwave" |
 | N6 | Wi-Fi-like loss, netem (T0), ETHERNET and WIFI profiles, 3 reps, main `200eefc6` | WIFI: R1, R3, R6 PASS; R4 ge10b4 `rel_large` p50 57.79 ms against its 74.24 ms bound; R7 3.7%; ETHERNET R4 ge10b4 121.3 ms, R5 and R7 FAIL | row `WB2` (2026-11-02) |
 | N7 | Wi-Fi-like loss, netem (T0): repair timing and discovery | WIFI discovery false peer deaths 81 -> 0 (`WW`); resends per lost datagram 2.2-2.9 -> 0.93-1.07, `tv` copies after delivery 12.7% -> 2.5% (`WR`) | rows `WW`, `WR` |
-| N8 | Time-varying, netem netns harness `time_varying_netns.sh` at `dc45d3d9`, ETHERNET, 270 runs, 5 reps (thresholds a DRAFT then) | V3 (goodput in the first 2 s after each loss step) PASS: `LB` rel_small 100.00% and rel_large 100.00%; `LD` p2 rel_small 98.36%, rel_large 100.00%; V4 `J` rel_small PASS; V2 VOID in 3 of 4 (too few samples after a step); two `LG_p10` V3 VOID | `time_varying/t1_dc45d3d9_20261102-1906` (the directory name is `t1_`, the run is netns, no `wmediumd`) |
-| N9 | Time-varying, a time-varying `wmediumd` schedule | **no result recorded**: the ROADMAP named it a plan; every recorded time-varying run is netem (N8) or the rig (R1 to R3) | none |
-
-### Framework comparison in T1 (TickLE, CycloneDDS 0.10.5, Fast DDS 2.14.6; zenoh-pico reference), simulation only
-
-Same T1 simulation as above (`mac80211_hwsim` + patched `wmediumd`, no real Wi-Fi): **relative comparison, not Wi-Fi performance**. **Versions: Fast DDS 2.14.6 and CycloneDDS 0.10.5, the
-rig's (section 2) and the Pi T1 run's**, built from pinned sources on the PC (x86_64; `examples/perf_hil/experiments/t1fw/t1fw_build_deps.sh`: Fast DDS v2.14.6, Fast CDR v2.2.7, Fast-DDS-Gen v2.3.0,
-CycloneDDS 0.10.5 without iceoryx), zenoh-pico 1.10.2 (6a881c21). TickLE, CycloneDDS and Fast DDS are scored with the win rule of "How to read these numbers" (WIN when every TickLE run beats every vendor run,
-LOSE the reverse, else TIE; VOID when the A/A noise rule, 10 %, fails). zenoh-pico is shown, never scored ("zephyr-pico" in the request: the repository has no Zephyr build). Rules were registered before
-the runs and amended before them (versions, pilot) in `examples/perf_hil/experiments/t1fw/FRAMEWORK_CMP_PLAN.md`; 216 runs, 3 cells x 3 arms (`ctl`, `o60`, `o200`) x 3 rounds x 4 frameworks x A/A2, one lane,
-no run lost, no harness fault, raw `~/rig_results_safe/t1_fwcmp_20261115_v214/` (readings `reader.txt`, report `~/claude_reports/T1_FRAMEWORK_CMP_RESULTS_20261115_v214.md`, branch `ab/t1-fw-versions`). `rel_large`
-runs at 128 KiB / 0.25 Hz because 1 MiB did not pass the TickLE pilot (0 of 15; pilot: Cyclone 1, Fast DDS 0, zenoh-pico 0). Fast DDS `maxMessageSize` 1472; all other knobs in the plan. The framework nodes are
-harness code, not TickLE product code: `examples/perf_hil/t1fw_vendor/`, outside the lint passes (`NOT_PRODUCT_DIRS`, `platform/linux/Makefile`).
-
-| id | cell / arm | delivery (median of 6 runs, TickLE / Cyclone / Fast DDS / zenoh-pico) | TickLE vs Cyclone / vs Fast DDS (WIN-TIE-LOSE-VOID of the 3-4 metrics) |
-|---|---|---|---|
-| F1 | `be_small` ctl | 100 / 100 / 100 / 100 % | 3-1-0-0 / 3-1-0-0 |
-| F2 | `be_small` o60 | 96.4 / 95.2 / 94.3 / 86.2 % | 4-0-0-0 / 3-0-0-1 |
-| F3 | `be_small` o200 | 94.2 / 89.9 / 87.1 / 84.6 % | 4-0-0-0 / 4-0-0-0 |
-| F4 | `rel_small` ctl | 100 / 100 / 100 / 100 % | 0-4-0-0 / 0-4-0-0 |
-| F5 | `rel_small` o60 | 100 / 99.6 / 90.0 / 100 % (zenoh-pico over TCP) | 0-2-0-2 / 2-0-0-2 |
-| F6 | `rel_small` o200 | 96.8 / 98.3 / 85.3 / 100 % | 0-2-0-2 / 2-0-0-2 |
-| F7 | `rel_large` 128 KiB ctl | 96.7 / 100 / 100 / 0 % | 0-1-0-2 / 0-1-0-2 |
-| F8 | `rel_large` o60 | 93.3 / 100 / 100 / 0 % | 0-1-0-2 / 0-1-0-2 |
-| F9 | `rel_large` o200 | 93.3 / 100 / 96.7 / 0 % | 0-1-1-1 / 0-1-0-2 |
-
-Total 25 WIN, 20 TIE, 1 LOSE, 20 VOID of 66 metric comparisons (Cyclone 11-12-1-9, Fast DDS 14-8-0-11). The one LOSE is `rel_large` o200 p99 against CycloneDDS (TickLE 12.5 s, Cyclone 3.0 s; TickLE's
-`rel_large` p50 is 4.5-8.4 s against 1.1-1.2 s for both vendors in all three arms, mostly VOID by TickLE's own A/A spread; a TickLE observation of the T1 model, cause open). The wins are best-effort delivery and
-latency (21 of 24 `be_small` comparisons) and `rel_small` delivery under loss against Fast DDS. Recorded: zenoh-pico delivers 0 of 15 large samples in all 27 runs (default `FRAG_MAX_SIZE` 4096), its best-effort data
-crosses the single-attempt multicast leg (84.6-86.2 % under loss), its TCP RELIABLE did not collapse in T1. Section 2's tables are the rig's and are not comparable to these numbers.
-
-Note: the first run of this comparison used Fast DDS 3.6.2 and CycloneDDS 11.0.1 (ROS lyrical), not the rig's versions: raw `~/rig_results_safe/t1_fwcmp_20261114/`, report `~/claude_reports/T1_FRAMEWORK_CMP_RESULTS_20261114.md`,
-13 WIN, 14 TIE, 1 LOSE (`rel_large` o60 p50 against Cyclone), 38 VOID of 66; `rel_large` at 128 KiB (1 MiB pilot: TickLE 0, Cyclone 7, Fast DDS 1). Superseded by the table above for the rig's versions, kept as recorded:
-
-| id | cell / arm (3.6.2 / 11.0.1) | delivery (median of 6 runs, TickLE / Cyclone / Fast DDS / zenoh-pico) | TickLE vs Cyclone / vs Fast DDS (WIN-TIE-LOSE-VOID of the 3-4 metrics) |
-|---|---|---|---|
-| F1 | `be_small` ctl | 100 / 100 / 100 / 100 % | 0-1-0-3 / 0-1-0-3 (latency VOID: phase effect) |
-| F2 | `be_small` o60 | 96.3 / 95.0 / 94.8 / 86.2 % | 3-0-0-1 / 2-0-0-2 |
-| F3 | `be_small` o200 | 93.7 / 90.0 / 87.3 / 83.7 % | 4-0-0-0 / 3-0-0-1 |
-| F4 | `rel_small` ctl | 100 / 100 / 100 / 100 % | 0-2-0-2 / 0-1-0-3 |
-| F5 | `rel_small` o60 | 98.6 / 99.7 / 92.1 / 100 % (zenoh-pico over TCP) | 0-1-0-3 / 0-1-0-3 |
-| F6 | `rel_small` o200 | 96.9 / 98.5 / 84.4 / 100 % | 0-1-0-3 / 1-0-0-3 |
-| F7 | `rel_large` 128 KiB ctl | 100 / 100 / 86.7 / 0 % | 0-1-0-2 / 0-1-0-2 |
-| F8 | `rel_large` o60 | 93.3 / 100 / 80.0 / 0 % | 0-1-1-1 / 0-2-0-1 |
-| F9 | `rel_large` o200 | 93.3 / 100 / 86.7 / 0 % | 0-1-0-2 / 0-0-0-3 |
-
-Total 13 WIN, 14 TIE, 1 LOSE, 38 VOID of 66 metric comparisons. The one LOSE is `rel_large` o60 p50 against CycloneDDS (TickLE 6.3 s, Cyclone 1.3 s; TickLE's
-`rel_large` p50 is 4.5-8.7 s against Cyclone's 1.0-1.6 s in all three arms, a TickLE observation of the T1 model, cause open). The wins are best-effort delivery and latency under loss. Most latency
-metrics are VOID: the T1 run-to-run spread (RTT p50 1.3 versus 2.7 ms phase effect, p99 under loss 2x) exceeds the 10 % rule. Recorded: zenoh-pico delivers 0 of 15 large samples in all 27 runs (default
-`FRAG_MAX_SIZE` 4096), its best-effort data crosses the single-attempt multicast leg (83.7-86.2 % under loss), its TCP RELIABLE did not collapse in T1; Fast DDS with its default `maxMessageSize` delivered 0 of 15 at 1 MiB.
-
-### Pacing on the Pi T1 topology (TickLE link options; simulation only)
-
-**Simulation only** (`mac80211_hwsim` + patched `wmediumd` on the two rig Raspberry Pi 5, one simulated hop, GRE tap to a wired server; no real wireless hardware, hwsim has no airtime): relative figures
-inside this model, **not Wi-Fi performance**, not comparable with the PC's two-hop tables above. Question: does the existing `tt_LinkOptions.pacing_rate` / `pacing_burst` / `large_fragmentation` make
-`rel_large` robust, and which settings would a Wi-Fi user be told? Plan registered before any run, amended before the final rows were read: `examples/perf_hil/experiments/t1pi/PACE_PLAN.md` (branch
-`ab/t1-pi-pacing`); 576 sweep runs (2 sizes x 3 arms x 16 configurations x 6) and 216 final runs, raw `~/rig_results_safe/t1pi_pace_20261115/`, report `~/claude_reports/T1_PI_PACING_RESULTS_2026-11-15.md`.
-Every `rel_large` row: 0.25 Hz, 15 samples, RELIABLE KEEP_LAST 10, publisher on the station, subscriber on the wired server, `TT_UDP_OFFLOAD=0`, TickLE on `-P wifi` = **link profile WIFI**
-(`repair_reveal` ALL_MISSING and the other WIFI values), `link_rate` declared 54 Mbit/s only where a `pacing_rate` is set (it may not exceed it); the settings of each row are in its columns. Medians of 6 runs
-(3 A, 3 A2); `V` = the 10 % A/A2 noise rule failed. **The row `tickle` (pacing off, burst default, `large_fragmentation` AUTO) is the library default and remains it.**
-
-| id | cell | what | result |
-|---|---|---|---|
-| P-diag | 1 MiB, `ctl` and `o200`, pcaps on both sides | unpaced default against 12 Mbit/s | unpaced: 47-70 % of each burst arrives, repair rounds are bursts; paced 12 Mbit/s: 722 of 722 units, 0 retransmissions, 15/15 (`ctl`); the `o200` runs that delivered 5-6 of 15 (paced or not) carried a steady ~80 datagrams/s for the whole run, below the 178/s offered: backlog at the subscriber's 8 s post-publish stop, not an abandon (`large_abandoned`, `large_no_buffer`, `large_dropped` all 0) |
-
-Sweep (p50 ms one-way with the delivered count of 15 in brackets; `pacing_burst` default = 4 frames of the MTU = 6152 B; 128 KiB then 1 MiB, arms `ctl` / `o60` / `o200`):
-
-| row | pacing_rate | pacing_burst | large_fragmentation | 128 KiB ctl / o60 / o200: p50 ms (delivered of 15), medians of 6 | 1 MiB ctl / o60 / o200 |
-|---|---|---|---|---|---|
-| P1 `tickle` | default (off) | default | AUTO | 597 (15) V / 73.92 (15) / 1164 (15) V | 6638 (11) V / 8931 (10) V / 7541 (10) V |
-| P2 `tickle-r2` | 2 Mbit/s | default 6152 B | AUTO | 1124 (15) / 532 (15) V / 531 (15) V | 14010 (2) V / 12458 (4) V / 15078 (2) V |
-| P3 `tickle-r4` | 4 Mbit/s | default 6152 B | AUTO | 702 (15) V / 266 (15) V / 11324 (11) | 12891 (8) V / 2882 (15) V / 2213 (15) |
-| P4 `tickle-r6` | 6 Mbit/s | default 6152 B | AUTO | 178 (15) / 667 (15) V / 664 (15) V | 14073 (2) / 2195 (10) V / 33194 (5) V |
-| P5 `tickle-r8` | 8 Mbit/s | default 6152 B | AUTO | 629 (15) V / 639 (15) V / 134 (15) | 13582 (2) V / 2169 (14) V / 1107 (14) |
-| P6 `tickle-r12` | 12 Mbit/s | default 6152 B | AUTO | 90.31 (15) / 90.26 (15) V / 90.40 (15) V | 738 (15) / 13631 (6) V / 4908 (13) V |
-| P7 `tickle-r16` | 16 Mbit/s | default 6152 B | AUTO | 1141 (15) V / 123 (15) V / 654 (15) V | 13810 (2) / 8520 (6) V / 7550 (8) V |
-| P8 `tickle-r24` | 24 Mbit/s | default 6152 B | AUTO | 601 (15) V / 1150 (15) / 74.05 (15) | 7676 (8) V / 14148 (4) / 3296 (4) V |
-| P9 `tickle-roff-fip` | off | default | IP | 1472 (15) / 913 (15) V / 940 (15) V | 32684 (3) V / 25836 (3) V / 30701 (2) V |
-| P10 `tickle-roff-fmtu` | off | default | MTU | 71.87 (15) / 1158 (15) V / 72.90 (15) | 12858 (7) V / 7081 (10) V / 1736 (14) V |
-| P11 `tickle-r6-b1538` | 6 Mbit/s | 1538 B | AUTO | 186 (15) / 187 (15) V / 18525 (7) V | 13603 (2) V / 16221 (6) V / 21635 (5) V |
-| P12 `tickle-r6-b24608` | 6 Mbit/s | 24608 B | AUTO | 1135 (15) / 651 (15) V / 154 (15) | 1437 (15) V / 12808 (6) V / 13233 (10) |
-| P13 `tickle-r12-b1538` | 12 Mbit/s | 1538 B | AUTO | 618 (15) V / 1156 (15) / 95.40 (15) | 748 (15) / 13500 (6) V / 759 (13) |
-| P14 `tickle-r12-b24608` | 12 Mbit/s | 24608 B | AUTO | 1141 (15) V / 157 (15) / 156 (15) | 6485 (10) V / 1357 (14) V / 7487 (9) V |
-| P15 `tickle-r12-fip` | 12 Mbit/s | default 6152 B | IP | 1110 (15) V / 446 (15) V / 1476 (15) V | none (8) V / none (0) V / 2153 (14) |
-| P16 `tickle-r12-fmtu` | 12 Mbit/s | default 6152 B | MTU | 620 (15) V / 621 (15) V / 626 (15) V | 6476 (11) V / 11863 (6) V / 13146 (6) |
-
-**Reading (registered rules).** No rate is within the noise of the best in all six (size, arm) pairs, and no 1 MiB pair has a qualifying best (median delivered >= 14, worst run >= 12): **there is no recommended
-rate band and no pacing guideline can be derived**. Results are bimodal per run (about 0.07-0.2 s or 1.1-14 s) and non-monotonic in the rate; the PC's single-run 8 Mbit/s = 0.14 s is not reproduced (8 Mbit/s,
-128 KiB `ctl`: median 629 ms, min 134). Burst and fragmentation variants widen nothing. The WIFI default stays unpaced; the recommendation is to document the options only (DESIGN section 14,
-"Wi-Fi tuning"). Adaptive repair-burst limiting: ROADMAP "Later".
-
-Final comparison, same session (WIN-TIE-LOSE-VOID over the metric comparisons of the three arms, TickLE row against CycloneDDS and Fast DDS together; rules of the framework comparison above; zenoh-pico not run):
-
-| id | cell | TickLE `tickle` (library default: WIFI, pacing off, burst default, fragmentation AUTO) | TickLE `tickle-r12` (WIFI, `pacing_rate` 12 Mbit/s, `pacing_burst` default 6152 B, fragmentation AUTO, `link_rate` 54 Mbit/s declared) |
-|---|---|---|---|
-| FP1 | `rel_large` 1 MiB, 3 arms | 0-11-0-7 | 0-5-0-13 |
-| FP2 | `rel_large` 128 KiB, 3 arms | 0-10-0-8 | 0-10-0-8 |
-| FP3 | `rel_small` 100 B / 100 Hz, 3 arms | 2-16-0-6 | 4-13-0-7 |
-
-No LOSE. At 1 MiB the 12 Mbit/s row delivered a median of 100 / 66.7 / 50 % (`ctl` / `o60` / `o200`; min 13.3 %) against the default's 100 / 100 / 96.7 %, so pacing at that rate is worse at 1 MiB; at 128 KiB `ctl` it
-cut p50 from 1121 ms to 90 ms (TIE by the all-runs rule, bimodal). `rel_small` TickLE rows are the same node, pacing does not hold small samples. Fast DDS 2.14.6 and CycloneDDS 0.10.5 settings (both rows
-and all cells): Fast DDS XML profile UDPv4 only, `maxMessageSize` 1472, built-in transports off, no interface whitelist, RELIABLE, history 10 (`rel_large`) / 100 (`rel_small`); CycloneDDS XML with the namespace
-interface by address, `SPDPInterval` 1 s, RELIABLE, history 10 / 100; otherwise vendor defaults. One lost run: `rel_large` o60 round 3, Fast DDS A (no RESULT after 3 attempts).
+| N8 | Time-varying, netem netns harness `time_varying_netns.sh` at `dc45d3d9`, ETHERNET, 270 runs, 5 reps (thresholds a DRAFT then) | V3 (goodput in the first 2 s after each loss step) PASS: `LB` rel_small 100.00% and rel_large 100.00%; `LD` p2 rel_small 98.36%, rel_large 100.00%; V4 `J` rel_small PASS; V2 VOID in 3 of 4 (too few samples after a step); two `LG_p10` V3 VOID | `time_varying/t1_dc45d3d9_20261102-1906` (netns run) |
 
 ### Rig (two Raspberry Pi 5, wired 1 GbE, ethernet profile): kept separate, not wireless
 

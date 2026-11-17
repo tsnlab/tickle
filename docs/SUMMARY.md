@@ -48,7 +48,7 @@ Terse digest of [README](../README.md), [DESIGN](DESIGN.md), [ROADMAP](ROADMAP.m
 
 - Linux (UDP, io_uring when the container allows it, shared memory); FreeRTOS + lwIP (RISC-V tested under QEMU).
 - ROS 2 through `rmw_tickle` (docs/RMW.md).
-- Measured on two Raspberry Pi 5 over 1 GbE; wireless only in simulation (`mac80211_hwsim` + `wmediumd`, netem); no real Wi-Fi hardware.
+- Measured on two Raspberry Pi 5 over 1 GbE; wireless-like links only emulated (`tc`/netem); no real Wi-Fi hardware.
 
 ## Build and run
 
@@ -79,7 +79,7 @@ Terse digest of [README](../README.md), [DESIGN](DESIGN.md), [ROADMAP](ROADMAP.m
 
 ## ROADMAP state
 
-- Done: performance stage (v2.1); QoS reshape; `tt_InitOptions`; link profiles; wireless stage and time-varying stage on simulation (v2.2).
+- Done: performance stage (v2.1); QoS reshape; `tt_InitOptions`; link profiles; wireless stage and time-varying stage on emulated links (v2.2; the Wi-Fi comparison figures are pending).
 - Closed without landing: FEC (dropped), range NACK and run header merge (stopped at stage 0), shared reorder ring
   over-send (advice: `reorder_slots` 1,024-2,048 for 4+ writers above ~10% loss), small-sample batching (stage 0 missed its bar; opt-in stays).
 - Parked, only on the user's go:
@@ -93,7 +93,7 @@ Terse digest of [README](../README.md), [DESIGN](DESIGN.md), [ROADMAP](ROADMAP.m
 
 - No security: any node can claim any identity; use an isolated VLAN or link.
 - No DDS interop; no congestion control, NAT traversal or encryption, so no internet paths.
-- T1 wireless simulation is a relative A/B instrument; no figure is Wi-Fi performance.
+- Wireless-like links are emulated with `tc`/netem; no figure is Wi-Fi performance.
 - Slow-reader repair bursts (flow control) are a documented limit (`C7W`).
 - rmw receive return on the Pi is +0.7 to +2.4 us behind CycloneDDS / FastDDS (io_uring deferred completion; `KH2W`).
 - Delay step down is learned slowly (~12 s from 20 to 1 ms).
