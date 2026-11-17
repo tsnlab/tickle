@@ -197,6 +197,12 @@ wireless").
   datagrams loses about 85%, repair rounds about 1 s apart) needs no hand-set `pacing_rate`. Until then Wi-Fi users set
   `tt_LinkOptions.pacing_rate` and `pacing_burst` by the guideline in DESIGN "Wi-Fi tuning". A new rule in the
   retransmit path: needs a burst-dropping test link and the rig core gate (no default or wire change decided yet).
+- **Wi-Fi large samples, the "drip" state** (open, the user, 2026-11-17). Some T1 runs carry a steady 80 datagrams/s for the
+  whole run; a 1 MiB sample every 4 s needs about 178/s, so the backlog never clears and 5 to 6 of 15 samples arrive.
+  Fast DDS delivers 15/15 in the same cells. Why a run enters this state (peer re-registrations 11 against 3 in one pair
+  is the lead) and what DDS does differently are not known; the diagnosis (Pi rig, T1) comes first, then the levers in
+  `~/claude_reports/WIFI_STRATEGY_2026-11-17.md`: repair cadence, adaptive repair-burst limiting, slow start of a large
+  sample's first send, all scoped to the WIFI profile.
 - The time-varying stage moved to Now on 2026-11-08 and is closed for 2.2.0.
 
 ## Parked (only on the user's explicit go)

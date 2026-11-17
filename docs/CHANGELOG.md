@@ -34,6 +34,12 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
 - **Against DDS** (rig, `KS`, rerun 2026-11-10, 3 reps): core cells WIN 136, TIE 14, LOSE 0 of 150 on main `d2de7c3d`
   and WIN 137, TIE 13, LOSE 0 on `836665bb`; rmw cross-host round trip fastest in all 8 combinations measured. The
   139 / 11 / 0 above is the October campaign (RESULTS tables).
+- **Wi-Fi (T1 simulation, relative A/B, not Wi-Fi performance)**: TickLE against CycloneDDS 0.10.5 and Fast DDS 2.14.6
+  (zenoh-pico 1.10.2 reference, not scored) on the Pi rig (one simulated hop): no LOSE, most cells TIE or VOID; on the PC
+  (two hops): 25 WIN, 20 TIE, 1 LOSE (128 KiB, o200 p99 against Cyclone), 20 VOID. Large samples are TickLE's gap: the
+  simulated link tail-drops back-to-back bursts and repair rounds are about 1 s apart. `pacing_rate` has no robust band
+  (RESULTS section 5, DESIGN "Wi-Fi tuning"); the library default is unchanged and adaptive repair-burst limiting is a
+  later-version item (ROADMAP).
 - Closed without landing: FEC (dropped), range NACK and run header merge (stopped at stage 0), shared reorder buffer
   over-send (advice only: `reorder_slots` 1,024-2,048 for 4 or more writers above about 10% loss), small-sample batching
   (stage 0 did not meet its bar; the opt-in stays), slow-reader flow control (`C7W`, parked).
