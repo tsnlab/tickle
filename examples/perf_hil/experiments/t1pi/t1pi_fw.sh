@@ -171,14 +171,19 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
             "$(cpu_state cli)" "$(cpu_state srv)" >>"$dir/$run.meta"
         local fpid
         if [ "${PCAP:-0}" = 1 ]; then # diagnosis runs (PACE_PLAN.md section 4): headers of every frame on the STA radio and on the server's tap
-            cli "setsid nohup sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_NEAR -s 96 -B 8192 -w $RD/$id.cli.pcap >/dev/null 2>&1 </dev/null &"
-            srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_FAR -s 96 -B 8192 -w $RD/$id.srv.pcap >/dev/null 2>&1 </dev/null &"
+            cli "setsid nohup sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_NEAR -s ${PCAP_SNAP:-96} -B 8192 -w $RD/$id.cli.pcap >/dev/null 2>&1 </dev/null &"
+            srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 80)) tcpdump -i $IF_FAR -s ${PCAP_SNAP:-96} -B 8192 -w $RD/$id.srv.pcap >/dev/null 2>&1 </dev/null &"
             sleep 1
+        fi
+        if [ "${SAMPLE:-0}" = 1 ]; then # read-only 1 Hz sampler on the client Pi (minstrel rates, aqm, wmediumd CPU): t1pi_sampler.py
+            cli_in "cat > $RD/$id.sampler.py" <"$S/t1pi_sampler.py"
+            cli "setsid nohup sudo -n timeout -k 5 $((DUR + 80)) python3 $RD/$id.sampler.py $RD/$id.rc $RD/$id.rcstop >/dev/null 2>&1 </dev/null &"
         fi
         fpid=$(srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 60)) $far >$RD/$id.far 2>&1 </dev/null & echo \$!")
         sleep 1
         cli "sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) $near" >"$dir/$run.near" 2>&1
         srv "touch $RD/$id.stop"
+        if [ "${SAMPLE:-0}" = 1 ]; then cli "touch $RD/$id.rcstop"; fi
         for i in $(seq 1 40); do srv "[ -d /proc/$fpid ]" || break; sleep 0.5; done
         if [ "${PCAP:-0}" = 1 ]; then
             for h in cli srv; do
@@ -189,6 +194,7 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
             srv "cat $RD/$id.srv.pcap" >"$dir/$run.srv.pcap" 2>/dev/null
         fi
         kill_ns_procs
+        if [ "${SAMPLE:-0}" = 1 ]; then sleep 1.5; cli "sudo -n cat $RD/$id.rc" >"$dir/$run.rc" 2>/dev/null; fi
         srv "cat $RD/$id.far" >"$dir/$run.far" 2>&1
         for role in echo sub; do srv "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
         for role in ping pub; do cli "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
