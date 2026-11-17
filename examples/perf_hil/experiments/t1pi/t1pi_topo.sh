@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # T1-Pi topology (plan: PLAN.md). SIMULATION ONLY: mac80211_hwsim + wmediumd. NEVER touches the real wlan0 or eth0's config.
 #   t1pi_topo.sh cli up [GE]   on the client Pi (rpi-1): 2 hwsim radios (STA, AP), wmediumd, wpa_supplicant, bridge + GRE tap
 #   t1pi_topo.sh cli down      stop what `up` started, delete namespaces, unload mac80211_hwsim if `up` loaded it

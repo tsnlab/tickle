@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # T1-Pi cross-framework comparison runner (PLAN.md section 6; cells, arms, rules from the PC's T1_FRAMEWORK_CMP_PLAN.md ported
 # unchanged to the Pi topology). Runs on the PC, drives both Pis over ssh. SIMULATION ONLY (mac80211_hwsim + wmediumd).
 # One cell / arm / round / framework / copy per run: fresh topology, the far side (echo / sub) in t1p_srv on rpi-0, the near side

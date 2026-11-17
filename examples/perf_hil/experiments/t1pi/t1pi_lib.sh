@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # Shared helpers of the T1-Pi runners (t1pi_run.sh, t1pi_fw.sh); sourced, not run. SIMULATION ONLY (hwsim + wmediumd).
 # Needs before sourcing: S (this directory), REPO, SET (a name for the log), OUT (results directory, created here).
 KEY=${PI_KEY:-$HOME/.ssh/tickle_ci_ed25519}

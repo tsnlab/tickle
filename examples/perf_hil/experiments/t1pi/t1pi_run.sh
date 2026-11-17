@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # T1-Pi runner (plan: PLAN.md). Runs on the dev PC, drives both Pis over ssh. SIMULATION ONLY (hwsim + wmediumd).
 #   t1pi_run.sh SET        SET = v1 | calib | noise | one
 #   one: CELL=be|rel DUR=60 PROFILE=ctl|o60|o200|p0.1 NAME=x REPS=1

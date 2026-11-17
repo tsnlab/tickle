@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2209  # experiment driver: role words are assigned as plain strings on purpose
 # shellcheck disable=SC2024 # the redirects (>"$OUT/...") run as the invoking user; only `ip netns exec` needs root
 # T1 framework comparison runner (plan: FRAMEWORK_CMP_PLAN.md). One cell / arm / round / framework / copy per run: fresh T1
 # topology, the framework's echo (or sub) in t1_0_2 and its ping (or pub) in t1_0_1, raw output under $OUT/<cell>/<arm>/.

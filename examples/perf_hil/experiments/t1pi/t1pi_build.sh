@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # Build the T1 node programs (node_d100, node_base, large) natively on the client Pi from this tree, then copy the scripts and
 # binaries to both Pis. Runs on the dev PC (ssh). Needs the rig lock only if a measurement is running on the Pis (it is not
 # a measurement, but it loads rpi-1's CPUs: take the lock).

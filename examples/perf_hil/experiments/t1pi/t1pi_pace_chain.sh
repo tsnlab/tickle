@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2029,SC2016,SC2086,SC2129,SC2012,SC2024,SC2034,SC2209  # experiment driver: ssh-side expansion, unquoted word lists and sudo redirects are deliberate
 # Detached chain of the pacing plan after stage 1 (PACE_PLAN.md sections 2-5): diagnosis runs, stage 2 (choices by t1pi_pacread.py --pick),
 # final comparison. Resumable: every block skips finished runs.
 P=$HOME/tmp_build/pipace/examples/perf_hil/experiments/t1pi
