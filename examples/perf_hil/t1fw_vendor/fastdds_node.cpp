@@ -8,8 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Fast DDS (3.x) node of the T1 framework comparison (roles and semantics: t1fw_common.h). Transport and interface are
-// set by the XML profile in FASTDDS_DEFAULT_PROFILES_FILE (the harness writes it); the QoS below is the comparison's.
+// Fast DDS (2.14, the rig Pis' ROS 2 jazzy install; port of the PC's 3.x node, same logic) node of the T1 framework
+// comparison (roles and semantics: t1fw_common.h). Transport and interface are set by the XML profile in
+// FASTDDS_DEFAULT_PROFILES_FILE (the harness writes it); the QoS below is the comparison's.
 #include <atomic>
 #include <csignal>
 #include <mutex>
@@ -27,8 +28,8 @@
 #include <fastdds/dds/topic/Topic.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
 
-#include "Blob.hpp"
-#include "BlobPubSubTypes.hpp"
+#include "Blob.h"
+#include "BlobPubSubTypes.h"
 
 extern "C" {
 #include "t1fw_common.h"
@@ -51,7 +52,7 @@ static int send_sample(uint32_t len, uint64_t send_ns, uint32_t seq) {
     t1_hdr_put(txbuf.data(), send_ns, seq);
     Blob msg;
     msg.data().assign(txbuf.begin(), txbuf.begin() + len);
-    return wr->write(&msg) == RETCODE_OK ? 0 : -1;
+    return wr->write(&msg) ? 0 : -1; // 2.14: write(void*) returns bool (3.x: ReturnCode_t)
 }
 
 class WListener : public DataWriterListener {
@@ -70,7 +71,7 @@ class RListener : public DataReaderListener {
     void on_data_available(DataReader* reader) override {
         Blob msg;
         SampleInfo info;
-        while (reader->take_next_sample(&msg, &info) == RETCODE_OK) {
+        while (reader->take_next_sample(&msg, &info) == ReturnCode_t::RETCODE_OK) {
             if (info.instance_state != ALIVE_INSTANCE_STATE || !info.valid_data || msg.data().size() < T1_HDR) {
                 continue;
             }
@@ -142,7 +143,7 @@ int main(int argc, char** argv) {
     WListener wl;
     RListener rl;
     rl.answer = opt.role == T1_ECHO;
-    eprosima::fastdds::dds::Duration_t block(static_cast<int32_t>(opt.block_s), 0);
+    eprosima::fastrtps::Duration_t block(static_cast<int32_t>(opt.block_s), 0);
     DataReader* rd = nullptr;
     if (rname != nullptr) {
         Topic* topic = part->create_topic(rname, type.get_type_name(), TOPIC_QOS_DEFAULT);

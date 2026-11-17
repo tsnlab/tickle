@@ -37,7 +37,7 @@ KEEP_LAST 100 on the small cells: T1 found history 10 evicts gaps before repair 
 framework gets the same depth, so none is handed a depth handicap. The payload is 16 header bytes (send_ns, seq, reserved) plus zeros to
 the size, one sample per topic message, topics `wifi_ping` / `wifi_pong` (pong = the 16 header bytes, same reliability). No ROS 2 layer.
 
-Small cells = `wifi_link_node` semantics, re-implemented per framework (`<framework>/t1_wifi_node/`, shared header and scripts in `experiments/t1fw/`): `ping` publishes at the rate for 60 s after its
+Small cells = `wifi_link_node` semantics, re-implemented per framework (`examples/perf_hil/t1fw_vendor/`, scripts in `experiments/t1fw/`): `ping` publishes at the rate for 60 s after its
 endpoints matched (seq 0..), the first second (100 samples) is warm-up and not scored; `echo` answers the first copy of each sample from inside
 the receive callback; `ping` takes the round trip from its own send stamp to the first pong naming the sample; 3 s drain. TickLE runs its own
 `wifi_link_node` (`node_d100`, depth 100) unchanged. Both DDS ping waits for BOTH of its endpoints (writer and reader) to match; TickLE's node
@@ -112,3 +112,28 @@ Pilot raw: `~/rig_results_safe/t1_fwcmp_20261114/pilot*` (be_small and rel_small
 - Section 2.1 pilot rule applied: 1 MiB at 0.25 Hz, TickLE delivered 0 of 15 at `ctl` (the pilot table in the results lists every framework), so
   `rel_large` is run at **128 KiB / 0.25 Hz** and the 1 MiB pilot is reported as a recorded result, not scored.
 - Delivery denominator for the small cells: published - 100 (published counted by the ping); a run that never matched has published 0 and delivery 0.
+
+### 2026-11-15 (before any run of the repeat; the 20261114 run is finished and kept)
+Decision (user, 2026-11-15): unify the DDS versions. The first run (raw `~/rig_results_safe/t1_fwcmp_20261114/`, results
+`T1_FRAMEWORK_CMP_RESULTS_20261114.md`) used Fast DDS 3.6.2 and CycloneDDS 11.0.1 (ROS lyrical), while the Pi T1 run and the rig campaign
+(RESULTS.md section 2) use Fast DDS 2.14.6 and CycloneDDS 0.10.5 (ROS jazzy). The whole matrix is therefore repeated on the rig versions,
+so the PC and Pi framework tables and the rig tables name the same library versions (the first run is not deleted and stays a recorded result).
+- **Versions (x86_64 builds from pinned sources, `t1fw_build_deps.sh`; jazzy packages differ only in architecture):** Fast DDS v2.14.6
+  (f052f239), Fast CDR v2.2.7, foonathan_memory v0.7-3, Fast-DDS-Gen v2.3.0 (the Pis fastddsgen is 2.3.0; its output patched as
+  `examples/perf_hil/fastdds/build.sh` does), CycloneDDS 0.10.5 (2cdd114c; built without iceoryx/SHM and security: distinct namespaces cannot use
+  SHM and the arms force UDP), zenoh-pico 1.10.2 (6a881c21, unchanged). `RelWithDebInfo` (-O2 -DNDEBUG), the packages -O2.
+- **Nodes:** the PC nodes of the first run, unchanged, except the Fast DDS node, which is the Pi branch port to the 2.14 API (`ab/t1-pi`,
+  `write()` returns bool, `ReturnCode_t::RETCODE_OK`, `eprosima::fastrtps::Duration_t`; same logic). Sources: `examples/perf_hil/t1fw_vendor/`.
+  Fast DDS profile: 2.x XML root, UDPv4 only, `maxMessageSize 1472`, no interfaceWhiteList (as amended 2026-11-14).
+- **Everything else is unchanged:** topology, cells, arms, 3 rounds, A and A2, the rotated order, the metrics, the verdict and VOID rules, the
+  pilot rule of 2.1 (the 128 KiB fallback applies as written if TickLE delivers fewer than 12 of 15 at 1 MiB; the pilot decides, the first run
+  fell back). Section 1 "Machine" and the section 4 raw directory are superseded: raw output goes to
+  `~/rig_results_safe/t1_fwcmp_20261115_v214/`, binaries to `~/tmp_build/t1fw_v214/bin`.
+- A framework that matches nothing at the pilot is debugged in the harness, never in the library (section 7); no silent zero.
+
+### 2026-11-15 (after the pilot, before any scored run of the repeat)
+Pilot raw: `~/rig_results_safe/t1_fwcmp_20261115_v214/pilot_small` (be_small, rel_small, `ctl`, 20 s, 1 run per framework), `pilot_large1m` and
+`pilot_large128k` (rel_large `ctl`, 1 run per framework). Seen first: every framework matched and scored 1900 of 1900 in both small cells (TickLE,
+Cyclone 0.10.5, Fast DDS 2.14.6, zenoh-pico); no harness change was needed. `rel_large` at 1 MiB / 0.25 Hz: TickLE 0 of 15 (< 12), Cyclone 1, Fast DDS 0,
+zenoh-pico 0, so by the rule of 2.1 `rel_large` runs at **128 KiB / 0.25 Hz** (as in the first run); at 128 KiB the pilot delivered TickLE 14,
+Cyclone 15, Fast DDS 15, zenoh-pico 0 of 15. Matrix: `LARGE_SZ=131072`, 216 runs.

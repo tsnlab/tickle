@@ -5,12 +5,12 @@
 # SIMULATION ONLY (mac80211_hwsim + wmediumd): no real Wi-Fi, no rig, no Pi. Run one at a time, nothing else on the PC.
 #
 #   CELLS="be_small rel_small rel_large" ARMS="ctl o60 o200" ROUNDS=3 FWS="tickle cyclonedds fastdds zenohpico" COPIES="A A2"
-#   OUT=$HOME/rig_results_safe/t1_fwcmp_20261114  BIN=$HOME/tmp_build/t1fw/bin  T1_DIR=$HOME/tmp_build/t1fw  LARGE_SZ=1048576
+#   OUT=$HOME/rig_results_safe/t1_fwcmp_20261115_v214  BIN=$HOME/tmp_build/t1fw_v214/bin  T1_DIR=$HOME/tmp_build/t1fw  LARGE_SZ=1048576
 # Order inside a (cell, arm) round: the list [fw.A for each fw, fw.A2 for each fw] rotated left by 3*(round-1).
 set -u
 S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 T1S=$S/../t1
-BIN=${BIN:-$HOME/tmp_build/t1fw/bin}
+BIN=${BIN:-$HOME/tmp_build/t1fw_v214/bin}
 export T1_DIR=${T1_DIR:-$HOME/tmp_build/t1fw}
 export PHY_BASE=${PHY_BASE:-6} RETRY=1 SEED=7 PIN_WM=2 TMPDIR=${T1_TMPDIR:-$HOME/tmp_build}
 CELLS=${CELLS:-"be_small rel_small rel_large"}
@@ -22,7 +22,7 @@ DUR=${DUR:-60}
 LARGE_SZ=${LARGE_SZ:-1048576}
 LARGE_HZ=${LARGE_HZ:-0.25}
 ROTATE=${ROTATE:-3}
-OUT=${OUT:-$HOME/rig_results_safe/t1_fwcmp_$(date +%Y%m%d)}
+OUT=${OUT:-$HOME/rig_results_safe/t1_fwcmp_$(date +%Y%m%d)_v214}
 IP_PING=10.80.0.2
 IP_ECHO=10.80.0.3
 BCAST=10.80.0.255
@@ -34,28 +34,28 @@ declare -A PROF_BADP=([ctl]=0.0 [o60]=0.9 [o200]=0.9)
 declare -A PROF_GE=([ctl]="1000000,1,0.0" [o60]="1140,60,0.01" [o200]="3800,200,0.01")
 mkdir -p "$OUT"
 
-fdds_xml() { # fdds_xml <file>: the rig's campaign-T profile (UDPv4 only, maxMessageSize 1472), v3 root. No interfaceWhiteList: in Fast DDS 3.6 it stopped discovery here (pilot), and each T1 namespace has only its wlan and lo
+fdds_xml() { # fdds_xml <file>: the rig's campaign-T profile (UDPv4 only, maxMessageSize 1472), Fast DDS 2.x root and layout of
+    # examples/perf_hil/fastdds/fastdds_eth0_only_mms1472.xml. No interfaceWhiteList (plan amendment 2026-11-14: it stopped discovery with
+    # Fast DDS 3.6 here, and each T1 namespace has only its wlan and lo).
     cat >"$1" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
-<dds xmlns="http://www.eprosima.com">
-  <profiles>
-    <transport_descriptors>
-      <transport_descriptor>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>t1_udp</transport_id>
+      <type>UDPv4</type>
+      <maxMessageSize>${FDDS_MMS:-1472}</maxMessageSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="t1_udp_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
         <transport_id>t1_udp</transport_id>
-        <type>UDPv4</type>
-        <maxMessageSize>${FDDS_MMS:-1472}</maxMessageSize>
-      </transport_descriptor>
-    </transport_descriptors>
-    <participant profile_name="t1_udp_participant" is_default_profile="true">
-      <rtps>
-        <userTransports>
-          <transport_id>t1_udp</transport_id>
-        </userTransports>
-        <useBuiltinTransports>false</useBuiltinTransports>
-      </rtps>
-    </participant>
-  </profiles>
-</dds>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>
 XML
 }
 

@@ -8,10 +8,10 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Shared pieces of the T1 framework-comparison nodes (cyclonedds/t1_wifi_node, fastdds/t1_wifi_node,
-// zenohpico/t1_wifi_node): the command line, the 16-byte sample header, first-copy scoring, the quantiles and the
-// RESULT line. Plain C so both the C and the C++ node include it. The roles mirror wifi_link_node.c (small cells) and
-// large_sample_bench.c (large cell):
+// Shared pieces of the T1 framework-comparison nodes (cyclonedds_node.c, fastdds_node.cpp, zenohpico_node.c, this
+// directory): the command line, the 16-byte sample header, first-copy scoring, the quantiles and the RESULT line. Plain
+// C so both the C and the C++ node include it. The roles mirror wifi_link_node.c (small cells) and large_sample_bench.c
+// (large cell):
 //
 //   ping  publishes SIZE-byte samples at HZ for -d seconds once matched; the first -r samples (one second at -r HZ) are
 //         warm-up and not scored; times each sample's round trip from its own send stamp to the first pong naming it;
