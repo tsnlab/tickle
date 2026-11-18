@@ -80,3 +80,10 @@ tap in one pilot run (not scored, under `pilot_*`). Output: ranked levers with t
 ## 8. Cost
 Stage A about 128 small-cell runs (about 60 s each) + 128 large-cell runs (about 90 s each) + 16 reference runs = about 6 h; Stage B at most
 about 3 h. Nothing else uses the Pis meanwhile (rig lock).
+
+## 9. Stage B list (written 2026-11-19 after Stage A, before Stage B started)
+Stage A (272 runs, none lost): `tickle` as shipped has LOSE or VOID on rel_large p50/p99 in every profile at 1 MiB and in S1/S2 at 128 KiB;
+`tickle-pace` leads. Small cells have no `tickle` LOSE (be_small: no verdict beyond TIE; rel_small: WIN or VOID, the VOID being Fast DDS noise),
+so they are not repeated. Stage B: rel_large 1 MiB, all four profiles, rounds 3..5 (10 pooled runs per framework); 128 KiB, all four
+profiles, rounds 3..4 (8 pooled). About 4 h, above the 3 h estimate of section 8: the list above is longer than assumed; 128 KiB is capped at
+8 runs to bound the cost.
