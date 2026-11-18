@@ -238,13 +238,13 @@ calibrate() {
         bring_up "$OUT/cal_$prof" "$prof" || continue
         srv "sudo -n ip netns exec $NS_FAR true" || true
         cli "sudo -n ip netns exec $NS_NEAR ping -c 20 -i 0.2 -W 2 $IP_FAR | tail -3" >"$OUT/cal_$prof.ping" 2>&1
-        srv "setsid nohup sudo -n ip netns exec $NS_FAR python3 \$HOME/wtc_scripts/wtc_probe.py serve $IP_FAR 47921 45 >\$HOME/wtc_run/probe.out 2>&1 </dev/null &"
+        srv "setsid nohup sudo -n ip netns exec $NS_FAR python3 \$HOME/wtc_scripts/wtc_probe.py serve $IP_FAR 47921 34 >\$HOME/wtc_run/probe.out 2>&1 </dev/null &"
         sleep 2
         for f in "flood $IP_FAR 47921 1472 5" "burst $IP_FAR 47921 1472 91 3" "burst $IP_FAR 47921 1472 256 3" "rate $IP_FAR 47921 1472 40 8"; do
             cli "sudo -n ip netns exec $NS_NEAR python3 \$HOME/wtc_scripts/wtc_probe.py $f" >>"$OUT/cal_$prof.client" 2>&1
             sleep 1
         done
-        sleep 12
+        sleep 10
         srv "cat \$HOME/wtc_run/probe.out" >"$OUT/cal_$prof.server" 2>&1
         srv "rm -f \$HOME/wtc_run/probe.out"
         kill_ns_procs
