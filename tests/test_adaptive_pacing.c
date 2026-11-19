@@ -77,6 +77,30 @@ static double ms(uint64_t ns) {
     return (double)ns / 1e6;
 }
 
+// The rate the writer sends at: the sender's line rate unpaced, else the pacing rate (fixed, or the estimator's).
+static uint64_t send_rate(enum mode mode, uint64_t fixed_bps, const struct ap_pacer* ctl) {
+    if (mode == MODE_UNPACED) {
+        return 1000000000ULL;
+    }
+    return mode == MODE_FIXED ? fixed_bps : ap_rate_bps(ctl);
+}
+
+// Which of the link's three stretches (before the first step, between, after the second) `now` is in, and when it
+// began.
+static int link_phase(const struct link_cfg* cfg, uint64_t now) {
+    if (now < cfg->step1_ns) {
+        return 0;
+    }
+    return now < cfg->step2_ns ? 1 : 2;
+}
+
+static uint64_t link_phase_start(const struct link_cfg* cfg, int phase) {
+    if (phase == 0) {
+        return 0;
+    }
+    return phase == 1 ? cfg->step1_ns : cfg->step2_ns;
+}
+
 static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
     return now < cfg->step1_ns ? cfg->rate_bps[0] : (now < cfg->step2_ns ? cfg->rate_bps[1] : cfg->rate_bps[2]);
 }
@@ -86,7 +110,9 @@ static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
 // carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
 // estimate).
 static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, uint64_t cap_bps, uint64_t min_bps,
-                uint64_t period_ns, uint64_t duration_ns, uint32_t readers, struct result* out) {
+                uint64_t period_ns, uint64_t duration_ns, uint32_t readers,
+                struct result* out) { // NOLINT(readability-function-cognitive-complexity) -- a simulator: the link and
+                                      // both ends in one clock loop
     static struct pkt queue[MAX_Q];
     static struct flight fwd[MAX_DELAY];
     static struct flight rev[MAX_DELAY];
@@ -98,16 +124,28 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     memset(last_sent, 0, sizeof(last_sent));
     memset(want_repair, 0, sizeof(want_repair));
     out->min_rate_bps = UINT64_MAX;
-    uint32_t qh = 0, qt = 0, qn = 0, qbytes = 0;
-    uint32_t fh = 0, ft = 0, fn = 0, rh = 0, rt = 0, rn = 0;
+    uint32_t qh = 0;
+    uint32_t qt = 0;
+    uint32_t qn = 0;
+    uint32_t qbytes = 0;
+    uint32_t fh = 0;
+    uint32_t ft = 0;
+    uint32_t fn = 0;
+    uint32_t rh = 0;
+    uint32_t rt = 0;
+    uint32_t rn = 0;
     int64_t credit = 0; // link credit in bits
     struct ap_pacer ap;
     ap_init(&ap, min_bps, cap_bps, 0, 2 * cfg->one_way_ns);
 
-    int64_t sample_first = 0, sample_next = 0, sample_end = 0; // unit ids of the current sample
+    int64_t sample_first = 0; // unit ids of the current sample
+    int64_t sample_next = 0;
+    int64_t sample_end = 0;
     bool sampling = false;
-    uint64_t sample_started = 0, next_sample_ns = 0;
-    uint64_t next_send_ns = 0, next_solicit_ns = 0;
+    uint64_t sample_started = 0;
+    uint64_t next_sample_ns = 0;
+    uint64_t next_send_ns = 0;
+    uint64_t next_solicit_ns = 0;
     uint64_t delivered_units[MAX_READERS] = {0}; // what each reader has, as the reader counts it
     uint64_t reported_units[MAX_READERS] = {0};  // what the writer last heard each reader had
     uint64_t srtt = 2 * cfg->one_way_ns;
@@ -127,7 +165,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             next_sample_ns = period_ns != 0 ? now + period_ns : 0;
         }
         // 2. the writer sends: repairs ahead of new units, at the pacing rate
-        uint64_t rate = mode == MODE_UNPACED ? 1000000000ULL : (mode == MODE_FIXED ? fixed_bps : ap_rate_bps(&ap));
+        uint64_t rate = send_rate(mode, fixed_bps, &ap);
         if (rate > out->max_rate_bps) {
             out->max_rate_bps = rate;
         }
@@ -277,8 +315,8 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
         if (mode == MODE_ADAPTIVE && sampling) {
             uint64_t c = link_rate(cfg, now);
             uint64_t bw = ap_btlbw_bps(&ap);
-            int phase = now < cfg->step1_ns ? 0 : (now < cfg->step2_ns ? 1 : 2);
-            uint64_t phase_start = phase == 0 ? 0 : (phase == 1 ? cfg->step1_ns : cfg->step2_ns);
+            int phase = link_phase(cfg, now);
+            uint64_t phase_start = link_phase_start(cfg, phase);
             if (bw * 4U >= c * 3U && bw * 4U <= c * 5U) {
                 if (rate_ok_since[phase] == 0 && out->rate_after_step_ok_ns[phase] == 0) {
                     rate_ok_since[phase] = now - phase_start + 1U;
@@ -311,7 +349,8 @@ static uint64_t repair_share_pct(const struct result* r) {
 }
 
 static void print_result(const char* name, const struct result* r) {
-    uint64_t med = 0, worst = 0;
+    uint64_t med = 0;
+    uint64_t worst = 0;
     uint64_t sorted[64];
     uint32_t n = r->samples_done < 64U ? r->samples_done : 64U;
     memcpy(sorted, r->completion_ns, n * sizeof(uint64_t));
@@ -337,7 +376,9 @@ static void print_result(const char* name, const struct result* r) {
 }
 
 int main(void) {
-    struct result unpaced, fixed, adaptive;
+    struct result unpaced;
+    struct result fixed;
+    struct result adaptive;
     const uint64_t SEC = 1000000000ULL;
 
     // 1. constant 4 Mbit/s, queue of 40 frames, 10 ms each way, a 1 MiB sample every 4 s for 40 s
@@ -414,10 +455,13 @@ int main(void) {
                                       24 * SEC,
                                       60U * UNIT_WIRE,
                                       10000000ULL};
-        struct result multi, multi_un;
+        struct result multi;
+        struct result multi_un;
         run(&multi_slow, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, readers, &multi);
         run(&multi_slow, MODE_UNPACED, 0, 0, 0, 0, 40 * SEC, readers, &multi_un);
-        uint64_t total = 0, least = UINT64_MAX, most = 0;
+        uint64_t total = 0;
+        uint64_t least = UINT64_MAX;
+        uint64_t most = 0;
         for (uint32_t r = 0; r < readers; r++) {
             total += multi.delivered_by_reader[r];
             least = multi.delivered_by_reader[r] < least ? multi.delivered_by_reader[r] : least;
