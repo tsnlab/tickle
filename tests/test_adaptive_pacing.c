@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/pacing_adaptive.h"
+#include <tickle/pacing_adaptive.h>
 
 #define UNIT_WIRE 1538U   // a full frame on the wire: 1472 payload + UDP, IP and Ethernet framing
 #define SAMPLE_UNITS 723U // 1 MiB in 1472-byte units
@@ -28,7 +28,8 @@
 #define STEP_NS 100000ULL // the model's clock step
 #define MAX_Q 4096U
 #define MAX_DELAY 8192U
-#define MAX_UNITS 200000U
+#define MAX_UNITS 400000U
+#define MAX_READERS 4U
 #define MS 1000000ULL
 
 enum mode { MODE_UNPACED, MODE_FIXED, MODE_ADAPTIVE };
@@ -36,7 +37,8 @@ enum mode { MODE_UNPACED, MODE_FIXED, MODE_ADAPTIVE };
 struct pkt {
     uint64_t enq_ns;
     uint32_t wire;
-    int64_t unit;        // unit id, -1 for a solicit
+    int64_t unit;        // datagram id (unit x readers + reader), -1 for a solicit
+    uint32_t reader;     // the reader a datagram, solicit or report belongs to
     uint64_t solicit_ns; // a solicit's send time
     int64_t last_unit; // a solicit's highest sent unit: its HEARTBEAT last_seq_no, how the reader learns of a lost tail
 };
@@ -68,6 +70,7 @@ struct result {
     uint64_t max_rate_bps;
     uint64_t min_rate_bps;
     uint64_t trips_q, trips_d;
+    uint64_t delivered_by_reader[MAX_READERS]; // unique datagrams each reader holds at the end
 };
 
 static double ms(uint64_t ns) {
@@ -79,8 +82,11 @@ static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
 }
 
 // One run: `period_ns` 0 = a new sample as soon as the last completes (bulk); else one sample every period_ns.
+// `readers` readers share the link: a sample goes to each of them as its own datagrams (unicast reliable), so the link
+// carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
+// estimate).
 static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, uint64_t cap_bps, uint64_t min_bps,
-                uint64_t period_ns, uint64_t duration_ns, struct result* out) {
+                uint64_t period_ns, uint64_t duration_ns, uint32_t readers, struct result* out) {
     static struct pkt queue[MAX_Q];
     static struct flight fwd[MAX_DELAY];
     static struct flight rev[MAX_DELAY];
@@ -102,8 +108,8 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     bool sampling = false;
     uint64_t sample_started = 0, next_sample_ns = 0;
     uint64_t next_send_ns = 0, next_solicit_ns = 0;
-    int64_t highest = -1;
-    uint64_t delivered_units = 0;
+    uint64_t delivered_units[MAX_READERS] = {0}; // what each reader has, as the reader counts it
+    uint64_t reported_units[MAX_READERS] = {0};  // what the writer last heard each reader had
     uint64_t srtt = 2 * cfg->one_way_ns;
     uint64_t rate_ok_since[3] = {0, 0, 0};
     uint64_t sample_period_start = 0;
@@ -111,10 +117,11 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
 
     for (uint64_t now = 0; now < duration_ns; now += STEP_NS) {
         // 1. a sample begins
-        if (!sampling && now >= next_sample_ns && sample_end + 1 < (int64_t)MAX_UNITS - (int64_t)SAMPLE_UNITS) {
+        if (!sampling && now >= next_sample_ns &&
+            sample_end + 1 < (int64_t)MAX_UNITS - (int64_t)(SAMPLE_UNITS * readers)) {
             sample_first = sample_end + (sample_end == 0 ? 0 : 1);
             sample_next = sample_first;
-            sample_end = sample_first + (int64_t)SAMPLE_UNITS - 1;
+            sample_end = sample_first + (int64_t)(SAMPLE_UNITS * readers) - 1;
             sampling = true;
             sample_started = now;
             next_sample_ns = period_ns != 0 ? now + period_ns : 0;
@@ -146,7 +153,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             if (qn + 1U >= MAX_Q || qbytes + UNIT_WIRE > cfg->queue_bytes) {
                 out->dropped++;
             } else {
-                queue[qt] = (struct pkt) {now, UNIT_WIRE, unit, 0, 0};
+                queue[qt] = (struct pkt) {now, UNIT_WIRE, unit, (uint32_t)(unit % (int64_t)readers), 0, 0};
                 qt = (qt + 1U) % MAX_Q;
                 qn++;
                 qbytes += UNIT_WIRE;
@@ -161,21 +168,23 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                 ap_note_send(&ap, now + 1U, UNIT_WIRE, repair);
             }
             uint64_t gap = ((uint64_t)UNIT_WIRE * 8ULL * 1000000000ULL) / rate;
-            next_send_ns = (next_send_ns < now ? now : next_send_ns) + gap;
-            if (next_send_ns > now + 400000ULL) { // a send tick of at most 4 steps' work per step
-                break;
+            if (next_send_ns + MS < now) {
+                next_send_ns = now; // idle for a while: no catching up in a burst
             }
+            next_send_ns += gap; // the clock, not "now": a send late by part of a step does not lose that part
         }
         // 3. a solicit, once per RTprop (10 ms before a sample of round trips), while a sample is open
         if (sampling && now >= next_solicit_ns) {
             uint64_t rtprop = mode == MODE_ADAPTIVE ? ap_rtprop_ns(&ap) : srtt;
             next_solicit_ns = now + (rtprop < 5000000ULL ? 5000000ULL : rtprop);
-            if (qn + 1U < MAX_Q && qbytes + SOLICIT_WIRE <= cfg->queue_bytes) {
-                queue[qt] = (struct pkt) {now, SOLICIT_WIRE, -1, now, sample_next - 1};
-                qt = (qt + 1U) % MAX_Q;
-                qn++;
-                qbytes += SOLICIT_WIRE;
-                out->solicits++;
+            for (uint32_t r = 0; r < readers; r++) {
+                if (qn + 1U < MAX_Q && qbytes + SOLICIT_WIRE <= cfg->queue_bytes) {
+                    queue[qt] = (struct pkt) {now, SOLICIT_WIRE, -1, r, now, sample_next - 1};
+                    qt = (qt + 1U) % MAX_Q;
+                    qn++;
+                    qbytes += SOLICIT_WIRE;
+                    out->solicits++;
+                }
             }
         }
         // 4. the link serves its queue at its rate
@@ -207,16 +216,13 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             if (p.unit >= 0) {
                 if (!got[p.unit]) {
                     got[p.unit] = 1;
-                    delivered_units++;
-                }
-                if (p.unit > highest) {
-                    highest = p.unit;
+                    delivered_units[p.reader]++;
                 }
             } else {
                 // the report travels back: the reader's own state when the solicit arrived
                 rev[rt] = (struct flight) {now + cfg->one_way_ns,
-                                           (struct pkt) {p.solicit_ns, 0, (int64_t)delivered_units,
-                                                         (uint64_t)(highest > p.last_unit ? highest : p.last_unit), 0}};
+                                           (struct pkt) {p.solicit_ns, 0, (int64_t)delivered_units[p.reader], p.reader,
+                                                         (uint64_t)p.last_unit, 0}};
                 rt = (rt + 1U) % MAX_DELAY;
                 rn++;
             }
@@ -230,12 +236,17 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             srtt = srtt == 0 ? rtt : (srtt * 7U + rtt) / 8U;
             int64_t reported_highest = (int64_t)f.pkt.solicit_ns;
             for (int64_t u = sample_first; u <= reported_highest && u <= sample_end; u++) {
-                if (!got[u]) {
-                    want_repair[u] = 1; // the reader names what is missing below its highest
+                if (!got[u] && (uint32_t)(u % (int64_t)readers) == f.pkt.reader) {
+                    want_repair[u] = 1; // the reader names what is missing, up to the HEARTBEAT's last_seq_no
                 }
             }
+            reported_units[f.pkt.reader] = (uint64_t)f.pkt.unit;
             if (mode == MODE_ADAPTIVE) {
-                ap_on_feedback(&ap, now, (uint64_t)f.pkt.unit * UNIT_WIRE, rtt);
+                uint64_t pooled = 0; // the link's delivered bytes: the sum over its readers
+                for (uint32_t r = 0; r < readers; r++) {
+                    pooled += reported_units[r] * UNIT_WIRE;
+                }
+                ap_on_feedback(&ap, now, pooled, rtt);
             }
         }
         // 7. a sample completes
@@ -275,6 +286,9 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                 }
             }
         }
+    }
+    for (uint32_t r = 0; r < readers; r++) {
+        out->delivered_by_reader[r] = delivered_units[r];
     }
     out->trips_q = ap.queue_trips;
     out->trips_d = ap.drop_trips;
@@ -328,9 +342,9 @@ int main(void) {
 
     // 1. constant 4 Mbit/s, queue of 40 frames, 10 ms each way, a 1 MiB sample every 4 s for 40 s
     struct link_cfg slow = {{4000000ULL, 4000000ULL, 4000000ULL}, 1000 * SEC, 2000 * SEC, 40U * UNIT_WIRE, 10000000ULL};
-    run(&slow, MODE_UNPACED, 0, 0, 0, 4 * SEC, 40 * SEC, &unpaced);
-    run(&slow, MODE_FIXED, 3000000ULL, 0, 0, 4 * SEC, 40 * SEC, &fixed);
-    run(&slow, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 40 * SEC, &adaptive);
+    run(&slow, MODE_UNPACED, 0, 0, 0, 4 * SEC, 40 * SEC, 1U, &unpaced);
+    run(&slow, MODE_FIXED, 3000000ULL, 0, 0, 4 * SEC, 40 * SEC, 1U, &fixed);
+    run(&slow, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &adaptive);
     printf("-- 4 Mbit/s, queue 40, RTT 20 ms, 1 MiB every 4 s --\n");
     print_result("unpaced", &unpaced);
     print_result("fixed 3 Mbit/s (oracle)", &fixed);
@@ -350,9 +364,9 @@ int main(void) {
                             2000 * SEC,
                             100U * UNIT_WIRE,
                             10000000ULL};
-    run(&fast, MODE_UNPACED, 0, 0, 0, 4 * SEC, 40 * SEC, &unpaced);
-    run(&fast, MODE_FIXED, 22000000ULL, 0, 0, 4 * SEC, 40 * SEC, &fixed);
-    run(&fast, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 40 * SEC, &adaptive);
+    run(&fast, MODE_UNPACED, 0, 0, 0, 4 * SEC, 40 * SEC, 1U, &unpaced);
+    run(&fast, MODE_FIXED, 22000000ULL, 0, 0, 4 * SEC, 40 * SEC, 1U, &fixed);
+    run(&fast, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &adaptive);
     printf("-- 30 Mbit/s, queue 100, RTT 20 ms, 1 MiB every 4 s --\n");
     print_result("unpaced", &unpaced);
     print_result("fixed 22 Mbit/s (oracle)", &fixed);
@@ -361,8 +375,8 @@ int main(void) {
 
     // 3. rate step 30 -> 4 -> 30 Mbit/s, bulk (back-to-back samples)
     struct link_cfg step = {{30000000ULL, 4000000ULL, 30000000ULL}, 8 * SEC, 24 * SEC, 60U * UNIT_WIRE, 10000000ULL};
-    run(&step, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, &adaptive);
-    run(&step, MODE_UNPACED, 0, 0, 0, 0, 40 * SEC, &unpaced);
+    run(&step, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, 1U, &adaptive);
+    run(&step, MODE_UNPACED, 0, 0, 0, 0, 40 * SEC, 1U, &unpaced);
     printf("-- step 30 -> 4 (t = 8 s) -> 30 (t = 24 s) Mbit/s, queue 60, bulk --\n");
     print_result("unpaced", &unpaced);
     print_result("adaptive", &adaptive);
@@ -380,11 +394,60 @@ int main(void) {
           (unsigned long long)repair_share_pct(&unpaced));
 
     // 4. the cap and the floor are honoured
-    run(&fast, MODE_ADAPTIVE, 0, 2000000ULL, 500000ULL, 0, 20 * SEC, &adaptive);
+    run(&fast, MODE_ADAPTIVE, 0, 2000000ULL, 500000ULL, 0, 20 * SEC, 1U, &adaptive);
     printf("-- 30 Mbit/s link, cap 2 Mbit/s, floor 0.5 Mbit/s: rate %.2f .. %.2f Mbit/s --\n",
            (double)adaptive.min_rate_bps / 1e6, (double)adaptive.max_rate_bps / 1e6);
     CHECK(adaptive.max_rate_bps <= 2000000ULL, "above the cap: %llu", (unsigned long long)adaptive.max_rate_bps);
     CHECK(adaptive.min_rate_bps >= 500000ULL, "below the floor: %llu", (unsigned long long)adaptive.min_rate_bps);
+
+    // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
+    // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
+    // bits, over what the link could have carried.
+    for (uint32_t readers = 2; readers <= 3; readers++) {
+        struct link_cfg multi_slow = {{4000000ULL, 4000000ULL, 4000000ULL},
+                                      1000 * SEC,
+                                      2000 * SEC,
+                                      40U * UNIT_WIRE,
+                                      10000000ULL};
+        struct link_cfg multi_step = {{30000000ULL, 4000000ULL, 30000000ULL},
+                                      8 * SEC,
+                                      24 * SEC,
+                                      60U * UNIT_WIRE,
+                                      10000000ULL};
+        struct result multi, multi_un;
+        run(&multi_slow, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, readers, &multi);
+        run(&multi_slow, MODE_UNPACED, 0, 0, 0, 0, 40 * SEC, readers, &multi_un);
+        uint64_t total = 0, least = UINT64_MAX, most = 0;
+        for (uint32_t r = 0; r < readers; r++) {
+            total += multi.delivered_by_reader[r];
+            least = multi.delivered_by_reader[r] < least ? multi.delivered_by_reader[r] : least;
+            most = multi.delivered_by_reader[r] > most ? multi.delivered_by_reader[r] : most;
+        }
+        uint64_t util_pct = total * UNIT_WIRE * 8U * 100U / (4000000ULL * 40U);
+        printf("-- %u readers, 4 Mbit/s, queue 40, bulk 40 s --\n", readers);
+        print_result("unpaced", &multi_un);
+        print_result("adaptive (link-level)", &multi);
+        printf("link utilisation %llu %%, readers hold %llu .. %llu datagrams (least .. most)\n",
+               (unsigned long long)util_pct, (unsigned long long)least, (unsigned long long)most);
+        CHECK(util_pct >= 70U, "%u readers: the link is used %llu %%", readers, (unsigned long long)util_pct);
+        CHECK(multi.queue_delay_n != 0 && multi.queue_delay_sum_ns / multi.queue_delay_n < 15 * MS,
+              "%u readers: the mean queue delay is %.1f ms", readers,
+              ms(multi.queue_delay_sum_ns / multi.queue_delay_n));
+        CHECK(least * 10U >= most * 7U, "%u readers: one is starved (%llu vs %llu)", readers, (unsigned long long)least,
+              (unsigned long long)most);
+        CHECK(repair_share_pct(&multi) <= 10U, "%u readers: the repair share is %llu %%", readers,
+              (unsigned long long)repair_share_pct(&multi));
+        run(&multi_step, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, readers, &multi);
+        printf("%u readers, step 30 -> 4 -> 30: BtlBw within 25 %% of the link %.0f ms after start, %.0f ms after the "
+               "drop, "
+               "%.0f ms after the rise\n",
+               readers, ms(multi.rate_after_step_ok_ns[0]), ms(multi.rate_after_step_ok_ns[1]),
+               ms(multi.rate_after_step_ok_ns[2]));
+        CHECK(multi.rate_after_step_ok_ns[1] != 0 && multi.rate_after_step_ok_ns[1] < 2 * SEC,
+              "%u readers: the drop took %.0f ms", readers, ms(multi.rate_after_step_ok_ns[1]));
+        CHECK(multi.rate_after_step_ok_ns[2] != 0 && multi.rate_after_step_ok_ns[2] < 2 * SEC,
+              "%u readers: the rise took %.0f ms", readers, ms(multi.rate_after_step_ok_ns[2]));
+    }
 
     if (failures != 0) {
         printf("test_adaptive_pacing: %d check(s) failed\n", failures);

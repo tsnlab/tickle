@@ -8,13 +8,14 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// The adaptive send pacer's estimator (examples/perf_hil/experiments/adaptive_pacing/DESIGN.md): from what comes back
-// of a paced send - bytes delivered, and now and then a round trip time - it finds the rate the link delivers and
-// keeps the queue short. Plain C with no dependency on the rest of the library, so a test can drive it with a
-// synthetic link (tests/test_adaptive_pacing.c). Nothing in the library includes it yet.
+// The adaptive rate control's estimator (tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE;
+// examples/perf_hil/experiments/adaptive_pacing/DESIGN.md): from what comes back of a paced send - bytes delivered,
+// and now and then a round trip time - it finds the rate the link delivers and keeps the queue short. Plain C with no
+// dependency on the rest of the library, so a test can drive it with a synthetic link (tests/test_adaptive_pacing.c).
 //
-// One ap_pacer per link. All times are ns, all rates bits per second, all sizes bytes. Not thread-safe: the caller
-// is the node's own thread.
+// One ap_pacer per LINK, however many readers are on it: the caller pools the readers' delivered bytes into one
+// cumulative count and feeds every reader's round trip samples to the one min filter. All times are ns, all rates bits
+// per second, all sizes bytes. Not thread-safe: the caller is the node's own thread.
 
 #ifndef TT_PACING_ADAPTIVE_H
 #define TT_PACING_ADAPTIVE_H
@@ -232,6 +233,12 @@ static inline void ap_note_send(struct ap_pacer* ap, uint64_t now, uint64_t byte
     if (repair) {
         ap->round_repair += bytes;
     }
+}
+
+// `bytes` of what was sent in this round were repairs (a retransmission, counted into the bytes sent by
+// ap_note_send()).
+static inline void ap_note_repair(struct ap_pacer* ap, uint64_t bytes) {
+    ap->round_repair += bytes;
 }
 
 static inline void ap_end_round(struct ap_pacer* ap, uint64_t now) {
