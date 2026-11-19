@@ -133,25 +133,29 @@ def verdict(metric, t, v):
 def main():
     root = sys.argv[1]
     md = "--md" in sys.argv
+    roots = [(root, None)] + [(p, os.environ.get("EXTRA_FWS", "cyclonedds fastdds").split()) for p in os.environ.get("EXTRA_ROOTS", "").split(":") if p]
     data = {}  # (cell, arm) -> fw -> copy -> [metrics]
     lost = []
-    for cell in sorted(os.listdir(root)):
-        cd = os.path.join(root, cell)
-        if not os.path.isdir(cd) or cell == "pilot" or cell.startswith("pilot"):
-            continue
-        for arm in sorted(os.listdir(cd)):
-            ad = os.path.join(cd, arm)
-            for f in sorted(os.listdir(ad)):
-                mt = re.match(r"r(\d+)_([\w-]+?)_(A2?)\.done$", f)
-                if not mt:
-                    continue
-                rnd, fw, copy = mt.group(1), mt.group(2), mt.group(3)
-                m = run_metrics(os.path.join(ad, f[:-5]), cell)
-                if m is None:
-                    lost.append(f"{cell}/{arm}/{f[:-5]}")
-                    continue
-                m["run"] = f"{cell}/{arm}/{f[:-5]}"
-                data.setdefault((cell, arm), {}).setdefault(fw, {}).setdefault(copy, []).append(m)
+    for rt, only in roots:
+      for cell in sorted(os.listdir(rt)):
+          cd = os.path.join(rt, cell)
+          if not os.path.isdir(cd) or cell == "pilot" or cell.startswith("pilot"):
+              continue
+          for arm in sorted(os.listdir(cd)):
+              ad = os.path.join(cd, arm)
+              for f in sorted(os.listdir(ad)):
+                  mt = re.match(r"r(\d+)_([\w-]+?)_(A2?)\.done$", f)
+                  if not mt:
+                      continue
+                  rnd, fw, copy = mt.group(1), mt.group(2), mt.group(3)
+                  if only and fw not in only:
+                      continue
+                  m = run_metrics(os.path.join(ad, f[:-5]), cell)
+                  if m is None:
+                      lost.append(f"{cell}/{arm}/{f[:-5]}")
+                      continue
+                  m["run"] = f"{cell}/{arm}/{f[:-5]}"
+                  data.setdefault((cell, arm), {}).setdefault(fw, {}).setdefault(copy, []).append(m)
     counts = {"WIN": 0, "TIE": 0, "LOSE": 0, "VOID": 0}
     rowcounts = {}
     print("# tc-emulated Wi-Fi-like link, framework comparison, read by wtc_read.py (an emulation with tc netem on two Raspberry Pi, relative figures, not Wi-Fi performance)\n")

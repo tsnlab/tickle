@@ -78,6 +78,7 @@ variant_env() {
         case $part in
         roff) ;;
         r[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#r} * 1000000))" ;;
+        p[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${CARRIED_KBIT:?CARRIED_KBIT unset} * ${part#p} * 10))" ;; # percent of the profile's carried rate (PLAN.md section 10)
         b[0-9]*) TV_ENV="$TV_ENV TT_PACING_BURST=${part#b}" ;;
         fip | fmtu) TV_ARGS="$TV_ARGS -F ${part#f}" ;;
         *) echo "unknown variant part $part in $1" >&2; return 1 ;;
@@ -153,6 +154,7 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
     local cell=$1 arm=$2 round=$3 fw=$4 copy=$5 idx=$6
     local dir=$OUT/$cell/$arm run=r${round}_${fw}_${copy} id i
     case $cell in rel_large) DUR=$DUR_LARGE ;; *) DUR=$DUR_SMALL ;; esac
+    case $arm in M*) CARRIED_KBIT=29730 ;; S*) CARRIED_KBIT=3970 ;; esac # carried rates of the calibration, kbit/s
     eval "PACE_MBIT=\${PACE_$arm:-}"
     mkdir -p "$dir"
     [ -f "$dir/$run.done" ] && { echo "SKIP $cell/$arm/$run (done)"; return 0; }
