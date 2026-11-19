@@ -56,6 +56,11 @@ struct link_cfg {
     uint32_t queue_bytes;
     uint64_t one_way_ns;
     uint64_t reader_tick_ns; // 0: a reader answers a solicitation at once; else at its next poll, every this many ns
+    uint32_t
+        loss_ppm; // the link drops this share of what it carries, per million datagrams (a fixed pseudo-random run)
+    uint64_t unsolicited_ns; // a reader with a gap reports by itself this often (its retry timer); 0 = only when asked
+    bool watermark_acks; // a report is what an ACKNACK shows (the watermark and the received units its bitmap names),
+                         // and the writer takes the first report after a solicitation as its answer, as the library did
 };
 
 struct result {
@@ -107,6 +112,59 @@ static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
     return cfg->rate_bps[link_phase(cfg, now)];
 }
 
+// What a reader's ACKNACK shows it holds, in its own units: without watermark_acks, the units it has received; with,
+// the watermark (its lowest missing unit) plus the units received inside the window its bitmap names (up to its highest
+// missing unit), and everything up to its highest received when nothing is missing.
+static uint64_t reader_missing(const struct link_cfg* cfg, const uint8_t* got, uint32_t readers, uint32_t reader,
+                               int64_t last_id) {
+    if (!cfg->watermark_acks) {
+        return 0;
+    }
+    int64_t highest_got = -1;
+    for (int64_t u = reader; u <= last_id; u += readers) {
+        if (got[u] != 0) {
+            highest_got = u;
+        }
+    }
+    uint64_t missing = 0;
+    for (int64_t u = reader; u <= highest_got; u += readers) {
+        missing += got[u] == 0 ? 1U : 0U;
+    }
+    return missing;
+}
+
+static uint64_t reader_units(const struct link_cfg* cfg, const uint8_t* got, uint32_t readers, uint32_t reader,
+                             int64_t last_id, uint64_t unique) {
+    if (!cfg->watermark_acks) {
+        return unique;
+    }
+    int64_t highest_got = -1;
+    for (int64_t u = reader; u <= last_id; u += readers) {
+        if (got[u] != 0) {
+            highest_got = u;
+        }
+    }
+    if (highest_got < 0) {
+        return 0;
+    }
+    int64_t lowest_missing = -1;
+    int64_t highest_missing = -1;
+    uint64_t received_in_window = 0;
+    for (int64_t u = reader; u <= highest_got; u += readers) {
+        if (got[u] == 0) {
+            lowest_missing = lowest_missing < 0 ? u : lowest_missing;
+            highest_missing = u;
+        } else if (lowest_missing >= 0) {
+            received_in_window++;
+        }
+    }
+    if (lowest_missing < 0) {
+        return (uint64_t)(highest_got / (int64_t)readers) + 1U;
+    }
+    (void)highest_missing;
+    return (uint64_t)(lowest_missing / (int64_t)readers) + received_in_window;
+}
+
 // One run: `period_ns` 0 = a new sample as soon as the last completes (bulk); else one sample every period_ns.
 // `readers` readers share the link: a sample goes to each of them as its own datagrams (unicast reliable), so the link
 // carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
@@ -139,7 +197,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     uint32_t rn = 0;
     int64_t credit = 0; // link credit in bits
     struct ap_pacer ap;
-    ap_init(&ap, min_bps, cap_bps, 0, 2 * cfg->one_way_ns);
+    ap_init(&ap, min_bps, cap_bps, 0, 2 * cfg->one_way_ns, UNIT_WIRE);
 
     int64_t sample_first = 0; // unit ids of the current sample
     int64_t sample_next = 0;
@@ -148,9 +206,14 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     uint64_t sample_started = 0;
     uint64_t next_sample_ns = 0;
     uint64_t next_send_ns = 0;
+    uint64_t next_unsolicited_ns = 0;
+    uint64_t last_solicit_ns = 0;
+    bool solicit_open = false; // a solicitation is out and no report has come since
+    uint32_t lcg = 12345;
     uint64_t next_solicit_ns = 0;
     uint64_t delivered_units[MAX_READERS] = {0}; // what each reader has, as the reader counts it
-    uint64_t reported_units[MAX_READERS] = {0};  // what the writer last heard each reader had
+    uint64_t reported_units[MAX_READERS] = {0};
+    uint64_t reported_missing[MAX_READERS] = {0}; // what the writer last heard each reader had
     uint64_t srtt = 2 * cfg->one_way_ns;
     uint64_t rate_ok_since[3] = {0, 0, 0};
     uint64_t sample_period_start = 0;
@@ -207,6 +270,9 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             }
             if (mode == MODE_ADAPTIVE) {
                 ap_note_send(&ap, now + 1U, UNIT_WIRE, repair);
+                if (!repair) {
+                    ap_note_unit_sent(&ap, now); // an original: the library stamps these, not repairs
+                }
             }
             uint64_t gap = ((uint64_t)UNIT_WIRE * 8ULL * 1000000000ULL) / rate;
             if (next_send_ns + MS < now) {
@@ -215,9 +281,16 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             next_send_ns += gap; // the clock, not "now": a send late by part of a step does not lose that part
         }
         // 3. a solicit, once per RTprop (10 ms before a sample of round trips), while a sample is open
-        if (sampling && now >= next_solicit_ns) {
+        if (cfg->watermark_acks && solicit_open && now - last_solicit_ns > 100 * MS) {
+            solicit_open = false; // a lost solicitation or answer: asked again
+        }
+        if (sampling && now >= next_solicit_ns && !(cfg->watermark_acks && solicit_open)) {
             uint64_t rtprop = mode == MODE_ADAPTIVE ? ap_rtprop_ns(&ap) : srtt;
             next_solicit_ns = now + (rtprop < 5000000ULL ? 5000000ULL : rtprop);
+            if (cfg->watermark_acks) {
+                solicit_open = true;
+                last_solicit_ns = now;
+            }
             for (uint32_t r = 0; r < readers; r++) {
                 if (qn + 1U < MAX_Q && qbytes + SOLICIT_WIRE <= cfg->queue_bytes) {
                     queue[qt] = (struct pkt) {now, SOLICIT_WIRE, -1, r, now, sample_next - 1};
@@ -242,6 +315,11 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             }
             out->queue_delay_sum_ns += qd;
             out->queue_delay_n++;
+            lcg = (lcg * 1103515245U) + 12345U;
+            if (cfg->loss_ppm != 0 && ((lcg >> 8) % 1000000U) < cfg->loss_ppm) {
+                out->dropped++; // lost on the link, not in its queue
+                continue;
+            }
             fwd[ft] = (struct flight) {now + cfg->one_way_ns, p};
             ft = (ft + 1U) % MAX_DELAY;
             fn++;
@@ -259,9 +337,39 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             pending[i] = pending[--pending_n];
             rev[rt] = (struct flight) {
                 now + cfg->one_way_ns,
-                (struct pkt) {q.solicit_ns, 0, (int64_t)delivered_units[q.reader], q.reader, (uint64_t)q.last_unit, 0}};
+                (struct pkt) {q.solicit_ns, 0,
+                              (int64_t)reader_units(cfg, got, readers, q.reader, sample_end, delivered_units[q.reader]),
+                              q.reader, (uint64_t)q.last_unit,
+                              (int64_t)reader_missing(cfg, got, readers, q.reader, sample_end)}};
             rt = (rt + 1U) % MAX_DELAY;
             rn++;
+        }
+        // 4c. a reader that has a gap reports by itself, at its retry timer
+        if (cfg->unsolicited_ns != 0 && now >= next_unsolicited_ns) {
+            next_unsolicited_ns = now + cfg->unsolicited_ns;
+            for (uint32_t r = 0; r < readers; r++) {
+                int64_t highest_got = -1;
+                bool gap = false;
+                for (int64_t u = sample_first; u <= sample_end; u++) {
+                    if ((uint32_t)(u % (int64_t)readers) != r) {
+                        continue;
+                    }
+                    if (got[u]) {
+                        highest_got = u;
+                    } else if (highest_got >= 0 || u < sample_next) {
+                        gap = gap || (highest_got >= 0);
+                    }
+                }
+                if (gap && rn + 1U < MAX_DELAY) {
+                    rev[rt] = (struct flight) {
+                        now + cfg->one_way_ns,
+                        (struct pkt) {0, 0, (int64_t)reader_units(cfg, got, readers, r, sample_end, delivered_units[r]),
+                                      r, (uint64_t)highest_got,
+                                      (int64_t)reader_missing(cfg, got, readers, r, sample_end)}};
+                    rt = (rt + 1U) % MAX_DELAY;
+                    rn++;
+                }
+            }
         }
         // 5. the reader receives; a solicit makes it report
         while (fn != 0 && fwd[fh].at_ns <= now) {
@@ -288,7 +396,10 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             rh = (rh + 1U) % MAX_DELAY;
             rn--;
             uint64_t rtt = now - f.pkt.enq_ns;
-            srtt = srtt == 0 ? rtt : (srtt * 7U + rtt) / 8U;
+            if (!(cfg->watermark_acks && f.pkt.enq_ns == 0)) {
+                srtt = srtt == 0 ? rtt : (srtt * 7U + rtt) / 8U;
+            }
+            solicit_open = false; // the first report after a solicitation answers it, whatever sent it
             int64_t reported_highest = (int64_t)f.pkt.solicit_ns;
             for (int64_t u = sample_first; u <= reported_highest && u <= sample_end; u++) {
                 if (!got[u] && (uint32_t)(u % (int64_t)readers) == f.pkt.reader) {
@@ -296,12 +407,15 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                 }
             }
             reported_units[f.pkt.reader] = (uint64_t)f.pkt.unit;
+            reported_missing[f.pkt.reader] = (uint64_t)f.pkt.last_unit;
             if (mode == MODE_ADAPTIVE) {
-                uint64_t pooled = 0; // the link's delivered bytes: the sum over its readers
+                uint64_t pooled_missing = 0;
+                uint64_t pooled_units = 0; // the link's delivered units: the sum over its readers
                 for (uint32_t r = 0; r < readers; r++) {
-                    pooled += reported_units[r] * UNIT_WIRE;
+                    pooled_units += reported_units[r] + reported_missing[r];
+                    pooled_missing += reported_missing[r];
                 }
-                ap_on_feedback(&ap, now, pooled, rtt);
+                ap_on_feedback(&ap, now, (pooled_units - pooled_missing) * UNIT_WIRE, pooled_units);
             }
         }
         // 7. a sample completes
@@ -474,6 +588,90 @@ int main(void) {
     run(&loop, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 0, 4 * SEC, 1U, &lan_result);
     print_result("adaptive, 1 Gbit/s, 7 us RTT", &lan_result);
     CHECK(lan_result.samples_done >= 5U, "a loopback: %u samples", lan_result.samples_done);
+
+    // 4c. a lossy link with the reports of a real reader: 1 MiB every 6 s for 60 s, the reader reports by itself at its
+    // retry timer when it has a gap, and what it reports is a watermark and a bitmap. S1-like (4 Mbit/s, 10 ms round
+    // trip, 1 % loss) and M2-like (30 Mbit/s, 40 ms, 3 %). A first version took the first report after a solicitation
+    // as its answer's round trip, which an early report from a retry timer made a few ms: the estimate collapsed to the
+    // floor and the samples did not complete.
+    struct link_cfg lossy_s1 = {
+        {4000000ULL, 4000000ULL, 4000000ULL}, 1000 * SEC, 2000 * SEC, 40U * UNIT_WIRE, 5 * MS, 0, 10000U, 3 * MS, true};
+    struct link_cfg lossy_m2 = {{30000000ULL, 30000000ULL, 30000000ULL},
+                                1000 * SEC,
+                                2000 * SEC,
+                                100U * UNIT_WIRE,
+                                20 * MS,
+                                0,
+                                30000U,
+                                8 * MS,
+                                true};
+    struct result lossy;
+    run(&lossy_s1, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 6 * SEC, 60 * SEC, 1U, &lossy);
+    print_result("adaptive, S1-like, 1 % loss", &lossy);
+    CHECK(lossy.samples_done >= 8U, "S1-like: %u of 10 samples", lossy.samples_done);
+    CHECK(lossy.min_rate_bps > 500000ULL, "S1-like: the rate fell to %llu bit/s",
+          (unsigned long long)lossy.min_rate_bps);
+    run(&lossy_m2, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 6 * SEC, 60 * SEC, 1U, &lossy);
+    print_result("adaptive, M2-like, 3 % loss", &lossy);
+    CHECK(lossy.samples_done >= 8U, "M2-like: %u of 10 samples", lossy.samples_done);
+    CHECK(lossy.min_rate_bps > 500000ULL, "M2-like: the rate fell to %llu bit/s",
+          (unsigned long long)lossy.min_rate_bps);
+
+    // 4d. an outage: the link all but stops (50 kbit/s) for six seconds and comes back. The estimate must not sit at
+    // its floor afterwards: it finds the link again within a few seconds.
+    struct link_cfg outage = {
+        {4000000ULL, 50000ULL, 4000000ULL}, 6 * SEC, 12 * SEC, 40U * UNIT_WIRE, 10 * MS, 0, 0, 0, false};
+    struct result outage_result;
+    run(&outage, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 24 * SEC, 1U, &outage_result);
+    printf("outage 6 s: BtlBw within 25 %% of the link %.0f ms after the link came back\n",
+           ms(outage_result.rate_after_step_ok_ns[2]));
+    CHECK(outage_result.rate_after_step_ok_ns[2] != 0 && outage_result.rate_after_step_ok_ns[2] < 4 * SEC,
+          "after an outage the estimate took %.0f ms", ms(outage_result.rate_after_step_ok_ns[2]));
+
+    // 4e. never at the floor on an estimate of nothing: BtlBw 0 in CRUISE (what a collapse left on the Pis) is a
+    // restart of the search from the start rate, and the rate then climbs with what is delivered.
+    struct ap_pacer floor_ctl;
+    ap_init(&floor_ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    floor_ctl.state = AP_CRUISE;
+    floor_ctl.rate_bps = 100000ULL;
+    uint64_t t_ns = SEC;
+    uint64_t units = 0;
+    for (int i = 0; i < 400; i++) {
+        t_ns += 2 * MS;
+        for (int k = 0; k < 8; k++) {
+            ap_note_send(&floor_ctl, t_ns, UNIT_WIRE, false);
+            ap_note_unit_sent(&floor_ctl, t_ns - (20 * MS)); // sent a round trip earlier
+        }
+        units += 8;
+        ap_on_feedback(&floor_ctl, t_ns, units * UNIT_WIRE, units);
+    }
+    printf("floor: after 800 ms of delivery at about 49 Mbit/s the rate is %.1f Mbit/s (restarts %llu)\n",
+           (double)ap_rate_bps(&floor_ctl) / 1e6, (unsigned long long)floor_ctl.stall_restarts + floor_ctl.rounds);
+    CHECK(ap_rate_bps(&floor_ctl) > 5000000ULL, "stuck near the floor: %llu bit/s",
+          (unsigned long long)ap_rate_bps(&floor_ctl));
+
+    // 4f. solicitations are spaced by the pacing rate: self-clocked at the report rate they once sent thousands a
+    // second of 156 wire bytes, which the bucket charged, and a slow start's whole rate went on them (a loopback run
+    // delivered nothing).
+    struct ap_pacer gap_ctl;
+    ap_init(&gap_ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    gap_ctl.rate_bps = 1000000ULL;
+    CHECK(ap_solicit_gap_ns(&gap_ctl) >= 24 * MS, "at 1 Mbit/s a solicitation every %.1f ms",
+          ms(ap_solicit_gap_ns(&gap_ctl)));
+    gap_ctl.rate_bps = 100000ULL;
+    CHECK(ap_solicit_gap_ns(&gap_ctl) >= 240 * MS, "at 100 kbit/s a solicitation every %.1f ms",
+          ms(ap_solicit_gap_ns(&gap_ctl)));
+    gap_ctl.rate_bps = 1000000000ULL;
+    CHECK(ap_solicit_gap_ns(&gap_ctl) >= AP_MIN_ROUND_NS, "at 1 Gbit/s a solicitation every %.3f ms",
+          ms(ap_solicit_gap_ns(&gap_ctl)));
+    // Their share of the rate: 156 wire bytes (90 B of HEARTBEAT, framed) a gap, against what the rate sends in it.
+    for (uint64_t bps = 100000ULL; bps <= 1000000000ULL; bps *= 10U) {
+        gap_ctl.rate_bps = bps;
+        uint64_t gap = ap_solicit_gap_ns(&gap_ctl);
+        uint64_t data_bytes = (bps / 8U) * gap / 1000000000ULL;
+        CHECK(data_bytes >= (uint64_t)15U * 156U, "at %llu bit/s a solicitation (156 B) per %llu B of data",
+              (unsigned long long)bps, (unsigned long long)data_bytes);
+    }
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link

@@ -385,8 +385,8 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     EXPECT_TRUE(!node.rate[0].adaptive);
     uint64_t rate = pacer_rate_bps();
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, &ack, 100, true, test_mock_now - 1000);
-    rate_acknack(&node, 0, &ack, 900, true, test_mock_now - 1000);
+    rate_acknack(&node, 0, &ack, 100, 0);
+    rate_acknack(&node, 0, &ack, 900, 0);
     EXPECT_EQ_U64(rate, pacer_rate_bps());
     EXPECT_EQ_U64(0, node.rate[0].delivered);
     EXPECT_EQ_U32(0, ack.rate_units_valid ? 1U : 0U);
@@ -414,14 +414,51 @@ static void test_control_datagrams_are_not_units(void) {
     destroy();
 }
 
+// What an ACKNACK shows held, without the missing count.
+static uint32_t held_only(uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
+    uint32_t missing = 0;
+    return rate_units_held_and_missing(seq_no, bitmap, words, &missing);
+}
+
+// The round trip is read from the send time of the unit an ACKNACK newly shows held - never from the solicitation,
+// which an ACKNACK sent for another reason answers early: that read a few ms on a 10 ms path and collapsed the rate to
+// its floor.
+static void test_the_round_trip_is_from_unit_send_times(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+    create(&opts);
+    struct tt_PeerAck ack = {0};
+    rate_acknack(&node, 0, &ack, 0, 0); // the baseline
+    uint64_t sent_at = test_mock_now;
+    for (uint32_t i = 0; i < 10; i++) {
+        pace_charge(&node, 0, 1472U, sent_at); // ten data units leave at once
+    }
+    // An ACKNACK that shows nothing new is no sample, however early it comes.
+    test_mock_now = sent_at + 100000ULL;
+    rate_acknack(&node, 0, &ack, 0, 0);
+    EXPECT_EQ_U64(UINT64_MAX, ap_filter_get(&node.rate[0].ap.rtt));
+    // One that shows the tenth unit held, 10 ms after they left, is a 10 ms round trip.
+    test_mock_now = sent_at + 10000000ULL;
+    rate_acknack(&node, 0, &ack, 10, 0);
+    EXPECT_EQ_U64(10000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
+    // A later one showing the same units is none; a slower one for later units does not raise the least.
+    test_mock_now = sent_at + 12000000ULL;
+    rate_acknack(&node, 0, &ack, 10, 0);
+    pace_charge(&node, 0, 1472U, sent_at + 12000000ULL);
+    test_mock_now = sent_at + 60000000ULL;
+    rate_acknack(&node, 0, &ack, 11, 0);
+    EXPECT_EQ_U64(10000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
+    destroy();
+}
+
 static void test_held_units_from_an_acknack(void) {
     uint64_t none[2] = {0, 0};
-    EXPECT_EQ_U32(1000, rate_units_held(1000, none, 0)); // nothing missing: the watermark
-    uint64_t gaps[2] = {0x5ULL, 0};                      // units 1000 and 1002 missing: held 1000 + (3 - 2)
-    EXPECT_EQ_U32(1001, rate_units_held(1000, gaps, 1));
+    EXPECT_EQ_U32(1000, held_only(1000, none, 0)); // nothing missing: the watermark
+    uint64_t gaps[2] = {0x5ULL, 0};                // units 1000 and 1002 missing: held 1000 + (3 - 2)
+    EXPECT_EQ_U32(1001, held_only(1000, gaps, 1));
     uint64_t wide[2] = {0x1ULL, 0x2ULL}; // units 1000 and 1065 missing: window 66, 2 missing
-    EXPECT_EQ_U32(1000 + 64, rate_units_held(1000, wide, 2));
-    EXPECT_EQ_U32(0, rate_units_held(0xFFFFFFFFU, gaps, 1)); // the watermark wraps, the window follows
+    EXPECT_EQ_U32(1000 + 64, held_only(1000, wide, 2));
+    EXPECT_EQ_U32(0, held_only(0xFFFFFFFFU, gaps, 1)); // the watermark wraps, the window follows
 }
 
 static void test_readers_pool_into_one_link_count(void) {
@@ -432,20 +469,19 @@ static void test_readers_pool_into_one_link_count(void) {
     struct tt_PeerAck a = {0};
     struct tt_PeerAck b = {0};
     // First ACKNACKs are baselines: nothing counted.
-    rate_acknack(&node, 0, &a, 500, false, 0);
-    rate_acknack(&node, 0, &b, 9000, false, 0);
+    rate_acknack(&node, 0, &a, 500, 0);
+    rate_acknack(&node, 0, &b, 9000, 0);
     EXPECT_EQ_U64(0, node.rate[0].delivered);
     // Each reader's advance adds to the one count.
-    rate_acknack(&node, 0, &a, 510, false, 0);
+    rate_acknack(&node, 0, &a, 510, 0);
     EXPECT_EQ_U64(10ULL * wire, node.rate[0].delivered);
-    rate_acknack(&node, 0, &b, 9020, false, 0);
+    rate_acknack(&node, 0, &b, 9020, 0);
     EXPECT_EQ_U64(30ULL * wire, node.rate[0].delivered);
     // A reordered, older ACKNACK moves nothing, and does not lower the baseline.
-    rate_acknack(&node, 0, &a, 505, false, 0);
+    rate_acknack(&node, 0, &a, 505, 0);
     EXPECT_EQ_U64(30ULL * wire, node.rate[0].delivered);
-    rate_acknack(&node, 0, &a, 512, false, 0);
+    rate_acknack(&node, 0, &a, 512, 0);
     EXPECT_EQ_U64(32ULL * wire, node.rate[0].delivered);
-    EXPECT_EQ_U32(6U, node.rate[0].acks_seen);
     destroy();
 }
 
@@ -460,15 +496,16 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
     uint64_t sent_credit = 0;
     uint64_t snapshot_at = 0; // the solicitation reaches the reader: what it holds then is what it reports
     uint64_t reply_at = 0;
-    uint64_t solicit_ns = 0;
     uint64_t held_at_solicit = 0;
+    uint64_t dropped_units = 0; // the units the queue dropped: what the reader names missing, never repaired here
+    uint64_t missing_at_solicit = 0;
     bool outstanding = false;
     bool snapped = false;
     const uint64_t base_rtt = 20ULL * 1000000ULL;
     const uint64_t step = 1000000ULL; // 1 ms
     uint64_t start = test_mock_now;
     *queue_peak = 0;
-    rate_acknack(&node, 0, &ack, 0, false, 0); // the baseline
+    rate_acknack(&node, 0, &ack, 0, 0); // the baseline
     for (uint64_t t = 0; t < (uint64_t)seconds * tt_SECOND; t += step) {
         test_mock_now = start + t;
         uint64_t bps = link_bps(t / tt_SECOND);
@@ -483,23 +520,24 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
         queue -= carried;
         delivered_bytes += carried;
         if (queue > queue_bytes) {
-            queue = queue_bytes; // tail drop: a repair would follow, not modelled here
+            dropped_units +=
+                (queue - queue_bytes + 1537U) / 1538U; // tail drop: a repair would follow, not modelled here
+            queue = queue_bytes;
         }
         if (queue > *queue_peak) {
             *queue_peak = queue;
         }
         if (!outstanding) {
-            rate_note_solicit(&node);
-            solicit_ns = test_mock_now;
             snapshot_at = test_mock_now + (base_rtt / 2U) + (queue * 8U * tt_SECOND / bps); // out and through the queue
             outstanding = true;
             snapped = false;
         } else if (!snapped && test_mock_now >= snapshot_at) {
             held_at_solicit = delivered_bytes / 1538U;
+            missing_at_solicit = dropped_units;
             reply_at = test_mock_now + (base_rtt / 2U); // and back
             snapped = true;
         } else if (snapped && test_mock_now >= reply_at) {
-            rate_acknack(&node, 0, &ack, (uint32_t)held_at_solicit, true, solicit_ns);
+            rate_acknack(&node, 0, &ack, (uint32_t)held_at_solicit, (uint32_t)missing_at_solicit);
             outstanding = false;
         }
         if ((t + step) % tt_SECOND == 0) {
@@ -555,6 +593,7 @@ int main(void) {
     test_validation();
     test_adaptive_starts_between_floor_and_cap();
     test_control_datagrams_are_not_units();
+    test_the_round_trip_is_from_unit_send_times();
     test_held_units_from_an_acknack();
     test_readers_pool_into_one_link_count();
     test_the_bucket_follows_the_link();
