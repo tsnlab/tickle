@@ -1,8 +1,14 @@
 # Adaptive send pacing - design and acceptance criteria (draft, 2026-11-19)
 
-Status: DESIGN ONLY. Nothing here is implemented, nothing is measured. Branch `ab/adaptive-pacing`, off
-`ab/release-2.2.0`. The option is opt-in and **off by default everywhere**; making it the WIFI profile's default is a
-separate decision for the user, taken after the validation below.
+Status: DRAFT, 2026-11-19. Branch `ab/adaptive-pacing`, off `ab/release-2.2.0`. The estimator and its model test exist
+(section 10); the library integration is being written on this branch (section 11). Nothing is measured on a real link.
+The option is opt-in and **off by default everywhere**; making it the WIFI profile's default is a separate decision for
+the user, taken after the validation below.
+
+User decisions of 2026-11-19, applied below: the option is `tt_LinkOptions.rate_control` (not `pacing_mode`); the
+adaptive code is always compiled in and behaves exactly as before when `rate_control` is off or fixed (the wired gates
+and the core gate prove that; no byte-identical-objects requirement); rate control is per link, with link-level
+information pooled over all readers on the link (section 4.2 item 5).
 
 Numbers written `[X]` or `[N]` are placeholders to be filled from the tc runs (Stage C oracle rates, rate-step test);
 constants written `(initial)` are starting choices to be fixed by the userspace model and the tc runs, not results.
@@ -93,8 +99,21 @@ one, and gives up the last few percent of throughput to keep it.
    long (the reader's poll delay, an unrelated gap ACKNACK arriving first), never too short, which the windowed
    *minimum* tolerates; the max filter tolerates the matching under-estimate of the delivery rate. Both errors are in
    the safe direction (rate a little low, BDP a little high); the probe recovers the former.
-5. **Multi-reader:** the bucket is per link, feedback is per reader. v1 is specified and validated for **one reader
-   per link**; with several, BtlBw is the sum of each reader's own windowed max (stated here, validated later).
+5. **Several readers on one link (link-level state, user decision 2026-11-19):** the bucket, the estimator and the
+   rate are per **link**, not per reader. Every ACKNACK from any reader on the link feeds the one estimator:
+   - *delivered* is pooled: each reader's ACKNACK advances that reader's own delivered count (watermark plus the
+     received units its bitmap shows), the increment is converted to bytes and added to one link-wide cumulative
+     delivered counter; a round's delivery-rate sample is the pooled bytes over the round, i.e. the **sum of the
+     readers' delivery rates**. Unicast reliable sends of one sample to N readers cross the link N times, and the pooled
+     sample counts all N copies, which is what the bottleneck carries;
+   - *RTprop* is the **minimum over all readers' RTT samples** (the filter already is a min filter; a reader whose
+     poll loop is slow only adds larger samples that it ignores);
+   - the solicit: one solicited HEARTBEAT per RTprop goes to all matched readers (as `tt_Publisher_request_ack()` does),
+     so every reader answers and every answer is a sample; the first answer gives the RTT sample;
+   - the queue guard, drain and drop guards are link-level for the same reason: a queue is shared by all readers.
+   Remaining limit (stated, not hidden): readers' feedback arrives at different instants, so a round can end between
+   two readers' answers and its sample covers a partial set. The byte floor per round (24 kB) and the max filter keep
+   that bounded; the model test (section 10) runs 1, 2 and 3 readers to check it.
 
 ### 4.3 State machine (per link)
 - **START** (no rate remembered): rate = floor `(initial)`; RTprop seeded from `announce_rtt_ns` of the peer. Each
@@ -127,20 +146,34 @@ one, and gives up the last few percent of throughput to keep it.
 ## 5. API (opt-in, zero = today)
 
 ```c
-enum { tt_PACING_FIXED = 0, tt_PACING_ADAPTIVE = 1 };
+#define tt_RATE_CONTROL_OFF      0U  // the default: see "compatibility" below
+#define tt_RATE_CONTROL_FIXED    1U  // send pacing at pacing_rate, as today
+#define tt_RATE_CONTROL_ADAPTIVE 2U  // find the rate: this document
 struct tt_LinkOptions {
-    ...                        // existing fields unchanged, in place
-    uint8_t  pacing_mode;      // 0 = fixed (pacing_rate as today); tt_PACING_ADAPTIVE = find the rate
-    uint64_t pacing_min_rate;  // adaptive only: the floor, bits/s; 0 = tt_LINK_RATE_MIN
-    uint32_t pacing_queue_ns;  // adaptive only: queue-delay target; 0 = max(2 ms, RTprop / 4)
+    ...                          // existing fields unchanged, in place
+    uint8_t  rate_control;       // tt_RATE_CONTROL_*; 0 = see below
+    uint64_t rate_min_rate;      // ADAPTIVE only: the floor, bits/s; 0 = tt_LINK_RATE_MIN
+    uint32_t rate_queue_ns;      // ADAPTIVE only: queue-delay target; 0 = max(2 ms, RTprop / 4)
 };
 ```
-- `pacing_rate` under ADAPTIVE is the **cap**; 0 = `link_rate`. `tt_PACING_OFF` with ADAPTIVE is rejected.
-- `validate_link_pacing()`: `pacing_mode` in {0, 1}; adaptive fields only with `pacing_mode == ADAPTIVE`
-  (like `pacing_burst` on an unpaced link today); floor >= `tt_LINK_RATE_MIN`, floor <= cap; `pacing_queue_ns` at least
-  `(initial)` 100 us; ADAPTIVE only in a build with `tt_LARGE_SAMPLES`, else `tt_RET_INVALID_ARGUMENT`.
-- The WIFI profile's default stays `tt_PACING_FIXED`/off. The documentation says "on Wi-Fi turn adaptive pacing on"
-  only if the acceptance results below support it.
+Names: the user's `rate_control`; the two tunables are named `rate_min_rate` and `rate_queue_ns` (not `pacing_*`), so
+that every adaptive-only field reads as belonging to `rate_control`; `pacing_rate` and `pacing_burst` keep their names
+and meaning.
+- **Compatibility (the zero value).** `rate_control == tt_RATE_CONTROL_OFF` (0) does not mean "no pacing"; it means
+  "what the existing fields say", so every existing program is unchanged: `pacing_rate` set (neither 0 nor
+  `tt_PACING_OFF`) is FIXED at that rate; `pacing_rate == 0` is the profile's (T1S: FIXED at 75 % of `link_rate`; the
+  other profiles: not paced, as now); `pacing_rate == tt_PACING_OFF` is not paced. An explicit `FIXED` requires a
+  `pacing_rate` (0 = the profile's, which must then exist, else rejected). After resolution `rate_control` holds the
+  concrete mode (OFF, FIXED or ADAPTIVE), as `pacing_rate` already holds the concrete rate.
+- Under `ADAPTIVE`, `pacing_rate` is the **cap**; 0 = `link_rate`. `tt_PACING_OFF` with ADAPTIVE is rejected.
+  `pacing_burst` keeps its meaning (the bucket depth in bytes on the wire, 0 = 4 frames); the bucket's rate follows the
+  estimator.
+- `validate_link_pacing()`: `rate_control` is in {0, 1, 2}; `rate_min_rate` and `rate_queue_ns` only with ADAPTIVE;
+  floor >= `tt_LINK_RATE_MIN` and <= the cap; `rate_queue_ns` at least 100 us; ADAPTIVE only in a build with
+  `tt_LARGE_SAMPLES` (the feedback it reads is the large-sample send's), else `tt_RET_INVALID_ARGUMENT`.
+- The WIFI profile's default stays off. The user guide says "on Wi-Fi set `rate_control = tt_RATE_CONTROL_ADAPTIVE`"
+  only as a plan until the Pi results exist (section 8); no result is claimed before then.
+- The code is always compiled in (user decision); with OFF or FIXED the send path takes the branches it takes today.
 - Counters (`tt_Context`): rate samples taken, solicitations sent, queue-guard trips, rate-drop trips, current BtlBw
   and RTprop (read-only), so a run can be diagnosed.
 
@@ -164,7 +197,7 @@ Nothing is claimed until each row is measured. `[X]`, `[N]` come from the Stage 
 
 | # | Criterion | How |
 |---|---|---|
-| A1 | `pacing_mode` off (every profile by default): wire identical, bytes and times, to the parent; ETHERNET/T1S/TSN/WIFI unchanged | `tests/wire_identity_adaptive_pacing.sh`, the pattern of `wire_identity_send_pacing.sh` (control, identity, mutant) |
+| A1 | `rate_control` off or fixed (every profile by default): wire identical, bytes and times, to the parent; ETHERNET/T1S/TSN/WIFI unchanged | `tests/wire_identity_send_pacing.sh` against the parent, plus the wired gates |
 | A2 | Core gate v2 (158 deciding comparisons): 0 WORSE, adaptive off | rig core gate |
 | A3 | Wired DDS comparison: no LOSE that the parent did not have | the 136/14/0 campaign, adaptive off (unchanged path) |
 | A4 | Rate-step 30 -> 4 -> 30 Mbit/s (tc, 1 reader): BtlBw within 25 % of the carried rate within `[N]` s after each step; queue delay bounded; no run lost | tc time-varying schedule, Pis |
@@ -173,7 +206,8 @@ Nothing is claimed until each row is measured. `[X]`, `[N]` come from the Stage 
 | A7 | Small samples and be_small: no regression (they bypass the pacer) | same cells, adaptive on vs off |
 | A8 | Datagram count at 1 MiB / S1 within `[X]` x the oracle's (no retransmission storm) | counters |
 | A9 | Unit tests: estimator converges on synthetic rate steps, queue bounded, floor/cap honoured; every `validate_link_pacing()` bound refused and accepted | `tests/test_adaptive_pacing.c`, mutants as for `test_send_pacing.c` |
-| A10 | Object-size delta reported for the three builds; objects byte-identical with the code compiled out | `tt_PACING_ADAPTIVE_COMPILED` switch if the user wants byte-identical objects (decision) |
+| A10 | Context size delta and send-path size delta reported for the three builds (the adaptive code is always compiled in; no byte-identity requirement) | `size`, `sizeof(struct tt_Context)` |
+| A11 | 2 and 3 readers on one link (link-level pooled estimate): the aggregate rate follows the link, the queue stays bounded, no reader starves | model test (section 10), then Pis with 2 and 3 reader processes in one namespace |
 
 ## 8. Validation the Pis need once Stage C is done
 
@@ -185,11 +219,9 @@ Nothing is claimed until each row is measured. `[X]`, `[N]` come from the Stage 
 4. Estimator-trace run: one 1 MiB per profile with the counters dumped, to compare the estimator's BtlBw/RTprop with
    the calibrated carried rate and ping RTT.
 
-## 9. Open questions for the user
-- Compile switch (A10): code compiled out by default for byte-identical objects, or always compiled in and
-  identical in behaviour only?
-- Multi-reader semantics (4.2 item 5): accept "one reader validated" for 2.2.0?
-- Whether adaptive pacing becomes the WIFI default (only after A1-A8).
+## 9. Open for the user
+- Whether adaptive rate control becomes the WIFI default (only after A1-A8 and A11).
+- Decided 2026-11-19: option name `rate_control`; always compiled in; per-link pooled multi-reader state.
 
 ## 10. Userspace model (step 3, 2026-11-19)
 
