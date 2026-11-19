@@ -946,6 +946,14 @@ struct tt_HybridState {
 #define tt_LINK_T1S_PACING_PCT 75U // a T1S link's pacing rate, in percent of its link_rate
 #define tt_PACING_BURST_FRAMES 4U  // a paced link's default burst, in frames of its MTU
 #define tt_PACING_BURST_MIN 1538U  // pacing_burst's least: one full 1500-byte frame on the wire (+ 38 framing)
+// Rate control (tt_LinkOptions.rate_control, docs/DESIGN.md "Send pacing"): how a link's send rate is set. OFF, the
+// zero value, is "what pacing_rate says" - FIXED at that rate if one is set (or the profile's), else not paced - so a
+// program that sets only pacing_rate is unchanged. After resolution rate_control holds the concrete mode.
+#define tt_RATE_CONTROL_OFF \
+    0U // no rate set: pacing_rate absent or tt_PACING_OFF (resolved), or "as pacing_rate says" (given)
+#define tt_RATE_CONTROL_FIXED 1U     // paced at pacing_rate, as tt_LinkOptions.pacing_rate has always meant
+#define tt_RATE_CONTROL_ADAPTIVE 2U  // paced at the rate the link is found to deliver, up to pacing_rate (the cap)
+#define tt_RATE_QUEUE_MIN_NS 100000U // tt_LinkOptions.rate_queue_ns' least
 // A RELIABLE reader's re-ask when a repair arrives above its watermark while a gap is open
 // (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"). On a path that keeps the writer's order, such a
 // repair shows that every repair the writer sent before it, and that has not arrived, is lost.
@@ -1017,6 +1025,17 @@ struct tt_LinkOptions {
     // The bucket's depth in bytes on the wire: what a paced link may send back to back. 0 = tt_PACING_BURST_FRAMES
     // frames of the link MTU. At least tt_PACING_BURST_MIN; only on a paced link.
     uint32_t pacing_burst;
+    // How the link's send rate is set (tt_RATE_CONTROL_*; docs/DESIGN.md "Send pacing"). 0 = what pacing_rate says:
+    // FIXED at it when set (T1S's profile sets one), not paced otherwise. FIXED needs a pacing_rate. ADAPTIVE finds the
+    // rate the link delivers from what its readers report, keeps the queue short, and never goes above pacing_rate
+    // (0 = link_rate) or below rate_min_rate; it needs a build with tt_LARGE_SAMPLES. One estimator per link, fed by
+    // every reader on it.
+    uint8_t rate_control;
+    // ADAPTIVE only: the least rate, bits per second; 0 = tt_LINK_RATE_MIN. At most the cap.
+    uint64_t rate_min_rate;
+    // ADAPTIVE only: the queueing delay it holds the link to, ns; 0 = the larger of 2 ms and a quarter of the least
+    // round trip seen. At least tt_RATE_QUEUE_MIN_NS.
+    uint32_t rate_queue_ns;
     // A RELIABLE reader's retry estimate for a lossy, jittery link (tt_SWITCH_*; 0 = the profile's: WIFI on, the rest
     // off; docs/DESIGN.md "Link profiles"). On: a writer proxy's first recovery is timed even past the back-off, and
     // after it only a recovery its first request answered (Karn's rule) - on such a link a recovery that needed a

@@ -1079,8 +1079,22 @@ static void resolve_link_profile(struct tt_LinkOptions* link) {
     if (link->idle_heartbeat_ns == 0 && t1s) {
         link->idle_heartbeat_ns = LINK_T1S_IDLE_HEARTBEAT;
     }
-    if (link->pacing_rate == 0) {
-        link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
+    if (link->rate_control == tt_RATE_CONTROL_ADAPTIVE) {
+        if (link->pacing_rate == 0) {
+            link->pacing_rate = link->link_rate; // the cap
+        }
+        if (link->rate_min_rate == 0) {
+            link->rate_min_rate = tt_LINK_RATE_MIN;
+        }
+    } else {
+        if (link->pacing_rate == 0) {
+            link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
+        }
+        if (link->rate_control == tt_RATE_CONTROL_OFF) {
+            // 0 is "what pacing_rate says": the concrete mode, as pacing_rate is the concrete rate. A FIXED asked for
+            // and left without a rate stays FIXED, for validate_link_pacing() to refuse.
+            link->rate_control = link->pacing_rate == tt_PACING_OFF ? tt_RATE_CONTROL_OFF : tt_RATE_CONTROL_FIXED;
+        }
     }
     resolve_link_discovery(link);
     resolve_link_repair_timing(link);
@@ -1230,6 +1244,36 @@ static bool valid_slot_bytes(uint32_t slot_bytes);
 // A link's pacing (validate_link_profile()): a rate the link can carry and a burst that holds a full frame, on a paced
 // link only. Checked on the resolved options: a pacing_rate of 0 is the profile's by now.
 static tt_ret_t validate_link_pacing(const struct tt_LinkOptions* link) {
+    if (link->rate_control > tt_RATE_CONTROL_ADAPTIVE) {
+        return reject_option("net.links[].rate_control", "is not a tt_RATE_CONTROL_* value");
+    }
+    bool adaptive = link->rate_control == tt_RATE_CONTROL_ADAPTIVE;
+    if (!adaptive && link->rate_min_rate != 0) {
+        return reject_option("net.links[].rate_min_rate", "is set on a link whose rate_control is not ADAPTIVE");
+    }
+    if (!adaptive && link->rate_queue_ns != 0) {
+        return reject_option("net.links[].rate_queue_ns", "is set on a link whose rate_control is not ADAPTIVE");
+    }
+    if (link->rate_control == tt_RATE_CONTROL_FIXED && link->pacing_rate == tt_PACING_OFF) {
+        return reject_option("net.links[].rate_control", "is FIXED on a link with no pacing_rate");
+    }
+    if (adaptive) {
+#if !tt_LARGE_SAMPLES
+        return reject_option("net.links[].rate_control", "is ADAPTIVE in a build without tt_LARGE_SAMPLES");
+#endif
+        if (link->pacing_rate == tt_PACING_OFF) {
+            return reject_option("net.links[].rate_control", "is ADAPTIVE with pacing_rate tt_PACING_OFF");
+        }
+        if (link->rate_min_rate < tt_LINK_RATE_MIN) {
+            return reject_option("net.links[].rate_min_rate", "is below tt_LINK_RATE_MIN");
+        }
+        if (link->rate_min_rate > link->pacing_rate) {
+            return reject_option("net.links[].rate_min_rate", "is above the cap (pacing_rate)");
+        }
+        if (link->rate_queue_ns != 0 && link->rate_queue_ns < tt_RATE_QUEUE_MIN_NS) {
+            return reject_option("net.links[].rate_queue_ns", "is below tt_RATE_QUEUE_MIN_NS");
+        }
+    }
     bool paced = link->pacing_rate != tt_PACING_OFF;
     if (paced && link->pacing_rate < tt_LINK_RATE_MIN) {
         return reject_option("net.links[].pacing_rate", "is below tt_LINK_RATE_MIN");
