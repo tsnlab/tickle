@@ -323,7 +323,8 @@ what its readers report, holds the queue short, and never goes above `pacing_rat
 `rate_min_rate` (0 = `tt_RATE_MIN_DEFAULT`, 100 kbit/s, or the cap if lower). ADAPTIVE needs a build with
 `tt_LARGE_SAMPLES`. One estimator per link, fed by every reader on it: the readers' delivered bytes are pooled, the
 round trip is the least over all of them. It reads each ACKNACK's advance in units held, and a large send on an
-adaptive link keeps one solicited HEARTBEAT in flight so that a clean stream answers. Small samples, discovery,
+adaptive link solicits a report (a HEARTBEAT) now and then, at most once per round trip and per two units of send time,
+so that a clean stream answers. The round trip is read from the send time of the newest unit a report shows received. Small samples, discovery,
 HEARTBEATs and ACKNACKs go at once and are counted, as above. No wire change. **Status: implemented and unit-tested
 against a synthetic link; not yet measured on a real or emulated link, so no recommendation is made, and the WIFI
 profile stays off.** Design, model and the plan to validate it: `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`.

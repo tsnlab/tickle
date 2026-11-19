@@ -298,3 +298,36 @@ Each run writes `<run>.near`, `.far` (and `.far2`, `.far3`), `.steps` for the ra
 `rate_control`, `rate_bps`, `btlbw_bps`, `rtprop_ns`, `rate_rounds`, `rate_queue_trips`, `rate_drop_trips` for the
 estimator. Score as the earlier tc stages did (WIN/TIE/LOSE against each DDS stack, A/A noise rule, state the exact link
 settings in every row).
+
+## 13. The S1 failure of b9587eaa on the Pis, and what was found (2026-11-20)
+
+Symptom (`wifitc/results/ADAPTIVE_S1.md`): at 1 MiB the estimate ended at the 100 kbit/s floor with `btlbw_bps` 0 in every run,
+0-2 of 15 samples delivered; `rtprop_ns` read 0.01-4.5 ms on 10 and 40 ms paths.
+
+Reproduced in the model before the fix (`tests/test_adaptive_pacing.c`, scenarios "S1-like, 1 % loss" and "M2-like, 3 % loss":
+1 MiB every 6 s for 60 s, the reader reporting a watermark and a bitmap and by itself at its retry timer, the first report after
+a solicitation read as its answer): old estimator, M2-like: **1 of 10 samples, the rate at the 100 kbit/s floor, 1407 queue
+trips**; S1-like: 10 samples but a queue of 90 ms on average and 135 drop trips. The same scenarios with the fix: 10 of 10 and
+10 of 10, mean queue 1.0 ms and 1.3 ms, no run at the floor.
+
+Causes, in the order the evidence showed them, each fixed and tested:
+
+1. **Round trip from the solicitation.** A report sent for another reason before the answer read as the answer, a round trip
+   shorter than the path; the minimum filter kept it, and the queue guard (round trip over that minimum) then saw a queue on every
+   sample. Now the round trip is the time from a unit's send to a report that shows that unit (or a later one) received -
+   never shorter than the path (`ap_note_delivered_units()`, `test_the_round_trip_is_from_unit_send_times`), the guard reads the
+   least of the last two samples against a target that is at least two units of send time, and `top_units` counts the units
+   missing in front of a held one so that losses do not make every sample longer.
+2. **A solicitation storm** (found on a loopback, not in the model): a large send asked for a report as soon as the last was
+   answered, thousands a second, each 156 bytes on the wire, which the bucket charged. At a slow start (1 Mbit/s) or at the floor
+   that is more than the rate: the data starved (a loopback run delivered 0 of 5 with 29,072 datagrams sent, 907 after the
+   fix and 4 of 4 delivered in three runs), and on the Pis a rate that fell to the floor stayed there. Solicitations are now
+   at least `max(round trip, 1 ms, two units of send time)` apart (`ap_solicit_gap_ns()`), about 5 % of the rate.
+3. **Rounds with nothing delivered were samples of 0.** A round now needs delivery to end; sending a second with none restarts
+   the search from the start rate; a guard trip lowers BtlBw to at most a quarter in one step; BtlBw 0 in CRUISE restarts the search
+   (`test_adaptive_pacing`: "floor" and "outage" cases).
+4. **A counter of "repairs the bucket let go" leaked** (a repair allowed and not sent was never consumed) and swallowed the
+   stamps of the units that followed; it is now a flag consumed by the next data datagram.
+
+Not verified: the Pis. The model, the unit tests and a one-host loopback pass; `wifitc/wtc_chainD.sh s1` on the tc links is
+the check, the quick test being 15 of 15 delivered at 1 MiB in every cell.
