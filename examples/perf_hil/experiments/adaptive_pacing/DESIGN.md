@@ -82,9 +82,13 @@ one, and gives up the last few percent of throughput to keep it.
 2. **Positive feedback:** while a paced large send has data in flight and no ACKNACK has arrived for one `RTprop` (or
    `(initial)` 10 ms before the first sample), the pacer sends one throttled solicited HEARTBEAT (`FINAL` clear) via
    `solicit_ack_throttled()`. At most one outstanding per reader; one small datagram per RTprop at most.
-3. **Delivery-rate sample:** at each ACKNACK from a reader, `delivered = watermark advance x unit payload bytes`; the
-   sample is `delivered / interval`, interval at least one RTprop (BBR's rule against ACK compression). A sample taken
-   while the pacer had nothing to send (application-limited) only counts if it raises BtlBw.
+3. **Delivery-rate sample:** one per *round*. A round ends at the first feedback at which at least one RTprop has
+   passed **and** at least `AP_MIN_SAMPLE_BYTES` (24 kB, `(initial)`) were delivered, or 8 RTprop have passed. The
+   byte floor matters: on a few-frame BDP (4 Mbit/s x 20 ms = 7 frames) a sample over one RTprop is quantised by a
+   frame to 15 % of the rate, and a max filter over such samples overshoots the link by that much for good (found in
+   the model, section 10). The sample is `delivered / round time`; `delivered` is the watermark advance (plus what the
+   bitmap shows received) x unit bytes. A round in which the pacer sent less than 80 % of its allowance
+   (application-limited) only counts if it raises BtlBw.
 4. **RTT sample:** a solicited HEARTBEAT's send time against the next ACKNACK from that reader. It can only be too
    long (the reader's poll delay, an unrelated gap ACKNACK arriving first), never too short, which the windowed
    *minimum* tolerates; the max filter tolerates the matching under-estimate of the delivery rate. Both errors are in
@@ -93,18 +97,25 @@ one, and gives up the last few percent of throughput to keep it.
    per link**; with several, BtlBw is the sum of each reader's own windowed max (stated here, validated later).
 
 ### 4.3 State machine (per link)
-- **START:** rate `min_rate`-seeded `(initial)`; RTprop seeded from `announce_rtt_ns` of the peer. Each RTprop the
-  rate doubles (gain 2/ln2 as in BBR Startup, `(initial)`) while delivery-rate samples still grow by 25 % per round.
+- **START** (no rate remembered): rate = floor `(initial)`; RTprop seeded from `announce_rtt_ns` of the peer. Each
+  round the rate doubles while delivery-rate samples still grow by 25 %.
 - **PLATEAU:** three rounds without 25 % growth: BtlBw is found; go to CRUISE. Repairs seen in START (lost units
   during doubling) are expected and count as budget, not as a signal.
-- **CRUISE:** rate = BtlBw. Every 8 RTprop probe at 1.25 x BtlBw for one RTprop; if delivery rate rises, BtlBw follows
-  (the max filter), else return. Window of the max filter `(initial)` 10 RTprop, floor 500 ms; of the min filter
-  `(initial)` 10 s (RTprop is a property of the path, not of the load).
-- **Queue guard:** if `RTT - RTprop > queue_target` on two consecutive samples, stop probing and hold at the last
-  delivery rate; queue_target = max(2 ms, RTprop / 4) `(initial)`. This is the real-time term: bound the queueing
-  delay, not just the loss.
-- **Rate-drop guard (fast down):** repairs / sent units > 50 % over one RTprop, or delivery rate below half of BtlBw
+- **After idle** (the pacer sent nothing for 1 s, as between samples at 0.25 Hz): the send starts in CRUISE at the
+  remembered BtlBw and probes after its first round, instead of starting over in START. The BtlBw filter ages in
+  *active rounds*, so idle time does not empty it; a link that got slower meanwhile is caught by the queue guard.
+- **CRUISE:** rate = BtlBw (the max over the last 8 active rounds). Every 8 rounds a probe round at 1.25 x BtlBw;
+  a probe that raised the delivery rate by 10 % is followed at once by another at 2 x (the link got faster), else by
+  a drain round at 0.75 x for the queue it made. RTprop is the min over 10 s of wall time (a property of the path).
+- **Queue guard:** if `RTT - RTprop > queue_target` on two consecutive samples: stop probing, take the delivery
+  rate of the round so far as BtlBw if it is lower, and **drain** at 0.75 x until RTT is back under half the target;
+  queue_target = max(2 ms, RTprop / 4) `(initial)`. This is the real-time term: bound the queueing delay, not just
+  the loss.
+- **Rate-drop guard (fast down):** repairs > 50 % of the bytes sent in a round, or delivery rate below half of BtlBw
   for two rounds: set BtlBw to the latest sample at once instead of waiting for the max filter to age out.
+- **In-flight cap (`ap_inflight_limit()`, 2 x BDP): specified, not used by the model.** Lost units would have to leave
+  the in-flight count when the reader names them missing, which needs a per-unit state the model does not have. The
+  model holds the queue with rate pacing and the guards alone; whether the cap is needed is decided on the Pis.
 - **Floor and cap:** `pacing_min_rate` (default `tt_LINK_RATE_MIN`) and the cap `pacing_rate` (default `link_rate`),
   so an adaptive link can still be told "never above this".
 
@@ -179,3 +190,30 @@ Nothing is claimed until each row is measured. `[X]`, `[N]` come from the Stage 
   identical in behaviour only?
 - Multi-reader semantics (4.2 item 5): accept "one reader validated" for 2.2.0?
 - Whether adaptive pacing becomes the WIFI default (only after A1-A8).
+
+## 10. Userspace model (step 3, 2026-11-19)
+
+`src/pacing_adaptive.h` is the estimator as plain C (nothing in the library includes it yet);
+`tests/test_adaptive_pacing.c` drives it with a synthetic link (FIFO queue with a byte limit behind a rate schedule,
+10 ms each way, a reader that reports what arrived and, through the solicit's last-sent unit, what is missing, a writer
+that repairs what is named missing). It is a MODEL: the thresholds in it are what the design needs of the estimator on
+an idealised link, not a performance claim; real numbers come from the Pis (section 8). What it showed, and what it
+changed in the design:
+
+- First version: BtlBw overshot the link by the frame quantisation of its samples and kept a full queue (mean 102 ms at
+  4 Mbit/s with 186 repairs). Fixed by the byte floor per round and the drain rounds (section 4.2 item 3, 4.3).
+- A step 30 -> 4 Mbit/s collapsed BtlBw to a tenth of the link and never came back: probing 1.25 x every 8 rounds could
+  not climb out. Fixed by chaining probes while they succeed (2 x) and a success threshold of 10 %.
+- Restarting in START after every idle period overshot on every sample (11 % repairs at 30 Mbit/s); remembered-rate
+  restart removed it.
+- The model also lost a sample whose tail was lost, until the solicit carried the writer's last sent unit: in TickLE
+  that is the HEARTBEAT's `last_seq_no`, so the reader names the tail missing. The solicited HEARTBEAT is therefore
+  not only a feedback source but how a lost tail is found.
+
+Result on the final model (4 Mbit/s queue 40: 1 MiB every 4 s; 30 -> 4 -> 30 Mbit/s bulk): mean queue delay 2.4 ms and
+no repair on the 4 Mbit/s link; BtlBw within 25 % of the link after the start in 1.0 s, after the drop in 0.24 s, after
+the rise in 0.24 s; the unpaced control, same link, resends 87 % of what it sends. The model's unpaced control
+completes a sample faster than the oracle fixed rate (2445 ms against 3042 ms at 4 Mbit/s) and no slower than the
+adaptive pacer's 2367 ms: unlike the real tc runs (5907 ms), the model's writer has no retry-interval slowness, so the
+model says nothing about the size of the real gain. Mutants: removing the queue guard or the probing fails a check;
+removing the drain rounds (gain 100 %) does **not**, so the drain is not shown to matter in this model.
