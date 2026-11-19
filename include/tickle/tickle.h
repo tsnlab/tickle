@@ -16,6 +16,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/pacing_adaptive.h>
 
 // _Alignas is a C11 keyword, not a C++ one (C++11's own equivalent is the unprefixed `alignas`,
 // a real keyword there rather than a macro) - a plain `_Alignas` fails to parse under a C++
@@ -1354,6 +1355,20 @@ struct tt_Pacer {
     uint64_t burst_ns;
     uint64_t ns_per_byte_q16;
     uint32_t frame_payload;
+    uint32_t burst_bytes; // the bucket's depth on the wire: burst_ns follows it when an adaptive link's rate moves
+};
+
+// One link's adaptive rate control (tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE; struct tt_Context.rate):
+// the estimator, which every reader on the link feeds, and what turns ACKNACKs into its input. All 0 - not adaptive -
+// on any other link.
+struct tt_RateControl {
+    struct ap_pacer ap;
+    uint64_t delivered;    // the bytes this link's readers have shown received, pooled over them (cumulative)
+    uint64_t applied_bps;  // the rate struct tt_Pacer was last given
+    uint32_t avg_wire;     // the average datagram sent on the link, bytes on the wire: what a unit counts as
+    uint32_t acks_seen;    // ACKNACKs read from this link's readers
+    uint32_t solicit_acks; // acks_seen when the last solicitation went: its answer is the first one after
+    bool adaptive;
 };
 
 struct tt_Context {
@@ -2301,6 +2316,9 @@ struct tt_Context {
     // writer proxy's least repair transit.
     uint8_t repair_reveal;
     uint32_t repair_reveal_pace_ns;
+    // Each link's adaptive rate control (tt_LinkOptions.rate_control), set by link_profiles_apply(); all 0 - not
+    // adaptive - on a hand-built context. After every other field, so none of them moves.
+    struct tt_RateControl rate[tt_MAX_LINK_COUNT];
 #ifdef tt_ESTIMATOR_TRACE
     // When this context last printed its ESTTRACE lines (estimator_trace(), tickle.c); 0: never. Only in a build with
     // -Dtt_ESTIMATOR_TRACE, after every other field, so the default build's layout is untouched.
@@ -3136,6 +3154,10 @@ struct tt_PeerAck {
     // naming nothing is answered without the order, so a later one's prev_ack can lie past repairs nobody freed.
     uint32_t repair_seen_ack;
     bool repair_seen_valid;
+    // Adaptive rate control: what this reader's last ACKNACK showed it holds (its watermark and the received units its
+    // bitmap names), in units; the next one's advance is what it received since (rate_acknack()).
+    uint32_t rate_units;
+    bool rate_units_valid;
 #endif
 };
 

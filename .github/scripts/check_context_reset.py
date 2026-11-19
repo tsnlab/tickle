@@ -79,6 +79,8 @@ SURVIVES_RESET = {
     # Send pacing (2026-10-22): each link's bucket and whether any link has one, from its options.
     "pacing": "node_init_locks() (none), then link_profiles_apply() in tt_Context_create_with()",
     "pacers": "node_init_locks() (none), then link_profiles_apply() in tt_Context_create_with()",
+    # Adaptive rate control (2026-11-19): each link's estimator and what feeds it, from its options.
+    "rate": "node_init_locks() (none), then link_profiles_apply() in tt_Context_create_with()",
     "collision_logged_ip": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "collision_logged_port": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "hal": "tt_bind() and the platform HAL, which writes every member it uses",

@@ -16,6 +16,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/pacing_adaptive.h>
 #include <tickle/tickle.h>
 #if tt_PEER_TABLE_CHECK
 #include <stdlib.h> // abort(), check_peer_table()
@@ -956,6 +957,7 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
 #define LINK_UDP_HEADER 8U
 #define LINK_IP_FRAGMENT_UNIT 8U // an IP fragment's payload is a multiple of 8 bytes, but for the last
 #define LINK_PERCENT 100U
+#define RATE_AVG_WIRE_DIV 16U // an adaptive link's average datagram: each send moves it a sixteenth of the way
 #define LINK_BITS_PER_BYTE 8ULL
 // struct tt_Pacer.ns_per_byte_q16's fixed point: 16 fraction bits.
 #define LINK_Q16_SHIFT 16U
@@ -1053,6 +1055,29 @@ static void resolve_link_miss_threshold(struct tt_InitOptions* opts, bool any_wi
     }
 }
 
+// A link's send rate (docs/DESIGN.md "Send pacing"): pacing_rate and rate_control, resolved together. ADAPTIVE:
+// pacing_rate is the cap (0 = link_rate) and rate_min_rate the floor (0 = tt_LINK_RATE_MIN). Otherwise 0 is the
+// profile's pacing_rate (T1S 75 % of link_rate, the rest none), and rate_control 0 is "what pacing_rate says": the
+// concrete mode, as pacing_rate is the concrete rate. A FIXED asked for and left without a rate stays FIXED, for
+// validate_link_pacing() to refuse.
+static void resolve_link_rate_control(struct tt_LinkOptions* link, bool t1s) {
+    if (link->rate_control == tt_RATE_CONTROL_ADAPTIVE) {
+        if (link->pacing_rate == 0) {
+            link->pacing_rate = link->link_rate; // the cap
+        }
+        if (link->rate_min_rate == 0) {
+            link->rate_min_rate = tt_LINK_RATE_MIN;
+        }
+        return;
+    }
+    if (link->pacing_rate == 0) {
+        link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
+    }
+    if (link->rate_control == tt_RATE_CONTROL_OFF) {
+        link->rate_control = link->pacing_rate == tt_PACING_OFF ? tt_RATE_CONTROL_OFF : tt_RATE_CONTROL_FIXED;
+    }
+}
+
 // One link's zero fields, each the profile's value. The MTU of T1S and TSN, and so T1S's retry floor, wait for the
 // interface (link_profiles_apply()). An unknown profile is filled as ETHERNET and refused by validate_link_options().
 static void resolve_link_profile(struct tt_LinkOptions* link) {
@@ -1079,23 +1104,7 @@ static void resolve_link_profile(struct tt_LinkOptions* link) {
     if (link->idle_heartbeat_ns == 0 && t1s) {
         link->idle_heartbeat_ns = LINK_T1S_IDLE_HEARTBEAT;
     }
-    if (link->rate_control == tt_RATE_CONTROL_ADAPTIVE) {
-        if (link->pacing_rate == 0) {
-            link->pacing_rate = link->link_rate; // the cap
-        }
-        if (link->rate_min_rate == 0) {
-            link->rate_min_rate = tt_LINK_RATE_MIN;
-        }
-    } else {
-        if (link->pacing_rate == 0) {
-            link->pacing_rate = t1s ? link_t1s_pacing_rate(link->link_rate) : tt_PACING_OFF;
-        }
-        if (link->rate_control == tt_RATE_CONTROL_OFF) {
-            // 0 is "what pacing_rate says": the concrete mode, as pacing_rate is the concrete rate. A FIXED asked for
-            // and left without a rate stays FIXED, for validate_link_pacing() to refuse.
-            link->rate_control = link->pacing_rate == tt_PACING_OFF ? tt_RATE_CONTROL_OFF : tt_RATE_CONTROL_FIXED;
-        }
-    }
+    resolve_link_rate_control(link, t1s);
     resolve_link_discovery(link);
     resolve_link_repair_timing(link);
 }
@@ -1992,6 +2001,8 @@ static void link_resolve_interface(struct tt_LinkOptions* link, const struct _tt
     }
 }
 
+static void pace_apply_rate(struct tt_Pacer* pacer, uint64_t bps);
+
 // A link's bucket (struct tt_Pacer) from its resolved pacing_rate and pacing_burst; all 0 - not paced - for
 // tt_PACING_OFF. The burst in ns is taken in two halves so that no product passes 64 bits (a burst near 4 GB at
 // tt_LINK_RATE_MIN would).
@@ -2000,11 +2011,24 @@ static void link_pacer_configure(struct tt_Pacer* pacer, const struct tt_LinkOpt
     if (link->pacing_rate == tt_PACING_OFF) {
         return;
     }
-    uint64_t q16 = ((tt_SECOND * LINK_BITS_PER_BYTE) << LINK_Q16_SHIFT) / link->pacing_rate;
-    pacer->ns_per_byte_q16 = q16 != 0 ? q16 : 1U;
-    pacer->burst_ns = ((uint64_t)(link->pacing_burst >> LINK_Q16_SHIFT) * pacer->ns_per_byte_q16) +
-                      (((uint64_t)(link->pacing_burst & LINK_Q16_MASK) * pacer->ns_per_byte_q16) >> LINK_Q16_SHIFT);
+    pacer->burst_bytes = link->pacing_burst;
+    pace_apply_rate(pacer, link->pacing_rate);
     pacer->frame_payload = ((uint32_t)link->mtu - LINK_IP_HEADER) & ~(LINK_IP_FRAGMENT_UNIT - 1U);
+}
+
+// A link's adaptive rate control (struct tt_RateControl) from its resolved options, and its bucket's first rate - the
+// estimator's start rate, between the floor and the cap. All 0 - not adaptive - for any other link.
+static void link_rate_configure(struct tt_RateControl* rate, struct tt_Pacer* pacer,
+                                const struct tt_LinkOptions* link) {
+    memset(rate, 0, sizeof(*rate));
+    if (link->rate_control != tt_RATE_CONTROL_ADAPTIVE) {
+        return;
+    }
+    rate->adaptive = true;
+    ap_init(&rate->ap, link->rate_min_rate, link->pacing_rate, link->rate_queue_ns, 0);
+    rate->avg_wire = (uint32_t)link->mtu + LINK_FRAME_OVERHEAD;
+    rate->applied_bps = rate->ap.rate_bps;
+    pace_apply_rate(pacer, rate->applied_bps);
 }
 
 // tt_ETHERNET_UDP_PAYLOAD sized every datagram for a 1500-byte MTU, and nothing checked that the link has one; a link
@@ -2058,6 +2082,7 @@ static void link_profiles_apply(struct tt_Context* node) {
             struct tt_LinkOptions* link = &net->links[i];
             link_resolve_interface(link, &node->links[i]);
             link_pacer_configure(&node->pacers[i], link);
+            link_rate_configure(&node->rate[i], &node->pacers[i], link);
             pacing = pacing || node->pacers[i].ns_per_byte_q16 != 0;
             mtu = link->mtu;
             floor = link->retry_floor_ns > floor ? link->retry_floor_ns : floor;
@@ -3890,13 +3915,104 @@ static uint8_t pace_link(struct tt_Context* node, uint32_t ip) {
     return link_count(node) <= 1 ? 0U : link_of_ip(node, ip);
 }
 
+// ---- Adaptive rate control (tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE; the estimator is
+// tickle/pacing_adaptive.h, the design examples/perf_hil/experiments/adaptive_pacing/DESIGN.md). One estimator per
+// link, fed by every reader on it; its rate is given to the link's bucket whenever it moves. Nothing here runs on a
+// link that is not adaptive: pace_charge() and pace_repair_allowed() test struct tt_RateControl.adaptive, the one
+// branch they pay.
+
+// Gives the link's bucket a new rate (bits per second); its depth in bytes stays.
+static void pace_apply_rate(struct tt_Pacer* pacer, uint64_t bps) {
+    uint64_t q16 = ((tt_SECOND * LINK_BITS_PER_BYTE) << LINK_Q16_SHIFT) / bps;
+    pacer->ns_per_byte_q16 = q16 != 0 ? q16 : 1U;
+    pacer->burst_ns = ((uint64_t)(pacer->burst_bytes >> LINK_Q16_SHIFT) * pacer->ns_per_byte_q16) +
+                      (((uint64_t)(pacer->burst_bytes & LINK_Q16_MASK) * pacer->ns_per_byte_q16) >> LINK_Q16_SHIFT);
+}
+
+// The estimator's rate to the bucket, when it has moved.
+static void rate_sync(struct tt_Context* node, uint8_t link) {
+    struct tt_RateControl* rate = &node->rate[link];
+    if (rate->ap.rate_bps != rate->applied_bps) {
+        rate->applied_bps = rate->ap.rate_bps;
+        pace_apply_rate(&node->pacers[link], rate->applied_bps);
+    }
+}
+
+// A datagram of `wire` bytes on the wire left on an adaptive link at `now`.
+static void rate_note_send(struct tt_Context* node, uint8_t link, uint64_t now, uint32_t wire) {
+    struct tt_RateControl* rate = &node->rate[link];
+    rate->avg_wire = (rate->avg_wire * (RATE_AVG_WIRE_DIV - 1U) + wire) / RATE_AVG_WIRE_DIV;
+    ap_note_send(&rate->ap, now, wire, false);
+    rate_sync(node, link);
+}
+
+// A solicitation went (solicit_ack_throttled()): the first ACKNACK read after it answers it.
+static void rate_note_solicit(struct tt_Context* node) {
+    for (uint8_t link = 0; link < tt_MAX_LINK_COUNT; link++) {
+        node->rate[link].solicit_acks = node->rate[link].acks_seen;
+    }
+}
+
+// What a reader holds, in units, by its ACKNACK: every unit below the watermark seq_no, and the units its bitmap leaves
+// unnamed up to the highest it names - a reader names every unit missing below its highest, so the rest of that window
+// was received. Units above the highest named are not known: they show when a later ACKNACK's watermark passes them.
+static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
+    uint32_t window = 0;
+    uint32_t missing = 0;
+    for (uint16_t word = 0; word < words; word++) {
+        if (bitmap[word] != 0) {
+            missing += (uint32_t)__builtin_popcountll(bitmap[word]);
+            window = ((uint32_t)word * tt_RELIABLE_BITMAP_WORD_BITS) + tt_RELIABLE_BITMAP_WORD_BITS -
+                     (uint32_t)__builtin_clzll(bitmap[word]);
+        }
+    }
+    return seq_no + (window - missing);
+}
+
+#if tt_LARGE_SAMPLES
+// One ACKNACK of a reader on an adaptive link: its advance in units held becomes bytes of the link's pooled delivered
+// count, and the first answer after a solicitation is a round trip sample (the minimum filter keeps the least of them,
+// over every reader). An ACKNACK that arrives for another reason before the answer is read as the answer: a sample
+// that can only be too short while its sender was already waiting - a lower RTprop, which the queue guard answers by
+// holding the rate down, not up.
+static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held, bool solicited,
+                         uint64_t solicit_ns) {
+    uint8_t link = pace_link(node, ip);
+    struct tt_RateControl* rate = &node->rate[link];
+    if (!rate->adaptive) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    if (ack->rate_units_valid) {
+        int32_t advance = seq_delta(held, ack->rate_units);
+        if (advance > 0) {
+            rate->delivered += (uint64_t)advance * rate->avg_wire;
+            ack->rate_units = held;
+        }
+    } else {
+        ack->rate_units = held; // the first ACKNACK: a baseline, nothing counted
+        ack->rate_units_valid = true;
+    }
+    uint64_t rtt = 0;
+    if (solicited && rate->acks_seen == rate->solicit_acks && now > solicit_ns) {
+        rtt = now - solicit_ns;
+    }
+    rate->acks_seen++;
+    ap_on_feedback(&rate->ap, now, rate->delivered, rtt);
+    rate_sync(node, link);
+}
+#endif
+
 // What a datagram of `len` UDP payload bytes takes of a paced link, in ns: its bytes on the wire - UDP and IP headers,
 // one IP header and Ethernet framing (LINK_FRAME_OVERHEAD) per frame the link MTU cuts it into - at the pacing rate.
-static uint64_t pace_cost_ns(const struct tt_Pacer* pacer, uint32_t len) {
+static uint64_t pace_wire_bytes(const struct tt_Pacer* pacer, uint32_t len) {
     uint32_t ip_payload = len + LINK_UDP_HEADER;
     uint32_t frames = 1U + ((ip_payload - 1U) / pacer->frame_payload);
-    uint64_t wire = (uint64_t)ip_payload + ((uint64_t)frames * (LINK_IP_HEADER + LINK_FRAME_OVERHEAD));
-    return (wire * pacer->ns_per_byte_q16) >> LINK_Q16_SHIFT;
+    return (uint64_t)ip_payload + ((uint64_t)frames * (LINK_IP_HEADER + LINK_FRAME_OVERHEAD));
+}
+
+static uint64_t pace_cost_ns(const struct tt_Pacer* pacer, uint32_t len) {
+    return (pace_wire_bytes(pacer, len) * pacer->ns_per_byte_q16) >> LINK_Q16_SHIFT;
 }
 
 // The bucket's emptiness at `now`, in ns of sending: 0 when it is full.
@@ -3907,12 +4023,16 @@ static uint64_t pace_backlog(const struct tt_Pacer* pacer, uint64_t now) {
 // Counts one datagram sent over UDP to ip into its link's bucket - whatever sent it, so that a large sample's send
 // leaves room for what else the context sends. Only called with tt_Context.pacing set.
 static void pace_charge(struct tt_Context* node, uint32_t ip, size_t len, uint64_t now) {
-    struct tt_Pacer* pacer = &node->pacers[pace_link(node, ip)];
+    uint8_t link = pace_link(node, ip);
+    struct tt_Pacer* pacer = &node->pacers[link];
     if (pacer->ns_per_byte_q16 == 0) {
         return; // a link that is not paced, beside one that is
     }
     uint64_t start = pacer->until_ns > now ? pacer->until_ns : now;
     pacer->until_ns = start + pace_cost_ns(pacer, (uint32_t)len);
+    if (__builtin_expect(node->rate[link].adaptive, 0)) {
+        rate_note_send(node, link, now, (uint32_t)pace_wire_bytes(pacer, (uint32_t)len));
+    }
 }
 
 static __attribute__((noinline)) void pace_charge_one(struct tt_Context* node, uint32_t ip, size_t len) {
@@ -3982,6 +4102,10 @@ static bool pace_repair_allowed(struct tt_Context* node, const struct tt_Peer* t
     }
     uint64_t backlog = pace_backlog(pacer, tt_get_ns());
     if (backlog == 0 || backlog + pace_cost_ns(pacer, len) <= 2U * pacer->burst_ns) {
+        uint8_t link = pace_link(node, target->ip);
+        if (__builtin_expect(node->rate[link].adaptive, 0)) {
+            ap_note_repair(&node->rate[link].ap, pace_wire_bytes(pacer, len));
+        }
         return true;
     }
     node->pacing_repairs_deferred++;
@@ -8188,9 +8312,10 @@ static void node_init_locks(struct tt_Context* node) {
     node->retry_floor_ns = 0;
     node->pacing = false; // no link paced: the send path's one branch (docs/DESIGN.md "Send pacing")
     memset(node->pacers, 0, sizeof(node->pacers));
-    node->summary_copies = false; // nor a WIFI link's discovery (link_profiles_apply())
-    node->repair_timing = false;  // nor its readers' retry estimate
-    node->repair_reveal = 0;      // nor their re-ask on a repair above the watermark
+    memset(node->rate, 0, sizeof(node->rate)); // link_profiles_apply() sets each adaptive link
+    node->summary_copies = false;              // nor a WIFI link's discovery (link_profiles_apply())
+    node->repair_timing = false;               // nor its readers' retry estimate
+    node->repair_reveal = 0;                   // nor their re-ask on a repair above the watermark
     node->repair_reveal_pace_ns = 0;
     node->announce_repeats = 0;
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
@@ -10726,6 +10851,9 @@ static void solicit_ack_throttled(struct tt_Publisher* pub) {
     pub->ack_solicit_seq_no = pub->seq_no; // where the watermark path counts the next half-window from
     pub->ack_solicited = true;
     pub->last_ack_solicit_ns = now;
+    if (__builtin_expect(pub->node->pacing, 0)) {
+        rate_note_solicit(pub->node);
+    }
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
 }
@@ -12990,6 +13118,9 @@ static uint32_t large_paced_count(struct tt_Context* node, struct tt_Publisher* 
         return want;
     }
     struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (__builtin_expect(node->rate[pace_link(node, cursor->dests[cursor->next_dest].ip)].adaptive, 0)) {
+        solicit_ack_throttled(pub); // a clean stream draws no ACKNACK of its own: the estimator's feedback is asked for
+    }
     uint32_t fit = pace_units(node, &cursor->dests[cursor->next_dest], len, want, &cursor->pace_at_ns);
     if (fit == 0 && !large_encode_through(pub, record, record->cdr_len)) {
         cursor->pace_at_ns = 0;
@@ -23227,6 +23358,15 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
 #endif
     claim_from_acknack(node, pub, header->source, endpoint_id, sender_entity_id, sender_ip, sender_port);
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
+#if tt_LARGE_SAMPLES
+    if (__builtin_expect(node->pacing, 0)) {
+        struct tt_PeerAck* rate_ack = find_peer_ack(pub, header->source, sender_entity_id);
+        if (rate_ack != NULL) {
+            rate_acknack(node, sender_ip, rate_ack, rate_units_held(seq_no, bitmap, bitmap_words),
+                         pub->ack_solicit_outstanding, pub->last_ack_solicit_ns);
+        }
+    }
+#endif
 #if tt_LARGE_SAMPLES
     if (pub->large_count != 0) {
         large_release_acked(node, pub); // a VOLATILE Publisher's large buffers, once every reader has them
