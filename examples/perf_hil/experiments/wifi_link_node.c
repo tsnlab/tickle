@@ -51,6 +51,7 @@
 #include <sys/resource.h> // NOLINT(misc-include-cleaner) - getrusage(): struct rusage lives in a glibc-private header
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/pacing_adaptive.h>
 #include <tickle/tickle.h>
 #ifdef tt_RELIABLE_STATS
 #include "reliable_stats_print.h"
@@ -347,6 +348,12 @@ static bool create_context(void) {
     if (burst != NULL && burst[0] != 0) {
         init.net.links[0].pacing_burst = (uint32_t)strtoul(burst, NULL, 10);
     }
+    // TT_RATE_CONTROL=adaptive: tt_LinkOptions.rate_control (see large_sample_bench.c); small samples bypass the pacer,
+    // so a small-sample cell on an adaptive link is the no-regression check.
+    const char* rate_control = getenv("TT_RATE_CONTROL");
+    if (rate_control != NULL && strcmp(rate_control, "adaptive") == 0) {
+        init.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+    }
     init.net.link_count = 1;
     tt_ret_t created = tt_Context_create_with(&ctx, &init);
     if (created != tt_RET_OK) {
@@ -480,9 +487,11 @@ static void print_result(const char* role, uint64_t create_ns, const struct ping
            (unsigned long long)ctx.tx_datagrams, (unsigned long long)ctx.rx_datagrams, cpu, event_count, events_dropped,
            (unsigned)ctx.opts.discovery.miss_threshold, (unsigned long long)ctx.summary_copies_sent,
            (unsigned long long)ctx.announce_repeats_sent);
-    printf("PACING: pacing=%d pacing_rate=%llu pacing_burst=%lu pacing_waits=%lu pacing_repairs_deferred=%lu\n",
+    printf("PACING: pacing=%d pacing_rate=%llu pacing_burst=%lu pacing_waits=%lu pacing_repairs_deferred=%lu "
+           "rate_control=%u rate_bps=%llu btlbw_bps=%llu\n",
            ctx.pacing ? 1 : 0, (unsigned long long)link->pacing_rate, (unsigned long)link->pacing_burst,
-           (unsigned long)ctx.pacing_waits, (unsigned long)ctx.pacing_repairs_deferred);
+           (unsigned long)ctx.pacing_waits, (unsigned long)ctx.pacing_repairs_deferred, (unsigned)link->rate_control,
+           (unsigned long long)ctx.rate[0].ap.rate_bps, (unsigned long long)ap_btlbw_bps(&ctx.rate[0].ap));
 }
 
 static const char* role_name(void) {

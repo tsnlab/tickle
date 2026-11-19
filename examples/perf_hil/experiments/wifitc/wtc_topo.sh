@@ -73,6 +73,11 @@ tap_up() { # ns tap local remote ip
     fi
 }
 
+# setnetem ns tap: the tap's netem becomes $NETEM, in place (tc qdisc change: the queue and its packets stay) - a rate step.
+setnetem() {
+    sudo -n ip netns exec "$1" tc qdisc change dev "$2" root netem $NETEM || { echo "WTC_SETNETEM_FAILED '$NETEM'"; return 1; }
+}
+
 tap_down() { # ns tap
     reap_nodes
     ip netns list | grep -q "^$1" && sudo -n ip netns del "$1"
@@ -115,5 +120,7 @@ case "$role $cmd" in
     mkdir -p "$DIR/run"; tap_up wtc_srv wtcgs "$LOCAL_IP" "$REMOTE_IP" "$SRV_IP" && echo "WTC_SRV_UP srv=$SRV_IP netem='$NETEM'" ;;
 "srv down") tap_down wtc_srv wtcgs; echo WTC_SRV_DOWN ;;
 "snap "*) snap ;;
-*) [ "$role" = snap ] && { snap; exit 0; }; echo "usage: $0 cli up|down | srv up|down | modules load|unload | snap"; exit 2 ;;
+"cli setnetem") setnetem wtc_sta wtcgc && echo "WTC_CLI_NETEM $NETEM" ;;
+"srv setnetem") setnetem wtc_srv wtcgs && echo "WTC_SRV_NETEM $NETEM" ;;
+*) [ "$role" = snap ] && { snap; exit 0; }; echo "usage: $0 cli up|down|setnetem | srv up|down|setnetem | modules load|unload | snap"; exit 2 ;;
 esac

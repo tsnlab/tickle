@@ -8,6 +8,10 @@
 #   PACE_M1=22 PACE_S1=3 ...  (Mbit/s of the "tickle-pace" arm per profile, from the calibration and the DESIGN.md guideline)
 #   OUT=$HOME/rig_results_safe/wtc_<set>  LARGE_SZ=131072  DUR_SMALL=30 DUR_LARGE=60  FIRST_ROUND=1
 #   MODE=cal runs the calibration of every profile instead (PLAN.md section 4).
+#   ADAPTIVE_PLAN.md: FWS may name "tickle-lg" (the small-sample node as a large-samples build: the control of "tickle-ad" in the small cells), "tickle-ad" (tt_LinkOptions.rate_control = ADAPTIVE; TT_RATE_CONTROL=adaptive) or
+#   "tickle-ad-c<Mbit/s>" (the same, capped), RATE_STEP="<second>:<Mbit/s> ..." steps the link's rate that many seconds
+#   after the near side starts (both taps, other netem settings kept), READERS=<n> runs n reader processes of a rel_large
+#   cell in the far namespace (TT_CONTEXT_ID 4, 5, ...; their outputs in <run>.far2, .far3).
 set -u
 S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$S/../../../.." && pwd)
@@ -74,11 +78,15 @@ variant_env() {
     local part
     TV_ENV=""
     TV_ARGS=""
+    TV_BIN="" # "lg": the small-sample node built with large samples (node_d100lg), which an ADAPTIVE link needs
     for part in $(echo "${1#tickle}" | tr '-' ' '); do
         case $part in
         roff) ;;
         r[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#r} * 1000000))" ;;
         p[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${CARRIED_KBIT:?CARRIED_KBIT unset} * ${part#p} * 10))" ;; # percent of the profile's carried rate (PLAN.md section 10)
+        ad) TV_ENV="$TV_ENV TT_RATE_CONTROL=adaptive"; TV_BIN=lg ;; # rate_control ADAPTIVE (ADAPTIVE_PLAN.md)
+        lg) TV_BIN=lg ;;                                              # the large-samples small-sample node, no option: ad's control
+        c[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#c} * 1000000))" ;; # with ad: the cap, Mbit/s
         b[0-9]*) TV_ENV="$TV_ENV TT_PACING_BURST=${part#b}" ;;
         fip | fmtu) TV_ARGS="$TV_ARGS -F ${part#f}" ;;
         *) echo "unknown variant part $part in $1" >&2; return 1 ;;
@@ -90,7 +98,7 @@ variant_env() {
 cmd_for() {
     local fw=$1 cell=$2 side=$3 ip=$4 wl=$5 id=$6 mode role args stop_arg="" stop lat
     [ "$fw" = tickle-pace ] && fw=tickle-r${PACE_MBIT:?PACE_MBIT unset for this profile}
-    case $fw in tickle-*) variant_env "$fw" || return 1; fw=tickle ;; *) TV_ENV=""; TV_ARGS="" ;; esac
+    case $fw in tickle-*) variant_env "$fw" || return 1; fw=tickle ;; *) TV_ENV=""; TV_ARGS=""; TV_BIN="" ;; esac
     stop=$RD/$id.stop
     lat=$RD/$id.lat
     case $cell in be_small) mode=be ;; *) mode=rel ;; esac
@@ -111,7 +119,7 @@ cmd_for() {
         else
             local ctx=1 d=$DUR
             [ $role = echo ] && ctx=2 && d=$((DUR + 40))
-            echo "env$TV_ENV $PB/node_d100 $role -c $ctx -b $BCAST -d $d -m $mode -s 100 -r 100 -p wifi $stop_arg -l $lat.$role"
+            echo "env$TV_ENV $PB/node_d100$TV_BIN $role -c $ctx -b $BCAST -d $d -m $mode -s 100 -r 100 -p wifi $stop_arg -l $lat.$role"
         fi
         ;;
     cyclonedds | fastdds | zenohpico)
@@ -148,6 +156,25 @@ clock_offset() { # t1pi_clock.py is shipped with the t1pi scripts (both Pis)
     srv "setsid nohup python3 \$HOME/t1pi_scripts/t1pi_clock.py serve $SRV_ETH 47911 >/dev/null 2>&1 </dev/null &" || true
     sleep 1
     cli "python3 \$HOME/t1pi_scripts/t1pi_clock.py probe $SRV_ETH 47911" >"$1" 2>&1
+}
+
+# rate_step_driver <run dir/run>: at each "<second>:<Mbit/s>" of RATE_STEP (seconds after it was started) the link's rate
+# becomes that, on both taps, the profile's other netem settings kept. Logged to <run>.steps.
+rate_step_driver() {
+    local base=$1 t0 item at mbit now n
+    t0=$(date +%s.%N)
+    for item in $RATE_STEP; do
+        at=${item%%:*}
+        mbit=${item##*:}
+        now=$(date +%s.%N)
+        n=$(awk -v a="$at" -v t0="$t0" -v now="$now" 'BEGIN { d = a - (now - t0); print (d > 0 ? d : 0) }')
+        sleep "$n"
+        # shellcheck disable=SC2001
+        NETEM=$(echo "$NETEM_BASE" | sed "s/rate [0-9a-z]*/rate ${mbit}mbit/")
+        srv "NETEM='$NETEM' $T srv setnetem" >>"$base.steps" 2>&1
+        cli "NETEM='$NETEM' $T cli setnetem" >>"$base.steps" 2>&1
+        echo "$(date -Is) step at=${at}s rate=${mbit}mbit" >>"$base.steps"
+    done
 }
 
 run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
@@ -187,8 +214,18 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
             sleep 1
         fi
         fpid=$(srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 60)) $far >$RD/$id.far 2>&1 </dev/null & echo \$!")
+        local extra
+        for ((extra = 2; extra <= ${READERS:-1}; extra++)); do # more readers on the same link (rel_large): their own context ids
+            srv "setsid nohup sudo -n ip netns exec $NS_FAR timeout -k 5 $((DUR + 60)) ${far/env /env TT_CONTEXT_ID=$((extra + 2)) } >$RD/$id.far$extra 2>&1 </dev/null &"
+        done
         sleep 1
+        local steppid=""
+        if [ -n "${RATE_STEP:-}" ]; then
+            NETEM_BASE=$NETEM rate_step_driver "$dir/$run" &
+            steppid=$!
+        fi
         cli "sudo -n ip netns exec $NS_NEAR timeout -k 5 $((DUR + 80)) $near" >"$dir/$run.near" 2>&1
+        [ -n "$steppid" ] && kill "$steppid" 2>/dev/null
         srv "touch $RD/$id.stop"
         for i in $(seq 1 40); do srv "[ -d /proc/$fpid ]" || break; sleep 0.5; done
         if [ "${PCAP:-0}" = 1 ]; then
@@ -201,6 +238,7 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
         fi
         kill_ns_procs
         srv "cat $RD/$id.far" >"$dir/$run.far" 2>&1
+        for ((extra = 2; extra <= ${READERS:-1}; extra++)); do srv "cat $RD/$id.far$extra" >"$dir/$run.far$extra" 2>&1; done
         for role in echo sub; do srv "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
         for role in ping pub; do cli "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
         srv "rm -rf $RD"

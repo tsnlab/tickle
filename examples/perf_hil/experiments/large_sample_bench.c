@@ -71,6 +71,7 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // struct tt_hal: the receive sockets, the drain's counters
+#include <tickle/pacing_adaptive.h>
 #include <tickle/tickle.h>
 
 // RSTATS lines at the end of a run when built with -Dtt_RELIABLE_STATS (wifi_burst_loss_netns.sh's large cell). Guarded
@@ -315,6 +316,15 @@ static void print_discovery(const struct tt_Context* node) {
            node->pacing ? 1 : 0, (unsigned long long)node->opts.net.links[0].pacing_rate,
            (unsigned long)node->opts.net.links[0].pacing_burst, (unsigned long)node->pacing_waits,
            (unsigned long)node->pacing_repairs_deferred);
+    // The link's rate control as it ran (TT_RATE_CONTROL): the mode, the bucket's rate at the end, and what the
+    // estimator found - the delivery rate (BtlBw), the least round trip, and how often its guards tripped.
+    const struct tt_RateControl* rate = &node->rate[0];
+    printf(" rate_control=%u rate_bps=%llu btlbw_bps=%llu rtprop_ns=%llu rate_rounds=%llu rate_queue_trips=%llu "
+           "rate_drop_trips=%llu",
+           (unsigned)node->opts.net.links[0].rate_control, (unsigned long long)rate->ap.rate_bps,
+           (unsigned long long)ap_btlbw_bps(&rate->ap), (unsigned long long)ap_rtprop_ns(&rate->ap),
+           (unsigned long long)rate->ap.samples, (unsigned long long)rate->ap.queue_trips,
+           (unsigned long long)rate->ap.drop_trips);
 }
 
 static void print_large(const struct tt_Context* node) {
@@ -880,6 +890,7 @@ static void print_repair_reveal(const struct tt_Context* node) {
            (unsigned)node->repair_reveal_pace_ns, value != NULL ? value : "-");
 }
 
+// NOLINTBEGIN(readability-function-cognitive-complexity) -- the bench's option and mode switch
 int main(int argc, char** argv) {
     struct options opts;
     if (!parse_options(argc, argv, &opts)) {
@@ -922,6 +933,22 @@ int main(int argc, char** argv) {
         if (burst != NULL && burst[0] != 0) {
             init.net.links[0].pacing_burst = (uint32_t)strtoul(burst, NULL, 10);
         }
+        // TT_RATE_CONTROL=adaptive: the link finds its own rate (tt_LinkOptions.rate_control); TT_PACING_BPS is then
+        // the cap. TT_RATE_MIN_BPS is its floor and TT_RATE_QUEUE_NS its queue-delay target; unset: the defaults.
+        const char* rate_control = getenv("TT_RATE_CONTROL");
+        if (rate_control != NULL && strcmp(rate_control, "adaptive") == 0) {
+            init.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+            const char* rate_min = getenv("TT_RATE_MIN_BPS");
+            const char* rate_queue = getenv("TT_RATE_QUEUE_NS");
+            init.net.links[0].rate_min_rate = rate_min != NULL && rate_min[0] != 0 ? strtoull(rate_min, NULL, 10) : 0;
+            init.net.links[0].rate_queue_ns =
+                rate_queue != NULL && rate_queue[0] != 0 ? (uint32_t)strtoul(rate_queue, NULL, 10) : 0;
+        }
+        // TT_CONTEXT_ID: this context's id, for several readers of one host (a namespace); unset: from the address.
+        const char* context_id = getenv("TT_CONTEXT_ID");
+        if (context_id != NULL && context_id[0] != 0) {
+            init.net.context_id = (int32_t)strtol(context_id, NULL, 10);
+        }
         init.net.link_count = 1;
         init.net.large_fragmentation = _tt_CONFIG.large_fragmentation;
         init.net.ip_reassembly_max = _tt_CONFIG.ip_reassembly_max;
@@ -943,3 +970,4 @@ int main(int argc, char** argv) {
     tt_Context_destroy(&node);
     return result;
 }
+// NOLINTEND(readability-function-cognitive-complexity)
