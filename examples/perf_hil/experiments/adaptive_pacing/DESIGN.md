@@ -152,7 +152,7 @@ one, and gives up the last few percent of throughput to keep it.
 struct tt_LinkOptions {
     ...                          // existing fields unchanged, in place
     uint8_t  rate_control;       // tt_RATE_CONTROL_*; 0 = see below
-    uint64_t rate_min_rate;      // ADAPTIVE only: the floor, bits/s; 0 = tt_LINK_RATE_MIN
+    uint64_t rate_min_rate;      // ADAPTIVE only: the floor, bits/s; 0 = tt_RATE_MIN_DEFAULT (100 kbit/s) or the cap
     uint32_t rate_queue_ns;      // ADAPTIVE only: queue-delay target; 0 = max(2 ms, RTprop / 4)
 };
 ```
@@ -249,3 +249,52 @@ completes a sample faster than the oracle fixed rate (2445 ms against 3042 ms at
 adaptive pacer's 2367 ms: unlike the real tc runs (5907 ms), the model's writer has no retry-interval slowness, so the
 model says nothing about the size of the real gain. Mutants: removing the queue guard or the probing fails a check;
 removing the drain rounds (gain 100 %) does **not**, so the drain is not shown to matter in this model.
+
+## 11. Implementation (2026-11-19, branch `ab/adaptive-pacing`)
+
+What is in the library, all behind `tt_LinkOptions.rate_control == tt_RATE_CONTROL_ADAPTIVE` and always compiled in:
+
+- `include/tickle/pacing_adaptive.h`: the estimator (`struct ap_pacer`), plain C.
+- `struct tt_RateControl rate[tt_MAX_LINK_COUNT]` at the end of `tt_Context`: the estimator, the link's pooled delivered
+  bytes, the unit size, and the solicitation bookkeeping. `struct tt_PeerAck` gains `rate_units` (what a reader's last
+  ACKNACK showed it holds).
+- `pace_charge()` (the seam: every datagram on the link) counts into the estimator; `pace_repair_allowed()` counts a
+  repair that goes; `rate_acknack()` (from `process_acknack()`) turns a reader's ACKNACK into delivered bytes and an RTT
+  sample; `large_paced_count()` keeps one solicitation in flight while a paced large send runs;
+  `solicit_ack_throttled()` records where the next answer falls; `rate_sync()` gives the bucket the estimator's rate.
+- Options and validation: `resolve_link_rate_control()`, `validate_link_pacing()`; the zero value is what `pacing_rate`
+  says, so existing programs are unchanged (`tests/test_rate_control.c`).
+
+Two defects the real stack showed that the synthetic model had hidden, both fixed and kept as tests: a loopback run
+(2 readers, `TT_RATE_CONTROL=adaptive`, 1 MiB) delivered nothing because the rate collapsed to a few kbit/s - (1) a
+unit was counted as the average datagram on the link, which the solicitations and ACKNACKs (90 bytes each) pulled
+down to a fraction of a frame, so every delivery read as a fraction of what it was (now only datagrams of at least half
+a frame count: `test_control_datagrams_are_not_units`); (2) a round's length followed the round trip alone, 7 us on a
+loopback, so a round held a frame or two (now at least `AP_MIN_ROUND_NS`, 1 ms). After the fix the same loopback run
+delivers 5 of 5 samples to both readers; the ramp from the 1 Mbit/s start costs about 10-20 ms of latency per sample
+there (baseline about 1 ms), which a real link at 4-30 Mbit/s does not show this way. This is a functional check on one
+host, not a measurement.
+
+Known limits: the first ACKNACK read after a solicitation is taken as its answer even when it was sent for another
+reason, a round trip that can only be too short (a low RTprop; the queue guard then holds the rate down, not up); the
+delivered count reads the watermark plus the received units the bitmap names, so units received above the reader's
+highest missing unit show up one ACKNACK later; `btlbw_bps` can read above the cap on a loopback (the rate itself is
+clamped to the cap).
+
+## 12. Validating on the Pis (commands; nothing here has been run on a Pi)
+
+Harness: `examples/perf_hil/experiments/wifitc/` (this branch has `ab/wifi-tc` merged). New in it: the arm `tickle-ad`
+(`tickle-ad-c<Mbit/s>` capped) which sets `TT_RATE_CONTROL=adaptive` for the `large` and `node_d100` programs,
+`RATE_STEP`, `READERS`. See `wifitc/ADAPTIVE_PLAN.md` for the plan and `wifitc/wtc_chainD.sh` for the chains. Build and
+ship the binaries of this branch first: `examples/perf_hil/experiments/t1pi/t1pi_build.sh`.
+
+1. **S1 stage (ADAPTIVE vs the DDS stacks, one reader):**
+   `OUT_BASE=$HOME/rig_results_safe/wtc_adaptive_$(date +%Y%m%d) examples/perf_hil/experiments/wifitc/wtc_chainD.sh s1`
+2. **All four profiles, 1 MiB and 128 KiB, and the small cells (no regression):** `... wtc_chainD.sh all`
+3. **Rate step 30 -> 4 -> 30 Mbit/s:** `... wtc_chainD.sh step`
+4. **2 and 3 readers on the link:** `... wtc_chainD.sh readers`
+
+Each run writes `<run>.near`, `.far` (and `.far2`, `.far3`), `.steps` for the rate step; the RESULT lines carry
+`rate_control`, `rate_bps`, `btlbw_bps`, `rtprop_ns`, `rate_rounds`, `rate_queue_trips`, `rate_drop_trips` for the
+estimator. Score as the earlier tc stages did (WIN/TIE/LOSE against each DDS stack, A/A noise rule, state the exact link
+settings in every row).

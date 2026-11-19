@@ -315,6 +315,19 @@ TSN and WIFI are off (`tt_PACING_OFF`), and so is a context with no links config
 | not held | ordinary DATA, announces, HEARTBEATs, ACKNACKs and a small sample's fragments go at once and are counted. They are what pacing protects - a periodic sample's latency - and core has no queue to hold them in; holding them would add latency where the large send is what fills the bus. On T1S they are already batched on the 1 ms tick |
 | off | `tt_Context.pacing` false: each send site pays one branch on it, nothing else |
 
+**Rate control** (`tt_LinkOptions.rate_control`, `rate_min_rate`, `rate_queue_ns`; 2026-11-19, opt-in). How the link's rate is
+set: `tt_RATE_CONTROL_OFF` (0, the default) means what `pacing_rate` says - FIXED at it when set (T1S's 75 % profile
+rate included), not paced otherwise - so a program that sets only `pacing_rate` is unchanged; `tt_RATE_CONTROL_FIXED`
+is that, asked for by name (it needs a `pacing_rate`); `tt_RATE_CONTROL_ADAPTIVE` finds the rate the link delivers from
+what its readers report, holds the queue short, and never goes above `pacing_rate` (the cap; 0 = `link_rate`) or below
+`rate_min_rate` (0 = `tt_RATE_MIN_DEFAULT`, 100 kbit/s, or the cap if lower). ADAPTIVE needs a build with
+`tt_LARGE_SAMPLES`. One estimator per link, fed by every reader on it: the readers' delivered bytes are pooled, the
+round trip is the least over all of them. It reads each ACKNACK's advance in units held, and a large send on an
+adaptive link keeps one solicited HEARTBEAT in flight so that a clean stream answers. Small samples, discovery,
+HEARTBEATs and ACKNACKs go at once and are counted, as above. No wire change. **Status: implemented and unit-tested
+against a synthetic link; not yet measured on a real or emulated link, so no recommendation is made, and the WIFI
+profile stays off.** Design, model and the plan to validate it: `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`.
+
 Refused at creation: a `pacing_rate` below `tt_LINK_RATE_MIN` or above the link's `link_rate`, a `pacing_burst` below
 `tt_PACING_BURST_MIN` (one full 1500-byte frame on the wire) or on a link that is not paced. An EPOLLOUT wake for
 another Publisher resumes a paced send early; it finds the bucket and waits again.
@@ -1274,7 +1287,7 @@ drops back-to-back bursts (a large sample is sent as one burst, and every repair
 less than the sample rate offers. If you set a rate: measure the link's sustained throughput with an unpaced UDP flood that you count at the
 receiver, and choose well under it (the nominal PHY rate is an upper bound, not a target); keep `pacing_burst` at the default unless you
 measure otherwise; leave `large_fragmentation` at AUTO (IP and MTU modes can each be worse); and test your own link at your own sample size.
-Adaptive repair-burst limiting (the sender estimating what the link takes) is a roadmap item, `docs/ROADMAP.md` "Later".
+Adaptive rate control (`rate_control = tt_RATE_CONTROL_ADAPTIVE`, "Send pacing") is the sender estimating what the link takes; it exists as an opt-in and is not yet validated on Wi-Fi-like links, so this section still recommends nothing.
 
 ## 15. Configuration reference
 
