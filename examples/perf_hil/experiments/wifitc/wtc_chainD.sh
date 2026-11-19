@@ -12,14 +12,15 @@ S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 B=${OUT_BASE:?OUT_BASE}
 stage=${1:?usage: wtc_chainD.sh s1|all|step|readers}
 export FIRST_ROUND=1
-FWS_ALL="tickle-ad tickle tickle-p95 cyclonedds fastdds"
+FWS_ALL=${FWS_ALL:-"tickle-ad tickle tickle-p95 cyclonedds fastdds"}
+FWS_SMALL=${FWS_SMALL:-"tickle-ad tickle-lg tickle cyclonedds fastdds"}
 case $stage in
 s1 | all)
     [ $stage = s1 ] && arms="S1" || arms="M1 M2 S1 S2"
     export ROUNDS=${ROUNDS:-5} ARMS="$arms" FWS="$FWS_ALL"
     OUT=$B/D_$stage/rl1m CELLS=rel_large LARGE_SZ=1048576 "$S/wtc_run.sh"
     OUT=$B/D_$stage/rl128k CELLS=rel_large LARGE_SZ=131072 "$S/wtc_run.sh"
-    OUT=$B/D_$stage/small CELLS="be_small rel_small" FWS="tickle-ad tickle-lg tickle cyclonedds fastdds" "$S/wtc_run.sh"
+    OUT=$B/D_$stage/small CELLS="be_small rel_small" FWS="$FWS_SMALL" "$S/wtc_run.sh"
     ;;
 step)
     export ROUNDS=${ROUNDS:-5} ARMS="M1" FWS="tickle-ad tickle cyclonedds fastdds" DUR_LARGE=48
