@@ -87,3 +87,37 @@ Stage A (272 runs, none lost): `tickle` as shipped has LOSE or VOID on rel_large
 so they are not repeated. Stage B: rel_large 1 MiB, all four profiles, rounds 3..5 (10 pooled runs per framework); 128 KiB, all four
 profiles, rounds 3..4 (8 pooled). About 4 h, above the 3 h estimate of section 8: the list above is longer than assumed; 128 KiB is capped at
 8 runs to bound the cost.
+
+## 10. Stage C pacing sweep (registered 2026-11-19, committed before any Stage C run)
+**Question (the user, 2026-11-19: "apply pacing and check that we beat all DDS"):** with the existing documented link options and no library, wire,
+API or default change, does TickLE beat BOTH Fast DDS and CycloneDDS in every cell of this emulated link? Stage A/B found the shipped (unpaced)
+default loses at 1 MiB and that `pacing_rate` = 75 % of the carried rate mostly wins; its remaining LOSEs were S1 against CycloneDDS (1 MiB p50
+2979 v 2514 ms, 128 KiB p50 362 v 307 ms). Stage A used rounded rates (22 / 3 Mbit/s = 74 % / 76 %); Stage C uses exact fractions.
+
+**Arms** (TickLE, WIFI profile as before, `large_fragmentation` AUTO, `link_rate` declared 54 Mbit/s): `tickle-p75`, `-p85`, `-p90`, `-p95` =
+`pacing_rate` of 75/85/90/95 % of the calibration's carried rate (M 29.73 Mbit/s -> 22.30 / 25.27 / 26.76 / 28.24; S 3.97 -> 2.98 / 3.37 / 3.57 /
+3.77 Mbit/s), `pacing_burst` default (4 MTU frames, 6152 B). One larger-burst arm, `tickle-p90-b24608` (16 frames, 24 608 B), **at 1 MiB only**:
+justified because the S queue holds 40 packets (about 59 kB) so 16 frames fit, a bigger bucket could cut the start of each sample's tail; Stage
+A's pacing sweep of the earlier radio runs found no burst effect, so one arm, not a sweep. No other option (`large_fragmentation` stays AUTO).
+**Profiles** M1 M2 S1 S2 (settings in section 3, unchanged, same calibration). Selection is **per class** (M = M1+M2, S = S1+S2): one rate per
+class, because a user sets the rate from the measured carried rate, not per loss pattern.
+
+**Phase 1, selection (the tuning set):** `rel_large` 128 KiB and 1 MiB, 4 rounds x copies A and A2 = **8 runs per arm** and profile, fresh
+runs, written into the Stage A directories (`A/rl128k`, `A/rl1m`) so the unchanged DDS runs sit beside them. 128 KiB: 4 arms x 4 profiles x 8 =
+128 runs; 1 MiB: 5 arms x 4 x 8 = 160 runs (about 85-95 s each, about 7 h). The small cells are not swept (a 100 B sample at 100 Hz is far below any
+pacing rate; checked in Phase 2).
+**Selection rule (fixed now):** for each class, arm score = mean over (its two profiles x both sizes x {p50, p99}) of (arm median / smallest arm
+median in that profile, size, metric); only arms with median delivery 15/15 and no run below 14/15 in every cell of the class qualify (else the
+class has none and is reported); lowest score wins, ties to the lower rate; the burst arm may replace its rate-matched `p90` only if its score is
+at least 10 % lower. Per-arm VOIDs (A/A: |median A2 - median A| > 10 % of median A) are shown and count as their medians but are listed.
+**Phase 2, confirmation (the scoring set, fresh runs):** the chosen arm of each class, again with the 4 profiles, in **fresh runs never used for
+the selection**: rel_large 128 KiB and 1 MiB and rel_small and be_small, **10 runs** (5 copies A + 5 copies A2) per cell and profile, directory
+`C/confirm_*`. 4 profiles x 4 cells x 10 = 160 runs (about 3 h). Only Phase 2 may support a WIN/TIE/LOSE claim; Phase 1 numbers are tuning data.
+**DDS arms are reused, not rerun:** CycloneDDS 0.10.5 and Fast DDS 2.14.6 runs of Stage A/B (same link, same binaries, same command lines, same
+profiles; 1 MiB 10 runs, 128 KiB 8, rel_small and be_small 4 per profile). The verdict code is `wtc_read.py` with `EXTRA_ROOTS` pointing at the
+Stage A/B directories; a verdict against the 4-run small-cell DDS samples is stated as resting on 4 runs. Rules as section 6 (WIN = every TickLE
+run strictly beats every DDS run; A/A noise VOID; a sample with fewer than 8 runs per side is labelled "few reps").
+**Analysis:** every cell where the confirmed arm is not a WIN against both DDS stacks: counters (tx datagrams, `retransmitted`, `pacing_waits`,
+`pacing_repairs_deferred`, `large_duplicate`) of its runs against the best DDS, and whether pacing alone can win it; if not, what a library-side
+adaptive limiter would have to do. A cell that stays VOID with 10 runs is reported as not decidable at this sample size, not as a result.
+**Cost:** about 10 h in all. Nothing else uses the Pis (rig lock).
