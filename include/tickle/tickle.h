@@ -1366,13 +1366,15 @@ struct tt_Pacer {
 // on any other link.
 struct tt_RateControl {
     struct ap_pacer ap;
-    uint64_t delivered;   // the bytes this link's readers have shown received, pooled over them (cumulative)
-    uint64_t applied_bps; // the rate struct tt_Pacer was last given
-    uint32_t unit_wire;   // a full frame of the link on the wire, bytes
-    uint32_t avg_wire;  // the average data datagram on the link, bytes on the wire (control datagrams left out): what a
-                        // unit counts as
-    uint32_t acks_seen; // ACKNACKs read from this link's readers
-    uint32_t solicit_acks; // acks_seen when the last solicitation went: its answer is the first one after
+    uint64_t delivered;     // the bytes this link's readers have shown received, pooled over them (cumulative)
+    uint64_t held_units;    // the same in units (a unit is a datagram a reader holds), pooled the same way
+    uint64_t missing_units; // and the units lost in front of a held one, pooled: held + missing is how far the sends
+                            // have been seen
+    uint64_t applied_bps;   // the rate struct tt_Pacer was last given
+    uint32_t unit_wire;     // a full frame of the link on the wire, bytes
+    uint32_t avg_wire; // the average data datagram on the link, bytes on the wire (control datagrams left out): what a
+                       // unit counts as
+    bool repair_next; // pace_repair_allowed() let a repair go and the seam has not yet counted it: it is not a new unit
     bool adaptive;
 };
 
@@ -3162,6 +3164,7 @@ struct tt_PeerAck {
     // Adaptive rate control: what this reader's last ACKNACK showed it holds (its watermark and the received units its
     // bitmap names), in units; the next one's advance is what it received since (rate_acknack()).
     uint32_t rate_units;
+    uint32_t rate_missing; // and the units its bitmap named missing
     bool rate_units_valid;
 #endif
 };

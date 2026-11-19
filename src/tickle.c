@@ -2025,9 +2025,9 @@ static void link_rate_configure(struct tt_RateControl* rate, struct tt_Pacer* pa
         return;
     }
     rate->adaptive = true;
-    ap_init(&rate->ap, link->rate_min_rate, link->pacing_rate, link->rate_queue_ns, 0);
     rate->unit_wire = (uint32_t)link->mtu + LINK_FRAME_OVERHEAD;
     rate->avg_wire = rate->unit_wire;
+    ap_init(&rate->ap, link->rate_min_rate, link->pacing_rate, link->rate_queue_ns, 0, rate->unit_wire);
     rate->applied_bps = rate->ap.rate_bps;
     pace_apply_rate(pacer, rate->applied_bps);
 }
@@ -3942,24 +3942,23 @@ static void rate_sync(struct tt_Context* node, uint8_t link) {
 // A datagram of `wire` bytes on the wire left on an adaptive link at `now`.
 static void rate_note_send(struct tt_Context* node, uint8_t link, uint64_t now, uint32_t wire) {
     struct tt_RateControl* rate = &node->rate[link];
-    if (wire >= rate->unit_wire / 2U) { // a data unit: the HEARTBEATs and ACKNACKs a unit is not
+    if (wire >= rate->unit_wire / 2U) { // a data datagram: the HEARTBEATs and ACKNACKs are not
         rate->avg_wire = (rate->avg_wire * (RATE_AVG_WIRE_DIV - 1U) + wire) / RATE_AVG_WIRE_DIV;
+        if (rate->repair_next) {
+            rate->repair_next = false; // pace_repair_allowed() just let one go: a repair is not a new unit
+        } else {
+            ap_note_unit_sent(&rate->ap, now); // an original: its send time is a round trip sample's start
+        }
     }
     ap_note_send(&rate->ap, now, wire, false);
     rate_sync(node, link);
 }
 
-// A solicitation went (solicit_ack_throttled()): the first ACKNACK read after it answers it.
-static void rate_note_solicit(struct tt_Context* node) {
-    for (uint8_t link = 0; link < tt_MAX_LINK_COUNT; link++) {
-        node->rate[link].solicit_acks = node->rate[link].acks_seen;
-    }
-}
-
 // What a reader holds, in units, by its ACKNACK: every unit below the watermark seq_no, and the units its bitmap leaves
 // unnamed up to the highest it names - a reader names every unit missing below its highest, so the rest of that window
 // was received. Units above the highest named are not known: they show when a later ACKNACK's watermark passes them.
-static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
+static uint32_t rate_units_held_and_missing(uint32_t seq_no, const uint64_t* bitmap, uint16_t words,
+                                            uint32_t* missing_out) {
     uint32_t window = 0;
     uint32_t missing = 0;
     for (uint16_t word = 0; word < words; word++) {
@@ -3969,6 +3968,7 @@ static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_
                      (uint32_t)__builtin_clzll(bitmap[word]);
         }
     }
+    *missing_out = missing;
     return seq_no + (window - missing);
 }
 
@@ -3978,8 +3978,8 @@ static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_
 // over every reader). An ACKNACK that arrives for another reason before the answer is read as the answer: a sample
 // that can only be too short while its sender was already waiting - a lower RTprop, which the queue guard answers by
 // holding the rate down, not up.
-static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held, bool solicited,
-                         uint64_t solicit_ns) {
+static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held,
+                         uint32_t missing) {
     uint8_t link = pace_link(node, ip);
     struct tt_RateControl* rate = &node->rate[link];
     if (!rate->adaptive) {
@@ -3990,18 +3990,18 @@ static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck
         int32_t advance = seq_delta(held, ack->rate_units);
         if (advance > 0) {
             rate->delivered += (uint64_t)advance * rate->avg_wire;
+            rate->held_units += (uint64_t)advance;
             ack->rate_units = held;
         }
     } else {
         ack->rate_units = held; // the first ACKNACK: a baseline, nothing counted
         ack->rate_units_valid = true;
     }
-    uint64_t rtt = 0;
-    if (solicited && rate->acks_seen == rate->solicit_acks && now > solicit_ns) {
-        rtt = now - solicit_ns;
+    if (ack->rate_units_valid) { // the units lost in front of a held one: this reader's change in them
+        rate->missing_units = rate->missing_units + missing - ack->rate_missing;
     }
-    rate->acks_seen++;
-    ap_on_feedback(&rate->ap, now, rate->delivered, rtt);
+    ack->rate_missing = missing;
+    ap_on_feedback(&rate->ap, now, rate->delivered, rate->held_units + rate->missing_units);
     rate_sync(node, link);
 }
 #endif
@@ -4108,6 +4108,8 @@ static bool pace_repair_allowed(struct tt_Context* node, const struct tt_Peer* t
         uint8_t link = pace_link(node, target->ip);
         if (__builtin_expect(node->rate[link].adaptive, 0)) {
             ap_note_repair(&node->rate[link].ap, pace_wire_bytes(pacer, len));
+            node->rate[link].repair_next =
+                true; // the next data datagram charged is that repair (one: a repair not sent costs one stamp)
         }
         return true;
     }
@@ -10854,9 +10856,6 @@ static void solicit_ack_throttled(struct tt_Publisher* pub) {
     pub->ack_solicit_seq_no = pub->seq_no; // where the watermark path counts the next half-window from
     pub->ack_solicited = true;
     pub->last_ack_solicit_ns = now;
-    if (__builtin_expect(pub->node->pacing, 0)) {
-        rate_note_solicit(pub->node);
-    }
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
 }
@@ -13121,7 +13120,9 @@ static uint32_t large_paced_count(struct tt_Context* node, struct tt_Publisher* 
         return want;
     }
     struct tt_LargeCursor* cursor = &pub->large_cursor;
-    if (__builtin_expect(node->rate[pace_link(node, cursor->dests[cursor->next_dest].ip)].adaptive, 0)) {
+    const struct tt_RateControl* adaptive = &node->rate[pace_link(node, cursor->dests[cursor->next_dest].ip)];
+    if (__builtin_expect(adaptive->adaptive, 0) &&
+        tt_get_ns() - pub->last_ack_solicit_ns >= ap_solicit_gap_ns(&adaptive->ap)) {
         solicit_ack_throttled(pub); // a clean stream draws no ACKNACK of its own: the estimator's feedback is asked for
     }
     uint32_t fit = pace_units(node, &cursor->dests[cursor->next_dest], len, want, &cursor->pace_at_ns);
@@ -23365,8 +23366,11 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     if (__builtin_expect(node->pacing, 0)) {
         struct tt_PeerAck* rate_ack = find_peer_ack(pub, header->source, sender_entity_id);
         if (rate_ack != NULL) {
-            rate_acknack(node, sender_ip, rate_ack, rate_units_held(seq_no, bitmap, bitmap_words),
-                         pub->ack_solicit_outstanding, pub->last_ack_solicit_ns);
+            {
+                uint32_t missing = 0;
+                uint32_t held = rate_units_held_and_missing(seq_no, bitmap, bitmap_words, &missing);
+                rate_acknack(node, sender_ip, rate_ack, held, missing);
+            }
         }
     }
 #endif
