@@ -1,0 +1,62 @@
+
+=== class M (M1, M2) ===
+tickle-p75           score 1.239 qualifies=True 
+tickle-p85           score 1.203 qualifies=True 
+tickle-p90           score 1.039 qualifies=True 
+tickle-p95           score 1.034 qualifies=True 
+tickle-p90-b24608    score 1.017 qualifies=True 
+CHOSEN M tickle-p95
+  oracle 128 KiB M1: tickle-p95 p50 44 ms p99 54 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50      54 p99      64 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50      48 p99      58 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50      46 p99      56 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50      44 p99      54 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 128 KiB M2: tickle-p95 p50 69 ms p99 107 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50      77 p99     148 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50      83 p99     176 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50      74 p99     100 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50      69 p99     107 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 1 MiB M1: tickle-p95 p50 324 ms p99 334 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50     408 p99     417 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50     361 p99     370 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50     341 p99     350 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50     324 p99     334 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90-b24608    p50     335 p99     345 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 1 MiB M2: tickle-p90-b24608 p50 362 ms p99 475 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50     434 p99     569 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50     397 p99     555 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50     376 p99     480 deliv ['15', '15', '15', '16', '15', '15', '15', '15']
+      tickle-p95           p50     367 p99     568 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90-b24608    p50     362 p99     475 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+
+=== class S (S1, S2) ===
+tickle-p75           score 1.248 qualifies=True 
+tickle-p85           score 1.114 qualifies=True 
+tickle-p90           score 1.053 qualifies=True 
+tickle-p95           score 1.011 qualifies=True 
+tickle-p90-b24608    score 1.046 qualifies=True 
+CHOSEN S tickle-p95
+  oracle 128 KiB S1: tickle-p95 p50 293 ms p99 302 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50     368 p99     381 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50     326 p99     336 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50     308 p99     324 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50     293 p99     302 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 128 KiB S2: tickle-p95 p50 321 ms p99 503 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50     402 p99     537 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50     361 p99     501 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50     335 p99     463 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50     321 p99     503 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 1 MiB S1: tickle-p95 p50 2374 ms p99 2398 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50    3004 p99    3058 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50    2652 p99    2705 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90           p50    2505 p99    2525 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50    2374 p99    2398 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p90-b24608    p50    2464 p99    2496 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+  oracle 1 MiB S2: tickle-p95 p50 2513 ms p99 2673 ms delivered med 15 min 15 (8 runs)
+      tickle-p75           p50    3159 p99    3351 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p85           p50    2791 p99    3002 deliv ['15', '15', '15', '15', '16', '15', '15', '15']
+      tickle-p90           p50    2646 p99    2899 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+      tickle-p95           p50    2513 p99    2673 deliv ['15', '15', '15', '15', '15', '15', '15', '16']
+      tickle-p90-b24608    p50    2602 p99    2858 deliv ['15', '15', '15', '15', '15', '15', '15', '15']
+
+SELECTED {'M': 'tickle-p95', 'S': 'tickle-p95'}

@@ -121,3 +121,13 @@ run strictly beats every DDS run; A/A noise VOID; a sample with fewer than 8 run
 `pacing_repairs_deferred`, `large_duplicate`) of its runs against the best DDS, and whether pacing alone can win it; if not, what a library-side
 adaptive limiter would have to do. A cell that stays VOID with 10 runs is reported as not decidable at this sample size, not as a result.
 **Cost:** about 10 h in all. Nothing else uses the Pis (rig lock).
+
+### 10.1 Selection result (written 2026-11-19 after phase 1, before any phase 2 run; `wtc_select.py`, output `~/rig_results_safe/wtc_20261117/C1_selection.txt`)
+Phase 1: 288 runs (128 KiB 128, 1 MiB 160), 0 lost, 0 aborts. Rule applied as registered. Scores (mean normalised p50/p99 median, 1.0 = best arm
+everywhere): class M: p75 1.239, p85 1.203, p90 1.039, **p95 1.034**, p90-b24608 1.017 (the burst arm needs a score at least 10 % below p90's:
+1.017 v 1.039 is 2 %, so it does not replace it); class S: p75 1.248, p85 1.114, p90 1.053, **p95 1.011**, p90-b24608 1.046. All arms deliver 15/15 in
+every cell. **Chosen: `tickle-p95` for class M (28.24 Mbit/s) and class S (3.77 Mbit/s).** The p50/p99 fall monotonically with the rate in every
+cell, so the best rate is at the edge of the swept range (95 %), not bracketed: the sweep does not show that 95 % is the optimum, only that nothing
+tested beats it; a higher rate (97-100 %) is not tested here and is reported as an open question. Phase 2 confirms `tickle-p95` on fresh runs
+(5 rounds x copies A and A2 = 10 runs per cell and profile; be_small, rel_small, rel_large 128 KiB and 1 MiB; 160 runs) against the unchanged
+Stage A/B DDS runs.
