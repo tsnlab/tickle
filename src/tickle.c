@@ -1066,7 +1066,7 @@ static void resolve_link_rate_control(struct tt_LinkOptions* link, bool t1s) {
             link->pacing_rate = link->link_rate; // the cap
         }
         if (link->rate_min_rate == 0) {
-            link->rate_min_rate = tt_LINK_RATE_MIN;
+            link->rate_min_rate = link->pacing_rate < tt_RATE_MIN_DEFAULT ? link->pacing_rate : tt_RATE_MIN_DEFAULT;
         }
         return;
     }
@@ -2026,7 +2026,8 @@ static void link_rate_configure(struct tt_RateControl* rate, struct tt_Pacer* pa
     }
     rate->adaptive = true;
     ap_init(&rate->ap, link->rate_min_rate, link->pacing_rate, link->rate_queue_ns, 0);
-    rate->avg_wire = (uint32_t)link->mtu + LINK_FRAME_OVERHEAD;
+    rate->unit_wire = (uint32_t)link->mtu + LINK_FRAME_OVERHEAD;
+    rate->avg_wire = rate->unit_wire;
     rate->applied_bps = rate->ap.rate_bps;
     pace_apply_rate(pacer, rate->applied_bps);
 }
@@ -3941,7 +3942,9 @@ static void rate_sync(struct tt_Context* node, uint8_t link) {
 // A datagram of `wire` bytes on the wire left on an adaptive link at `now`.
 static void rate_note_send(struct tt_Context* node, uint8_t link, uint64_t now, uint32_t wire) {
     struct tt_RateControl* rate = &node->rate[link];
-    rate->avg_wire = (rate->avg_wire * (RATE_AVG_WIRE_DIV - 1U) + wire) / RATE_AVG_WIRE_DIV;
+    if (wire >= rate->unit_wire / 2U) { // a data unit: the HEARTBEATs and ACKNACKs a unit is not
+        rate->avg_wire = (rate->avg_wire * (RATE_AVG_WIRE_DIV - 1U) + wire) / RATE_AVG_WIRE_DIV;
+    }
     ap_note_send(&rate->ap, now, wire, false);
     rate_sync(node, link);
 }

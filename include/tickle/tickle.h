@@ -952,8 +952,10 @@ struct tt_HybridState {
 // program that sets only pacing_rate is unchanged. After resolution rate_control holds the concrete mode.
 #define tt_RATE_CONTROL_OFF \
     0U // no rate set: pacing_rate absent or tt_PACING_OFF (resolved), or "as pacing_rate says" (given)
-#define tt_RATE_CONTROL_FIXED 1U     // paced at pacing_rate, as tt_LinkOptions.pacing_rate has always meant
-#define tt_RATE_CONTROL_ADAPTIVE 2U  // paced at the rate the link is found to deliver, up to pacing_rate (the cap)
+#define tt_RATE_CONTROL_FIXED 1U    // paced at pacing_rate, as tt_LinkOptions.pacing_rate has always meant
+#define tt_RATE_CONTROL_ADAPTIVE 2U // paced at the rate the link is found to deliver, up to pacing_rate (the cap)
+#define tt_RATE_MIN_DEFAULT \
+    100000U // tt_LinkOptions.rate_min_rate 0: this, or the cap if that is lower (bits per second)
 #define tt_RATE_QUEUE_MIN_NS 100000U // tt_LinkOptions.rate_queue_ns' least
 // A RELIABLE reader's re-ask when a repair arrives above its watermark while a gap is open
 // (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"). On a path that keeps the writer's order, such a
@@ -1032,7 +1034,8 @@ struct tt_LinkOptions {
     // (0 = link_rate) or below rate_min_rate; it needs a build with tt_LARGE_SAMPLES. One estimator per link, fed by
     // every reader on it.
     uint8_t rate_control;
-    // ADAPTIVE only: the least rate, bits per second; 0 = tt_LINK_RATE_MIN. At most the cap.
+    // ADAPTIVE only: the least rate, bits per second; 0 = tt_RATE_MIN_DEFAULT (100 kbit/s) or the cap if that is lower.
+    // At least tt_LINK_RATE_MIN, at most the cap.
     uint64_t rate_min_rate;
     // ADAPTIVE only: the queueing delay it holds the link to, ns; 0 = the larger of 2 ms and a quarter of the least
     // round trip seen. At least tt_RATE_QUEUE_MIN_NS.
@@ -1363,10 +1366,12 @@ struct tt_Pacer {
 // on any other link.
 struct tt_RateControl {
     struct ap_pacer ap;
-    uint64_t delivered;    // the bytes this link's readers have shown received, pooled over them (cumulative)
-    uint64_t applied_bps;  // the rate struct tt_Pacer was last given
-    uint32_t avg_wire;     // the average datagram sent on the link, bytes on the wire: what a unit counts as
-    uint32_t acks_seen;    // ACKNACKs read from this link's readers
+    uint64_t delivered;   // the bytes this link's readers have shown received, pooled over them (cumulative)
+    uint64_t applied_bps; // the rate struct tt_Pacer was last given
+    uint32_t unit_wire;   // a full frame of the link on the wire, bytes
+    uint32_t avg_wire;  // the average data datagram on the link, bytes on the wire (control datagrams left out): what a
+                        // unit counts as
+    uint32_t acks_seen; // ACKNACKs read from this link's readers
     uint32_t solicit_acks; // acks_seen when the last solicitation went: its answer is the first one after
     bool adaptive;
 };

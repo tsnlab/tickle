@@ -258,7 +258,7 @@ static void test_adaptive_defaults(void) {
     const struct tt_LinkOptions* link = &node.opts.net.links[0];
     EXPECT_EQ_U32(tt_RATE_CONTROL_ADAPTIVE, link->rate_control);
     EXPECT_EQ_U64(link->link_rate, link->pacing_rate); // the cap
-    EXPECT_EQ_U64(tt_LINK_RATE_MIN, link->rate_min_rate);
+    EXPECT_EQ_U64(tt_RATE_MIN_DEFAULT, link->rate_min_rate);
     EXPECT_EQ_U32(tt_PACING_BURST_FRAMES * (1500U + 38U), link->pacing_burst);
     EXPECT_TRUE(node.pacing);
     destroy();
@@ -390,6 +390,27 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     EXPECT_EQ_U64(rate, pacer_rate_bps());
     EXPECT_EQ_U64(0, node.rate[0].delivered);
     EXPECT_EQ_U32(0, ack.rate_units_valid ? 1U : 0U);
+    destroy();
+}
+
+static void test_control_datagrams_are_not_units(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+    create(&opts);
+    uint32_t unit = node.rate[0].unit_wire;
+    EXPECT_EQ_U32(1500U + 38U, unit);
+    // A flood of HEARTBEAT-sized datagrams (a solicitation per round trip) leaves what a unit counts as alone: it once
+    // fell to the control datagrams' size and the estimator read every delivery as a fraction of what it was.
+    for (uint32_t i = 0; i < 1000; i++) {
+        pace_charge(&node, 0, 90U, test_mock_now);
+    }
+    EXPECT_EQ_U32(unit, node.rate[0].avg_wire);
+    // Data frames of another size move it, within what is a data frame.
+    for (uint32_t i = 0; i < 1000; i++) {
+        pace_charge(&node, 0, 1000U, test_mock_now);
+    }
+    EXPECT_TRUE(node.rate[0].avg_wire < unit);
+    EXPECT_TRUE(node.rate[0].avg_wire >= unit / 2U);
     destroy();
 }
 
@@ -533,6 +554,7 @@ int main(void) {
     test_adaptive_defaults();
     test_validation();
     test_adaptive_starts_between_floor_and_cap();
+    test_control_datagrams_are_not_units();
     test_held_units_from_an_acknack();
     test_readers_pool_into_one_link_count();
     test_the_bucket_follows_the_link();

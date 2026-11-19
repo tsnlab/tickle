@@ -34,10 +34,13 @@
 #define AP_DRAIN_GAIN_PCT 75U           // the round after a probe, and while the queue is over its target
 #define AP_PROBE_RISE_PCT 110U          // a probe that raised the delivery rate by this much is followed by another
 #define AP_MIN_SAMPLE_BYTES \
-    24000U                                // a delivery-rate sample spans at least this much delivered, so that a
-                                          // unit more or less is a small part of it (the BDP is a few frames)
-#define AP_MAX_ROUND_RTTS 8U              // but a round is never longer than this many RTprop
-#define AP_PROBE_EVERY_ROUNDS 8U          // and does so every this many rounds
+    24000U // a delivery-rate sample spans at least this much delivered, so that a
+           // unit more or less is a small part of it (the BDP is a few frames)
+#define AP_MIN_ROUND_NS \
+    1000000ULL                   // and a round is never shorter than this, whatever the round trip: on a loopback it is
+                                 // microseconds, a round then holds a frame or two and its rate is noise
+#define AP_MAX_ROUND_RTTS 8U     // but a round is never longer than this many RTprop
+#define AP_PROBE_EVERY_ROUNDS 8U // and does so every this many rounds
 #define AP_QUEUE_TARGET_MIN_NS 2000000ULL // queue-delay target: at least this, else RTprop / AP_QUEUE_TARGET_RTT_DIV
 #define AP_QUEUE_TARGET_RTT_DIV 4U
 #define AP_QUEUE_TRIPS 2U                // queue-delay samples over the target in a row that trip the guard
@@ -424,8 +427,9 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t d
     }
     uint64_t elapsed = now - ctl->round_start_ns;
     uint64_t rtprop = ap_rtprop_ns(ctl);
-    if (elapsed >= rtprop &&
-        (ctl->delivered - ctl->round_delivered >= AP_MIN_SAMPLE_BYTES || elapsed >= AP_MAX_ROUND_RTTS * rtprop)) {
+    uint64_t least_ns = ap_max_u64(rtprop, AP_MIN_ROUND_NS);
+    if (elapsed >= least_ns &&
+        (ctl->delivered - ctl->round_delivered >= AP_MIN_SAMPLE_BYTES || elapsed >= AP_MAX_ROUND_RTTS * least_ns)) {
         ap_end_round(ctl, now);
     }
 }

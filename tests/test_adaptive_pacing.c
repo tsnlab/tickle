@@ -30,6 +30,7 @@
 #define MAX_DELAY 8192U
 #define MAX_UNITS 400000U
 #define MAX_READERS 4U
+#define MAX_PENDING 64U
 #define MS 1000000ULL
 
 enum mode { MODE_UNPACED, MODE_FIXED, MODE_ADAPTIVE };
@@ -54,6 +55,7 @@ struct link_cfg {
     uint64_t step2_ns;
     uint32_t queue_bytes;
     uint64_t one_way_ns;
+    uint64_t reader_tick_ns; // 0: a reader answers a solicitation at once; else at its next poll, every this many ns
 };
 
 struct result {
@@ -102,20 +104,21 @@ static uint64_t link_phase_start(const struct link_cfg* cfg, int phase) {
 }
 
 static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
-    return now < cfg->step1_ns ? cfg->rate_bps[0] : (now < cfg->step2_ns ? cfg->rate_bps[1] : cfg->rate_bps[2]);
+    return cfg->rate_bps[link_phase(cfg, now)];
 }
 
 // One run: `period_ns` 0 = a new sample as soon as the last completes (bulk); else one sample every period_ns.
 // `readers` readers share the link: a sample goes to each of them as its own datagrams (unicast reliable), so the link
 // carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
 // estimate).
+// NOLINTBEGIN(readability-function-cognitive-complexity) -- a simulator: the link and both its ends in one clock loop
 static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, uint64_t cap_bps, uint64_t min_bps,
-                uint64_t period_ns, uint64_t duration_ns, uint32_t readers,
-                struct result* out) { // NOLINT(readability-function-cognitive-complexity) -- a simulator: the link and
-                                      // both ends in one clock loop
+                uint64_t period_ns, uint64_t duration_ns, uint32_t readers, struct result* out) {
     static struct pkt queue[MAX_Q];
     static struct flight fwd[MAX_DELAY];
     static struct flight rev[MAX_DELAY];
+    static struct flight pending[MAX_PENDING]; // solicitations that have reached a reader and wait for its poll
+    uint32_t pending_n = 0;
     static uint8_t got[MAX_UNITS];
     static uint64_t last_sent[MAX_UNITS];
     static uint8_t want_repair[MAX_UNITS];
@@ -246,6 +249,20 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
         if (qn == 0 && credit > (int64_t)UNIT_WIRE * 8) {
             credit = (int64_t)UNIT_WIRE * 8; // an idle link does not bank a burst
         }
+        // 4b. a reader's poll: it reports what it holds now, and the report travels back
+        for (uint32_t i = 0; i < pending_n;) {
+            if (pending[i].at_ns > now) {
+                i++;
+                continue;
+            }
+            struct pkt q = pending[i].pkt;
+            pending[i] = pending[--pending_n];
+            rev[rt] = (struct flight) {
+                now + cfg->one_way_ns,
+                (struct pkt) {q.solicit_ns, 0, (int64_t)delivered_units[q.reader], q.reader, (uint64_t)q.last_unit, 0}};
+            rt = (rt + 1U) % MAX_DELAY;
+            rn++;
+        }
         // 5. the reader receives; a solicit makes it report
         while (fn != 0 && fwd[fh].at_ns <= now) {
             struct pkt p = fwd[fh].pkt;
@@ -256,13 +273,13 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                     got[p.unit] = 1;
                     delivered_units[p.reader]++;
                 }
-            } else {
-                // the report travels back: the reader's own state when the solicit arrived
-                rev[rt] = (struct flight) {now + cfg->one_way_ns,
-                                           (struct pkt) {p.solicit_ns, 0, (int64_t)delivered_units[p.reader], p.reader,
-                                                         (uint64_t)p.last_unit, 0}};
-                rt = (rt + 1U) % MAX_DELAY;
-                rn++;
+            } else if (pending_n < MAX_PENDING) {
+                // the reader answers at its next poll (at once without a tick)
+                uint64_t poll_at = now;
+                if (cfg->reader_tick_ns != 0) {
+                    poll_at = ((now / cfg->reader_tick_ns) + 1U) * cfg->reader_tick_ns;
+                }
+                pending[pending_n++] = (struct flight) {poll_at, p};
             }
         }
         // 6. the writer receives the report
@@ -331,6 +348,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     out->trips_q = ap.queue_trips;
     out->trips_d = ap.drop_trips;
 }
+// NOLINTEND(readability-function-cognitive-complexity)
 
 static int failures;
 
@@ -440,6 +458,22 @@ int main(void) {
            (double)adaptive.min_rate_bps / 1e6, (double)adaptive.max_rate_bps / 1e6);
     CHECK(adaptive.max_rate_bps <= 2000000ULL, "above the cap: %llu", (unsigned long long)adaptive.max_rate_bps);
     CHECK(adaptive.min_rate_bps >= 500000ULL, "below the floor: %llu", (unsigned long long)adaptive.min_rate_bps);
+
+    // 4b. a fast link whose readers answer at their poll, far apart against the round trip (a loopback or a fast LAN):
+    // 1 Gbit/s, 35 us each way, the reader polls every 2 ms. The estimator once took the rounds' length from the round
+    // trip alone and collapsed to the floor here: rounds shorter than the answers' spacing carried no delivery.
+    struct link_cfg lan = {
+        {1000000000ULL, 1000000000ULL, 1000000000ULL}, 1000 * SEC, 2000 * SEC, 300U * UNIT_WIRE, 35000ULL, 2 * MS};
+    struct result lan_result;
+    run(&lan, MODE_ADAPTIVE, 0, 1000000000ULL, 1000000ULL, 0, 6 * SEC, 1U, &lan_result);
+    print_result("adaptive, 1 Gbit/s, 2 ms poll", &lan_result);
+    CHECK(lan_result.samples_done >= 5U, "a fast link with slow answers: %u samples", lan_result.samples_done);
+    // And a loopback: a round trip of 7 us. Rounds follow the round trip, so they must have a floor of their own.
+    struct link_cfg loop = {
+        {1000000000ULL, 1000000000ULL, 1000000000ULL}, 1000 * SEC, 2000 * SEC, 300U * UNIT_WIRE, 3500ULL, 0};
+    run(&loop, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 0, 4 * SEC, 1U, &lan_result);
+    print_result("adaptive, 1 Gbit/s, 7 us RTT", &lan_result);
+    CHECK(lan_result.samples_done >= 5U, "a loopback: %u samples", lan_result.samples_done);
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
