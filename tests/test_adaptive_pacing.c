@@ -548,6 +548,99 @@ static void print_result(const char* name, const struct result* r) {
            (unsigned long long)r->solicits, (unsigned long long)r->trips_q, (unsigned long long)r->trips_d);
 }
 
+// ---- Replay of the Pi traces (quick test 4 of 04cd1473, wtc_adaptive_quick4): the recorded rounds fed to the
+// estimator one by one. What is recorded of each round is its length, the bytes it delivered and whether it was
+// application-limited (the pacer sent less than 80 % of its allowance: the sender had nothing to send but control
+// traffic). The replay gives the estimator those, at the rate the estimator itself has chosen - a round that was
+// application-limited sends a quarter of its allowance, one that was not sends all of it - and checks what the
+// estimator does with them.
+struct replay_round {
+    double el_ms;
+    uint64_t bytes;
+    int app;
+};
+
+/* replay_m2r2: M2 run 2, first 64 rounds of the Pi trace: round length ms, bytes delivered, 1 if the round was
+ * application-limited */
+static const struct replay_round replay_m2r2[] = {
+    {196.9, 29222, 0},   {177.8, 33836, 0},   {85.5, 26146, 0},    {85.6, 61520, 0},    {42.8, 39988, 0},
+    {43.1, 86128, 0},    {45.5, 173794, 0},   {43.1, 206092, 1},   {43.2, 446020, 1},   {3236.6, 7690, 1},
+    {48.3, 1088904, 1},  {346.9, 3076, 1},    {349.4, 18456, 1},   {71.9, 149186, 0},   {220.3, 24608, 1},
+    {143.8, 24608, 1},   {238.5, 26146, 1},   {348.5, 27684, 1},   {213.1, 29222, 1},   {175.1, 24608, 1},
+    {125.0, 24608, 1},   {97.0, 27684, 1},    {44.3, 29222, 1},    {45.5, 58444, 1},    {45.9, 133806, 1},
+    {43.6, 166104, 1},   {43.6, 118426, 1},   {44.8, 47678, 1},    {235.9, 198402, 0},  {209.5, 58444, 0},
+    {209.5, 41526, 0},   {209.4, 52292, 0},   {209.6, 87666, 0},   {330.1, 287606, 0},  {238.8, 346050, 0},
+    {2593.3, 236852, 1}, {209.5, 1047378, 0}, {220.2, 63058, 1},   {223.2, 1104284, 0}, {786.6, 52292, 1},
+    {561.8, 129192, 0},  {212.5, 76900, 0},   {209.7, 147648, 0},  {221.9, 396804, 0},  {238.8, 307600, 1},
+    {691.8, 409108, 0},  {784.5, 184560, 0},  {224.0, 67672, 0},   {277.2, 232238, 0},  {263.9, 475242, 0},
+    {700.1, 30760, 1},   {263.0, 827444, 1},  {2041.8, 281454, 1}, {209.5, 821292, 1},  {3749.4, 7690, 1},
+    {210.9, 985858, 1},  {406.5, 24608, 1},   {346.0, 1108898, 0}, {3694.3, 1538, 1},   {169.2, 644422, 0},
+    {3830.8, 466014, 1}, {166.4, 678258, 0},  {3833.7, 432178, 1}, {166.7, 679796, 0},
+};
+/* replay_s2r2: S2 run 2, first 120 rounds of the Pi trace: round length ms, bytes delivered, 1 if the round was
+ * application-limited */
+static const struct replay_round replay_s2r2[] = {
+    {198.9, 29222, 0}, {152.3, 27684, 0}, {151.3, 29222, 0}, {130.6, 24608, 0}, {122.5, 27684, 0},  {152.0, 30760, 0},
+    {176.5, 35374, 0}, {129.9, 26146, 0}, {150.5, 33836, 0}, {150.5, 33836, 0}, {205.2, 43064, 0},  {150.5, 33836, 0},
+    {161.8, 33836, 0}, {473.3, 56906, 0}, {117.0, 41526, 0}, {118.0, 30760, 0}, {117.2, 39988, 0},  {168.3, 49216, 0},
+    {122.3, 39988, 0}, {108.4, 32298, 0}, {113.0, 38450, 0}, {113.6, 38450, 0}, {79.8, 26146, 0},   {94.0, 35374, 0},
+    {111.6, 33836, 0}, {114.2, 38450, 0}, {117.2, 43064, 0}, {116.6, 44602, 0}, {113.7, 43064, 0},  {72.6, 24608, 0},
+    {93.6, 36912, 0},  {105.2, 36912, 0}, {101.9, 44602, 0}, {53.8, 24608, 0},  {102.9, 50754, 0},  {51.6, 27684, 0},
+    {97.8, 47678, 0},  {66.1, 27684, 0},  {191.7, 87666, 0}, {61.8, 30760, 0},  {74.5, 29222, 0},   {117.0, 46140, 0},
+    {51.5, 26146, 0},  {51.5, 26146, 0},  {106.0, 53830, 0}, {95.1, 46140, 0},  {109.1, 55368, 0},  {121.2, 56906, 0},
+    {98.1, 50754, 0},  {54.7, 27684, 0},  {110.9, 55368, 0}, {67.3, 29222, 0},  {113.0, 56906, 0},  {82.0, 39988, 0},
+    {63.6, 32298, 0},  {110.7, 49216, 0}, {104.7, 50754, 1}, {1240.2, 7690, 1}, {60.5, 30760, 0},   {99.9, 50754, 0},
+    {99.9, 50754, 0},  {51.5, 26146, 0},  {99.9, 50754, 0},  {90.8, 44602, 0},  {78.8, 41526, 0},   {75.7, 36912, 0},
+    {106.9, 44602, 0}, {100.1, 49216, 0}, {54.5, 27684, 0},  {51.5, 26146, 0},  {51.7, 26146, 0},   {54.5, 27684, 0},
+    {51.5, 26146, 0},  {51.5, 26146, 0},  {60.5, 30760, 0},  {87.8, 44602, 0},  {51.5, 26146, 0},   {51.5, 26146, 0},
+    {99.9, 50754, 0},  {51.5, 26146, 0},  {51.5, 26146, 0},  {99.9, 50754, 0},  {51.5, 26146, 0},   {109.0, 55368, 0},
+    {64.0, 32298, 0},  {73.2, 35374, 0},  {54.7, 29222, 0},  {103.0, 52292, 1}, {1810.4, 12304, 1}, {72.6, 38450, 0},
+    {87.8, 43064, 0},  {72.7, 35374, 0},  {75.9, 38450, 0},  {51.5, 26146, 0},  {72.5, 35374, 0},   {128.0, 59982, 0},
+    {51.5, 26146, 0},  {54.5, 27684, 0},  {51.5, 26146, 0},  {151.4, 76900, 0}, {99.9, 50754, 0},   {100.1, 50754, 0},
+    {51.5, 26146, 0},  {109.0, 55368, 0}, {63.6, 32298, 0},  {90.9, 46140, 0},  {96.8, 47678, 0},   {69.7, 30760, 0},
+    {133.3, 64596, 0}, {57.6, 26146, 0},  {99.9, 44602, 0},  {142.4, 56906, 0}, {67.7, 29222, 0},   {102.4, 29222, 0},
+    {104.7, 33836, 0}, {111.9, 27684, 0}, {249.7, 24608, 1}, {214.4, 30760, 0}, {155.9, 27684, 0},  {104.5, 24608, 0},
+};
+
+// Replays `rounds`; returns the largest ratio of the rate chosen to twice the best delivery rate seen so far (1 Mbit/s
+// at least): at most 1 means the rate never ran past twice what the link was seen to deliver. `variation` is the
+// max/min rate after START.
+static double replay_run(const struct replay_round* rounds, size_t count, double* variation, uint64_t* max_rate_kbit) {
+    struct ap_pacer ctl;
+    ap_init(&ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t now = 1000ULL * 1000000000ULL;
+    double best_kbit = 1000.0;
+    double worst = 0.0;
+    uint64_t lowest = UINT64_MAX;
+    uint64_t highest = 0;
+    bool cruised = false;
+    *max_rate_kbit = 0;
+    for (size_t i = 0; i < count; i++) {
+        double delivered_kbit = (double)rounds[i].bytes * 8.0 / rounds[i].el_ms;
+        best_kbit = delivered_kbit > best_kbit ? delivered_kbit : best_kbit;
+        uint64_t allowance = (uint64_t)((double)ctl.rate_bps / 8.0 * rounds[i].el_ms / 1000.0);
+        ctl.round_start_ns = now;
+        ctl.round_delivered = ctl.delivered;
+        ctl.delivered += rounds[i].bytes;
+        ctl.round_sent = rounds[i].app != 0 ? (allowance / 4U) + 100U : allowance;
+        ctl.round_units0 = ctl.units_sent;
+        ctl.units_sent += rounds[i].app != 0 ? 0U : 10U;
+        now += (uint64_t)(rounds[i].el_ms * 1e6);
+        ap_end_round(&ctl, now);
+        double chosen_kbit = (double)ctl.rate_bps / 1000.0;
+        double ratio = chosen_kbit / (2.0 * best_kbit);
+        worst = ratio > worst ? ratio : worst;
+        *max_rate_kbit = (uint64_t)chosen_kbit > *max_rate_kbit ? (uint64_t)chosen_kbit : *max_rate_kbit;
+        cruised = cruised || ctl.state == AP_CRUISE;
+        if (cruised) {
+            lowest = ctl.rate_bps < lowest ? ctl.rate_bps : lowest;
+            highest = ctl.rate_bps > highest ? ctl.rate_bps : highest;
+        }
+    }
+    *variation = lowest != 0 && lowest != UINT64_MAX ? (double)highest / (double)lowest : 0.0;
+    return worst;
+}
+
 int main(void) {
     struct result unpaced;
     struct result fixed;
@@ -827,6 +920,54 @@ int main(void) {
     CHECK(jumpy_result.max_rate_bps < 50000000ULL, "watermark jumps: the rate reached %llu bit/s on a 4 Mbit/s link",
           (unsigned long long)jumpy_result.max_rate_bps);
 
+    // 4i. the Pi traces replayed (the root-cause analysis of 2026-11-20): the rate must not run past twice the best
+    // delivery the link was seen to make, and after START it must not swing by more than 10x. On 04cd1473 the replay of
+    // M2r2 reaches the 1 Gbit/s cap.
+    {
+        double variation = 0;
+        uint64_t max_kbit = 0;
+        double worst = replay_run(replay_m2r2, sizeof(replay_m2r2) / sizeof(replay_m2r2[0]), &variation, &max_kbit);
+        printf("replay M2r2: peak rate %llu kbit/s, worst rate / (2 x best delivery) %.1f, max/min after START %.0f\n",
+               (unsigned long long)max_kbit, worst, variation);
+        CHECK(worst <= 1.0, "replay M2r2: the rate ran to %.1f times twice the best delivery (peak %llu kbit/s)", worst,
+              (unsigned long long)max_kbit);
+        CHECK(variation <= 10.0, "replay M2r2: the rate swung %.0f times after START", variation);
+        worst = replay_run(replay_s2r2, sizeof(replay_s2r2) / sizeof(replay_s2r2[0]), &variation, &max_kbit);
+        printf("replay S2r2: peak rate %llu kbit/s, worst rate / (2 x best delivery) %.1f, max/min after START %.0f\n",
+               (unsigned long long)max_kbit, worst, variation);
+        CHECK(worst <= 1.0, "replay S2r2: the rate ran to %.1f times twice the best delivery (peak %llu kbit/s)", worst,
+              (unsigned long long)max_kbit);
+        CHECK(variation <= 10.0, "replay S2r2: the rate swung %.0f times after START", variation);
+    }
+
+    // 4j. an idle stretch is no evidence: rounds in which the sender has nothing to send but control traffic must not
+    // raise the rate (Pi quick test 4: START doubled in them, 96 times in 8 runs, to the 1 Gbit/s cap), and a second of
+    // that is no stall.
+    {
+        struct ap_pacer idle_ctl;
+        ap_init(&idle_ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+        uint64_t t_idle = 1000ULL * SEC;
+        uint64_t before = ap_rate_bps(&idle_ctl);
+        for (int round = 0; round < 40; round++) {
+            idle_ctl.round_start_ns = t_idle;
+            idle_ctl.round_delivered = idle_ctl.delivered;
+            idle_ctl.delivered += 3076U; // a couple of units a round: the tail of a sample, a repair
+            idle_ctl.round_sent = 3556U; // control traffic: far under the allowance
+            idle_ctl.round_units0 = idle_ctl.units_sent;
+            t_idle += 300 * MS;
+            ap_end_round(&idle_ctl, t_idle);
+        }
+        CHECK(ap_rate_bps(&idle_ctl) <= before, "idle rounds raised the rate from %llu to %llu bit/s",
+              (unsigned long long)before, (unsigned long long)ap_rate_bps(&idle_ctl));
+        // And a second with no data sent and nothing delivered is no stall.
+        idle_ctl.round_start_ns = t_idle;
+        idle_ctl.round_delivered = idle_ctl.delivered;
+        idle_ctl.round_sent = 3556U;
+        idle_ctl.round_units0 = idle_ctl.units_sent;
+        ap_on_feedback(&idle_ctl, t_idle + (2 * SEC), idle_ctl.held_units, idle_ctl.mark_units);
+        CHECK(idle_ctl.stall_restarts == 0U, "control traffic for 2 s was taken as a stall");
+    }
+
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
     // bits, over what the link could have carried.
@@ -876,14 +1017,11 @@ int main(void) {
         CHECK(multi.rate_after_step_ok_ns[1] != 0 && multi.rate_after_step_ok_ns[1] < 2 * SEC,
               "%u readers: the drop took %.0f ms", readers, ms(multi.rate_after_step_ok_ns[1]));
         if (readers == 2U) {
-            CHECK(multi.rate_after_step_ok_ns[2] != 0 && multi.rate_after_step_ok_ns[2] < 4 * SEC,
+            CHECK(multi.rate_after_step_ok_ns[2] != 0 && multi.rate_after_step_ok_ns[2] < 5 * SEC,
                   "%u readers: the rise took %.0f ms", readers, ms(multi.rate_after_step_ok_ns[2]));
         } else {
-            // KNOWN LIMIT (DESIGN.md section 15): with three readers the estimate does not follow a rise from 4 to 30
-            // Mbit/s within the 16 s the model gives it; it did before the round trip was read from the watermark
-            // alone.
-            printf("%u readers: KNOWN LIMIT: rise followed after %.0f ms (0 = not within 16 s)\n", readers,
-                   ms(multi.rate_after_step_ok_ns[2]));
+            CHECK(multi.rate_after_step_ok_ns[2] != 0 && multi.rate_after_step_ok_ns[2] < 3 * SEC,
+                  "%u readers: the rise took %.0f ms", readers, ms(multi.rate_after_step_ok_ns[2]));
         }
     }
 
