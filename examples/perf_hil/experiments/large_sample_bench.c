@@ -322,14 +322,15 @@ static void print_discovery(const struct tt_Context* node) {
     printf(
         " rate_control=%u rate_bps=%llu btlbw_bps=%llu rtprop_ns=%llu rate_rounds=%llu rate_queue_trips=%llu "
         "rate_drop_trips=%llu rate_stall_restarts=%llu rate_rtt_samples=%llu rate_units_sent=%llu rate_held_units=%llu "
-        "rate_top_units=%llu rate_jump_units=%llu rate_delivered_bytes=%llu",
+        "rate_mark_units=%llu rate_jump_units=%llu rate_jump_events=%llu rate_delivered_bytes=%llu",
         (unsigned)node->opts.net.links[0].rate_control, (unsigned long long)rate->ap.rate_bps,
         (unsigned long long)ap_btlbw_bps(&rate->ap), (unsigned long long)ap_rtprop_ns(&rate->ap),
         (unsigned long long)rate->ap.samples, (unsigned long long)rate->ap.queue_trips,
         (unsigned long long)rate->ap.drop_trips, (unsigned long long)rate->ap.stall_restarts,
         (unsigned long long)rate->ap.rtt_samples, (unsigned long long)rate->ap.units_sent,
-        (unsigned long long)rate->ap.held_units, (unsigned long long)rate->ap.top_units,
-        (unsigned long long)rate->ap.jump_units, (unsigned long long)rate->ap.delivered);
+        (unsigned long long)rate->ap.held_units, (unsigned long long)rate->ap.mark_units,
+        (unsigned long long)rate->ap.jump_units, (unsigned long long)rate->ap.jump_events,
+        (unsigned long long)rate->ap.delivered);
 }
 
 static void print_large(const struct tt_Context* node) {

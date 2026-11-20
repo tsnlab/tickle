@@ -385,12 +385,23 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     EXPECT_TRUE(!node.rate[0].adaptive);
     uint64_t rate = pacer_rate_bps();
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, &ack, 100, 0);
-    rate_acknack(&node, 0, &ack, 900, 0);
+    rate_acknack(&node, 0, &ack, 100, 100);
+    rate_acknack(&node, 0, &ack, 900, 900);
     EXPECT_EQ_U64(rate, pacer_rate_bps());
     EXPECT_EQ_U64(0, node.rate[0].ap.delivered);
     EXPECT_EQ_U32(0, ack.rate_units_valid ? 1U : 0U);
     destroy();
+}
+
+// What an ACKNACK shows held (the watermark and the unnamed units inside its bitmap's window).
+static void test_held_units_from_an_acknack(void) {
+    uint64_t none[2] = {0, 0};
+    EXPECT_EQ_U32(1000, rate_units_held(1000, none, 0)); // nothing missing: the watermark
+    uint64_t gaps[2] = {0x5ULL, 0};                      // units 1000 and 1002 missing: held 1000 + (3 - 2)
+    EXPECT_EQ_U32(1001, rate_units_held(1000, gaps, 1));
+    uint64_t wide[2] = {0x1ULL, 0x2ULL}; // units 1000 and 1065 missing: window 66, 2 missing
+    EXPECT_EQ_U32(1000 + 64, rate_units_held(1000, wide, 2));
+    EXPECT_EQ_U32(0, rate_units_held(0xFFFFFFFFU, gaps, 1)); // the watermark wraps, the window follows
 }
 
 static void test_control_datagrams_are_not_units(void) {
@@ -413,53 +424,6 @@ static void test_control_datagrams_are_not_units(void) {
     destroy();
 }
 
-// What an ACKNACK shows held, without the missing count.
-static uint32_t held_only(uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
-    uint32_t missing = 0;
-    return rate_units_held_and_missing(seq_no, bitmap, words, &missing);
-}
-
-// The round trip is read from the send time of the unit an ACKNACK newly shows held - never from the solicitation,
-// which an ACKNACK sent for another reason answers early: that read a few ms on a 10 ms path and collapsed the rate to
-// its floor.
-static void test_the_round_trip_is_from_unit_send_times(void) {
-    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
-    opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
-    create(&opts);
-    struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, &ack, 0, 0); // the baseline
-    uint64_t sent_at = test_mock_now;
-    for (uint32_t i = 0; i < 10; i++) {
-        pace_charge(&node, 0, 1472U, sent_at); // ten data units leave at once
-    }
-    // An ACKNACK that shows nothing new is no sample, however early it comes.
-    test_mock_now = sent_at + 100000ULL;
-    rate_acknack(&node, 0, &ack, 0, 0);
-    EXPECT_EQ_U64(UINT64_MAX, ap_filter_get(&node.rate[0].ap.rtt));
-    // One that shows the tenth unit held, 10 ms after they left, is a 10 ms round trip.
-    test_mock_now = sent_at + 10000000ULL;
-    rate_acknack(&node, 0, &ack, 10, 0);
-    EXPECT_EQ_U64(10000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
-    // A later one showing the same units is none; a slower one for later units does not raise the least.
-    test_mock_now = sent_at + 12000000ULL;
-    rate_acknack(&node, 0, &ack, 10, 0);
-    pace_charge(&node, 0, 1472U, sent_at + 12000000ULL);
-    test_mock_now = sent_at + 60000000ULL;
-    rate_acknack(&node, 0, &ack, 11, 0);
-    EXPECT_EQ_U64(10000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
-    destroy();
-}
-
-static void test_held_units_from_an_acknack(void) {
-    uint64_t none[2] = {0, 0};
-    EXPECT_EQ_U32(1000, held_only(1000, none, 0)); // nothing missing: the watermark
-    uint64_t gaps[2] = {0x5ULL, 0};                // units 1000 and 1002 missing: held 1000 + (3 - 2)
-    EXPECT_EQ_U32(1001, held_only(1000, gaps, 1));
-    uint64_t wide[2] = {0x1ULL, 0x2ULL}; // units 1000 and 1065 missing: window 66, 2 missing
-    EXPECT_EQ_U32(1000 + 64, held_only(1000, wide, 2));
-    EXPECT_EQ_U32(0, held_only(0xFFFFFFFFU, gaps, 1)); // the watermark wraps, the window follows
-}
-
 static void test_readers_pool_into_one_link_count(void) {
     struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
     opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
@@ -471,21 +435,123 @@ static void test_readers_pool_into_one_link_count(void) {
     struct tt_PeerAck a = {0};
     struct tt_PeerAck b = {0};
     // First ACKNACKs are baselines: nothing counted.
-    rate_acknack(&node, 0, &a, 500, 0);
-    rate_acknack(&node, 0, &b, 9000, 0);
+    rate_acknack(&node, 0, &a, 500, 500);
+    rate_acknack(&node, 0, &b, 9000, 9000);
     EXPECT_EQ_U64(0, node.rate[0].ap.held_units);
     // Each reader's advance adds to the one count.
-    rate_acknack(&node, 0, &a, 510, 0);
+    rate_acknack(&node, 0, &a, 510, 510);
     EXPECT_EQ_U64(10, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, &b, 9020, 0);
+    rate_acknack(&node, 0, &b, 9020, 9020);
     EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
     // A reordered, older ACKNACK moves nothing, and does not lower the baseline.
-    rate_acknack(&node, 0, &a, 505, 0);
+    rate_acknack(&node, 0, &a, 505, 505);
     EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, &a, 512, 0);
+    rate_acknack(&node, 0, &a, 512, 512);
     EXPECT_EQ_U64(32, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(32ULL * unit, node.rate[0].ap.delivered);
     destroy();
+}
+
+// The Pi stage 3 (a4db29f4): rtprop read 5-12 us on 10 and 40 ms paths. The round trip was read from the newest unit a
+// report accounts for - held plus the units its bitmap names missing - and a solicitation's HEARTBEAT makes the reader
+// name units the writer has sent that are still in flight, so that unit was one sent a moment ago. Only the watermark
+// is read now, and only where it moved by a few units (a repair that closes a gap moves it over units sent long before:
+// Karn).
+static void test_the_round_trip_reads_the_watermark_only(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+    create(&opts);
+    struct tt_PeerAck ack = {0};
+    rate_acknack(&node, 0, &ack, 0, 0); // the baseline
+    uint64_t t0 = test_mock_now;
+    for (uint32_t unit = 0; unit < 30; unit++) {
+        pace_charge(&node, 0, 1472U, t0 + ((uint64_t)unit * 1000000ULL)); // a unit a ms
+    }
+    // 30 ms on: the watermark is at 10 units; the bitmap names the 20 sent since as missing (in flight), which a count
+    // of held + named would read as the newest sent unit, a round trip of 1 ms.
+    test_mock_now = t0 + 30000000ULL;
+    rate_acknack(&node, 0, &ack, 30, 3);
+    EXPECT_EQ_U64(1, node.rate[0].ap.rtt_samples); // the watermark moved by 3 units: a sample
+    // The sample is the time since the unit under the watermark was sent: unit 2, at 2 ms.
+    EXPECT_EQ_U64(28000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
+    destroy();
+}
+
+// Karn: a watermark that jumps over many units (a repair closed a gap) is no sample; and one early bad sample does not
+// make the round trip: the estimate is the median of the buckets' minima.
+static void test_a_repair_is_no_round_trip_and_one_bad_sample_is_outvoted(void) {
+    struct ap_pacer ctl;
+    ap_init(&ctl, 100000ULL, 1000000000ULL, 0, 0, 1538U);
+    uint64_t now = 1000000000ULL;
+    for (uint32_t unit = 0; unit < 200; unit++) {
+        ap_note_data_sent(&ctl, now, 1538U, 1U);
+    }
+    ap_on_feedback(&ctl, now + 10000000ULL, 100, 100); // 100 units at once: a repair's arrival
+    EXPECT_EQ_U64(0, ctl.rtt_samples);
+    ap_on_feedback(&ctl, now + 20000000ULL, 102, 102); // 2 units: a sample
+    EXPECT_EQ_U64(1, ctl.rtt_samples);
+    // Samples in five buckets of the filter, one of them 5 us: the round trip is the median, 10 ms.
+    struct ap_pacer filt;
+    ap_init(&filt, 100000ULL, 1000000000ULL, 0, 0, 1538U);
+    uint64_t t = 1000000000ULL;
+    uint64_t rtts[5] = {10000000ULL, 5000ULL, 10100000ULL, 10200000ULL, 10300000ULL};
+    for (uint32_t idx = 0; idx < 5; idx++) {
+        ap_filter_put(&filt.rtt, rtts[idx], t);
+        t += 1300000000ULL; // one bucket on
+    }
+    EXPECT_TRUE(ap_rtprop_ns(&filt) >= 10000000ULL);
+    EXPECT_TRUE(ap_rtprop_ns(&filt) <= 10300000ULL);
+}
+
+// The rate swings of the Pi stage (250 kbit/s .. the 1 Gbit/s cap): START doubles three rounds past a link's rate
+// before it sees it, and a round that delivers four times the rate (a watermark moving at a repair's arrival) was read
+// as such. START holds at 1.25 times its best round on the first round that does not grow, and a round's delivery is
+// read at most 1.5 times the rate it was sent at.
+static void test_start_does_not_run_past_the_link_and_a_spike_is_capped(void) {
+    struct ap_pacer ctl;
+    ap_init(&ctl, 100000ULL, 1000000000ULL, 0, 0, 1538U);
+    uint64_t now = 1000000000ULL;
+    uint64_t link_bps = 4000000ULL;
+    uint64_t sent_units = 0;
+    uint64_t held = 0;
+    uint64_t max_rate = 0;
+    uint64_t credit_bits = 0;
+    uint64_t link_credit = 0;
+    for (uint32_t step = 0; step < 4000; step++) { // 1 ms steps for 4 s on a 4 Mbit/s link
+        now += 1000000ULL;
+        const uint64_t unit_bits = 1538ULL * 8ULL;
+        credit_bits += ap_rate_bps(&ctl) / 1000ULL; // what the rate sends in this ms
+        uint64_t units = credit_bits / unit_bits;
+        credit_bits -= units * unit_bits;
+        for (uint64_t unit = 0; unit < units; unit++) {
+            ap_note_data_sent(&ctl, now, 1538U, 1U);
+            ap_note_send(&ctl, now, 1538U, false);
+        }
+        sent_units += units;
+        link_credit += link_bps / 1000ULL; // what the link carries in this ms
+        uint64_t can_hold = link_credit / unit_bits;
+        link_credit -= can_hold * unit_bits;
+        uint64_t take = held + can_hold < sent_units ? can_hold : sent_units - held;
+        held += take;
+        ap_on_feedback(&ctl, now, held, held);
+        max_rate = ap_rate_bps(&ctl) > max_rate ? ap_rate_bps(&ctl) : max_rate;
+    }
+    printf("test_rate_control: START on a 4 Mbit/s link peaks at %.1f Mbit/s\n", (double)max_rate / 1e6);
+    EXPECT_TRUE(max_rate <= 4ULL * link_bps); // doubling past the link once or twice, not three rounds of it
+    // A spike: one round whose delivered count is six times what the round sent.
+    struct ap_pacer spike;
+    ap_init(&spike, 100000ULL, 1000000000ULL, 0, 0, 1538U);
+    spike.state = AP_CRUISE;
+    spike.rate_bps = 4000000ULL;
+    ap_filter_reset(&spike.bw, 4000000ULL, 0);
+    uint64_t t0 = 5000000000ULL;
+    for (uint32_t unit = 0; unit < 400; unit++) {
+        ap_note_data_sent(&spike, t0, 1538U, 1U);
+    }
+    ap_note_send(&spike, t0, 60ULL * 1538ULL, false);
+    ap_on_feedback(&spike, t0, 0, 0);
+    ap_on_feedback(&spike, t0 + 100000000ULL, 400, 400); // 400 units delivered in a round that sent 60 at 4 Mbit/s
+    EXPECT_TRUE(ap_btlbw_bps(&spike) <= 6000000ULL);     // read as at most 1.5 x 4 Mbit/s
 }
 
 // A watermark that moves over units nobody held - a sample evicted or given up, its units passed at once - is not
@@ -500,16 +566,16 @@ static void test_a_watermark_jump_is_not_delivery(void) {
         pace_charge(&node, 0, 1472U, test_mock_now);
     }
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, &ack, 1000, 0); // the baseline
-    rate_acknack(&node, 0, &ack, 1050, 0); // 50 held
+    rate_acknack(&node, 0, &ack, 1000, 1000); // the baseline
+    rate_acknack(&node, 0, &ack, 1050, 1050); // 50 held
     EXPECT_EQ_U64(50, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, &ack, 1800, 0); // the watermark jumps 750 units: only 100 were ever sent
+    rate_acknack(&node, 0, &ack, 1800, 1800); // the watermark jumps 750 units: only 100 were ever sent
     EXPECT_EQ_U64(100, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
     for (uint32_t i = 0; i < 20; i++) {
         pace_charge(&node, 0, 1472U, test_mock_now); // 20 more go and are held
     }
-    rate_acknack(&node, 0, &ack, 1820, 0);
+    rate_acknack(&node, 0, &ack, 1820, 1820);
     EXPECT_EQ_U64(120, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
     destroy();
@@ -527,8 +593,6 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
     uint64_t snapshot_at = 0; // the solicitation reaches the reader: what it holds then is what it reports
     uint64_t reply_at = 0;
     uint64_t held_at_solicit = 0;
-    uint64_t dropped_units = 0; // the units the queue dropped: what the reader names missing, never repaired here
-    uint64_t missing_at_solicit = 0;
     bool outstanding = false;
     bool snapped = false;
     const uint64_t base_rtt = 20ULL * 1000000ULL;
@@ -550,8 +614,6 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
         queue -= carried;
         delivered_bytes += carried;
         if (queue > queue_bytes) {
-            dropped_units +=
-                (queue - queue_bytes + 1537U) / 1538U; // tail drop: a repair would follow, not modelled here
             queue = queue_bytes;
         }
         if (queue > *queue_peak) {
@@ -563,11 +625,10 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
             snapped = false;
         } else if (!snapped && test_mock_now >= snapshot_at) {
             held_at_solicit = delivered_bytes / 1538U;
-            missing_at_solicit = dropped_units;
             reply_at = test_mock_now + (base_rtt / 2U); // and back
             snapped = true;
         } else if (snapped && test_mock_now >= reply_at) {
-            rate_acknack(&node, 0, &ack, (uint32_t)held_at_solicit, (uint32_t)missing_at_solicit);
+            rate_acknack(&node, 0, &ack, (uint32_t)held_at_solicit, (uint32_t)held_at_solicit);
             outstanding = false;
         }
         if ((t + step) % tt_SECOND == 0) {
@@ -623,9 +684,11 @@ int main(void) {
     test_validation();
     test_adaptive_starts_between_floor_and_cap();
     test_control_datagrams_are_not_units();
-    test_the_round_trip_is_from_unit_send_times();
     test_held_units_from_an_acknack();
     test_readers_pool_into_one_link_count();
+    test_the_round_trip_reads_the_watermark_only();
+    test_a_repair_is_no_round_trip_and_one_bad_sample_is_outvoted();
+    test_start_does_not_run_past_the_link_and_a_spike_is_capped();
     test_a_watermark_jump_is_not_delivery();
     test_the_bucket_follows_the_link();
     test_a_large_send_on_an_adaptive_link();
