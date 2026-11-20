@@ -35,7 +35,7 @@
 #define AP_PROBE_GAIN_PCT 125U          // CRUISE probes at this x BtlBw for one round, then drains at the next
 #define AP_PROBE_RUN_GAIN_PCT 200U      // the next probe after one that raised the delivery rate: the link got faster
 #define AP_DRAIN_GAIN_PCT 75U           // the round after a probe, and while the queue is over its target
-#define AP_PROBE_RISE_PCT 110U          // a probe that raised the delivery rate by this much is followed by another
+#define AP_PROBE_RISE_PCT 105U          // a probe that raised the delivery rate by this much is followed by another
 #define AP_MIN_SAMPLE_BYTES \
     24000U // a delivery-rate sample spans at least this much delivered, so that a
            // unit more or less is a small part of it (the BDP is a few frames)
@@ -53,6 +53,9 @@
 #define AP_APP_LIMITED_PCT 80U           // a round that sent less than this of its allowance is application-limited
 #define AP_IDLE_RESTART_NS 1000000000ULL // quiet this long: the next send starts in START at the remembered rate
 #define AP_INFLIGHT_GAIN_PCT 200U        // data in flight is held to this x BtlBw x RTprop
+#define AP_CAP_UNSET_BPS 10000000000ULL  // a cap at or above this is no cap
+#define AP_START_CAP_DIV 16U             // START begins at this fraction of a set cap ...
+#define AP_START_MAX_BPS 8000000ULL      // ... but not above this (a 1 Gbit/s cap is no sign of the link)
 #define AP_START_RATE_BPS 1000000ULL     // the rate a send starts at, clamped to [floor, cap], before any is measured
 #define AP_NS_PER_SECOND 1000000000ULL   // time and rate arithmetic
 #define AP_PERCENT 100U
@@ -267,6 +270,14 @@ static inline uint64_t ap_clamp_rate(const struct ap_pacer* ctl, uint64_t rate) 
     return ap_min_u64(ap_max_u64(rate, ctl->min_bps), ctl->cap_bps);
 }
 
+// Where a search starts: a sixteenth of the link rate or cap when one is set, at most AP_START_MAX_BPS (a 30 Mbit/s
+// link at 1 Mbit/s needed five doublings of 100-200 ms each, longer than a 128 KiB sample), else AP_START_RATE_BPS.
+static inline uint64_t ap_start_rate_bps(const struct ap_pacer* ctl) {
+    bool capped = ctl->cap_bps != 0 && ctl->cap_bps < AP_CAP_UNSET_BPS;
+    return capped ? ap_min_u64(ap_max_u64(AP_START_RATE_BPS, ctl->cap_bps / AP_START_CAP_DIV), AP_START_MAX_BPS)
+                  : AP_START_RATE_BPS;
+}
+
 // seed_rtt_ns: a first round trip to the peer (tt_Context.announce_rtt_ns), 0 = AP_SEED_RTT_NS.
 static inline void ap_init(struct ap_pacer* ctl, uint64_t min_bps, uint64_t cap_bps, uint64_t queue_cfg_ns,
                            uint64_t seed_rtt_ns, uint64_t unit_bytes) {
@@ -281,7 +292,7 @@ static inline void ap_init(struct ap_pacer* ctl, uint64_t min_bps, uint64_t cap_
     ap_filter_init(&ctl->rtt, false, AP_RTT_WINDOW_NS / AP_BUCKETS);
     ctl->state = AP_START;
     ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
-    ctl->rate_bps = ap_clamp_rate(ctl, AP_START_RATE_BPS);
+    ctl->rate_bps = ap_clamp_rate(ctl, ap_start_rate_bps(ctl));
 }
 
 // The rate to pace the link at, bits/s.
@@ -316,7 +327,6 @@ static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
     ctl->round_sent = 0;
     ctl->round_repair = 0;
     ctl->round_units0 = ctl->units_sent;
-    ctl->stall_start_ns = 0;
 }
 
 // Quiet for AP_IDLE_RESTART_NS: the remembered rate may be stale. The send starts again from it, keeping the filters
@@ -332,7 +342,7 @@ static inline void ap_restart_after_idle(struct ap_pacer* ctl, uint64_t now) {
     ctl->draining = false;
     ctl->rounds_since_probe = AP_PROBE_EVERY_ROUNDS - 1U;
     ap_round_begin(ctl, now);
-    ctl->rate_bps = ap_clamp_rate(ctl, bandwidth != 0 ? bandwidth : AP_START_RATE_BPS);
+    ctl->rate_bps = ap_clamp_rate(ctl, bandwidth != 0 ? bandwidth : ap_start_rate_bps(ctl));
 }
 
 // The caller sent `bytes` (a repair or new data) at `now`.
@@ -359,6 +369,9 @@ static inline void ap_note_repair(struct ap_pacer* ctl, uint64_t bytes) {
 
 // A data datagram of `units` units (an original send, not a repair) of `wire` bytes left at `now`.
 static inline void ap_note_data_sent(struct ap_pacer* ctl, uint64_t now, uint64_t wire, uint32_t units) {
+    if (ctl->held_units >= ctl->units_sent) {
+        ctl->stall_start_ns = now; // sending into an empty pipe: the stall clock starts here, not at the round start
+    }
     for (uint32_t unit = 0; unit < units; unit++) {
         ctl->stamp_ns[ctl->units_sent % AP_STAMPS] = now;
         ctl->units_sent++;
@@ -411,6 +424,7 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
 // Search again from the start rate: nothing is known of the link.
 static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->stall_restarts++;
+    ctl->stall_start_ns = 0;
     uint64_t quarter = ap_btlbw_bps(ctl) / 4U; // what was known is not forgotten: START resumes from a quarter of it
     ap_filter_reset(&ctl->bw, quarter, ctl->rounds);
     ctl->state = AP_START;
@@ -420,7 +434,7 @@ static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->draining = false;
     ctl->low_rounds = 0;
     ctl->queue_over = 0;
-    ctl->rate_bps = ap_clamp_rate(ctl, ap_max_u64(AP_START_RATE_BPS, quarter));
+    ctl->rate_bps = ap_clamp_rate(ctl, ap_max_u64(ap_start_rate_bps(ctl), quarter));
     ap_round_begin(ctl, now);
 }
 
@@ -640,6 +654,7 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t h
     uint64_t mark = mark_units > ctl->jump_units ? mark_units - ctl->jump_units : 0;
     mark = ap_min_u64(mark, held);
     if (held > ctl->held_units) {
+        ctl->stall_start_ns = now; // news: the stall clock restarts
         ctl->held_units = held;
         ctl->delivered = held * ctl->unit_bytes;
     }
@@ -659,7 +674,10 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t h
     if (bytes == 0) {
         // Nothing delivered: no sample - a round with no news says nothing of the link. Sending for AP_STALL_NS with
         // none is the link gone or the estimate wrong: search again.
-        if (ctl->units_sent - ctl->round_units0 >= AP_STALL_MIN_UNITS && elapsed >= AP_STALL_NS) {
+        // The clock runs from the last news or the first send into an empty pipe - an idle gap between samples is no
+        // stall (v5: 5-10 false stall restarts per run, each forgot the rate and fell to 1 Mbit/s).
+        if (ctl->units_sent - ctl->round_units0 >= AP_STALL_MIN_UNITS && ctl->stall_start_ns != 0 &&
+            now - ctl->stall_start_ns >= AP_STALL_NS) {
             ap_restart_search(ctl, now);
         }
         return;
