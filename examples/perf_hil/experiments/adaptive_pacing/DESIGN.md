@@ -331,3 +331,45 @@ Causes, in the order the evidence showed them, each fixed and tested:
 
 Not verified: the Pis. The model, the unit tests and a one-host loopback pass; `wifitc/wtc_chainD.sh s1` on the tc links is
 the check, the quick test being 15 of 15 delivered at 1 MiB in every cell.
+
+## 14. The quick test of 7f9aff89 on the Pis, and the second round (2026-11-20)
+
+Quick test (1 MiB, 1 rep, tc links): delivered of 15 - M1 15 and 6, M2 8 and 5, S1 6 and 11, S2 9 and 7; `rtprop` 0.02-0.07 ms on 10 and
+40 ms paths in half the runs; `btlbw` 0 with the rate at the cap or at the 1 Mbit/s start; 33-50 thousand retransmissions in four runs.
+The model of section 13 did not show it. A trace on a loopback did (`tt_RATE_TRACE`, one line a round: per-round delivered, round trip,
+rate, counts), and the model now has what it lacked: a tail-dropping netem queue at 10 and 40 ms, independent and Gilbert-Elliott
+bursty loss at the M1/M2/S1/S2 settings, readers that report by their retry timer and **leave out of their bitmaps what they named
+within a round trip and a half**, and a **watermark that jumps over units nobody held**. What was found:
+
+1. **A watermark jump read as delivery.** When a sample is evicted or given up, the reader's watermark passes its units at once; the
+   count advanced by hundreds of units, a megabyte "delivered" in one ACKNACK, the estimate ran to its cap, the cap lost most of it, and the
+   guards then took BtlBw to 0 - the pattern of the Pi runs (rate at the cap, BtlBw 0, retransmissions in the tens of thousands). The
+   model with a jump every 5 s: the old estimator runs to the 100 Mbit/s cap on a 4 Mbit/s link with 75 % repairs. A count past what was sent
+   cannot be delivery: the excess is a jump and is left out for good (`ap_on_feedback()`, `test_a_watermark_jump_is_not_delivery`).
+   A jump smaller than the data in flight cannot be told apart; one such costs a short spike, not a collapse.
+2. **Reports were as late as the send cursor.** The solicitations were sent from the send cursor, which wakes once per datagram; with a
+   run of 44 units (68 kB) at a few Mbit/s that is once every few hundred ms. A report that late reads as a round trip of the interval,
+   the queue guard drained, the send slowed, the next report was later: a spiral to the floor, seen in the trace (the round trip sample equal
+   to the round's length, the rate falling by a quarter a round). Solicitations now go out on a timer while a large send runs
+   (`rate_solicit_timer()`), and the queue target and the solicitation spacing are set by what a report can resolve - four units or one
+   data datagram of send time at the pacing rate (`ap_report_resolution_ns()`), whichever is more.
+3. **Units per datagram.** A run of n units is one datagram of n frames: the units are now counted from the wire size
+   (`wire / unit_wire`), not one per datagram; delivered bytes are held units x the unit size (an average of datagram sizes was ten to
+   forty times too large with runs).
+4. A try without the queue guard (the round trip no longer steering the rate) failed in the model - queue 55-110 ms, 20-26 % repairs, the rate
+   at the floor on S1/S2 - and was dropped; the guard stays, with the larger target.
+
+Model checks that are looser than before, as a consequence of the larger target: the mean queue delay of a single reader on 4 Mbit/s is
+below 20 ms (was 10), the 2 and 3 reader runs below 20 ms (was 15), the rate on a 4 Mbit/s link with watermark jumps below 50 Mbit/s.
+
+**Reading a Pi run from one run.** The `large` build of `t1_build_node.sh` now sets `tt_RATE_TRACE`: the near and far files hold one
+`RATETRACE` line per round (`t_ms`, round length, delivered bytes and rate, bytes sent and allowed, BtlBw, rate, state, phase, RTprop, the
+last round trip sample, held/top/sent unit counts, jump units), and the RESULT line carries `rate_stall_restarts`, `rate_rtt_samples`,
+`rate_units_sent`, `rate_held_units`, `rate_top_units`, `rate_jump_units`, `rate_delivered_bytes`. A healthy run: `held` follows
+`units_sent` within the data in flight, `jump` stays small, `rtprop_us` is above the path's round trip.
+
+**Is the estimator the right design?** See the answer given with the hand-back of this round: it has four estimates (delivery, round
+trip, queue, loss) that all read one noisy feedback (an ACKNACK that counts samples, units and repairs in ways that change with loss,
+eviction and runs), and each of the two failures found since the first Pi run was one of them misreading that feedback. A smaller design
+- the delivery rate from the watermark alone, a loss-based AIMD on the share of repairs, no round trip steering - has fewer ways to be wrong
+but, as the try in item 4 showed in the model, needs something to bound the queue on a link that tail-drops late.

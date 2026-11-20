@@ -33,6 +33,6 @@ if [ "$SUF" = _d100 ]; then
         -I"$W/examples/perf_hil/tickle/common" -o "$T/node_d100lg" "$tmp/wifi_link_node_d100.c" $SRC -lpthread -lm
 fi
 # shellcheck disable=SC2086
-cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS \
+cc -O2 -DNDEBUG -Wall -Wextra -Dtt_RATE_TRACE -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 -Dtt_RELIABLE_STATS \
     -I"$W/include" -I"$W/src" -o "$T/large" "$E/large_sample_bench.c" $SRC -lpthread -lm
 echo "BUILD_OK $T (tree $W)"
