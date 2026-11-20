@@ -82,6 +82,7 @@ struct result {
     uint64_t queue_delay_sum_ns;
     uint64_t queue_delay_n;
     uint64_t rate_after_step_ok_ns[3]; // time after each step until BtlBw is within 25 % of the link rate; 0 = never
+    uint64_t max_step_x100; // the largest change of the pacing rate from one step to the next, x100, after 5 s
     uint64_t max_rate_bps;
     uint64_t min_rate_bps;
     uint64_t trips_q, trips_d;
@@ -239,6 +240,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     uint64_t reported_missing[MAX_READERS] = {0}; // what the writer last heard each reader had
     uint64_t srtt = 2 * cfg->one_way_ns;
     uint64_t rate_ok_since[3] = {0, 0, 0};
+    uint64_t prev_rate_bps = 0;
     uint64_t sample_period_start = 0;
     (void)sample_period_start;
 
@@ -483,6 +485,14 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                    (double)ap_rate_bps(&ap) / 1e6, ms(ap_rtprop_ns(&ap)), (int)ap.state, (int)ap.phase,
                    (int)ap.draining, qbytes);
         }
+        if (mode == MODE_ADAPTIVE) {
+            uint64_t now_rate = ap_rate_bps(&ap);
+            if (prev_rate_bps != 0 && now > 5000000000ULL) {
+                uint64_t step_x100 = ap_max_u64(now_rate, prev_rate_bps) * 100U / ap_min_u64(now_rate, prev_rate_bps);
+                out->max_step_x100 = ap_max_u64(out->max_step_x100, step_x100);
+            }
+            prev_rate_bps = now_rate;
+        }
         // 8. convergence of the estimate after a step, against the link's own rate (adaptive runs)
         if (mode == MODE_ADAPTIVE && sampling) {
             uint64_t c = link_rate(cfg, now);
@@ -680,6 +690,9 @@ int main(void) {
     print_result("adaptive", &adaptive);
     CHECK(adaptive.samples_done >= 8U, "adaptive completes the samples: %u", adaptive.samples_done);
 
+    CHECK(adaptive.max_step_x100 <= 800U, "the rate changed by x%.1f in one step",
+          (double)adaptive.max_step_x100 / 100.0);
+
     // 3. rate step 30 -> 4 -> 30 Mbit/s, bulk (back-to-back samples)
     struct link_cfg step = {{30000000ULL, 4000000ULL, 30000000ULL}, 8 * SEC, 24 * SEC, 60U * UNIT_WIRE, 10000000ULL};
     run(&step, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 0, 40 * SEC, 1U, &adaptive);
@@ -690,6 +703,8 @@ int main(void) {
     printf("BtlBw within 25 %% of the link: %.0f ms after start, %.0f ms after the drop, %.0f ms after the rise\n",
            ms(adaptive.rate_after_step_ok_ns[0]), ms(adaptive.rate_after_step_ok_ns[1]),
            ms(adaptive.rate_after_step_ok_ns[2]));
+    CHECK(adaptive.max_step_x100 <= 800U, "the step run changed the rate by x%.1f in one step",
+          (double)adaptive.max_step_x100 / 100.0);
     CHECK(adaptive.rate_after_step_ok_ns[0] != 0, "the estimate never reached the first rate");
     CHECK(adaptive.rate_after_step_ok_ns[1] != 0, "the estimate never followed the drop");
     CHECK(adaptive.rate_after_step_ok_ns[2] != 0, "the estimate never followed the rise");
