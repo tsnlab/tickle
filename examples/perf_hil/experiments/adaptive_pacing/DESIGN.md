@@ -373,3 +373,39 @@ trip, queue, loss) that all read one noisy feedback (an ACKNACK that counts samp
 eviction and runs), and each of the two failures found since the first Pi run was one of them misreading that feedback. A smaller design
 - the delivery rate from the watermark alone, a loss-based AIMD on the share of repairs, no round trip steering - has fewer ways to be wrong
 but, as the try in item 4 showed in the model, needs something to bound the queue on a link that tail-drops late.
+
+## 15. Pi quick test 3 (a4db29f4) and the third round (2026-11-20)
+
+Quick test 3 (1 MiB, traced): delivered 15, 14, 15, 15, 15, 15, 12, 14 of 15 (M1, M1, M2, M2, S1, S1, S2, S2); no run at the floor; S1 p50
+2.3 s against the oracle's 2.37 s. Left: (1) `rtprop` microseconds in 5 of 8 runs; (2) the jump counter non-zero in nearly every trace line;
+(3) the rate swinging from 250 kbit/s to the cap a round, 2000-5000 retransmissions a run.
+
+1. **`rtprop` of microseconds.** The trace of S1 shows it: the sample was taken when `top == units_sent` - the newest sent unit - 562 us
+   after its send on a 10 ms path. `top` was held plus the units the bitmap names missing; a solicitation's HEARTBEAT carries the
+   writer's last sequence number, so the reader names every unit up to it that it has not received, **including units still in flight**, and the unit
+   at `top` was one sent a moment ago. Now the round trip is read from the watermark alone (every unit below it is received, for
+   certain; `test_the_round_trip_reads_the_watermark_only`), only where the watermark moved by at most four units or two data
+   datagrams (a repair that closes a gap moves it over units sent long before: Karn's rule;
+   `test_a_repair_is_no_round_trip_and_one_bad_sample_is_outvoted`), and the estimate is the median of the filter's bucket minima, so
+   one early bad sample is outvoted by the others. Delivery still reads the count with the bitmap window (the watermark alone moves in jumps at
+   each repair's arrival and the estimate followed them: in the model the M1 retransmissions went from 150 to 5600).
+2. **The jump counter** is cumulative: it was non-zero in every line after the first. What it counts is real and small: the last short
+   fragment of a sample is a sequence number and not a stamped unit, so the watermark runs about one unit per sample ahead of the
+   stamped units (8-19 units in 15 samples, as seen). `jump_events` (new) counts the reports that did it. It is not a defect of the rule, which
+   fires for a jump of hundreds of units and costs a unit or two here.
+3. **Swings.** (a) START doubled three rounds past a link before it saw it: it now holds at 1.25 times its best round on the first round that
+   does not grow (`test_start_does_not_run_past_the_link_and_a_spike_is_capped`: on a 4 Mbit/s link it peaks at 16 Mbit/s, 4 times the
+   link). (b) A round's delivery is read at most 1.5 times the rate it was sent at, so a watermark that moves at a repair's arrival is not read
+   as four times the link. (c) A drain lasts at most four rounds: the round trip that ends it is now rarer. The cap on the rate is still the user's
+   `pacing_rate` (the WIFI profile's `link_rate`, 1 Gbit/s, if unset): **on a link with a small queue set the cap near the link**.
+
+**Regressions, stated.** Reading the round trip from the watermark alone and only from small advances gives the queue guard fewer
+samples, so a standing queue is longer-lived and the round trip estimate can follow it up: in the model the single-reader step test (4 to 30 Mbit/s)
+now follows the rise in 3.0 s (0.25 s before), and **with three readers it does not follow the rise within 16 s** (1.7 s before; recorded as
+`KNOWN LIMIT` in `tests/test_adaptive_pacing.c`, not as a check). The mean queue delay of the single-reader 4 Mbit/s case is 25.7 ms (12.6 before); the
+checks are loosened to 30 ms. On the model's tc links (M1/M2/S1/S2: 1 MiB every 4 s for 68 s) all four deliver 14-17 of 17 samples with
+repairs of 116-989 against the 95 % oracle's 113-727 and datagrams within 1.04-1.1 of it, a result the previous round also had (the model did not
+reproduce the Pi's failures in either round).
+
+**An honest read.** Three rounds on the Pis each removed a failure and the model has not predicted the next one; every one of them was one of the
+estimator's signals misreading the ACKNACK. See the recommendation with the hand-back.

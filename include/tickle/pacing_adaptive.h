@@ -60,8 +60,20 @@
 #define AP_RECENT_RTTS 2U // the queue guard reads the least of this many latest round trip samples
 #define AP_SOLICIT_UNITS \
     4U // solicitations are at least this many data units of send time apart (a few per cent of the rate)
-#define AP_DGRAM_EWMA_DIV 16U       // the average data datagram moves a sixteenth of the way to each
-#define AP_STAMPS 256U              // send times kept, one per data unit sent: the round trip of a unit shown delivered
+#define AP_DGRAM_EWMA_DIV 16U // the average data datagram moves a sixteenth of the way to each
+#define AP_SAMPLE_CAP_PCT \
+    150U // a round's delivery rate is read at most this share of the rate it was sent at: delivery cannot
+         // outrun the sends but for what was in flight, and a watermark that moves at a repair's arrival
+         // or a jump read as a round that delivered four times the link
+#define AP_RTT_MIN_ADVANCE_UNITS \
+    4U // a round trip sample is taken only where the watermark moved by at most this many units, or two
+       // data datagrams (a unit it moved to by a repair was sent long before it was shown: Karn)
+#define AP_START_HOLD_PCT \
+    125U // when START finds the link's rate it holds this share of the best round, not another doubling
+#define AP_DRAIN_MAX_ROUNDS \
+    4U                 // a drain (the queue over its target) lasts at most this many rounds: the evidence that ends it
+                       // is a round trip sample, and a send with few of them would otherwise drain for good
+#define AP_STAMPS 256U // send times kept, one per data unit sent: the round trip of a unit shown delivered
 #define AP_STALL_NS 1000000000ULL   // sending this long with nothing delivered restarts the search
 #define AP_BW_RESET_FRACTION 4U     // a guard trip lowers BtlBw to at most this fraction of it in one step
 #define AP_MIN_INFLIGHT_BYTES 3000U // the least the in-flight cap is, two full frames and a little
@@ -102,11 +114,12 @@ struct ap_pacer {
     uint32_t probe_gain_pct;             // this probe round's gain over BtlBw
     uint64_t probe_base_bps;             // the BtlBw a probe round started from
     bool draining;                       // the queue is over its target: run below the delivery rate until it is not
+    uint32_t drain_rounds;               // rounds this drain has lasted
     uint32_t queue_over;                 // consecutive rounds over the queue target
     uint64_t recent_rtt[AP_RECENT_RTTS]; // the last round trip samples, newest overwriting oldest
     uint32_t recent_n;                   // samples taken, saturating at AP_RECENT_RTTS
     uint64_t units_sent;                 // data units sent, originals only (a repair is not a new unit)
-    uint64_t top_units;  // data units shown received, or lost in front of a received one, pooled (cumulative)
+    uint64_t mark_units; // the watermarks, pooled, less jump_units (cumulative): what is certainly received
     uint64_t held_units; // data units shown received, pooled, less jump_units (cumulative)
     uint64_t
         jump_units; // units a watermark moved over that were never sent: not delivery (an evicted or abandoned sample)
@@ -120,6 +133,7 @@ struct ap_pacer {
     uint64_t queue_trips;
     uint64_t drop_trips;
     uint64_t stall_restarts;
+    uint64_t jump_events; // reports that moved the watermark past what was sent
     uint64_t rtt_samples; // round trip samples taken
 };
 
@@ -188,9 +202,29 @@ static inline uint64_t ap_filter_get(const struct ap_filter* flt) {
     return best;
 }
 
+// The path's round trip: the median of the minima of the buckets that have a sample - a single early bad sample poisons
+// one bucket of the filter, not the estimate; with fewer than three buckets, the least.
 static inline uint64_t ap_rtprop_ns(const struct ap_pacer* ctl) {
-    uint64_t rtt = ap_filter_get(&ctl->rtt);
-    return rtt == UINT64_MAX ? ctl->seed_rtt_ns : rtt;
+    uint64_t minima[AP_BUCKETS];
+    uint32_t count = 0;
+    for (uint32_t idx = 0; idx < AP_BUCKETS; idx++) {
+        if (ctl->rtt.value[idx] != UINT64_MAX) {
+            minima[count++] = ctl->rtt.value[idx];
+        }
+    }
+    if (count == 0) {
+        return ctl->seed_rtt_ns;
+    }
+    for (uint32_t outer = 1; outer < count; outer++) { // insertion sort of at most AP_BUCKETS values
+        uint64_t value = minima[outer];
+        uint32_t pos = outer;
+        while (pos > 0 && minima[pos - 1U] > value) {
+            minima[pos] = minima[pos - 1U];
+            pos--;
+        }
+        minima[pos] = value;
+    }
+    return count < 3U ? minima[0] : minima[count / 2U];
 }
 
 static inline uint64_t ap_btlbw_bps(const struct ap_pacer* ctl) {
@@ -391,6 +425,10 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
         ctl->state = AP_CRUISE;
         ctl->rate_bps = ap_clamp_rate(ctl, bandwidth);
         ctl->rounds_since_probe = 0;
+    } else if (ctl->stalls != 0) {
+        // The first round that did not grow: the link's rate is about here. Hold at the best round so far, not another
+        // doubling (three doublings past a 4 Mbit/s link are 32 Mbit/s of loss).
+        ctl->rate_bps = ap_clamp_rate(ctl, bandwidth * AP_START_HOLD_PCT / AP_PERCENT);
     } else {
         ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * 2U);
     }
@@ -398,6 +436,9 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
 
 // CRUISE: BtlBw, a probe round now and then, and a drain round after a probe that found nothing.
 static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* round, uint64_t bandwidth) {
+    if (ctl->draining && ++ctl->drain_rounds >= AP_DRAIN_MAX_ROUNDS) {
+        ctl->draining = false;
+    }
     ctl->rounds_since_probe++;
     if (ctl->phase == AP_PH_PROBE) {
         // A probe that raised the delivery rate is followed by another at once (the link got faster); one that did
@@ -463,6 +504,7 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
     ctl->queue_over = 0;
     ctl->phase = AP_PH_CRUISE;
     ctl->draining = true;
+    ctl->drain_rounds = 0;
     if (ctl->state == AP_START) {
         ctl->state = AP_CRUISE;
     }
@@ -480,9 +522,10 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     uint64_t elapsed = now - ctl->round_start_ns;
     uint64_t allowance = (ctl->rate_bps / AP_BITS_PER_BYTE) * elapsed / AP_NS_PER_SECOND;
-    struct ap_round round = {.sample_bps = ap_delivery_rate_bps(ctl, elapsed),
-                             .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
-                             .idle = ctl->round_sent == 0};
+    struct ap_round round = {
+        .sample_bps = ap_min_u64(ap_delivery_rate_bps(ctl, elapsed), ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
+        .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
+        .idle = ctl->round_sent == 0};
     uint64_t bandwidth = ap_btlbw_bps(ctl);
     ctl->samples++;
     if (!round.idle) {
@@ -500,7 +543,8 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     fprintf(
         stderr,
         "RATETRACE t_ms=%llu el_ms=%.1f bytes=%llu sample_kbit=%llu sent=%llu allow=%llu app=%d idle=%d bw_kbit=%llu "
-        "rate_kbit=%llu st=%d ph=%d rtprop_us=%llu rtt_last_us=%llu held=%llu top=%llu units_sent=%llu jump=%llu "
+        "rate_kbit=%llu st=%d ph=%d rtprop_us=%llu rtt_last_us=%llu held=%llu units_sent=%llu jump=%llu "
+        "jump_events=%llu "
         "qover=%u drain=%d\n",
         (unsigned long long)(now / 1000000ULL), (double)elapsed / 1e6,
         (unsigned long long)(ctl->delivered - ctl->round_delivered), (unsigned long long)(round.sample_bps / 1000ULL),
@@ -508,8 +552,8 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
         (unsigned long long)(bandwidth / 1000ULL), (unsigned long long)(ctl->rate_bps / 1000ULL), (int)ctl->state,
         (int)ctl->phase, (unsigned long long)(ap_rtprop_ns(ctl) / 1000ULL),
         (unsigned long long)(ctl->recent_rtt[(ctl->recent_n + AP_RECENT_RTTS - 1U) % AP_RECENT_RTTS] / 1000ULL),
-        (unsigned long long)ctl->held_units, (unsigned long long)ctl->top_units, (unsigned long long)ctl->units_sent,
-        (unsigned long long)ctl->jump_units, (unsigned)ctl->queue_over, (int)ctl->draining);
+        (unsigned long long)ctl->held_units, (unsigned long long)ctl->units_sent, (unsigned long long)ctl->jump_units,
+        (unsigned long long)ctl->jump_events, (unsigned)ctl->queue_over, (int)ctl->draining);
 #endif
     bandwidth = ap_drop_guard(ctl, &round, bandwidth);
     if (ctl->state == AP_START) {
@@ -523,16 +567,19 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     ap_round_begin(ctl, now);
 }
 
-// A round trip sample from the newest unit a report shows received (pooled over the readers): the report cannot have
-// been sent before that unit arrived, so now less the unit's send time is never less than the path's round trip.
-// top_units counts the units held and the units missing in front of a held one: a unit lost on the way would otherwise
-// leave the count behind the sends by the losses, and every sample longer by their send time.
-static inline void ap_note_top_units(struct ap_pacer* ctl, uint64_t now, uint64_t top_units) {
-    if (top_units <= ctl->top_units) {
+// A round trip sample from the newest unit the watermark shows received (pooled over the readers): the report cannot
+// have been sent before that unit arrived, so now less the unit's send time is never less than the path's round trip.
+// Only the watermark is read - a bitmap names units missing that are still in flight (a solicitation's HEARTBEAT tells
+// the reader how far the writer has sent), so a count that includes them reads a unit sent a moment ago as received and
+// a round trip of microseconds (the Pi stage: 5-12 us on 10 and 40 ms paths). And only where the watermark moved by a
+// few units: a repair that closes a gap moves it over units sent long before (Karn's rule: no sample from a unit that
+// was repaired).
+static inline void ap_note_held_units(struct ap_pacer* ctl, uint64_t now, uint64_t held, uint64_t advance) {
+    uint64_t dgram_units = ctl->unit_bytes != 0 ? (ctl->dgram_bytes + ctl->unit_bytes - 1U) / ctl->unit_bytes : 1U;
+    if (advance == 0 || advance > ap_max_u64(AP_RTT_MIN_ADVANCE_UNITS, 2U * dgram_units)) {
         return;
     }
-    uint64_t idx = top_units - 1U;
-    ctl->top_units = top_units;
+    uint64_t idx = held - 1U;
     if (idx >= ctl->units_sent || ctl->units_sent - idx > AP_STAMPS) {
         return; // a unit that was not sent as one (a small sample's), or too long ago to have a stamp
     }
@@ -548,26 +595,36 @@ static inline void ap_note_top_units(struct ap_pacer* ctl, uint64_t now, uint64_
     ap_queue_guard(ctl, now);
 }
 
-// Feedback at `now`: the readers show `held_units` units received and `missing_units` named missing in front of them
-// (cumulative, pooled over the link's readers). A watermark can move over units nobody held - a sample the writer
-// evicted or the reader gave up, its units passed at once - and a count past what was sent cannot be delivery: the
-// excess is taken as such a jump and left out for good, or the estimate reads a megabyte delivered in an instant, runs
-// to its cap and loses it.
-static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t held_units, uint64_t missing_units) {
+// Feedback at `now`, pooled over the link's readers (cumulative, in units): `held_units` is what the readers' ACKNACKs
+// show held - the watermark and the units inside its bitmap's window that are not named missing - a smooth count of
+// delivery, `mark_units` the watermarks alone, every unit below one received for certain. Delivery reads the first (the
+// watermark alone moves in jumps at each repair's arrival and the rate estimate followed them); the round trip reads
+// the second (a bitmap names units missing that are still in flight, so a count with them reads a unit sent a moment
+// ago as received). A watermark can move over units nobody held - a sample the writer evicted or the reader gave up,
+// its units passed at once - and a count past what was sent cannot be delivery: the excess is taken as such a jump and
+// left out for good, or the estimate reads a megabyte delivered in an instant, runs to its cap and loses it.
+static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t held_units, uint64_t mark_units) {
     uint64_t held = held_units > ctl->jump_units ? held_units - ctl->jump_units : 0;
     if (held > ctl->units_sent) {
         ctl->jump_units += held - ctl->units_sent;
+        ctl->jump_events++;
         held = ctl->units_sent;
     }
+    uint64_t mark = mark_units > ctl->jump_units ? mark_units - ctl->jump_units : 0;
+    mark = ap_min_u64(mark, held);
     if (held > ctl->held_units) {
         ctl->held_units = held;
         ctl->delivered = held * ctl->unit_bytes;
+    }
+    uint64_t advance = mark > ctl->mark_units ? mark - ctl->mark_units : 0;
+    if (advance != 0) {
+        ctl->mark_units = mark;
     }
     if (ctl->round_start_ns == 0) {
         ctl->round_start_ns = now;
         ctl->round_delivered = ctl->delivered;
     }
-    ap_note_top_units(ctl, now, ap_min_u64(ctl->held_units + missing_units, ctl->units_sent));
+    ap_note_held_units(ctl, now, mark, advance);
     uint64_t elapsed = now - ctl->round_start_ns;
     uint64_t rtprop = ap_rtprop_ns(ctl);
     uint64_t least_ns = ap_max_u64(rtprop, AP_MIN_ROUND_NS);

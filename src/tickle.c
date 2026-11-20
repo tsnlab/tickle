@@ -3955,10 +3955,10 @@ static void rate_note_send(struct tt_Context* node, uint8_t link, uint64_t now, 
 }
 
 // What a reader holds, in units, by its ACKNACK: every unit below the watermark seq_no, and the units its bitmap leaves
-// unnamed up to the highest it names - a reader names every unit missing below its highest, so the rest of that window
-// was received. Units above the highest named are not known: they show when a later ACKNACK's watermark passes them.
-static uint32_t rate_units_held_and_missing(uint32_t seq_no, const uint64_t* bitmap, uint16_t words,
-                                            uint32_t* missing_out) {
+// unnamed up to the highest it names. A smooth count of delivery, a little high where a unit named lately is left out
+// of the bitmap while its repair is on the way. Units above the highest named are not known: they show when a later
+// ACKNACK's watermark passes them.
+static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
     uint32_t window = 0;
     uint32_t missing = 0;
     for (uint16_t word = 0; word < words; word++) {
@@ -3968,7 +3968,6 @@ static uint32_t rate_units_held_and_missing(uint32_t seq_no, const uint64_t* bit
                      (uint32_t)__builtin_clzll(bitmap[word]);
         }
     }
-    *missing_out = missing;
     return seq_no + (window - missing);
 }
 
@@ -3978,8 +3977,7 @@ static uint32_t rate_units_held_and_missing(uint32_t seq_no, const uint64_t* bit
 // over every reader). An ACKNACK that arrives for another reason before the answer is read as the answer: a sample
 // that can only be too short while its sender was already waiting - a lower RTprop, which the queue guard answers by
 // holding the rate down, not up.
-static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held,
-                         uint32_t missing) {
+static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held, uint32_t mark) {
     uint8_t link = pace_link(node, ip);
     struct tt_RateControl* rate = &node->rate[link];
     if (!rate->adaptive) {
@@ -3992,15 +3990,17 @@ static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck
             rate->held_units += (uint64_t)advance;
             ack->rate_units = held;
         }
+        int32_t mark_advance = seq_delta(mark, ack->rate_mark);
+        if (mark_advance > 0) {
+            rate->mark_units += (uint64_t)mark_advance;
+            ack->rate_mark = mark;
+        }
     } else {
         ack->rate_units = held; // the first ACKNACK: a baseline, nothing counted
+        ack->rate_mark = mark;
         ack->rate_units_valid = true;
     }
-    if (ack->rate_units_valid) { // the units lost in front of a held one: this reader's change in them
-        rate->missing_units = rate->missing_units + missing - ack->rate_missing;
-    }
-    ack->rate_missing = missing;
-    ap_on_feedback(&rate->ap, now, rate->held_units, rate->missing_units);
+    ap_on_feedback(&rate->ap, now, rate->held_units, rate->mark_units);
     rate_sync(node, link);
 }
 #endif
@@ -23399,11 +23399,7 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     if (__builtin_expect(node->pacing, 0)) {
         struct tt_PeerAck* rate_ack = find_peer_ack(pub, header->source, sender_entity_id);
         if (rate_ack != NULL) {
-            {
-                uint32_t missing = 0;
-                uint32_t held = rate_units_held_and_missing(seq_no, bitmap, bitmap_words, &missing);
-                rate_acknack(node, sender_ip, rate_ack, held, missing);
-            }
+            rate_acknack(node, sender_ip, rate_ack, rate_units_held(seq_no, bitmap, bitmap_words), seq_no);
         }
     }
 #endif
