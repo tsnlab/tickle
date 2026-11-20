@@ -44,20 +44,20 @@
                                  // microseconds, a round then holds a frame or two and its rate is noise
 #define AP_MAX_ROUND_RTTS 8U     // but a round is never longer than this many RTprop
 #define AP_PROBE_EVERY_ROUNDS 8U // and does so every this many rounds
-#define AP_QUEUE_TARGET_MIN_NS 2000000ULL // queue-delay target: at least this, else RTprop / AP_QUEUE_TARGET_RTT_DIV
-#define AP_QUEUE_TARGET_RTT_DIV 4U
-#define AP_QUEUE_TARGET_UNITS \
-    2U // and at least this many data units of send time at the pacing rate: a unit is the resolution of a sample
-#define AP_QUEUE_TRIPS 2U                // queue-delay samples over the target in a row that trip the guard
-#define AP_DROP_REPAIR_PCT 50U           // repairs / bytes sent over a round above this trip the rate-drop guard
-#define AP_APP_LIMITED_PCT 80U           // a round that sent less than this of its allowance is application-limited
+#define AP_DROP_REPAIR_PCT 50U   // repairs / bytes sent over a round above this trip the rate-drop guard
+#define AP_APP_LIMITED_PCT 80U   // a round that sent less than this of its allowance is application-limited
 #define AP_IDLE_RESTART_NS 1000000000ULL // quiet this long: the next send starts in START at the remembered rate
 #define AP_INFLIGHT_GAIN_PCT 200U        // data in flight is held to this x BtlBw x RTprop
 #define AP_START_RATE_BPS 1000000ULL     // the rate a send starts at, clamped to [floor, cap], before any is measured
 #define AP_NS_PER_SECOND 1000000000ULL   // time and rate arithmetic
 #define AP_PERCENT 100U
 #define AP_BITS_PER_BYTE 8U
-#define AP_RECENT_RTTS 2U // the queue guard reads the least of this many latest round trip samples
+#define AP_OVERLOAD_REPAIR_PCT \
+    20U // a round whose repairs are more than this share of what it sent is overload (random loss of a few per cent is
+        // not)
+#define AP_CUT_PCT 70U            // and the delivery estimate is cut to this share of itself
+#define AP_MIN_SHARE_BYTES 15000U // the share is read over rounds that sent at least this much
+#define AP_RECENT_RTTS 2U         // the queue guard reads the least of this many latest round trip samples
 #define AP_SOLICIT_UNITS \
     4U // solicitations are at least this many data units of send time apart (a few per cent of the rate)
 #define AP_DGRAM_EWMA_DIV 16U // the average data datagram moves a sixteenth of the way to each
@@ -79,6 +79,18 @@
 #define AP_MIN_INFLIGHT_BYTES 3000U // the least the in-flight cap is, two full frames and a little
 #define AP_SEED_RTT_NS 10000000ULL  // RTprop until a first sample, when the caller has no seed
 
+#define AP_CRUISE_GAIN_PCT \
+    100U // CRUISE sends at this share of BtlBw: an estimate that reads a little high would otherwise keep a standing
+         // queue
+
+#define AP_CUT_HOLDOFF_ROUNDS \
+    0U // after a cut, overload is not read for this many rounds: the repairs of what the overload lost are then most of
+       // what is sent
+
+#define AP_CUT_HOLDOFF_ROUNDS \
+    0U // after a cut, overload is not read for this many rounds: the repairs of what the overload lost are then most of
+       // what is sent
+
 struct ap_filter {
     uint64_t value[AP_BUCKETS];
     uint64_t bucket_len; // in the filter's own clock: ns for the min filter, active rounds for the max filter
@@ -94,7 +106,7 @@ struct ap_pacer {
     uint64_t cap_bps; // never above (the link's link_rate or the user's pacing_rate)
     uint64_t min_bps; // never below
     uint64_t rate_bps;
-    uint64_t queue_cfg_ns; // 0 = max(AP_QUEUE_TARGET_MIN_NS, RTprop / AP_QUEUE_TARGET_RTT_DIV)
+    uint64_t queue_cfg_ns; // rate_queue_ns: kept for the option, not used by this estimator (no queue guard)
     uint64_t seed_rtt_ns;
     uint64_t unit_bytes; // a data unit on the wire
     uint64_t
@@ -113,14 +125,12 @@ struct ap_pacer {
     enum ap_phase phase;
     uint32_t probe_gain_pct;             // this probe round's gain over BtlBw
     uint64_t probe_base_bps;             // the BtlBw a probe round started from
-    bool draining;                       // the queue is over its target: run below the delivery rate until it is not
-    uint32_t drain_rounds;               // rounds this drain has lasted
-    uint32_t queue_over;                 // consecutive rounds over the queue target
     uint64_t recent_rtt[AP_RECENT_RTTS]; // the last round trip samples, newest overwriting oldest
     uint32_t recent_n;                   // samples taken, saturating at AP_RECENT_RTTS
     uint64_t units_sent;                 // data units sent, originals only (a repair is not a new unit)
-    uint64_t mark_units; // the watermarks, pooled, less jump_units (cumulative): what is certainly received
-    uint64_t held_units; // data units shown received, pooled, less jump_units (cumulative)
+    uint64_t mark_units;  // the watermarks, pooled, less jump_units (cumulative): what is certainly received
+    uint64_t held_units;  // data units shown received, pooled, less jump_units (cumulative)
+    uint32_t cut_holdoff; // rounds left in which overload is not read
     uint64_t
         jump_units; // units a watermark moved over that were never sent: not delivery (an evicted or abandoned sample)
     uint64_t stall_start_ns;      // when the current round began with nothing delivered, 0: not stalled
@@ -243,14 +253,6 @@ static inline uint64_t ap_report_resolution_ns(const struct ap_pacer* ctl) {
     return (bytes * AP_BITS_PER_BYTE * AP_NS_PER_SECOND) / ctl->rate_bps;
 }
 
-static inline uint64_t ap_queue_target_ns(const struct ap_pacer* ctl) {
-    if (ctl->queue_cfg_ns != 0) {
-        return ctl->queue_cfg_ns;
-    }
-    uint64_t target_ns = ap_max_u64(AP_QUEUE_TARGET_MIN_NS, ap_rtprop_ns(ctl) / AP_QUEUE_TARGET_RTT_DIV);
-    return ap_max_u64(target_ns, 2U * ap_report_resolution_ns(ctl));
-}
-
 static inline uint64_t ap_clamp_rate(const struct ap_pacer* ctl, uint64_t rate) {
     return ap_min_u64(ap_max_u64(rate, ctl->min_bps), ctl->cap_bps);
 }
@@ -283,8 +285,7 @@ static inline uint64_t ap_rate_bps(const struct ap_pacer* ctl) {
 // 156 bytes on the wire each, and the control traffic charged into the bucket took the whole rate of a slow start - the
 // data starved, the estimate read nothing delivered, and the floor it fell to was less than the solicitations alone.
 static inline uint64_t ap_solicit_gap_ns(const struct ap_pacer* ctl) {
-    uint64_t round_ns = ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS);
-    return ap_max_u64(round_ns, ap_report_resolution_ns(ctl));
+    return ap_max_u64(AP_MIN_ROUND_NS, ap_report_resolution_ns(ctl));
 }
 
 // How many bytes may be in flight (sent, not yet delivered); UINT64_MAX until a rate is known.
@@ -316,7 +317,6 @@ static inline void ap_restart_after_idle(struct ap_pacer* ctl, uint64_t now) {
     ctl->stalls = 0;
     ctl->prev_round_bps = 0;
     ctl->phase = AP_PH_CRUISE;
-    ctl->draining = false;
     ctl->rounds_since_probe = AP_PROBE_EVERY_ROUNDS - 1U;
     ap_round_begin(ctl, now);
     ctl->rate_bps = ap_clamp_rate(ctl, bandwidth != 0 ? bandwidth : AP_START_RATE_BPS);
@@ -368,31 +368,46 @@ struct ap_round {
     bool idle;           // it sent nothing
 };
 
-// The rate-drop guard: most of what was sent was a repair, or the link delivers under half of what it did, twice.
-// Returns the BtlBw to go on with: the round's own sample after a trip - at least a quarter of what it was, so that one
-// noisy round cannot take the estimate to nothing - else `bandwidth`.
+// The overload and drop guards. Overload: more than AP_OVERLOAD_REPAIR_PCT of what a round sent was repairs - the link
+// is dropping what it is sent, in a START that ran past it or a probe that did - the delivery estimate is cut to
+// AP_CUT_PCT of itself (a multiplicative cut, not a reset to a noisy round). Drop: the link delivers under half of what
+// it did, twice in a row (a rate that fell): BtlBw is the round's own sample, at least a quarter of what it was.
+// Returns the BtlBw to go on with.
 static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round* round, uint64_t bandwidth) {
     if (round->idle) {
         ctl->low_rounds = 0;
         return bandwidth;
     }
-    bool drop = ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_DROP_REPAIR_PCT && ctl->state == AP_CRUISE;
+    if (ctl->cut_holdoff != 0) {
+        ctl->cut_holdoff--;
+    } else if (ctl->round_sent >= AP_MIN_SHARE_BYTES &&
+               ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_OVERLOAD_REPAIR_PCT) {
+        ctl->cut_holdoff = AP_CUT_HOLDOFF_ROUNDS;
+        ctl->drop_trips++;
+        uint64_t best = ap_max_u64(bandwidth, round->sample_bps);
+        uint64_t cut = best * AP_CUT_PCT / AP_PERCENT;
+        ap_filter_reset(&ctl->bw, cut, ctl->rounds);
+        ctl->state = AP_CRUISE;
+        ctl->low_rounds = 0;
+        ctl->phase = AP_PH_CRUISE;
+        ctl->rounds_since_probe = 0;
+        return cut;
+    }
     if (!round->app_limited && bandwidth != 0 && round->sample_bps * 2U < bandwidth) {
         ctl->low_rounds++;
-        drop = drop || ctl->low_rounds >= 2U;
+        if (ctl->low_rounds >= 2U) {
+            ctl->drop_trips++;
+            uint64_t lowered = ap_max_u64(round->sample_bps, bandwidth / AP_BW_RESET_FRACTION);
+            ap_filter_reset(&ctl->bw, lowered, ctl->rounds);
+            ctl->low_rounds = 0;
+            ctl->phase = AP_PH_CRUISE;
+            ctl->rounds_since_probe = 0;
+            return lowered;
+        }
     } else {
         ctl->low_rounds = 0;
     }
-    if (!drop) {
-        return bandwidth;
-    }
-    ctl->drop_trips++;
-    uint64_t lowered = ap_max_u64(round->sample_bps, bandwidth / AP_BW_RESET_FRACTION);
-    ap_filter_reset(&ctl->bw, lowered, ctl->rounds);
-    ctl->low_rounds = 0;
-    ctl->phase = AP_PH_CRUISE;
-    ctl->rounds_since_probe = 0;
-    return lowered;
+    return bandwidth;
 }
 
 // Search again from the start rate: nothing is known of the link.
@@ -403,9 +418,7 @@ static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->stalls = 0;
     ctl->prev_round_bps = 0;
     ctl->phase = AP_PH_CRUISE;
-    ctl->draining = false;
     ctl->low_rounds = 0;
-    ctl->queue_over = 0;
     ctl->rate_bps = ap_clamp_rate(ctl, AP_START_RATE_BPS);
     ap_round_begin(ctl, now);
 }
@@ -436,9 +449,6 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
 
 // CRUISE: BtlBw, a probe round now and then, and a drain round after a probe that found nothing.
 static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* round, uint64_t bandwidth) {
-    if (ctl->draining && ++ctl->drain_rounds >= AP_DRAIN_MAX_ROUNDS) {
-        ctl->draining = false;
-    }
     ctl->rounds_since_probe++;
     if (ctl->phase == AP_PH_PROBE) {
         // A probe that raised the delivery rate is followed by another at once (the link got faster); one that did
@@ -453,13 +463,13 @@ static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* 
     } else if (ctl->phase == AP_PH_DRAIN) {
         ctl->phase = AP_PH_CRUISE;
         ctl->rounds_since_probe = 0;
-    } else if (ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS && !ctl->draining && !round->app_limited) {
+    } else if (ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS && !round->app_limited) {
         ctl->phase = AP_PH_PROBE;
         ctl->probe_base_bps = bandwidth;
         ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
     }
-    uint64_t rate = bandwidth;
-    if (ctl->draining || ctl->phase == AP_PH_DRAIN) {
+    uint64_t rate = bandwidth * AP_CRUISE_GAIN_PCT / AP_PERCENT;
+    if (ctl->phase == AP_PH_DRAIN) {
         rate = bandwidth * AP_DRAIN_GAIN_PCT / AP_PERCENT;
     } else if (ctl->phase == AP_PH_PROBE) {
         rate = bandwidth * ctl->probe_gain_pct / AP_PERCENT;
@@ -471,52 +481,6 @@ static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* 
 static inline uint64_t ap_delivery_rate_bps(const struct ap_pacer* ctl, uint64_t elapsed) {
     uint64_t bytes = ctl->delivered - ctl->round_delivered;
     return elapsed != 0 ? (bytes * AP_BITS_PER_BYTE * AP_NS_PER_SECOND) / elapsed : 0;
-}
-
-// The queue guard, at each round trip sample: the least of the latest AP_RECENT_RTTS samples over the least ever seen
-// is the queue. (One sample is not read: a unit shown delivered by a repair that closed a gap was sent long before it
-// was shown, and reads as a long round trip; the least of a few does not.) Over the target AP_QUEUE_TRIPS evaluations
-// in a row: the real-time term - stop probing, take the rate the link is delivering now instead of the older maximum,
-// and drain below it.
-static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
-    if (ctl->recent_n < AP_RECENT_RTTS) {
-        return;
-    }
-    uint64_t least_recent = UINT64_MAX;
-    for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
-        least_recent = ap_min_u64(least_recent, ctl->recent_rtt[idx]);
-    }
-    uint64_t floor_ns = ap_rtprop_ns(ctl);
-    uint64_t target_ns = ap_queue_target_ns(ctl);
-    uint64_t queue_ns = least_recent > floor_ns ? least_recent - floor_ns : 0;
-    if (queue_ns <= target_ns) {
-        ctl->queue_over = 0;
-        if (queue_ns < target_ns / 2U) {
-            ctl->draining = false; // the queue is back under half its target
-        }
-        return;
-    }
-    ctl->queue_over++;
-    if (ctl->queue_over < AP_QUEUE_TRIPS) {
-        return;
-    }
-    ctl->queue_trips++;
-    ctl->queue_over = 0;
-    ctl->phase = AP_PH_CRUISE;
-    ctl->draining = true;
-    ctl->drain_rounds = 0;
-    if (ctl->state == AP_START) {
-        ctl->state = AP_CRUISE;
-    }
-    uint64_t elapsed = now - ctl->round_start_ns;
-    uint64_t sample = ap_delivery_rate_bps(ctl, elapsed);
-    uint64_t bandwidth = ap_btlbw_bps(ctl);
-    if (sample != 0 && sample < bandwidth && elapsed >= ap_rtprop_ns(ctl) / 2U) {
-        ap_filter_reset(&ctl->bw, ap_max_u64(sample, bandwidth / AP_BW_RESET_FRACTION), ctl->rounds);
-        bandwidth = ap_btlbw_bps(ctl);
-    }
-    ctl->rate_bps = ap_clamp_rate(ctl, (bandwidth != 0 ? bandwidth : ctl->rate_bps) * AP_DRAIN_GAIN_PCT / AP_PERCENT);
-    ctl->rounds_since_probe = 0;
 }
 
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
@@ -545,7 +509,7 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
         "RATETRACE t_ms=%llu el_ms=%.1f bytes=%llu sample_kbit=%llu sent=%llu allow=%llu app=%d idle=%d bw_kbit=%llu "
         "rate_kbit=%llu st=%d ph=%d rtprop_us=%llu rtt_last_us=%llu held=%llu units_sent=%llu jump=%llu "
         "jump_events=%llu "
-        "qover=%u drain=%d\n",
+        "cuts=%llu\n",
         (unsigned long long)(now / 1000000ULL), (double)elapsed / 1e6,
         (unsigned long long)(ctl->delivered - ctl->round_delivered), (unsigned long long)(round.sample_bps / 1000ULL),
         (unsigned long long)ctl->round_sent, (unsigned long long)allowance, (int)round.app_limited, (int)round.idle,
@@ -553,7 +517,7 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
         (int)ctl->phase, (unsigned long long)(ap_rtprop_ns(ctl) / 1000ULL),
         (unsigned long long)(ctl->recent_rtt[(ctl->recent_n + AP_RECENT_RTTS - 1U) % AP_RECENT_RTTS] / 1000ULL),
         (unsigned long long)ctl->held_units, (unsigned long long)ctl->units_sent, (unsigned long long)ctl->jump_units,
-        (unsigned long long)ctl->jump_events, (unsigned)ctl->queue_over, (int)ctl->draining);
+        (unsigned long long)ctl->jump_events, (unsigned long long)ctl->drop_trips);
 #endif
     bandwidth = ap_drop_guard(ctl, &round, bandwidth);
     if (ctl->state == AP_START) {
@@ -592,7 +556,6 @@ static inline void ap_note_held_units(struct ap_pacer* ctl, uint64_t now, uint64
     ctl->rtt_samples++;
     ctl->recent_rtt[ctl->recent_n % AP_RECENT_RTTS] = rtt_ns;
     ctl->recent_n++;
-    ap_queue_guard(ctl, now);
 }
 
 // Feedback at `now`, pooled over the link's readers (cumulative, in units): `held_units` is what the readers' ACKNACKs
@@ -626,8 +589,7 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t h
     }
     ap_note_held_units(ctl, now, mark, advance);
     uint64_t elapsed = now - ctl->round_start_ns;
-    uint64_t rtprop = ap_rtprop_ns(ctl);
-    uint64_t least_ns = ap_max_u64(rtprop, AP_MIN_ROUND_NS);
+    uint64_t least_ns = ap_solicit_gap_ns(ctl); // a round holds at least a report or two: no round trip steers it
     uint64_t bytes = ctl->delivered - ctl->round_delivered;
     if (bytes == 0) {
         // Nothing delivered: no sample - a round with no news says nothing of the link. Sending for AP_STALL_NS with

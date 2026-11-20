@@ -409,3 +409,36 @@ reproduce the Pi's failures in either round).
 
 **An honest read.** Three rounds on the Pis each removed a failure and the model has not predicted the next one; every one of them was one of the
 estimator's signals misreading the ACKNACK. See the recommendation with the hand-back.
+
+## 16. The simple estimator (branch `ab/adaptive-simple`, 2026-11-20)
+
+Same option, validation, wire and send-path hooks as `ab/adaptive-pacing` (`04cd1473`); the estimator (`include/tickle/pacing_adaptive.h`) is
+smaller: delivery rate only, with the bitmap-window count, the jump rule and the 1.5 x sample cap; BBR-style START (double, hold at
+1.25 x the best round at the first round that does not grow), CRUISE at BtlBw, a probe at 1.25 x every eight rounds (2 x while probes succeed),
+a drain round at 0.75 x after a probe that found nothing; **no round trip in the rate loop** (the watermark round trip stays in the trace and the
+counters); a round is at least one report or two long (solicitation spacing, not the round trip); a multiplicative cut to 70 % of the
+estimate (`AP_CUT_PCT`) when more than 20 % of what a round sent was repairs (`AP_OVERLOAD_REPAIR_PCT`, read over rounds that sent at least 15 kB);
+the drop rule (delivery under half of BtlBw twice) as before. `rate_queue_ns` is accepted and ignored (there is no queue guard).
+
+Model results (the netem-like links, the jump scenario, the 30 -> 4 -> 30 Mbit/s step, 1/2/3 readers; `tests/test_adaptive_pacing.c`):
+
+| | previous estimator (04cd1473) | simple estimator |
+|---|---|---|
+| tc M1 / M2 / S1 / S2, samples of 17 | 17 / 17 / 17 / 14 | 17 / 17 / 17 / 17 |
+| their repairs (95 % oracle: 113 / 327 / 130 / 693) | 677 / 989 / 116 / 619 | 1156 / 1031 / 1178 / 1609 |
+| their mean queue delay, ms | 13 / 10 / 11 / 9 | 19 / 11 / 65 / 44 |
+| step 30 -> 4 -> 30, one reader: rise followed after | 3.0 s | **0.4 s** |
+| 2 readers on 4 Mbit/s: link used, mean queue | 83 %, 14 ms | 98 %, **89 ms** |
+| 3 readers on 4 Mbit/s: link used, mean queue | 81 %, 16 ms | **23 %**, **78 ms** |
+| 3 readers: rise followed within 2 s | no (never) | **no (never)** |
+| watermark jumps (4 Mbit/s): samples, repairs, mean queue | 10, 1526, 48 ms | 10, 463, 45 ms |
+
+**The 3-reader rise does not follow within 2 s; it does not follow at all, and with three readers the link is used 23 %.** Those and the multi-reader
+queue and repair checks are recorded as `KNOWN LIMIT` in the test (printed, not failed). Two variants were tried and are worse: a cruise gain of 0.9
+or 0.85 (queue down, but the step-down recovery takes 9 s and S2 loses samples) and a holdoff after a cut (repairs 2000-3700, queue 80 ms). Without
+a round trip there is nothing that tells the sender its queue is long except losses, and the overload cut then fires on the repairs of
+the loss it is reacting to: at three readers the rate ratchets down to the floor with an empty queue. The standing queue (S1 65 ms, S2 44 ms) is the cost the
+previous design paid for with its guard; the guard's own failure modes were what the Pi runs showed.
+
+So the simple estimator is better at following a rate step and at one reader, and worse in queue and repairs at every setting and badly worse with
+several readers. It is not a replacement as it stands.
