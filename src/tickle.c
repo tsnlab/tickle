@@ -3977,13 +3977,17 @@ static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_
 // over every reader). An ACKNACK that arrives for another reason before the answer is read as the answer: a sample
 // that can only be too short while its sender was already waiting - a lower RTprop, which the queue guard answers by
 // holding the rate down, not up.
-static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck* ack, uint32_t held, uint32_t mark) {
+static void rate_acknack(struct tt_Context* node, uint32_t ip, uint8_t source, struct tt_PeerAck* ack, uint32_t held,
+                         uint32_t mark) {
     uint8_t link = pace_link(node, ip);
     struct tt_RateControl* rate = &node->rate[link];
     if (!rate->adaptive) {
         return;
     }
     uint64_t now = tt_get_ns();
+    if (source < tt_MAX_CONTEXT_IDS) {
+        ap_note_announce_rtt(&rate->ap, node->announce_rtt_ns[source]); // the idle path: a floor for RTprop
+    }
     if (ack->rate_units_valid) {
         int32_t advance = seq_delta(held, ack->rate_units);
         if (advance > 0) {
@@ -23399,7 +23403,8 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     if (__builtin_expect(node->pacing, 0)) {
         struct tt_PeerAck* rate_ack = find_peer_ack(pub, header->source, sender_entity_id);
         if (rate_ack != NULL) {
-            rate_acknack(node, sender_ip, rate_ack, rate_units_held(seq_no, bitmap, bitmap_words), seq_no);
+            rate_acknack(node, sender_ip, header->source, rate_ack, rate_units_held(seq_no, bitmap, bitmap_words),
+                         seq_no);
         }
     }
 #endif
