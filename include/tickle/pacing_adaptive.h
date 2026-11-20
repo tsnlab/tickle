@@ -40,10 +40,11 @@
     24000U // a delivery-rate sample spans at least this much delivered, so that a
            // unit more or less is a small part of it (the BDP is a few frames)
 #define AP_MIN_ROUND_NS \
-    1000000ULL                   // and a round is never shorter than this, whatever the round trip: on a loopback it is
-                                 // microseconds, a round then holds a frame or two and its rate is noise
-#define AP_MAX_ROUND_RTTS 8U     // but a round is never longer than this many RTprop
-#define AP_PROBE_EVERY_ROUNDS 8U // and does so every this many rounds
+    1000000ULL // and a round is never shorter than this, whatever the round trip: on a loopback it is
+               // microseconds, a round then holds a frame or two and its rate is noise
+#define AP_START_DROP_REPAIR_PCT 50U      // START ends on a loss storm: repairs above this share of a round's bytes
+#define AP_MAX_ROUND_RTTS 8U              // but a round is never longer than this many RTprop
+#define AP_PROBE_EVERY_ROUNDS 8U          // and does so every this many rounds
 #define AP_QUEUE_TARGET_MIN_NS 2000000ULL // queue-delay target: at least this, else RTprop / AP_QUEUE_TARGET_RTT_DIV
 #define AP_QUEUE_TARGET_RTT_DIV 4U
 #define AP_QUEUE_TARGET_UNITS \
@@ -403,6 +404,16 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
         return bandwidth;
     }
     bool drop = ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_DROP_REPAIR_PCT && ctl->state == AP_CRUISE;
+    if (ctl->state == AP_START && ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_START_DROP_REPAIR_PCT &&
+        ctl->rate_bps > 2U * round->sample_bps && round->sample_bps != 0) {
+        // START overshot: the rate is more than twice what the round delivered and the round went on repairs (Pi quick
+        // test 6, 1 MiB M2: 180 Mbit/s on a 30 Mbit/s link, 70 % of every sample lost, START held because every round
+        // was application-limited). The search is over; BtlBw comes down.
+        drop = true;
+        ctl->state = AP_CRUISE;
+        ctl->stalls = 0;
+        ctl->prev_round_bps = 0;
+    }
     if (!round->app_limited && bandwidth != 0 && round->sample_bps * 2U < bandwidth) {
         ctl->low_rounds++;
         drop = drop || ctl->low_rounds >= 2U;
@@ -559,19 +570,18 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     uint64_t elapsed = now - ctl->round_start_ns;
     uint64_t allowance = (ctl->rate_bps / AP_BITS_PER_BYTE) * elapsed / AP_NS_PER_SECOND;
-    struct ap_round round = {
-        .sample_bps = ap_min_u64(ap_delivery_rate_bps(ctl, elapsed), ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
-        .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
-        .idle = ctl->round_sent == 0};
+    uint64_t round_bps = ap_delivery_rate_bps(ctl, elapsed);
+    struct ap_round round = {.sample_bps = ap_min_u64(round_bps, ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
+                             .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
+                             .idle = ctl->round_sent == 0};
     uint64_t bandwidth = ap_btlbw_bps(ctl);
     ctl->samples++;
-    if (!round.idle) {
+    bool quiet = elapsed > AP_MAX_ROUND_RTTS * ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS); // a gap between samples
+    if (!round.idle && (!round.app_limited || round.sample_bps > bandwidth || !quiet)) {
+        // The quiet round between two samples (nothing to send, little read) does not age the filter: it did, and a
+        // 128 KiB sample every 4 s on S1 left BtlBw 0 in 10 rounds (Pi quick test 6).
         ctl->rounds++;
-        if (!round.app_limited || round.sample_bps > bandwidth) {
-            ap_filter_put(&ctl->bw, round.sample_bps, ctl->rounds);
-        } else {
-            ap_filter_advance(&ctl->bw, ctl->rounds);
-        }
+        ap_filter_put(&ctl->bw, round.sample_bps, ctl->rounds);
         bandwidth = ap_btlbw_bps(ctl);
     }
 #ifdef tt_RATE_TRACE
@@ -613,7 +623,12 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
 // was repaired).
 static inline void ap_note_held_units(struct ap_pacer* ctl, uint64_t now, uint64_t held, uint64_t advance) {
     uint64_t dgram_units = ctl->unit_bytes != 0 ? (ctl->dgram_bytes + ctl->unit_bytes - 1U) / ctl->unit_bytes : 1U;
-    if (advance == 0 || advance > ap_max_u64(AP_RTT_MIN_ADVANCE_UNITS, 2U * dgram_units)) {
+    // The watermark reaching the last unit sent is a sample whatever its advance: the path is empty then, so the unit
+    // was not queued behind others. Without it no sample came where ACKs advanced the watermark by more than a few
+    // units (S1 128 KiB, Pi quick test 6): the first one, taken in a queue the START rate had built (152 ms on a 10 ms
+    // path), stayed RTprop for the run.
+    bool tail = held == ctl->units_sent && held != 0;
+    if (advance == 0 || (advance > ap_max_u64(AP_RTT_MIN_ADVANCE_UNITS, 2U * dgram_units) && !tail)) {
         return;
     }
     uint64_t idx = held - 1U;

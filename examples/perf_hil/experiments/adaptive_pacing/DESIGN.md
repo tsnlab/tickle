@@ -472,3 +472,27 @@ Cause table (v5 traces, 128 KiB unless noted):
 
 Damping: the model run now checks that the pacing rate never changes by more than 8x from one step to the next after 5 s
 (`max_step_x100`); in the traces every change of 3x or more came from a restart. Not measured on the Pis.
+
+## 19. Pi quick test 6 (5de6f40b): what was left (2026-11-21)
+
+quick6 (stall fix of 5de6f40b): 128 KiB stall_restarts 0, no fall-back to the floor, M1 p50 42 / p99 98 ms (DDS 55-91 /
+92-126), M2 p50 75-92 ms (DDS 100-106), 15/15 in all 16 runs. Three things left, read from `wtc_adaptive_quick6` (RATETRACE
+in the .near files, RSTATS in the .far files):
+
+| # | Observation | Evidence | Cause |
+|---|---|---|---|
+| 1 | 1 MiB M2 r2: 180.8 Mbit/s on a 30 Mbit/s netem link (limit 100), 47,623 datagrams, 36,353 retransmissions, p99 2.4 s; `drop_trips` 0, `queue_trips` 0 | reader: `rx_loss` 7321/10842, `repair_duplicate` 7234; rounds 12-17 read 41-90 Mbit/s (520 kB in 46 ms) while the sample as a whole went at 19 Mbit/s | (a) the delivery reading of a round is bursty (the watermark passes the units a reader held in jumps) and the max filter takes the burst for the link: START doubled to 91, then 180 Mbit/s; (b) it then stayed there for 48 s: the 1 MiB sample leaves in 46 ms, so every later round is application-limited, START holds in those, and the drop guard ran in CRUISE only |
+| 2 | stall restarts at 1 MiB: S2 r2 round 27 (1); none found in S1 r1 | rate 7.8 -> 4.9 -> 2.9 -> 1.5 -> 0.7 Mbit/s in four rounds, RTT 389 ms against rtprop 128 ms | not a false stall: a real collapse after a START overshoot (queue of 390 ms, loss storm), the drop guard halving BtlBw until 700 kbit/s; the same causes as 1 and 3 |
+| 3 | 128 KiB S1 r1: final BtlBw 0, rtprop 152 ms against a 10 ms path | rtprop and `rtt_last` unchanged for 10 rounds; BtlBw 0 after the quiet rounds | (a) the first round trip sample was taken in the queue that the START rate (8 Mbit/s since 5de6f40b, on a 4 Mbit/s link) built, and Karn's rule (watermark advance of more than 4 units) rejects every later one, so RTprop never recovered; (b) the quiet round between two samples aged the BtlBw filter (8 rounds), emptying it |
+
+Fixes: START ends on a loss storm (repairs above 50 % of a round's bytes while the rate is more than twice what the round
+delivered: BtlBw comes down and CRUISE starts - in application-limited rounds too); the watermark reaching the last unit
+sent is a round trip sample whatever its advance (the path is empty then); the quiet round between samples (more than 8
+RTprop, application-limited, no higher reading) does not age the BtlBw filter. Tests: `check_quick6_causes()` in
+test_adaptive_pacing.c (each of the three fails on 7bd44e2b).
+
+Tried and dropped: a delivery sample capped by the average over a window of 8 RTprop. In the model it read the START ramp
+as BtlBw (M1 p50 312 -> 1008 ms, M2 413 -> 2675 ms, S2 12 of 15 samples) - removed.
+
+Not measured on the Pis. Open: the first round after a burst still reads above the link before the loss exit fires (one
+or two samples at the first 1 MiB), and the START rate of cap/16 (8 Mbit/s) is above a 4 Mbit/s link.

@@ -651,6 +651,73 @@ static double replay_run(const struct replay_round* rounds, size_t count, double
     return worst;
 }
 
+// Pi quick test 6 (5de6f40b), three causes read off its traces.
+static void check_quick6_causes(void) {
+    const uint64_t SEC = 1000000000ULL;
+    // (i) 1 MiB M2: START at 180 Mbit/s on a 30 Mbit/s link, 70 % of the bytes of a round repairs and the round
+    // delivered 21 Mbit/s: the search is over and BtlBw comes down (it held, every round was app-limited).
+    struct ap_pacer over;
+    ap_init(&over, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_over = 1000ULL * SEC;
+    over.rate_bps = 180000000ULL;
+    ap_filter_put(&over.bw, 90000000ULL, 1U);
+    over.round_start_ns = t_over;
+    over.round_delivered = over.delivered;
+    over.delivered += 120000U; // 21 Mbit/s over 46 ms
+    over.round_sent = 531006U;
+    over.round_repair = 400000U;
+    over.round_units0 = over.units_sent;
+    over.units_sent += 10U;
+    t_over += 46 * MS;
+    ap_end_round(&over, t_over);
+    CHECK(over.state == AP_CRUISE && over.drop_trips == 1U, "START went on after a loss storm (state %d, trips %u)",
+          (int)over.state, (unsigned)over.drop_trips);
+    CHECK(ap_rate_bps(&over) < 100000000ULL, "the rate stayed at %llu bit/s after a loss storm",
+          (unsigned long long)ap_rate_bps(&over));
+
+    // (ii) S1 128 KiB: a sample every 4 s, a quiet round between, the sample's own round application-limited: the
+    // BtlBw filter was aged empty in 10 rounds.
+    struct ap_pacer quiet;
+    ap_init(&quiet, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_quiet = 1000ULL * SEC;
+    quiet.rate_bps = 8000000ULL;
+    ap_filter_put(&quiet.bw, 4018000ULL, 1U);
+    for (int cycle = 0; cycle < 20; cycle++) {
+        quiet.round_start_ns = t_quiet;
+        quiet.round_delivered = quiet.delivered;
+        quiet.delivered += 25000U;
+        quiet.round_sent = 30000U;
+        quiet.round_units0 = quiet.units_sent;
+        t_quiet += 3770 * MS;
+        ap_end_round(&quiet, t_quiet);
+        if (cycle >= 10) {
+            CHECK(ap_btlbw_bps(&quiet) >= 3500000ULL, "BtlBw was aged to %llu bit/s by the quiet rounds (cycle %d)",
+                  (unsigned long long)ap_btlbw_bps(&quiet), cycle);
+        }
+        quiet.round_start_ns = t_quiet;
+        quiet.round_delivered = quiet.delivered;
+        quiet.delivered += 110000U;
+        quiet.round_sent = 125000U;
+        quiet.round_units0 = quiet.units_sent;
+        t_quiet += 220 * MS;
+        ap_end_round(&quiet, t_quiet);
+    }
+
+    // (iii) the watermark reaching the last unit sent is a round trip sample whatever its advance.
+    struct ap_pacer tail;
+    ap_init(&tail, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_tail = 1000ULL * SEC;
+    for (int unit = 0; unit < 90; unit++) {
+        ap_note_send(&tail, t_tail + ((uint64_t)unit * MS), UNIT_WIRE, false);
+        ap_note_data_sent(&tail, t_tail + ((uint64_t)unit * MS), UNIT_WIRE, 1U);
+    }
+    ap_on_feedback(&tail, t_tail + (89 * MS) + (12 * MS), 90U,
+                   90U); // all 90 at once, 12 ms after the last was sent
+    CHECK(tail.rtt_samples == 1U && ap_rtprop_ns(&tail) < 13 * MS,
+          "the tail sample was not taken (samples %u, rtprop %llu ns)", (unsigned)tail.rtt_samples,
+          (unsigned long long)ap_rtprop_ns(&tail));
+}
+
 int main(void) {
     struct result unpaced;
     struct result fixed;
@@ -1022,6 +1089,8 @@ int main(void) {
         CHECK(gap_ctl.stall_restarts == 1U, "a real stall of 1 s was missed (%llu)",
               (unsigned long long)gap_ctl.stall_restarts);
     }
+
+    check_quick6_causes();
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
