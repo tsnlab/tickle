@@ -968,6 +968,46 @@ int main(void) {
         CHECK(idle_ctl.stall_restarts == 0U, "control traffic for 2 s was taken as a stall");
     }
 
+    // 4b. v5 Pi traces (M2/M1 128 KiB): a sample, 3.4 s quiet, the next sample's first feedback before anything of it
+    // is delivered. The idle gap is no stall and the rate is not forgotten (it was: 5-10 false restarts per run, each
+    // fell to 1 Mbit/s).
+    {
+        enum { GAPT_SECONDS = 3, GAPT_FIRST_UNITS = 10 };
+        struct ap_pacer gap_ctl;
+        ap_init(&gap_ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+        uint64_t t_gap = 1000ULL * SEC;
+        uint64_t sent_units = 0;
+        for (int round = 0; round < 12; round++) {
+            for (int unit = 0; unit < 20; unit++) {
+                ap_note_send(&gap_ctl, t_gap, UNIT_WIRE, false);
+                ap_note_data_sent(&gap_ctl, t_gap, UNIT_WIRE, 1U);
+                sent_units++;
+            }
+            t_gap += 50 * MS;
+            ap_on_feedback(&gap_ctl, t_gap, sent_units, sent_units);
+        }
+        uint64_t known = ap_btlbw_bps(&gap_ctl);
+        for (uint64_t quiet = 0; quiet < (uint64_t)GAPT_SECONDS * SEC; quiet += 500U * MS) {
+            t_gap += 500U * MS;
+            ap_note_send(&gap_ctl, t_gap, 90U, false); // control traffic keeps the pacer "active" through the gap
+        }
+        t_gap += 400U * MS;
+        for (int unit = 0; unit < GAPT_FIRST_UNITS; unit++) {
+            ap_note_send(&gap_ctl, t_gap, UNIT_WIRE, false);
+            ap_note_data_sent(&gap_ctl, t_gap, UNIT_WIRE, 1U);
+        }
+        ap_on_feedback(&gap_ctl, t_gap + (40 * MS), sent_units, sent_units); // nothing of the new sample yet
+        CHECK(gap_ctl.stall_restarts == 0U, "an idle gap of %d s was taken as a stall (%llu restarts)", GAPT_SECONDS,
+              (unsigned long long)gap_ctl.stall_restarts);
+        CHECK(known == 0U || ap_btlbw_bps(&gap_ctl) >= known / 2U,
+              "the rate was forgotten across the gap: %llu -> %llu", (unsigned long long)known,
+              (unsigned long long)ap_btlbw_bps(&gap_ctl));
+        // A real stall: sent into an empty pipe and 1 s of nothing.
+        ap_on_feedback(&gap_ctl, t_gap + (1100 * MS), sent_units, sent_units);
+        CHECK(gap_ctl.stall_restarts == 1U, "a real stall of 1 s was missed (%llu)",
+              (unsigned long long)gap_ctl.stall_restarts);
+    }
+
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
     // bits, over what the link could have carried.

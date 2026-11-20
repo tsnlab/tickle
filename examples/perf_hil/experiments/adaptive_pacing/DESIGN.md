@@ -443,3 +443,19 @@ own choice, so it cannot reproduce what the real sender then did; the S2r2 repla
 
 Variation metric (max/min rate after START): replay M2r2 16 -> 6, S2r2 5 -> 5; model tc links (M1/M2/S1/S2) deliver 17/17/17/15 of 17 with repairs 477/966/129/746. The target
 of at most about 5 x after START is met on S2r2's first 120 rounds and not on M2r2 (6 x).
+
+## 18. Pi S1 v5 (68d4174a): the fall-back to 1 Mbit/s was a false stall restart (2026-11-21)
+
+Classified from the RATETRACE lines of `wtc_adaptive_20261120_v5`. M2 128 KiB fell to exactly 1000 kbit/s in 10/10 runs
+(S2 10/10); `stall_restarts` was 2-9 per run on M1, M2 and S2 (5-10 at 1 MiB). State START, rate 1000, bw 1500 (150 % of
+1000) is `ap_restart_search`, not a guard.
+
+Cause: the stall test measured `now - round_start`, and the round starts at the previous round's end, so the idle gap
+between two samples (3.4 s in the traces) counted as time sent with nothing delivered. The first feedback after the next
+sample's first 8 units (nothing delivered yet) satisfied "1 s, 8 units, 0 bytes" and the restart forgot the rate.
+
+Fixes: the stall clock runs from the last delivery news or the first data send into an empty pipe (`stall_start_ns`);
+START begins at cap/16 (1..8 Mbit/s) when a cap or link_rate is set; a probe that raised delivery by 5 % (was 10 %) is
+followed by another. Without the false restarts, the 3-reader rise after a link step no longer got rescued by a restart,
+which the probe change fixes. Test: the idle-gap check in test_adaptive_pacing (fails on 68d4174a, passes now).
+Not yet done: damping after START to 5-10x and fewer repairs at 1 MiB. Not measured on the Pis.

@@ -191,10 +191,10 @@ static void test_a_large_send_on_an_adaptive_link(void) {
     run_until_sent();
     EXPECT_TRUE(!large_unsent());
     // No feedback came back, so the rate never left its start: the units went at it, not in a burst.
-    EXPECT_EQ_U64(AP_START_RATE_BPS, node.rate[0].ap.rate_bps);
+    EXPECT_EQ_U64(ap_start_rate_bps(&node.rate[0].ap), node.rate[0].ap.rate_bps);
     EXPECT_TRUE(sent_last_ns > sent_first_ns);
     uint64_t measured = sent_wire_bytes * 8U * tt_SECOND / (sent_last_ns - sent_first_ns);
-    EXPECT_TRUE(within_pct(measured, AP_START_RATE_BPS, 25));
+    EXPECT_TRUE(within_pct(measured, ap_start_rate_bps(&node.rate[0].ap), 25));
     // Every datagram left through the seam was counted into the estimator, and the writer asked for its feedback.
     EXPECT_TRUE(node.rate[0].ap.last_active_ns != 0);
     EXPECT_TRUE(node.rate[0].ap.round_sent > 0 || node.rate[0].ap.samples > 0);
@@ -363,15 +363,15 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
     create(&opts);
     EXPECT_TRUE(node.rate[0].adaptive);
-    EXPECT_EQ_U64(AP_START_RATE_BPS, node.rate[0].ap.rate_bps);
-    EXPECT_TRUE(within_pct(pacer_rate_bps(), AP_START_RATE_BPS, 1));
+    EXPECT_EQ_U64(ap_start_rate_bps(&node.rate[0].ap), node.rate[0].ap.rate_bps);
+    EXPECT_TRUE(within_pct(pacer_rate_bps(), ap_start_rate_bps(&node.rate[0].ap), 1));
     EXPECT_EQ_U64(node.pacers[0].burst_bytes, node.opts.net.links[0].pacing_burst);
     destroy();
 
     // A floor above the start rate, a cap below it.
-    opts.net.links[0].rate_min_rate = 4000000ULL;
+    opts.net.links[0].rate_min_rate = 16000000ULL;
     create(&opts);
-    EXPECT_EQ_U64(4000000ULL, node.rate[0].ap.rate_bps);
+    EXPECT_EQ_U64(16000000ULL, node.rate[0].ap.rate_bps);
     destroy();
     opts.net.links[0].rate_min_rate = 0;
     opts.net.links[0].pacing_rate = 500000ULL;
