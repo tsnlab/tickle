@@ -409,3 +409,37 @@ reproduce the Pi's failures in either round).
 
 **An honest read.** Three rounds on the Pis each removed a failure and the model has not predicted the next one; every one of them was one of the
 estimator's signals misreading the ACKNACK. See the recommendation with the hand-back.
+
+## 17. Root cause of the rate variation (Pi quick test 4 of 04cd1473) and the fixes (2026-11-20)
+
+Quick test 4: 15 of 15 in six of eight runs, S2 12 and 13; per-round rate swings between 0.7-1 Mbit/s and the 1 Gbit/s cap (max/min rate: M1 1453 and
+1000, M2 1000 and 1000, S1 20 and 18, S2 429 and 6536); 13.8-32.9 thousand datagrams against about 10.8 thousand needed; final `rtprop` 248-263 ms on 10 and 40 ms paths.
+Analysis of the traces of the eight runs (`RATETRACE` lines of the `.near` files; the scripts are the `a2.py`-`a4.py` quoted in the hand-back):
+
+| cause | count | runs |
+|---|---|---|
+| START doubles the rate in rounds where the sender had nothing to send (the pacer sent under 80 % of its allowance: control traffic between samples) | 96 doublings; 81 of the 84 rounds at more than 8 x the link were app-limited | 8 of 8 (the three profiles M1, M2, S2 reach the 1 Gbit/s cap; S1 does not) |
+| repairs at the cap: at 1 Gbit/s the next gap's repairs go out at that rate (3.5 MB in 350 ms in M2r2, 8 Mbit/s of it delivered) | follows from the row above (retransmissions 490-21500) | 6 of 8 |
+| stall restart: a second of "sent, nothing delivered" (the sent bytes included repairs and control) resets BtlBw to 0 and the rate to 1 Mbit/s | 35 | 8 of 8 |
+| drop-guard resets to a noisy sample (down to a quarter of BtlBw) | 13 | 6 of 8 |
+| queue-guard drains on a contaminated sample (2.1 s in M2r2: rtprop 42 -> 209 ms) | 6 | 3 of 8 |
+| START doublings in delivery-limited rounds (the ramp, entered again after each restart) | 133 | 8 of 8 |
+
+The first row is the root cause: a link that carries a 1 MiB sample every 4 s is idle most of the time, an idle round has nothing delivered and
+little sent, and START read "no verdict" as "double". The rate ran to the cap during every idle stretch; the next sample and its repairs went out at 1 Gbit/s
+into a 4-30 Mbit/s link, rounds delivered nothing, and the stall restart (which forgot BtlBw) started the ramp over: the 0.7-1 Mbit/s lows.
+
+Fixes (`include/tickle/pacing_adaptive.h`): (1) a round that was application-limited holds the rate in START (no doubling, no stall count); START never doubles past twice the
+best delivery rate it has seen (`AP_START_CEIL_PCT`). (2) A stall needs at least eight data units sent in the round (`AP_STALL_MIN_UNITS`): repairs and control
+traffic are not data; and a restart keeps a quarter of what was known instead of forgetting it. (3) A guard trip lowers BtlBw to at most half of it in one step (was a
+quarter). (4) A round trip sample above 1 s, or above 16 times the estimate once there are three, is dropped (`AP_RTT_MAX_NS`, `AP_RTT_OUTLIER_X`);
+a factor of 4 was tried and blinded the queue guard (a queue of a few times the path is the signal: the multi-reader model went to 70-80 ms of queue).
+
+Tests that fail on `04cd1473` and pass now (`tests/test_adaptive_pacing.c`): the replay of the Pi trace of M2r2 (round lengths, delivered bytes and app-limited flags of its first
+64 rounds, fed to the estimator at the rate it chose: before, the rate runs to the 1 Gbit/s cap, 6.1 times twice the best delivery seen, and swings 16 times after START; now
+peak 112 Mbit/s, never more than twice the best delivery, 6 times after START); idle rounds do not raise the rate (before: 1 Mbit/s to 1 Gbit/s in 40 idle rounds); control traffic for 2 s is no
+stall; and the 3-reader rise is followed (before: never; now 2.0 s). The replay uses the recorded inputs, not a simulated link, and takes the rate it feeds the round from the estimator's
+own choice, so it cannot reproduce what the real sender then did; the S2r2 replay of its first 120 rounds shows no violation before or after (its variation of 6536 x comes later in the run).
+
+Variation metric (max/min rate after START): replay M2r2 16 -> 6, S2r2 5 -> 5; model tc links (M1/M2/S1/S2) deliver 17/17/17/15 of 17 with repairs 477/966/129/746. The target
+of at most about 5 x after START is met on S2r2's first 120 rounds and not on M2r2 (6 x).

@@ -74,10 +74,21 @@
     4U                 // a drain (the queue over its target) lasts at most this many rounds: the evidence that ends it
                        // is a round trip sample, and a send with few of them would otherwise drain for good
 #define AP_STAMPS 256U // send times kept, one per data unit sent: the round trip of a unit shown delivered
-#define AP_STALL_NS 1000000000ULL   // sending this long with nothing delivered restarts the search
-#define AP_BW_RESET_FRACTION 4U     // a guard trip lowers BtlBw to at most this fraction of it in one step
+#define AP_STALL_NS 1000000000ULL // sending this long with nothing delivered restarts the search
+#define AP_BW_RESET_FRACTION \
+    2U // a guard trip lowers BtlBw to at most this fraction of it in one step (half)     // a guard trip lowers BtlBw
+       // to at most this fraction of it in one step
 #define AP_MIN_INFLIGHT_BYTES 3000U // the least the in-flight cap is, two full frames and a little
 #define AP_SEED_RTT_NS 10000000ULL  // RTprop until a first sample, when the caller has no seed
+
+#define AP_START_CEIL_PCT 200U // START never doubles past this share of the best delivery rate it has seen
+#define AP_STALL_MIN_UNITS \
+    8U // a stall (sending, nothing delivered) needs this many data units sent in the round: repairs and control are not
+       // data
+#define AP_RTT_MAX_NS 1000000000ULL // a round trip sample above this is a repair or a queue, not the path
+#define AP_RTT_OUTLIER_X \
+    16U // and so is one above this many times the estimate, once there are three (a queue of a few times the path
+        // is the signal the queue guard reads and stays)
 
 struct ap_filter {
     uint64_t value[AP_BUCKETS];
@@ -106,6 +117,7 @@ struct ap_pacer {
     uint64_t round_delivered; // cumulative delivered bytes at the round's start
     uint64_t delivered;       // cumulative delivered bytes, as last reported
     uint64_t round_sent;      // bytes sent in this round
+    uint64_t round_units0;    // units_sent at the round\'s start
     uint64_t round_repair;    // of them, repairs
     uint64_t prev_round_bps;  // START: the last round's delivery rate
     uint32_t stalls;
@@ -303,6 +315,7 @@ static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
     ctl->round_delivered = ctl->delivered;
     ctl->round_sent = 0;
     ctl->round_repair = 0;
+    ctl->round_units0 = ctl->units_sent;
     ctl->stall_start_ns = 0;
 }
 
@@ -398,7 +411,8 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
 // Search again from the start rate: nothing is known of the link.
 static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->stall_restarts++;
-    ap_filter_reset(&ctl->bw, 0, ctl->rounds);
+    uint64_t quarter = ap_btlbw_bps(ctl) / 4U; // what was known is not forgotten: START resumes from a quarter of it
+    ap_filter_reset(&ctl->bw, quarter, ctl->rounds);
     ctl->state = AP_START;
     ctl->stalls = 0;
     ctl->prev_round_bps = 0;
@@ -406,7 +420,7 @@ static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->draining = false;
     ctl->low_rounds = 0;
     ctl->queue_over = 0;
-    ctl->rate_bps = ap_clamp_rate(ctl, AP_START_RATE_BPS);
+    ctl->rate_bps = ap_clamp_rate(ctl, ap_max_u64(AP_START_RATE_BPS, quarter));
     ap_round_begin(ctl, now);
 }
 
@@ -415,10 +429,14 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
     if (round->idle) {
         return;
     }
-    bool grew = ctl->prev_round_bps == 0 || round->sample_bps * AP_PERCENT >= ctl->prev_round_bps * AP_START_GROWTH_PCT;
     if (round->app_limited) {
-        grew = true; // not the link's limit: no verdict yet
+        // Nothing to send, or less than the rate allows: no evidence about the link. The rate is held - it used to
+        // double here, and between samples (control traffic only) ran to the cap in a handful of rounds (Pi quick test
+        // 4: 81 of 84 rounds at more than 8 x the link were app-limited), so the next sample and its repairs went out
+        // at 1 Gbit/s.
+        return;
     }
+    bool grew = ctl->prev_round_bps == 0 || round->sample_bps * AP_PERCENT >= ctl->prev_round_bps * AP_START_GROWTH_PCT;
     ctl->stalls = grew ? 0U : ctl->stalls + 1U;
     ctl->prev_round_bps = round->sample_bps;
     if (ctl->stalls >= AP_START_STALL_ROUNDS) {
@@ -430,7 +448,12 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
         // doubling (three doublings past a 4 Mbit/s link are 32 Mbit/s of loss).
         ctl->rate_bps = ap_clamp_rate(ctl, bandwidth * AP_START_HOLD_PCT / AP_PERCENT);
     } else {
-        ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * 2U);
+        uint64_t doubled = ctl->rate_bps * 2U;
+        if (bandwidth != 0) {
+            doubled = ap_min_u64(doubled,
+                                 bandwidth * AP_START_CEIL_PCT / AP_PERCENT); // never past twice the best delivery seen
+        }
+        ctl->rate_bps = ap_clamp_rate(ctl, doubled);
     }
 }
 
@@ -588,6 +611,10 @@ static inline void ap_note_held_units(struct ap_pacer* ctl, uint64_t now, uint64
         return;
     }
     uint64_t rtt_ns = now - sent_ns;
+    if (rtt_ns > AP_RTT_MAX_NS || (ctl->rtt_samples >= 3U && rtt_ns > AP_RTT_OUTLIER_X * ap_rtprop_ns(ctl))) {
+        return; // a unit repaired or held in a queue: Pi quick test 4 took a 2.1 s sample and moved rtprop from 42 to
+                // 209 ms
+    }
     ap_filter_put(&ctl->rtt, rtt_ns, now);
     ctl->rtt_samples++;
     ctl->recent_rtt[ctl->recent_n % AP_RECENT_RTTS] = rtt_ns;
@@ -632,7 +659,7 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t h
     if (bytes == 0) {
         // Nothing delivered: no sample - a round with no news says nothing of the link. Sending for AP_STALL_NS with
         // none is the link gone or the estimate wrong: search again.
-        if (ctl->round_sent != 0 && elapsed >= AP_STALL_NS) {
+        if (ctl->units_sent - ctl->round_units0 >= AP_STALL_MIN_UNITS && elapsed >= AP_STALL_NS) {
             ap_restart_search(ctl, now);
         }
         return;
