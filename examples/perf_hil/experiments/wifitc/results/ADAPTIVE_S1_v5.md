@@ -33,7 +33,7 @@ Cause, from the RATETRACE counters (inference, not a pcap proof): the controller
 | 1 MiB M2 | 520 v 367 (x1.42) | 1 640 v 488 (x3.4) | 17 006 / 11 396 (x1.49) | 5 748 / 298 | 15/15 |
 | 1 MiB S1 | 2 248 v 2 374 (x0.95) | 2 569 v 2 402 (x1.1) | 13 660 / 10 838 (x1.26) | 126 / 122 | 15/15 |
 | 1 MiB S2 | 2 625 v 2 497 (x1.05) | 4 266 v 2 660 (x1.6) | 16 552 / 11 682 (x1.42) | 4 870 / 580 | 14-15 of 15 |
-Against the proposed thresholds (X = 10 % on p50, 25 % on p99; A8 1.25x datagrams): **A5 passes only at 1 MiB S1 (p50 -5 %, p99 +10 %) and 128 KiB S1 p50 (-4 %); fails elsewhere** (p50 +5 % to +185 %, p99 +10 % to +800 %). **A8: 128 KiB all within 1.25x; 1 MiB S1 x1.26 (borderline), M1 x1.22, M2 x1.49, S2 x1.42 (retransmissions 20-48x the oracle's at M1/M2/S2).** A6 (no LOSE) fails at 128 KiB (5 LOSEs), passes at 1 MiB and in the small cells. A7 (small cells) passes: 0 LOSE, no regression against Stage A/C counts.
+Against the proposed thresholds (X = 10 % on p50, 25 % on p99; A8 1.25x datagrams): **A5 passes only at 1 MiB S1 (p50 -5 %, p99 +10 %) and 128 KiB S1 p50 (-4 %); fails elsewhere** (p50 +5 % to +185 %, p99 +10 % to +800 %). **A8: 128 KiB all within 1.25x; 1 MiB S1 x1.26 (borderline), M1 x1.22, M2 x1.49, S2 x1.42 (retransmissions 8-23x the oracle's at M1, M2 and S2).** A6 (no LOSE) fails at 128 KiB (5 LOSEs), passes at 1 MiB and in the small cells. A7 (small cells) passes: 0 LOSE, no regression against Stage A/C counts.
 
 ## 4. Rate swing and round-trip estimate (RATETRACE of the publisher, 10 runs per cell; swing = max/min of the per-round rate after START)
 | cell | rtprop median of medians (path 10 / 40 ms) | swing after START, median / max |
@@ -54,7 +54,7 @@ The round-trip estimate is now sane (path to +50 %; S1 13.5 ms against 10 ms, S2
 - Against the DDS stacks, 1 MiB: p50 WIN against both on M1, M2, S1 (and S2 against Fast DDS); delivery TIE (CycloneDDS) or WIN (Fast DDS at 4 Mbit/s: 53-60 %).
 
 ## 6. Honest verdict and what remains
-- **ADAPTIVE is now usable and beats or ties both DDS stacks on 1 MiB and the small cells; it does not beat CycloneDDS and Fast DDS on 128 KiB at M1 and M2**, where its start-up ramp from 1 Mbit/s dominates the p50 (M2) and the tail (M1, S1 p99). The shipped default of Stage A/B ties or loses there too (7 LOSE across the matrix), so ADAPTIVE is an improvement over the default at 1 MiB and not yet over the fixed-rate oracle at 128 KiB.
+- **ADAPTIVE is now usable and beats or ties both DDS stacks on 1 MiB and the small cells; it does not beat CycloneDDS and Fast DDS on 128 KiB at M1 and M2**, where its start-up ramp from 1 Mbit/s dominates the p50 (M2) and the tail (M1, S1 p99). At 1 MiB it is an improvement over the shipped default of Stage A/B (which lost to CycloneDDS there) and at 128 KiB it is not yet at the fixed-rate oracle.
 - Acceptance (plan A4-A8): A6 FAIL (5 LOSE at 128 KiB); A5 FAIL except S1; A7 PASS; A8 fails on the retransmission count at M1/M2/S2 1 MiB. A4 (rate step) and the reader cells were not part of this run.
 - Levers for the implementer (not done here): a higher or remembered start rate (carry the estimate across samples and idle periods; start from the last good estimate or a quarter of it), damping the swing (limit the per-round change), and the fall-back-to-floor in round 6 seen on M2.
 - Not changed: no library, wire, API, default, merge or tag.
