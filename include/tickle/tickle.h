@@ -1366,14 +1366,12 @@ struct tt_Pacer {
 // on any other link.
 struct tt_RateControl {
     struct ap_pacer ap;
-    uint64_t delivered;     // the bytes this link's readers have shown received, pooled over them (cumulative)
     uint64_t held_units;    // the same in units (a unit is a datagram a reader holds), pooled the same way
     uint64_t missing_units; // and the units lost in front of a held one, pooled: held + missing is how far the sends
                             // have been seen
     uint64_t applied_bps;   // the rate struct tt_Pacer was last given
     uint32_t unit_wire;     // a full frame of the link on the wire, bytes
-    uint32_t avg_wire; // the average data datagram on the link, bytes on the wire (control datagrams left out): what a
-                       // unit counts as
+                            // unit counts as
     bool repair_next; // pace_repair_allowed() let a repair go and the seam has not yet counted it: it is not a new unit
     bool adaptive;
 };
@@ -3493,6 +3491,8 @@ struct tt_Publisher { // extends endpoint
     // anything of it has gone; and the datagram count of a large publish KEEP_ALL refused, which
     // tt_Publisher_writable() answers about (0: none).
     struct tt_LargeRecord large[tt_LARGE_RETAINED];
+    bool rate_solicit_armed; // an adaptive link's solicitation timer is set while this Publisher's large send runs
+                             // (rate_solicit_timer())
     struct tt_LargeCursor large_cursor;
     struct tt_LargeRecord large_pending;
     // The end-of-sample HEARTBEAT asked again while a sent large sample stays unacknowledged (large_ack_chase(),
