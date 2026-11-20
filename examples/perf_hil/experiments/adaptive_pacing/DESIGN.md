@@ -496,3 +496,26 @@ as BtlBw (M1 p50 312 -> 1008 ms, M2 413 -> 2675 ms, S2 12 of 15 samples) - remov
 
 Not measured on the Pis. Open: the first round after a burst still reads above the link before the loss exit fires (one
 or two samples at the first 1 MiB), and the START rate of cap/16 (8 Mbit/s) is above a 4 Mbit/s link.
+
+## 20. Pi quick test 7 (74df5385): what the loss exit broke, and what stayed (2026-11-21)
+
+quick7 (`wtc_adaptive_quick7`, 1 run per cell x2): fixed 1 MiB M2 overshoot (peak 61/53 Mbit/s, retx 945/340, p99 0.64/0.99 s),
+stall restarts (1 in 8 runs), 128 KiB S1 BtlBw (4.0/4.1). Regressed: 128 KiB M2 p50 188/183 ms, p99 303/453 (v6 86/161; DDS
+100/106). Still weak: 1 MiB S2 (46 Mbit/s on a 4 Mbit/s link, swing 31x/11x, p99 6-9.5 s), 128 KiB S1 rtprop 153 ms.
+
+| # | Observation | Evidence | Cause |
+|---|---|---|---|
+| 1 | 128 KiB M2: rate 5-10 Mbit/s of 30, never 80 % of the link; `drop_trips` 2 | r1 round 8: the tail of a sample, 1.7 kB sent, all of it repairs, reading 2.9 Mbit/s against a rate of 9.7 -> BtlBw 11.5 -> 5.7, state CRUISE from round 9; CRUISE then climbs by one 1.25x probe every 8 rounds (a sample is 3-4 rounds) | the START loss exit of 74df5385 fired on any round of mostly repairs when rate > 2 x reading: true of every tail round, whatever the volume. The recovery in CRUISE is slow, so one false exit costs the run |
+| 2 | 1 MiB S2: START to 46 Mbit/s on a 4 Mbit/s link, 21 drop trips, 1 stall restart, swing 31x | r1 rounds 19-26: readings 9-23 Mbit/s (412 kB in 142 ms) on the 3.97 Mbit/s link; held total at the end is right (10813 of 10845), the readings are not | the readings are lumpy: the watermark waits at a hole and passes all units held above it when the repair arrives, and the bitmap cannot show them before (the ACKNACK names only missing units). START doubled on them: 8 -> 16 -> 25 -> 46 Mbit/s. The loss exit then fired a round late each time |
+| 3 | 128 KiB S1/S2: rtprop 153 / 48-268 ms against 10 / 40 ms | S2 r1: rtprop 142175 us from round 2 on, unchanged for the run; `rtt_last` follows only at the tail | the first samples are taken in the queue that the START rate (8 Mbit/s, above a 4 Mbit/s link) builds; later reports advance the watermark by more than 4 units, so no clean sample comes. The tail sample of 74df5385 is no help: the last unit sent waits behind the queue |
+
+Fixes: the START loss exit needs at least a sample's worth of repairs in the round (24 kB) - a tail is a few kB; START does not
+grow in a round whose repairs are above 25 % of its bytes (at least 24 kB), it counts as a round that did not grow (three of
+them end START) and holds the rate at no more than it is; RTprop is never above the announce round trip to the reader
+(tt_Context.announce_rtt_ns, an idle measurement, fed at every ACKNACK). Tests: `check_quick7_causes()`
+(each of three checks fails on 74df5385).
+
+Not done: the START rate of cap/16 = 8 Mbit/s is above a 4 Mbit/s link and below a 30 Mbit/s one, and the link cannot be known
+before the first round; a smaller start slows M, a larger one queues on S. Not measured on the Pis. The announce round trip
+errs long (it includes a flush wait) but is taken as a minimum, so it can only lower RTprop; it carries no serialisation time
+of a data frame (about 3 ms at 4 Mbit/s), so RTprop on S can read a few ms under the path of a data unit.

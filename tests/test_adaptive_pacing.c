@@ -718,6 +718,57 @@ static void check_quick6_causes(void) {
           (unsigned long long)ap_rtprop_ns(&tail));
 }
 
+// Pi quick test 7 (74df5385): what the three changes of quick test 6 left or broke, read off its traces.
+static void check_quick7_causes(void) {
+    // (i) 128 KiB M2 round 8: the tail of a sample, 1.7 kB sent and all of it repairs, a reading of 2.9 Mbit/s against
+    // a rate of 9.7. It ended START at 5.7 Mbit/s of a 30 Mbit/s link (p50 86 -> 188 ms): no loss storm, a few repairs.
+    struct ap_pacer tail;
+    ap_init(&tail, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_tail = 1000ULL * 1000000000ULL;
+    tail.rate_bps = 9732000ULL;
+    ap_filter_put(&tail.bw, 11464000ULL, 1U);
+    tail.round_start_ns = t_tail;
+    tail.round_delivered = tail.delivered;
+    tail.delivered += 32298U;
+    tail.round_sent = 1718U;
+    tail.round_repair = 1718U;
+    tail.round_units0 = tail.units_sent;
+    tail.units_sent += 1U;
+    t_tail += 88 * MS;
+    ap_end_round(&tail, t_tail);
+    CHECK(tail.state == AP_START && tail.drop_trips == 0U,
+          "a sample's tail of repairs ended START (state %d, trips %u)", (int)tail.state, (unsigned)tail.drop_trips);
+
+    // (ii) 1 MiB S2: a round on a 8 Mbit/s rate that read 6 Mbit/s with 40 % of its bytes repairs: START does not
+    // double on it (it did, to 46 Mbit/s on a 4 Mbit/s link).
+    struct ap_pacer lossy;
+    ap_init(&lossy, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_lossy = 1000ULL * 1000000000ULL;
+    lossy.rate_bps = 8000000ULL;
+    lossy.round_start_ns = t_lossy;
+    lossy.round_delivered = lossy.delivered;
+    lossy.delivered += 100000U; // 6 Mbit/s over 133 ms
+    lossy.round_sent = 133000U;
+    lossy.round_repair = 53000U;
+    lossy.round_units0 = lossy.units_sent;
+    lossy.units_sent += 60U;
+    t_lossy += 133 * MS;
+    ap_end_round(&lossy, t_lossy);
+    CHECK(lossy.state == AP_START && ap_rate_bps(&lossy) <= 8000000ULL,
+          "START grew to %llu bit/s in a round of 40 %% repairs", (unsigned long long)ap_rate_bps(&lossy));
+
+    // (iii) 128 KiB S1/S2: the first round trip samples were taken in the queue the START rate built (142 ms on a 40 ms
+    // path); the announce round trip is a floor for RTprop.
+    struct ap_pacer floor;
+    ap_init(&floor, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    for (uint64_t at = 1; at <= 3; at++) {
+        ap_filter_put(&floor.rtt, 142 * MS, at * 100 * MS);
+    }
+    ap_note_announce_rtt(&floor, 40 * MS);
+    CHECK(ap_rtprop_ns(&floor) <= 40 * MS, "RTprop %llu ns with an announce round trip of 40 ms",
+          (unsigned long long)ap_rtprop_ns(&floor));
+}
+
 int main(void) {
     struct result unpaced;
     struct result fixed;
@@ -1091,6 +1142,7 @@ int main(void) {
     }
 
     check_quick6_causes();
+    check_quick7_causes();
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link

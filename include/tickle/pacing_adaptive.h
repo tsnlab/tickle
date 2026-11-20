@@ -40,8 +40,9 @@
     24000U // a delivery-rate sample spans at least this much delivered, so that a
            // unit more or less is a small part of it (the BDP is a few frames)
 #define AP_MIN_ROUND_NS \
-    1000000ULL // and a round is never shorter than this, whatever the round trip: on a loopback it is
-               // microseconds, a round then holds a frame or two and its rate is noise
+    1000000ULL                 // and a round is never shorter than this, whatever the round trip: on a loopback it is
+                               // microseconds, a round then holds a frame or two and its rate is noise
+#define AP_START_LOSSY_PCT 25U // START does not grow in a round whose repairs are above this share of its bytes
 #define AP_START_DROP_REPAIR_PCT 50U      // START ends on a loss storm: repairs above this share of a round's bytes
 #define AP_MAX_ROUND_RTTS 8U              // but a round is never longer than this many RTprop
 #define AP_PROBE_EVERY_ROUNDS 8U          // and does so every this many rounds
@@ -111,6 +112,8 @@ struct ap_pacer {
     uint64_t rate_bps;
     uint64_t queue_cfg_ns; // 0 = max(AP_QUEUE_TARGET_MIN_NS, RTprop / AP_QUEUE_TARGET_RTT_DIV)
     uint64_t seed_rtt_ns;
+    uint64_t
+        announce_rtt_ns; // the idle round trip to a reader (tt_Context.announce_rtt_ns), 0 = none: a floor for RTprop
     uint64_t unit_bytes; // a data unit on the wire
     uint64_t
         dgram_bytes; // the average data datagram on the wire: one unit, or a run of them (the resolution of a report)
@@ -218,6 +221,13 @@ static inline uint64_t ap_filter_get(const struct ap_filter* flt) {
     return best;
 }
 
+// RTprop never above the announce round trip to a reader when one is known: that is a path with nothing queued on it.
+// The samples of a send start in the queue the START rate builds (Pi quick tests 6 and 7: 142-153 ms on a 10-40 ms path
+// on S1 and S2) and, with the watermark advancing by many units a report, no clean one follows to lower them.
+static inline uint64_t ap_floor_rtt(const struct ap_pacer* ctl, uint64_t rtt_ns) {
+    return ctl->announce_rtt_ns != 0 ? ap_min_u64(rtt_ns, ctl->announce_rtt_ns) : rtt_ns;
+}
+
 // The path's round trip: the median of the minima of the buckets that have a sample - a single early bad sample poisons
 // one bucket of the filter, not the estimate; with fewer than three buckets, the least.
 static inline uint64_t ap_rtprop_ns(const struct ap_pacer* ctl) {
@@ -229,7 +239,7 @@ static inline uint64_t ap_rtprop_ns(const struct ap_pacer* ctl) {
         }
     }
     if (count == 0) {
-        return ctl->seed_rtt_ns;
+        return ap_floor_rtt(ctl, ctl->seed_rtt_ns);
     }
     for (uint32_t outer = 1; outer < count; outer++) { // insertion sort of at most AP_BUCKETS values
         uint64_t value = minima[outer];
@@ -240,7 +250,7 @@ static inline uint64_t ap_rtprop_ns(const struct ap_pacer* ctl) {
         }
         minima[pos] = value;
     }
-    return count < 3U ? minima[0] : minima[count / 2U];
+    return ap_floor_rtt(ctl, count < 3U ? minima[0] : minima[count / 2U]);
 }
 
 static inline uint64_t ap_btlbw_bps(const struct ap_pacer* ctl) {
@@ -294,6 +304,11 @@ static inline void ap_init(struct ap_pacer* ctl, uint64_t min_bps, uint64_t cap_
     ctl->state = AP_START;
     ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
     ctl->rate_bps = ap_clamp_rate(ctl, ap_start_rate_bps(ctl));
+}
+
+// The announce round trip to a reader, ns (0: not measured).
+static inline void ap_note_announce_rtt(struct ap_pacer* ctl, uint64_t rtt_ns) {
+    ctl->announce_rtt_ns = rtt_ns;
 }
 
 // The rate to pace the link at, bits/s.
@@ -405,8 +420,10 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
     }
     bool drop = ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_DROP_REPAIR_PCT && ctl->state == AP_CRUISE;
     if (ctl->state == AP_START && ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_START_DROP_REPAIR_PCT &&
-        ctl->rate_bps > 2U * round->sample_bps && round->sample_bps != 0) {
-        // START overshot: the rate is more than twice what the round delivered and the round went on repairs (Pi quick
+        ctl->rate_bps > 2U * round->sample_bps && round->sample_bps != 0 && ctl->round_repair >= AP_MIN_SAMPLE_BYTES) {
+        // START overshot: the rate is more than twice what the round delivered and the round went on repairs - at least
+        // a sample's worth: the tail of a 128 KiB sample is a few kB of repairs and a tiny reading, and ended START at
+        // 5-10 Mbit/s of 30 on M2 (Pi quick test 7; 128 KiB M2 p50 86 -> 188 ms) (Pi quick
         // test 6, 1 MiB M2: 180 Mbit/s on a 30 Mbit/s link, 70 % of every sample lost, START held because every round
         // was application-limited). The search is over; BtlBw comes down.
         drop = true;
@@ -462,6 +479,13 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
         return;
     }
     bool grew = ctl->prev_round_bps == 0 || round->sample_bps * AP_PERCENT >= ctl->prev_round_bps * AP_START_GROWTH_PCT;
+    // A round that went on repairs (a quarter of its bytes, at least a sample's worth) is the link losing what is sent
+    // at this rate, whatever its delivery reading says: the readings are lumpy (the watermark waits at a hole and
+    // passes the units held above it when the repair arrives - 23 Mbit/s read on S2's 4 Mbit/s link) and doubled on
+    // them to 46 Mbit/s.
+    bool lossy = ctl->round_repair >= AP_MIN_SAMPLE_BYTES &&
+                 ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_START_LOSSY_PCT;
+    grew = grew && !lossy;
     ctl->stalls = grew ? 0U : ctl->stalls + 1U;
     ctl->prev_round_bps = round->sample_bps;
     if (ctl->stalls >= AP_START_STALL_ROUNDS) {
@@ -471,7 +495,8 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
     } else if (ctl->stalls != 0) {
         // The first round that did not grow: the link's rate is about here. Hold at the best round so far, not another
         // doubling (three doublings past a 4 Mbit/s link are 32 Mbit/s of loss).
-        ctl->rate_bps = ap_clamp_rate(ctl, bandwidth * AP_START_HOLD_PCT / AP_PERCENT);
+        uint64_t hold = bandwidth * AP_START_HOLD_PCT / AP_PERCENT;
+        ctl->rate_bps = ap_clamp_rate(ctl, lossy ? ap_min_u64(hold, ctl->rate_bps) : hold);
     } else {
         uint64_t doubled = ctl->rate_bps * 2U;
         if (bandwidth != 0) {
