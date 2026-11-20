@@ -957,7 +957,6 @@ static void resolve_capacity_options(struct tt_Capacity* capacity) {
 #define LINK_UDP_HEADER 8U
 #define LINK_IP_FRAGMENT_UNIT 8U // an IP fragment's payload is a multiple of 8 bytes, but for the last
 #define LINK_PERCENT 100U
-#define RATE_AVG_WIRE_DIV 16U // an adaptive link's average datagram: each send moves it a sixteenth of the way
 #define LINK_BITS_PER_BYTE 8ULL
 // struct tt_Pacer.ns_per_byte_q16's fixed point: 16 fraction bits.
 #define LINK_Q16_SHIFT 16U
@@ -2026,7 +2025,6 @@ static void link_rate_configure(struct tt_RateControl* rate, struct tt_Pacer* pa
     }
     rate->adaptive = true;
     rate->unit_wire = (uint32_t)link->mtu + LINK_FRAME_OVERHEAD;
-    rate->avg_wire = rate->unit_wire;
     ap_init(&rate->ap, link->rate_min_rate, link->pacing_rate, link->rate_queue_ns, 0, rate->unit_wire);
     rate->applied_bps = rate->ap.rate_bps;
     pace_apply_rate(pacer, rate->applied_bps);
@@ -3943,11 +3941,13 @@ static void rate_sync(struct tt_Context* node, uint8_t link) {
 static void rate_note_send(struct tt_Context* node, uint8_t link, uint64_t now, uint32_t wire) {
     struct tt_RateControl* rate = &node->rate[link];
     if (wire >= rate->unit_wire / 2U) { // a data datagram: the HEARTBEATs and ACKNACKs are not
-        rate->avg_wire = (rate->avg_wire * (RATE_AVG_WIRE_DIV - 1U) + wire) / RATE_AVG_WIRE_DIV;
         if (rate->repair_next) {
             rate->repair_next = false; // pace_repair_allowed() just let one go: a repair is not a new unit
         } else {
-            ap_note_unit_sent(&rate->ap, now); // an original: its send time is a round trip sample's start
+            // An original: one unit, or a run of them (a datagram of n units is n frames on the wire); each unit's send
+            // time is a round trip sample's start.
+            uint32_t units = (wire + (rate->unit_wire / 2U)) / rate->unit_wire;
+            ap_note_data_sent(&rate->ap, now, wire, units);
         }
     }
     ap_note_send(&rate->ap, now, wire, false);
@@ -3989,7 +3989,6 @@ static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck
     if (ack->rate_units_valid) {
         int32_t advance = seq_delta(held, ack->rate_units);
         if (advance > 0) {
-            rate->delivered += (uint64_t)advance * rate->avg_wire;
             rate->held_units += (uint64_t)advance;
             ack->rate_units = held;
         }
@@ -4001,7 +4000,7 @@ static void rate_acknack(struct tt_Context* node, uint32_t ip, struct tt_PeerAck
         rate->missing_units = rate->missing_units + missing - ack->rate_missing;
     }
     ack->rate_missing = missing;
-    ap_on_feedback(&rate->ap, now, rate->delivered, rate->held_units + rate->missing_units);
+    ap_on_feedback(&rate->ap, now, rate->held_units, rate->missing_units);
     rate_sync(node, link);
 }
 #endif
@@ -13106,6 +13105,37 @@ static bool large_encode_through(struct tt_Publisher* pub, struct tt_LargeRecord
     return true;
 }
 
+// While a paced large send runs on an adaptive link its solicitations go out on a timer, not from the send cursor: with
+// a run of 44 units a datagram and the rate at a few Mbit/s the cursor wakes once every few hundred ms, and a report
+// that late is a delivery rate that is the send rate and a round trip that is the interval. Armed from
+// large_paced_count().
+static void rate_solicit_timer(struct tt_Context* node, uint64_t time, void* param);
+
+static void rate_arm_solicit(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_RateControl* rate,
+                             uint64_t now) {
+    if (pub->rate_solicit_armed) {
+        return;
+    }
+    if (tt_Context_schedule(node, now + ap_solicit_gap_ns(&rate->ap), rate_solicit_timer, pub)) {
+        pub->rate_solicit_armed = true;
+    }
+}
+
+static void rate_solicit_timer(struct tt_Context* node, uint64_t time, void* param) {
+    struct tt_Publisher* pub = param;
+    pub->rate_solicit_armed = false;
+    if (!pub->large_cursor.active) {
+        return; // the send is over: nothing more to ask
+    }
+    const struct tt_Peer* dest = &pub->large_cursor.dests[pub->large_cursor.next_dest];
+    const struct tt_RateControl* rate = &node->rate[pace_link(node, dest->ip)];
+    if (!rate->adaptive) {
+        return;
+    }
+    solicit_ack_throttled(pub);
+    rate_arm_solicit(node, pub, rate, time);
+}
+
 // The CDR byte that ends fragment `last` of `record`.
 static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last) {
     return large_offset(last) + large_length(last, record->cdr_len);
@@ -13124,6 +13154,9 @@ static uint32_t large_paced_count(struct tt_Context* node, struct tt_Publisher* 
     if (__builtin_expect(adaptive->adaptive, 0) &&
         tt_get_ns() - pub->last_ack_solicit_ns >= ap_solicit_gap_ns(&adaptive->ap)) {
         solicit_ack_throttled(pub); // a clean stream draws no ACKNACK of its own: the estimator's feedback is asked for
+    }
+    if (__builtin_expect(adaptive->adaptive, 0)) {
+        rate_arm_solicit(node, pub, adaptive, tt_get_ns());
     }
     uint32_t fit = pace_units(node, &cursor->dests[cursor->next_dest], len, want, &cursor->pace_at_ns);
     if (fit == 0 && !large_encode_through(pub, record, record->cdr_len)) {

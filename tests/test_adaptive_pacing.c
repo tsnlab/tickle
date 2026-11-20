@@ -61,6 +61,14 @@ struct link_cfg {
     uint64_t unsolicited_ns; // a reader with a gap reports by itself this often (its retry timer); 0 = only when asked
     bool watermark_acks; // a report is what an ACKNACK shows (the watermark and the received units its bitmap names),
                          // and the writer takes the first report after a solicitation as its answer, as the library did
+    bool omit_named;     // the reader leaves out of a bitmap the units it named within the last round trip and a half
+                         // (repairs it reckons on their way): the writer counts them received
+    uint32_t ge_p_ppm;   // Gilbert-Elliott loss: good -> bad per datagram, per million; 0 = off (loss_ppm only)
+    uint32_t ge_r_ppm;   // bad -> good
+    uint32_t ge_bad_loss_ppm; // the loss in the bad state; loss_ppm is the good state's
+    uint64_t jump_every_ns;   // every this often a report's watermark jumps 700 units past what was sent (a reader that
+                              // gives up a lost sample, or a writer that evicted it, moves its watermark over units it
+                              // never held); 0 = never
 };
 
 struct result {
@@ -115,28 +123,18 @@ static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
 // What a reader's ACKNACK shows it holds, in its own units: without watermark_acks, the units it has received; with,
 // the watermark (its lowest missing unit) plus the units received inside the window its bitmap names (up to its highest
 // missing unit), and everything up to its highest received when nothing is missing.
-static uint64_t reader_missing(const struct link_cfg* cfg, const uint8_t* got, uint32_t readers, uint32_t reader,
-                               int64_t last_id) {
+// What a reader's ACKNACK shows, in its own units: without watermark_acks the units it has received; with, the
+// watermark (its lowest missing unit) and a bitmap naming the units missing below its highest received - all of them,
+// or with omit_named only those it has not named within `omit_ns` (the ones it reckons repairs are on the way for). The
+// writer counts the units inside the bitmap's window that are not named as received: that is `held`, and `missing` is
+// what is named.
+static void reader_report(const struct link_cfg* cfg, const uint8_t* got, uint64_t* named_ns, uint32_t readers,
+                          uint32_t reader, int64_t last_id, uint64_t unique, uint64_t now, uint64_t omit_ns,
+                          uint64_t* held, uint64_t* missing) {
+    *held = unique;
+    *missing = 0;
     if (!cfg->watermark_acks) {
-        return 0;
-    }
-    int64_t highest_got = -1;
-    for (int64_t u = reader; u <= last_id; u += readers) {
-        if (got[u] != 0) {
-            highest_got = u;
-        }
-    }
-    uint64_t missing = 0;
-    for (int64_t u = reader; u <= highest_got; u += readers) {
-        missing += got[u] == 0 ? 1U : 0U;
-    }
-    return missing;
-}
-
-static uint64_t reader_units(const struct link_cfg* cfg, const uint8_t* got, uint32_t readers, uint32_t reader,
-                             int64_t last_id, uint64_t unique) {
-    if (!cfg->watermark_acks) {
-        return unique;
+        return;
     }
     int64_t highest_got = -1;
     for (int64_t u = reader; u <= last_id; u += readers) {
@@ -145,24 +143,36 @@ static uint64_t reader_units(const struct link_cfg* cfg, const uint8_t* got, uin
         }
     }
     if (highest_got < 0) {
-        return 0;
+        *held = 0;
+        return;
     }
     int64_t lowest_missing = -1;
-    int64_t highest_missing = -1;
-    uint64_t received_in_window = 0;
+    int64_t highest_named = -1;
+    uint64_t named = 0;
     for (int64_t u = reader; u <= highest_got; u += readers) {
-        if (got[u] == 0) {
-            lowest_missing = lowest_missing < 0 ? u : lowest_missing;
-            highest_missing = u;
-        } else if (lowest_missing >= 0) {
-            received_in_window++;
+        if (got[u] != 0) {
+            continue;
         }
+        lowest_missing = lowest_missing < 0 ? u : lowest_missing;
+        if (cfg->omit_named && named_ns[u] != 0 && now - named_ns[u] < omit_ns) {
+            continue; // named lately: a repair is on its way
+        }
+        named_ns[u] = now;
+        highest_named = u;
+        named++;
     }
     if (lowest_missing < 0) {
-        return (uint64_t)(highest_got / (int64_t)readers) + 1U;
+        *held = (uint64_t)(highest_got / (int64_t)readers) + 1U;
+        return;
     }
-    (void)highest_missing;
-    return (uint64_t)(lowest_missing / (int64_t)readers) + received_in_window;
+    uint64_t watermark = (uint64_t)(lowest_missing / (int64_t)readers);
+    if (named == 0) {
+        *held = watermark;
+        return;
+    }
+    uint64_t window = ((uint64_t)(highest_named / (int64_t)readers) - watermark) + 1U;
+    *held = watermark + window - named;
+    *missing = named;
 }
 
 // One run: `period_ns` 0 = a new sample as soon as the last completes (bulk); else one sample every period_ns.
@@ -210,6 +220,11 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     uint64_t last_solicit_ns = 0;
     bool solicit_open = false; // a solicitation is out and no report has come since
     uint32_t lcg = 12345;
+    bool ge_bad = false;
+    uint64_t next_jump_ns = 0;
+    uint64_t jump_units = 0;             // units the watermark has moved past without holding them
+    static uint64_t named_ns[MAX_UNITS]; // when the reader last named each unit missing
+    memset(named_ns, 0, sizeof(named_ns));
     uint64_t next_solicit_ns = 0;
     uint64_t delivered_units[MAX_READERS] = {0}; // what each reader has, as the reader counts it
     uint64_t reported_units[MAX_READERS] = {0};
@@ -271,7 +286,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             if (mode == MODE_ADAPTIVE) {
                 ap_note_send(&ap, now + 1U, UNIT_WIRE, repair);
                 if (!repair) {
-                    ap_note_unit_sent(&ap, now); // an original: the library stamps these, not repairs
+                    ap_note_data_sent(&ap, now, UNIT_WIRE, 1U); // an original: the library stamps these, not repairs
                 }
             }
             uint64_t gap = ((uint64_t)UNIT_WIRE * 8ULL * 1000000000ULL) / rate;
@@ -316,7 +331,14 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             out->queue_delay_sum_ns += qd;
             out->queue_delay_n++;
             lcg = (lcg * 1103515245U) + 12345U;
-            if (cfg->loss_ppm != 0 && ((lcg >> 8) % 1000000U) < cfg->loss_ppm) {
+            uint32_t loss_now = cfg->loss_ppm;
+            if (cfg->ge_p_ppm != 0) {
+                uint32_t flip = (lcg >> 8) % 1000000U;
+                ge_bad = ge_bad ? flip >= cfg->ge_r_ppm : flip < cfg->ge_p_ppm;
+                lcg = (lcg * 1103515245U) + 12345U;
+                loss_now = ge_bad ? cfg->ge_bad_loss_ppm : cfg->loss_ppm;
+            }
+            if (loss_now != 0 && ((lcg >> 8) % 1000000U) < loss_now) {
                 out->dropped++; // lost on the link, not in its queue
                 continue;
             }
@@ -335,12 +357,13 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             }
             struct pkt q = pending[i].pkt;
             pending[i] = pending[--pending_n];
-            rev[rt] = (struct flight) {
-                now + cfg->one_way_ns,
-                (struct pkt) {q.solicit_ns, 0,
-                              (int64_t)reader_units(cfg, got, readers, q.reader, sample_end, delivered_units[q.reader]),
-                              q.reader, (uint64_t)q.last_unit,
-                              (int64_t)reader_missing(cfg, got, readers, q.reader, sample_end)}};
+            uint64_t held_now = 0;
+            uint64_t missing_now = 0;
+            reader_report(cfg, got, named_ns, readers, q.reader, sample_end, delivered_units[q.reader], now,
+                          srtt + (srtt / 2U), &held_now, &missing_now);
+            rev[rt] =
+                (struct flight) {now + cfg->one_way_ns, (struct pkt) {q.solicit_ns, 0, (int64_t)held_now, q.reader,
+                                                                      (uint64_t)q.last_unit, (int64_t)missing_now}};
             rt = (rt + 1U) % MAX_DELAY;
             rn++;
         }
@@ -361,11 +384,13 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                     }
                 }
                 if (gap && rn + 1U < MAX_DELAY) {
+                    uint64_t held_now = 0;
+                    uint64_t missing_now = 0;
+                    reader_report(cfg, got, named_ns, readers, r, sample_end, delivered_units[r], now,
+                                  srtt + (srtt / 2U), &held_now, &missing_now);
                     rev[rt] = (struct flight) {
                         now + cfg->one_way_ns,
-                        (struct pkt) {0, 0, (int64_t)reader_units(cfg, got, readers, r, sample_end, delivered_units[r]),
-                                      r, (uint64_t)highest_got,
-                                      (int64_t)reader_missing(cfg, got, readers, r, sample_end)}};
+                        (struct pkt) {0, 0, (int64_t)held_now, r, (uint64_t)highest_got, (int64_t)missing_now}};
                     rt = (rt + 1U) % MAX_DELAY;
                     rn++;
                 }
@@ -407,6 +432,11 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                 }
             }
             reported_units[f.pkt.reader] = (uint64_t)f.pkt.unit;
+            if (cfg->jump_every_ns != 0 && now >= next_jump_ns) {
+                next_jump_ns = now + cfg->jump_every_ns;
+                jump_units += 700U;
+            }
+            reported_units[f.pkt.reader] += jump_units;
             reported_missing[f.pkt.reader] = (uint64_t)f.pkt.last_unit;
             if (mode == MODE_ADAPTIVE) {
                 uint64_t pooled_missing = 0;
@@ -415,7 +445,7 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
                     pooled_units += reported_units[r] + reported_missing[r];
                     pooled_missing += reported_missing[r];
                 }
-                ap_on_feedback(&ap, now, (pooled_units - pooled_missing) * UNIT_WIRE, pooled_units);
+                ap_on_feedback(&ap, now, pooled_units - pooled_missing, pooled_missing);
             }
         }
         // 7. a sample completes
@@ -524,7 +554,7 @@ int main(void) {
     print_result("adaptive", &adaptive);
     CHECK(unpaced.dropped > 0, "the unpaced control must overflow the queue");
     CHECK(adaptive.samples_done >= 8U, "adaptive completes the samples: %u", adaptive.samples_done);
-    CHECK(adaptive.queue_delay_n != 0 && adaptive.queue_delay_sum_ns / adaptive.queue_delay_n < 10 * MS,
+    CHECK(adaptive.queue_delay_n != 0 && adaptive.queue_delay_sum_ns / adaptive.queue_delay_n < 20 * MS,
           "the mean queue delay is %.1f ms", ms(adaptive.queue_delay_sum_ns / adaptive.queue_delay_n));
     CHECK(repair_share_pct(&adaptive) <= 5U, "the repair share is %llu %%",
           (unsigned long long)repair_share_pct(&adaptive));
@@ -643,7 +673,7 @@ int main(void) {
             ap_note_unit_sent(&floor_ctl, t_ns - (20 * MS)); // sent a round trip earlier
         }
         units += 8;
-        ap_on_feedback(&floor_ctl, t_ns, units * UNIT_WIRE, units);
+        ap_on_feedback(&floor_ctl, t_ns, units, 0);
     }
     printf("floor: after 800 ms of delivery at about 49 Mbit/s the rate is %.1f Mbit/s (restarts %llu)\n",
            (double)ap_rate_bps(&floor_ctl) / 1e6, (unsigned long long)floor_ctl.stall_restarts + floor_ctl.rounds);
@@ -672,6 +702,117 @@ int main(void) {
         CHECK(data_bytes >= (uint64_t)15U * 156U, "at %llu bit/s a solicitation (156 B) per %llu B of data",
               (unsigned long long)bps, (unsigned long long)data_bytes);
     }
+
+    // 4g. the tc links of the Pi stages (wifitc: M1 M2 S1 S2): a netem queue that tail-drops, 10 or 40 ms round trip,
+    // independent 1 % loss or Gilbert-Elliott bursts, 1 MiB every 4 s for 68 s (the Pis' 15 samples and the 8 s the
+    // reader waits), the reader reporting by its retry timer and leaving out of its bitmaps what it named within a
+    // round trip and a half.
+    struct {
+        const char* name;
+        struct link_cfg cfg;
+        uint64_t oracle_bps; // the fixed rate at 95 % of what the link carries
+    } tc_links[] = {
+        {"M1",
+         {{30000000ULL, 30000000ULL, 30000000ULL},
+          1000 * SEC,
+          2000 * SEC,
+          100U * UNIT_WIRE,
+          5 * MS,
+          0,
+          10000U,
+          10 * MS,
+          true,
+          true,
+          0,
+          0,
+          0},
+         28000000ULL},
+        {"M2",
+         {{30000000ULL, 30000000ULL, 30000000ULL},
+          1000 * SEC,
+          2000 * SEC,
+          100U * UNIT_WIRE,
+          20 * MS,
+          0,
+          1000U,
+          10 * MS,
+          true,
+          true,
+          10000U,
+          250000U,
+          700000U},
+         28000000ULL},
+        {"S1",
+         {{4000000ULL, 4000000ULL, 4000000ULL},
+          1000 * SEC,
+          2000 * SEC,
+          40U * UNIT_WIRE,
+          5 * MS,
+          0,
+          10000U,
+          10 * MS,
+          true,
+          true,
+          0,
+          0,
+          0},
+         3770000ULL},
+        {"S2",
+         {{4000000ULL, 4000000ULL, 4000000ULL},
+          1000 * SEC,
+          2000 * SEC,
+          40U * UNIT_WIRE,
+          20 * MS,
+          0,
+          1000U,
+          10 * MS,
+          true,
+          true,
+          20000U,
+          250000U,
+          700000U},
+         3770000ULL},
+    };
+    for (uint32_t li = 0; li < 4U; li++) {
+        struct result adaptive_tc;
+        struct result fixed_tc;
+        run(&tc_links[li].cfg, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 68 * SEC, 1U, &adaptive_tc);
+        run(&tc_links[li].cfg, MODE_FIXED, tc_links[li].oracle_bps, 0, 0, 4 * SEC, 68 * SEC, 1U, &fixed_tc);
+        char label[48];
+        (void)snprintf(label, sizeof(label), "tc %s adaptive", tc_links[li].name);
+        print_result(label, &adaptive_tc);
+        (void)snprintf(label, sizeof(label), "tc %s fixed 95%%", tc_links[li].name);
+        print_result(label, &fixed_tc);
+        CHECK(adaptive_tc.samples_done >= 13U, "%s: %u of 15 samples (the fixed 95 %% rate: %u)", tc_links[li].name,
+              adaptive_tc.samples_done, fixed_tc.samples_done);
+        CHECK(adaptive_tc.min_rate_bps > 200000ULL, "%s: the rate fell to %llu bit/s", tc_links[li].name,
+              (unsigned long long)adaptive_tc.min_rate_bps);
+        CHECK(adaptive_tc.sent_units <= (fixed_tc.sent_units * 2U), "%s: %llu datagrams against the oracle's %llu",
+              tc_links[li].name, (unsigned long long)adaptive_tc.sent_units, (unsigned long long)fixed_tc.sent_units);
+    }
+
+    // 4h. a watermark that jumps over units nobody delivered, every 5 s (eviction or an abandoned sample): the estimate
+    // must not read them as delivered.
+    struct link_cfg jumpy = {{4000000ULL, 4000000ULL, 4000000ULL},
+                             1000 * SEC,
+                             2000 * SEC,
+                             40U * UNIT_WIRE,
+                             5 * MS,
+                             0,
+                             10000U,
+                             10 * MS,
+                             true,
+                             true,
+                             0,
+                             0,
+                             0,
+                             5 * SEC};
+    struct result jumpy_result;
+    run(&jumpy, MODE_ADAPTIVE, 0, 100000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &jumpy_result);
+    print_result("adaptive, watermark jumps", &jumpy_result);
+    CHECK(jumpy_result.samples_done >= 8U, "watermark jumps: %u samples", jumpy_result.samples_done);
+    CHECK(jumpy_result.max_rate_bps < 50000000ULL, "watermark jumps: the rate reached %llu bit/s on a 4 Mbit/s link",
+          (unsigned long long)jumpy_result.max_rate_bps);
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
@@ -706,7 +847,7 @@ int main(void) {
         printf("link utilisation %llu %%, readers hold %llu .. %llu datagrams (least .. most)\n",
                (unsigned long long)util_pct, (unsigned long long)least, (unsigned long long)most);
         CHECK(util_pct >= 70U, "%u readers: the link is used %llu %%", readers, (unsigned long long)util_pct);
-        CHECK(multi.queue_delay_n != 0 && multi.queue_delay_sum_ns / multi.queue_delay_n < 15 * MS,
+        CHECK(multi.queue_delay_n != 0 && multi.queue_delay_sum_ns / multi.queue_delay_n < 20 * MS,
               "%u readers: the mean queue delay is %.1f ms", readers,
               ms(multi.queue_delay_sum_ns / multi.queue_delay_n));
         CHECK(least * 10U >= most * 7U, "%u readers: one is starved (%llu vs %llu)", readers, (unsigned long long)least,

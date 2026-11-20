@@ -388,7 +388,7 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     rate_acknack(&node, 0, &ack, 100, 0);
     rate_acknack(&node, 0, &ack, 900, 0);
     EXPECT_EQ_U64(rate, pacer_rate_bps());
-    EXPECT_EQ_U64(0, node.rate[0].delivered);
+    EXPECT_EQ_U64(0, node.rate[0].ap.delivered);
     EXPECT_EQ_U32(0, ack.rate_units_valid ? 1U : 0U);
     destroy();
 }
@@ -399,18 +399,17 @@ static void test_control_datagrams_are_not_units(void) {
     create(&opts);
     uint32_t unit = node.rate[0].unit_wire;
     EXPECT_EQ_U32(1500U + 38U, unit);
-    // A flood of HEARTBEAT-sized datagrams (a solicitation per round trip) leaves what a unit counts as alone: it once
-    // fell to the control datagrams' size and the estimator read every delivery as a fraction of what it was.
+    // A flood of HEARTBEAT-sized datagrams (a solicitation per round trip) is no unit: it once fell the unit size to
+    // the control datagrams' size and the estimator read every delivery as a fraction of what it was.
     for (uint32_t i = 0; i < 1000; i++) {
         pace_charge(&node, 0, 90U, test_mock_now);
     }
-    EXPECT_EQ_U32(unit, node.rate[0].avg_wire);
-    // Data frames of another size move it, within what is a data frame.
-    for (uint32_t i = 0; i < 1000; i++) {
-        pace_charge(&node, 0, 1000U, test_mock_now);
-    }
-    EXPECT_TRUE(node.rate[0].avg_wire < unit);
-    EXPECT_TRUE(node.rate[0].avg_wire >= unit / 2U);
+    EXPECT_EQ_U64(0, node.rate[0].ap.units_sent);
+    // A data datagram of one frame is one unit, a run of n units is n.
+    pace_charge(&node, 0, 1472U, test_mock_now);
+    EXPECT_EQ_U64(1, node.rate[0].ap.units_sent);
+    pace_charge(&node, 0, (size_t)45U * 1472U, test_mock_now);
+    EXPECT_TRUE(node.rate[0].ap.units_sent >= 45U && node.rate[0].ap.units_sent <= 47U);
     destroy();
 }
 
@@ -465,23 +464,54 @@ static void test_readers_pool_into_one_link_count(void) {
     struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
     opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
     create(&opts);
-    uint32_t wire = node.rate[0].avg_wire;
+    uint32_t unit = node.rate[0].unit_wire;
+    for (uint32_t i = 0; i < 100; i++) {
+        pace_charge(&node, 0, 1472U, test_mock_now); // 100 units went
+    }
     struct tt_PeerAck a = {0};
     struct tt_PeerAck b = {0};
     // First ACKNACKs are baselines: nothing counted.
     rate_acknack(&node, 0, &a, 500, 0);
     rate_acknack(&node, 0, &b, 9000, 0);
-    EXPECT_EQ_U64(0, node.rate[0].delivered);
+    EXPECT_EQ_U64(0, node.rate[0].ap.held_units);
     // Each reader's advance adds to the one count.
     rate_acknack(&node, 0, &a, 510, 0);
-    EXPECT_EQ_U64(10ULL * wire, node.rate[0].delivered);
+    EXPECT_EQ_U64(10, node.rate[0].ap.held_units);
     rate_acknack(&node, 0, &b, 9020, 0);
-    EXPECT_EQ_U64(30ULL * wire, node.rate[0].delivered);
+    EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
     // A reordered, older ACKNACK moves nothing, and does not lower the baseline.
     rate_acknack(&node, 0, &a, 505, 0);
-    EXPECT_EQ_U64(30ULL * wire, node.rate[0].delivered);
+    EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
     rate_acknack(&node, 0, &a, 512, 0);
-    EXPECT_EQ_U64(32ULL * wire, node.rate[0].delivered);
+    EXPECT_EQ_U64(32, node.rate[0].ap.held_units);
+    EXPECT_EQ_U64(32ULL * unit, node.rate[0].ap.delivered);
+    destroy();
+}
+
+// A watermark that moves over units nobody held - a sample evicted or given up, its units passed at once - is not
+// delivery: a count past what was sent is taken as such a jump and left out for good. It once read as a megabyte
+// delivered in an instant and ran the rate to its cap (the Pi stages: the rate at the cap with BtlBw 0, 33-50 thousand
+// retransmissions).
+static void test_a_watermark_jump_is_not_delivery(void) {
+    struct tt_InitOptions opts = one_link(tt_LINK_PROFILE_WIFI);
+    opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
+    create(&opts);
+    for (uint32_t i = 0; i < 100; i++) {
+        pace_charge(&node, 0, 1472U, test_mock_now);
+    }
+    struct tt_PeerAck ack = {0};
+    rate_acknack(&node, 0, &ack, 1000, 0); // the baseline
+    rate_acknack(&node, 0, &ack, 1050, 0); // 50 held
+    EXPECT_EQ_U64(50, node.rate[0].ap.held_units);
+    rate_acknack(&node, 0, &ack, 1800, 0); // the watermark jumps 750 units: only 100 were ever sent
+    EXPECT_EQ_U64(100, node.rate[0].ap.held_units);
+    EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
+    for (uint32_t i = 0; i < 20; i++) {
+        pace_charge(&node, 0, 1472U, test_mock_now); // 20 more go and are held
+    }
+    rate_acknack(&node, 0, &ack, 1820, 0);
+    EXPECT_EQ_U64(120, node.rate[0].ap.held_units);
+    EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
     destroy();
 }
 
@@ -596,6 +626,7 @@ int main(void) {
     test_the_round_trip_is_from_unit_send_times();
     test_held_units_from_an_acknack();
     test_readers_pool_into_one_link_count();
+    test_a_watermark_jump_is_not_delivery();
     test_the_bucket_follows_the_link();
     test_a_large_send_on_an_adaptive_link();
 

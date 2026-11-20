@@ -319,12 +319,17 @@ static void print_discovery(const struct tt_Context* node) {
     // The link's rate control as it ran (TT_RATE_CONTROL): the mode, the bucket's rate at the end, and what the
     // estimator found - the delivery rate (BtlBw), the least round trip, and how often its guards tripped.
     const struct tt_RateControl* rate = &node->rate[0];
-    printf(" rate_control=%u rate_bps=%llu btlbw_bps=%llu rtprop_ns=%llu rate_rounds=%llu rate_queue_trips=%llu "
-           "rate_drop_trips=%llu",
-           (unsigned)node->opts.net.links[0].rate_control, (unsigned long long)rate->ap.rate_bps,
-           (unsigned long long)ap_btlbw_bps(&rate->ap), (unsigned long long)ap_rtprop_ns(&rate->ap),
-           (unsigned long long)rate->ap.samples, (unsigned long long)rate->ap.queue_trips,
-           (unsigned long long)rate->ap.drop_trips);
+    printf(
+        " rate_control=%u rate_bps=%llu btlbw_bps=%llu rtprop_ns=%llu rate_rounds=%llu rate_queue_trips=%llu "
+        "rate_drop_trips=%llu rate_stall_restarts=%llu rate_rtt_samples=%llu rate_units_sent=%llu rate_held_units=%llu "
+        "rate_top_units=%llu rate_jump_units=%llu rate_delivered_bytes=%llu",
+        (unsigned)node->opts.net.links[0].rate_control, (unsigned long long)rate->ap.rate_bps,
+        (unsigned long long)ap_btlbw_bps(&rate->ap), (unsigned long long)ap_rtprop_ns(&rate->ap),
+        (unsigned long long)rate->ap.samples, (unsigned long long)rate->ap.queue_trips,
+        (unsigned long long)rate->ap.drop_trips, (unsigned long long)rate->ap.stall_restarts,
+        (unsigned long long)rate->ap.rtt_samples, (unsigned long long)rate->ap.units_sent,
+        (unsigned long long)rate->ap.held_units, (unsigned long long)rate->ap.top_units,
+        (unsigned long long)rate->ap.jump_units, (unsigned long long)rate->ap.delivered);
 }
 
 static void print_large(const struct tt_Context* node) {
