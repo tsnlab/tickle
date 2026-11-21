@@ -376,7 +376,7 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     opts.net.links[0].rate_min_rate = 0;
     opts.net.links[0].pacing_rate = 500000ULL;
     create(&opts);
-    EXPECT_EQ_U64(500000ULL, node.rate[0].ap.rate_bps);
+    EXPECT_EQ_U64(250000ULL, node.rate[0].ap.rate_bps); // a cap below the default is a prior: START at half of it
     destroy();
 
     // FIXED and OFF links have no estimator and keep their bucket.
@@ -402,6 +402,10 @@ static void test_held_units_from_an_acknack(void) {
     uint64_t wide[2] = {0x1ULL, 0x2ULL}; // units 1000 and 1065 missing: window 66, 2 missing
     EXPECT_EQ_U32(1000 + 64, rate_units_held(1000, wide, 2));
     EXPECT_EQ_U32(0, rate_units_held(0xFFFFFFFFU, gaps, 1)); // the watermark wraps, the window follows
+    // The words reach to the reader's highest relevant bit and everything up to it is told: three words and one hole at
+    // position 5 means the units up to the start of the last word (position 128) are told, 127 of them held - not 5.
+    uint64_t late[3] = {0x20ULL, 0, 0};
+    EXPECT_EQ_U32(100 + 129 - 1, rate_units_held(100, late, 3));
 }
 
 static void test_control_datagrams_are_not_units(void) {

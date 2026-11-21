@@ -519,3 +519,29 @@ Not done: the START rate of cap/16 = 8 Mbit/s is above a 4 Mbit/s link and below
 before the first round; a smaller start slows M, a larger one queues on S. Not measured on the Pis. The announce round trip
 errs long (it includes a flush wait) but is taken as a minimum, so it can only lower RTprop; it carries no serialisation time
 of a data frame (about 3 ms at 4 Mbit/s), so RTprop on S can read a few ms under the path of a data unit.
+
+## 21. Decision (c) of 2026-11-21: one more bounded iteration on v7 (7c6e4fe3)
+
+v7 full S1 (`0b608977`): 50/37/1/24 against the fixed 95 % arm 65/31/0/16; the only LOSE is 128 KiB M1 p99 against Fast DDS (98.4 vs
+91.9 ms); 128 KiB M2 p50 +31 % and 1 MiB M2 p50 +39 % / p99 2.1x against the oracle; 1 MiB S2: 19 stall restarts in 7 runs, swing
+up to 84x, one run delivered 9/15; 1 MiB S1: 7 restarts, datagrams 1.32x the oracle. No wire change.
+
+| Change | Cause | Test (each fails on 7c6e4fe3 unless noted) |
+|---|---|---|
+| START from the user's prior: a cap below the 1 Gbit/s default (pacing_rate or link_rate the user set) starts at half of it; the first full round decides: delivering 60 % of what was sent - believed, CRUISE with a probe at the run gain (no doubling START); less - START goes on from the measured rate (x1.25). No prior (cap at the default): unchanged, 8 Mbit/s | START at cap/16 = 1-8 Mbit/s made every 128 KiB first sample slow on a 30 Mbit/s link (M1 p99 98 vs 92 ms: the 6 ms of START) although the user had said what the link was | `check_next_causes()` (iv): 15 Mbit/s under a 30 Mbit/s prior, right prior -> CRUISE above 25 Mbit/s (fails on 7c6e4fe3), wrong prior (4.3 Mbit/s delivered) -> START at under 7 Mbit/s (passes on both: a guard), no prior -> 8 Mbit/s (guard); (v) the model, 4 Mbit/s link under a 30 Mbit/s prior against none: same samples, median and queue (guard; the numbers are equal: 2248 ms, 23 ms) |
+| A stall is no report at all: the clock restarts at every ACKNACK (any report is a live path) and at a send into an empty pipe; checked at every send (`ap_check_stall`): 8 units in flight and silence for max(1 s, 8 RTprop) | the old test ran in `ap_on_feedback`: a report that showed nothing new after 1 s was a stall, though the reports were coming - 19 restarts in 7 runs of 1 MiB S2, each followed by a doubling START | (i) five seconds of reports showing nothing: no stall (fails: 1); the 4b idle-gap check now sends into the silence for the real stall; 4b's live-report check (fails: 1) |
+| Repairs sent in the last 2 RTT are waiting for their answer: no stall while they are (until 4 windows) | a hole being repaired is not a dead path | (ii) a repair 10 ms ago excuses a silent window (a guard: 7c6e4fe3 has no send-side stall; it fails if the rule is removed) |
+| After a stall the search resumes at half the last CRUISE rate, in CRUISE, with probes at 110 % (no run gain) for 16 rounds, instead of START from the bottom | each restart re-ran the doubling START and overshot; the next restart followed | (iii) a stall at 20 Mbit/s -> CRUISE at 10 Mbit/s with damped probes (fails: no stall at all there) |
+| `rate_units_held` counts the units up to the start of the last word the ACKNACK carries | (3) below | `test_rate_control`: three words, one hole at position 5: held 100 + 128, not 105 (fails: 105) |
+
+(3) What the ACKNACK carries above the watermark, read in `send_acknack_skipping()` and `rate_units_held()`: the watermark `seq_no` and
+`bitmap_words` words of bits for the units *missing*, cut at the reader's highest relevant bit (the highest it holds, or the last
+sequence number of the latest HEARTBEAT); every position up to it is told, a bit set for missing and none for held. The writer
+used only the highest *set* bit, so the units a reader held above its last hole counted all at once when a repair moved the
+watermark over them (the lumps of 9-23 Mbit/s on S2's 4 Mbit/s link). The number of words also tells the highest relevant bit to
+64 units, so the units up to the start of the last word are known held, a lower bound that never over-counts. That needs no wire
+change and is in. Not in: the units between that and the reader's highest (up to 63): not on the wire. Narrow ACKNACKs (a new
+gap's range, low_bit > 0) leave positions below low_bit as zero bits that mean not asked and not held; the formula cannot tell
+them from full ones, an over-count it already had.
+
+Not measured on the Pis.

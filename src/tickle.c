@@ -3968,6 +3968,14 @@ static uint32_t rate_units_held(uint32_t seq_no, const uint64_t* bitmap, uint16_
                      (uint32_t)__builtin_clzll(bitmap[word]);
         }
     }
+    // The words an ACKNACK carries reach to the reader's highest relevant bit, and every position up to it is told, a
+    // bit set for a unit missing and none for one held: so the unit at the start of the last word is told as well, and
+    // the units between the last hole and it are held. Without that they show only when a repair moves the watermark
+    // over them, all at once (S2 1 MiB, Pi quick test 7: 23 Mbit/s read on a 4 Mbit/s link). No wire change.
+    if (words > 0) {
+        uint32_t told = ((uint32_t)(words - 1U) * tt_RELIABLE_BITMAP_WORD_BITS) + 1U;
+        window = window > told ? window : told;
+    }
     return seq_no + (window - missing);
 }
 
