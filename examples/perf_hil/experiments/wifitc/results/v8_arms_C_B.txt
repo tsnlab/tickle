@@ -1,0 +1,8 @@
+== arm C (30 Mbit/s cap on S links), unscored
+tickle-ad-c30 rl128k S1: n=10 delivered min/med 15/15 (0 short); p50 281 [281..286] vs p95 292; p99 341 [311..864] vs 304; tx 1976 vs 1560; retx 71 vs 16; stall 0 (0 runs); swing med/max 3/30x; peak max 30M
+tickle-ad-c30 rl128k S2: n=10 delivered min/med 15/15 (0 short); p50 341 [302..1138] vs p95 325; p99 641 [401..4211] vs 570; tx 1886 vs 1693; retx 126 vs 80; stall 0 (0 runs); swing med/max 11/19x; peak max 30M
+tickle-ad-c30 rl1m S1: n=10 delivered min/med 11/15 (3 short); p50 2276 [2266..10569] vs p95 2374; p99 9443 [3997..24874] vs 2402; tx 14511 vs 10838; retx 811 vs 122; stall 0 (0 runs); swing med/max 16/159x; peak max 30M
+tickle-ad-c30 rl1m S2: n=10 delivered min/med 4/15 (3 short); p50 3037 [2467..51117] vs p95 2497; p99 6710 [3943..55023] vs 2660; tx 14774 vs 11682; retx 2576 vs 580; stall 1 (1 runs); swing med/max 25/181x; peak max 30M
+== arm B (30 Mbit/s cap = right prior) on M2
+tickle-ad-c30 rl128k M2: n=10 delivered min/med 15/15 (0 short); p50 165 [118..220] vs p95 79; p99 283 [168..487] vs 135; tx 1710 vs 1658; retx 40 vs 44; stall 0 (0 runs); swing med/max 7/14x; peak max 30M
+tickle-ad-c30 rl1m M2: n=10 delivered min/med 15/15 (0 short); p50 523 [417..1605] vs p95 367; p99 1114 [639..4137] vs 488; tx 11646 vs 11396; retx 318 vs 298; stall 26 (2 runs); swing med/max 6/23x; peak max 30M
