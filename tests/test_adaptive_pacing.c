@@ -188,6 +188,8 @@ static void reader_report(const struct link_cfg* cfg, const uint8_t* got, uint64
 // `readers` readers share the link: a sample goes to each of them as its own datagrams (unicast reliable), so the link
 // carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
 // estimate).
+static bool g_model_prior = false; // run(): the cap is the user's prior of the link (START begins at half of it)
+
 // NOLINTBEGIN(readability-function-cognitive-complexity) -- a simulator: the link and both its ends in one clock loop
 static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, uint64_t cap_bps, uint64_t min_bps,
                 uint64_t period_ns, uint64_t duration_ns, uint32_t readers, struct result* out) {
@@ -217,6 +219,11 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     int64_t credit = 0; // link credit in bits
     struct ap_pacer ap;
     ap_init(&ap, min_bps, cap_bps, 0, 2 * cfg->one_way_ns, UNIT_WIRE);
+    if (!g_model_prior) { // the cap of these scenarios is a cap, not a statement of the link
+        ap.prior_bps = 0;
+        ap.verify_prior = false;
+        ap.rate_bps = ap_clamp_rate(&ap, ap_start_rate_bps(&ap));
+    }
 
     int64_t sample_first = 0; // unit ids of the current sample
     int64_t sample_next = 0;
@@ -769,6 +776,136 @@ static void check_quick7_causes(void) {
           (unsigned long long)ap_rtprop_ns(&floor));
 }
 
+// The median completion time of a result's samples, ns.
+static uint64_t median_ns(const struct result* res) {
+    uint64_t sorted[64];
+    uint32_t count = res->samples_done < 64U ? res->samples_done : 64U;
+    for (uint32_t i = 0; i < count; i++) {
+        sorted[i] = res->completion_ns[i];
+    }
+    for (uint32_t i = 1; i < count; i++) {
+        uint64_t value = sorted[i];
+        uint32_t pos = i;
+        while (pos > 0 && sorted[pos - 1U] > value) {
+            sorted[pos] = sorted[pos - 1U];
+            pos--;
+        }
+        sorted[pos] = value;
+    }
+    return count != 0U ? sorted[count / 2U] : 0U;
+}
+
+// Pi v7 (7c6e4fe3), the user's decision (c) of 2026-11-21: a prior for START, no false stalls, and a restart that
+// resumes where the link was.
+static void check_next_causes(void) {
+    const uint64_t SEC = 1000000000ULL;
+    // (i) a stall is silence, not a report that shows nothing new: 19 restarts in 7 runs of 1 MiB S2.
+    struct ap_pacer quiet;
+    ap_init(&quiet, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_quiet = 1000ULL * SEC;
+    for (int unit = 0; unit < 20; unit++) {
+        ap_note_send(&quiet, t_quiet, UNIT_WIRE, false);
+        ap_note_data_sent(&quiet, t_quiet, UNIT_WIRE, 1U);
+    }
+    for (int second = 1; second <= 5; second++) { // a report a second, none of them showing anything
+        t_quiet += SEC;
+        ap_on_feedback(&quiet, t_quiet, 0U, 0U);
+        ap_note_send(&quiet, t_quiet + MS, 90U, false);
+    }
+    CHECK(quiet.stall_restarts == 0U, "five silent seconds of live reports were %llu stalls",
+          (unsigned long long)quiet.stall_restarts);
+
+    // (ii) repairs sent in the last two round trips are waiting for their answer: no stall while they are.
+    struct ap_pacer waiting;
+    ap_init(&waiting, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_wait = 1000ULL * SEC;
+    for (int unit = 0; unit < 20; unit++) {
+        ap_note_send(&waiting, t_wait, UNIT_WIRE, false);
+        ap_note_data_sent(&waiting, t_wait, UNIT_WIRE, 1U);
+    }
+    ap_on_feedback(&waiting, t_wait + (10 * MS), 0U, 0U);
+    ap_note_send(&waiting, t_wait + (1500 * MS), UNIT_WIRE, true); // a repair, then the window is over
+    ap_note_send(&waiting, t_wait + (1510 * MS), 90U, false);
+    CHECK(waiting.stall_restarts == 0U, "a repair 10 ms ago was no excuse (%llu restarts)",
+          (unsigned long long)waiting.stall_restarts);
+
+    // (iii) after a stall the search resumes at half the last CRUISE rate in CRUISE with gentle probes, no START.
+    struct ap_pacer resumed;
+    ap_init(&resumed, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    resumed.state = AP_CRUISE;
+    ap_filter_put(&resumed.bw, 20000000ULL, 1U);
+    resumed.last_cruise_bps = 20000000ULL;
+    resumed.rate_bps = 20000000ULL;
+    uint64_t t_res = 1000ULL * SEC;
+    for (int unit = 0; unit < 20; unit++) {
+        ap_note_send(&resumed, t_res, UNIT_WIRE, false);
+        ap_note_data_sent(&resumed, t_res, UNIT_WIRE, 1U);
+    }
+    ap_note_send(&resumed, t_res + (2 * SEC), 90U, false);
+    CHECK(resumed.stall_restarts == 1U && resumed.state == AP_CRUISE && ap_rate_bps(&resumed) == 10000000ULL &&
+              resumed.damp_probe_rounds != 0U,
+          "the restart went to state %d at %llu bit/s (restarts %llu)", (int)resumed.state,
+          (unsigned long long)ap_rate_bps(&resumed), (unsigned long long)resumed.stall_restarts);
+
+    // (iv) a prior: START at half of it; the first full round that delivers it is believed (CRUISE, probing), one that
+    // does not falls back to the measured rate.
+    struct ap_pacer right;
+    ap_init(&right, 100000ULL, 30000000ULL, 0, 0, UNIT_WIRE);
+    CHECK(ap_rate_bps(&right) == 15000000ULL, "START began at %llu bit/s under a 30 Mbit/s prior",
+          (unsigned long long)ap_rate_bps(&right));
+    uint64_t t_right = 1000ULL * SEC;
+    right.round_start_ns = t_right;
+    right.round_delivered = right.delivered;
+    right.delivered += 200000U; // 14.4 Mbit/s over 111 ms: the prior is right
+    right.round_sent = 208000U;
+    right.round_units0 = right.units_sent;
+    right.units_sent += 140U;
+    t_right += 111 * MS;
+    ap_end_round(&right, t_right);
+    CHECK(right.state == AP_CRUISE && ap_rate_bps(&right) > 25000000ULL, "a right prior went to state %d at %llu bit/s",
+          (int)right.state, (unsigned long long)ap_rate_bps(&right));
+    struct ap_pacer wrong;
+    ap_init(&wrong, 100000ULL, 30000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_wrong = 1000ULL * SEC;
+    wrong.round_start_ns = t_wrong;
+    wrong.round_delivered = wrong.delivered;
+    wrong.delivered += 60000U; // 4.3 Mbit/s over 111 ms: a 4 Mbit/s link under the prior
+    wrong.round_sent = 208000U;
+    wrong.round_units0 = wrong.units_sent;
+    wrong.units_sent += 140U;
+    t_wrong += 111 * MS;
+    ap_end_round(&wrong, t_wrong);
+    CHECK(wrong.state == AP_START && ap_rate_bps(&wrong) < 7000000ULL, "a wrong prior went to state %d at %llu bit/s",
+          (int)wrong.state, (unsigned long long)ap_rate_bps(&wrong));
+    struct ap_pacer none;
+    ap_init(&none, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    CHECK(ap_rate_bps(&none) == 8000000ULL, "no prior: START began at %llu bit/s",
+          (unsigned long long)ap_rate_bps(&none));
+
+    // (v) the model: a 4 Mbit/s link (queue 40 frames, 1 MiB every 4 s) under a 30 Mbit/s prior against none (v7
+    // start): not worse in the samples completed, the median completion or the queue it makes.
+    struct link_cfg slow = {{4000000ULL, 4000000ULL, 4000000ULL}, 1000 * SEC, 2000 * SEC, 40U * UNIT_WIRE, 10000000ULL};
+    struct result with_prior;
+    struct result without;
+    g_model_prior = true;
+    run(&slow, MODE_ADAPTIVE, 0, 30000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &with_prior);
+    g_model_prior = false;
+    run(&slow, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &without);
+    printf("-- 4 Mbit/s link under a 30 Mbit/s prior, against none --\n");
+    print_result("prior 30 Mbit/s", &with_prior);
+    print_result("no prior", &without);
+    CHECK(with_prior.samples_done >= without.samples_done, "the prior completed %u samples, none %u",
+          with_prior.samples_done, without.samples_done);
+    CHECK(median_ns(&with_prior) <= median_ns(&without) + (median_ns(&without) / 4U),
+          "the prior's median %.0f ms, none %.0f ms", ms(median_ns(&with_prior)), ms(median_ns(&without)));
+    CHECK(with_prior.queue_delay_n == 0U || without.queue_delay_n == 0U ||
+              with_prior.queue_delay_sum_ns / with_prior.queue_delay_n <=
+                  (without.queue_delay_sum_ns / without.queue_delay_n) + (10 * MS),
+          "the prior's mean queue delay %.1f ms, none %.1f ms",
+          ms(with_prior.queue_delay_n != 0U ? with_prior.queue_delay_sum_ns / with_prior.queue_delay_n : 0U),
+          ms(without.queue_delay_n != 0U ? without.queue_delay_sum_ns / without.queue_delay_n : 0U));
+}
+
 int main(void) {
     struct result unpaced;
     struct result fixed;
@@ -1135,14 +1272,19 @@ int main(void) {
         CHECK(known == 0U || ap_btlbw_bps(&gap_ctl) >= known / 2U,
               "the rate was forgotten across the gap: %llu -> %llu", (unsigned long long)known,
               (unsigned long long)ap_btlbw_bps(&gap_ctl));
-        // A real stall: sent into an empty pipe and 1 s of nothing.
+        // A report that shows nothing new is a live path, not a stall (it was: the clock ran from the last news) ...
         ap_on_feedback(&gap_ctl, t_gap + (1100 * MS), sent_units, sent_units);
+        CHECK(gap_ctl.stall_restarts == 0U, "a report with nothing new was taken as a stall (%llu)",
+              (unsigned long long)gap_ctl.stall_restarts);
+        // ... a real stall is units in flight and no report at all for the window.
+        ap_note_send(&gap_ctl, t_gap + (2300 * MS), 90U, false);
         CHECK(gap_ctl.stall_restarts == 1U, "a real stall of 1 s was missed (%llu)",
               (unsigned long long)gap_ctl.stall_restarts);
     }
 
     check_quick6_causes();
     check_quick7_causes();
+    check_next_causes();
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
