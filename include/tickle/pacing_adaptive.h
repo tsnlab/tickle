@@ -85,6 +85,7 @@
 #define AP_PRIOR_FLOOR_PCT 25U         // while the prior is believed the rate never goes below this share of it
 #define AP_PRIOR_VERIFY_PCT 60U // a round that delivered less than this share of what the round before it sent is low
 #define AP_ANCHOR_VERIFY_ROUNDS 4U    // the first rounds: two low ones in a row mean the prior is wrong
+#define AP_ANCHOR_QUEUE_ROUNDS 2U     // rounds in a row with a queue trip: congestion
 #define AP_ANCHOR_DELIVERY_ROUNDS 3U  // later: this many low rounds in a row are congestion
 #define AP_ANCHOR_DECREASE_PCT 80U    // a decrease takes the rate to this share of itself ...
 #define AP_ANCHOR_RECOVER_PCT 110U    // ... and a clean round gives back this much, up to the ceiling
@@ -126,13 +127,18 @@ struct ap_pacer {
     uint64_t rate_bps;
     uint64_t queue_cfg_ns; // 0 = max(AP_QUEUE_TARGET_MIN_NS, RTprop / AP_QUEUE_TARGET_RTT_DIV)
     uint64_t seed_rtt_ns;
-    uint64_t prior_bps;       // the user's statement of the link (a cap below AP_PRIOR_MAX_BPS), 0 = none
-    uint32_t anchor_rounds;   // ANCHOR: full rounds seen
-    uint32_t anchor_low;      // ... low ones in a row
-    uint64_t anchor_prev_bps; // ... the rate the previous full round sent at (0: none, or it was not full)
-    uint64_t anchor_ewma_bps; // ... the delivery rate, smoothed over rounds
-    uint64_t last_repair_ns;  // when a repair last went out
-    uint64_t last_cruise_bps; // BtlBw at the last CRUISE round: what a stall restart resumes from
+    uint64_t prior_bps;         // the user's statement of the link (a cap below AP_PRIOR_MAX_BPS), 0 = none
+    uint32_t anchor_rounds;     // ANCHOR: full rounds seen
+    bool anchor_qtrip;          // ... the queue guard tripped in this round
+    uint32_t anchor_qrounds;    // ... rounds in a row it did
+    uint32_t anchor_low;        // ... low ones in a row
+    uint64_t anchor_prev_bps;   // ... the rate the previous full round sent at (0: none, or it was not full)
+    uint64_t anchor_ewma_bps;   // ... the delivery rate, smoothed over rounds
+    uint64_t prev_sent_bytes;   // ... what it sent, in all
+    uint64_t prev_repair_bytes; // repairs sent in the previous round ...
+    uint64_t prev_round_ns;     // ... and how long that round was
+    uint64_t last_repair_ns;    // when a repair last went out
+    uint64_t last_cruise_bps;   // BtlBw at the last CRUISE round: what a stall restart resumes from
     uint32_t damp_probe_rounds;
     uint64_t
         announce_rtt_ns; // the idle round trip to a reader (tt_Context.announce_rtt_ns), 0 = none: a floor for RTprop
@@ -372,6 +378,9 @@ static inline uint64_t ap_inflight_limit(const struct ap_pacer* ctl) {
 
 // A new round starts at `now`.
 static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
+    ctl->prev_repair_bytes = ctl->round_repair;
+    ctl->prev_sent_bytes = ctl->round_sent;
+    ctl->prev_round_ns = ctl->round_start_ns != 0 && now > ctl->round_start_ns ? now - ctl->round_start_ns : 0;
     ctl->round_start_ns = now;
     ctl->round_delivered = ctl->delivered;
     ctl->round_sent = 0;
@@ -445,8 +454,32 @@ static inline void ap_note_send(struct ap_pacer* ctl, uint64_t now, uint64_t byt
 
 // `bytes` of what was sent in this round were repairs (a retransmission, counted into the bytes sent by
 // ap_note_send()).
-static inline void ap_note_repair(struct ap_pacer* ctl, uint64_t bytes) {
+static inline void ap_note_repair(struct ap_pacer* ctl, uint64_t now, uint64_t bytes) {
     ctl->round_repair += bytes;
+    ctl->last_repair_ns = now; // (the send path does not say "repair" to ap_note_send(): this is where it is known)
+}
+
+// The units of repairs probably in flight: sent in the last round trip, at the rate of the last two rounds. A reader
+// leaves out of the bitmap of its answer the units it named within the last round trip and a half (their repairs are
+// on the way), and the count of units held took them as received: at 70 % loss most of a sample was "delivered" the
+// moment its repairs were asked, and a link of 4 Mbit/s read 28 (Pi quick test 10, a 30 Mbit/s prior on S2: the prior
+// was never seen to be wrong).
+static inline uint64_t ap_repairs_in_flight_units(const struct ap_pacer* ctl, uint64_t now) {
+    uint64_t elapsed = ctl->round_start_ns != 0 && now > ctl->round_start_ns ? now - ctl->round_start_ns : 0;
+    uint64_t span = elapsed + ctl->prev_round_ns;
+    if (ctl->state != AP_ANCHOR || span == 0 || ctl->unit_bytes == 0) {
+        return 0; // (only on a believed prior, where a wrong one has to be seen: the no-prior search reads as it did)
+    }
+    uint64_t bytes = ctl->round_repair + ctl->prev_repair_bytes;
+    // Only where repairs are a good part of what is sent (a loss storm): there the omitted units are most of the count.
+    // Where they are few the count is right within the noise, and taking them off under-read a reader that leaves
+    // nothing out (the model's multi-reader runs: BtlBw too low, a rise of 4.5 s instead of 2.7).
+    if (bytes < AP_MIN_SAMPLE_BYTES ||
+        bytes * AP_PERCENT <= (ctl->round_sent + ctl->prev_sent_bytes) * AP_START_LOSSY_PCT) {
+        return 0;
+    }
+    uint64_t window = ap_min_u64(ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS), span);
+    return bytes * window / span / ctl->unit_bytes;
 }
 
 // A data datagram of `units` units (an original send, not a repair) of `wire` bytes left at `now`.
@@ -676,9 +709,8 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
     ctl->queue_trips++;
     ctl->queue_over = 0;
     if (ctl->state == AP_ANCHOR) {
-        // A queue on a believed prior: step down, and no recovery until it is gone (the guard clears draining).
-        ctl->draining = true;
-        ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_DECREASE_PCT / AP_PERCENT);
+        ctl->anchor_qtrip =
+            true; // a queue on a believed prior: ap_anchor_round() decides, when it lasts into a second round
         return;
     }
     ctl->phase = AP_PH_CRUISE;
@@ -728,6 +760,8 @@ static inline void ap_anchor_round(struct ap_pacer* ctl, const struct ap_round* 
         ctl->anchor_prev_bps = 0; // nothing learned of the link, and the next round has nothing to compare with
         return;
     }
+    ctl->anchor_qrounds = ctl->anchor_qtrip ? ctl->anchor_qrounds + 1U : 0U;
+    ctl->anchor_qtrip = false;
     uint64_t sample = round->sample_bps;
     ctl->anchor_ewma_bps = ctl->anchor_ewma_bps == 0 ? sample : (3U * ctl->anchor_ewma_bps + sample) / 4U;
     ctl->anchor_rounds++;
@@ -742,11 +776,11 @@ static inline void ap_anchor_round(struct ap_pacer* ctl, const struct ap_round* 
     uint64_t floor_bps = ctl->prior_bps * AP_PRIOR_FLOOR_PCT / AP_PERCENT;
     bool at_floor = ctl->rate_bps <= floor_bps;
     if (storm || (low && ctl->anchor_low >= 2U && ctl->anchor_rounds <= AP_ANCHOR_VERIFY_ROUNDS) ||
-        (at_floor && (low || ctl->draining))) {
+        (at_floor && low && ctl->anchor_low >= 2U)) {
         ap_anchor_wrong(ctl, storm ? ap_min_u64(sample, ctl->anchor_ewma_bps) : ctl->anchor_ewma_bps);
-    } else if (ctl->anchor_low >= AP_ANCHOR_DELIVERY_ROUNDS) {
+    } else if (ctl->anchor_low >= AP_ANCHOR_DELIVERY_ROUNDS || ctl->anchor_qrounds >= AP_ANCHOR_QUEUE_ROUNDS) {
         ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_DECREASE_PCT / AP_PERCENT);
-    } else if (!low && !ctl->draining && ctl->rate_bps < ctl->cap_bps) {
+    } else if (!low && ctl->anchor_qrounds == 0 && ctl->rate_bps < ctl->cap_bps) {
         ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_RECOVER_PCT / AP_PERCENT);
     }
 }
@@ -835,6 +869,12 @@ static inline void ap_note_held_units(struct ap_pacer* ctl, uint64_t now, uint64
     }
     ap_filter_put(&ctl->rtt, rtt_ns, now);
     ctl->rtt_samples++;
+    if (advance > ap_max_u64(AP_RTT_MIN_ADVANCE_UNITS, 2U * dgram_units) && ctl->last_repair_ns != 0 &&
+        now - ctl->last_repair_ns < 2U * ap_rtprop_ns(ctl)) {
+        return; // a tail sample after a recovery (a repair in the last two round trips): the time of the repair,
+                // RTprop's to take but not the queue guard's - on S2 it tripped the guard 18 times with no queue (Pi
+                // quick test 10)
+    }
     ctl->recent_rtt[ctl->recent_n % AP_RECENT_RTTS] = rtt_ns;
     ctl->recent_n++;
     ap_queue_guard(ctl, now);
@@ -856,6 +896,8 @@ static inline void ap_on_feedback(struct ap_pacer* ctl, uint64_t now, uint64_t h
         held = ctl->units_sent;
     }
     uint64_t mark = mark_units > ctl->jump_units ? mark_units - ctl->jump_units : 0;
+    uint64_t in_flight = ap_repairs_in_flight_units(ctl, now);
+    held = held > in_flight ? held - in_flight : 0;
     mark = ap_min_u64(mark, held);
     if (held > ctl->held_units) {
         ctl->held_units = held;

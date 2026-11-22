@@ -567,3 +567,22 @@ The ceiling and the floor are fractions of the prior; the user's own `rate_min_r
 Without a prior (the cap at the 1 Gbit/s default) nothing changes: arm A. Not measured on the Pis. Known: ANCHOR has no
 estimate of the link above the prior, so a link faster than the user said is never found; that is the guideline (set it to the
 expected bandwidth), a slow probe to 100 % was left out.
+
+## 23. Pi quick test 10 (32e2a6c2): the ratchet of the right prior, and the wrong prior that was not seen (2026-11-22)
+
+quick10: arm B (right prior) fixed M2, equal to the fixed 95 % arm on M1 and S1, 0 stall restarts; one collapse (1 MiB S2 r2: rate
+3.8 Mbit/s -> 100 kbit/s in about ten rounds, 2 of 15 delivered); arm C (30 Mbit/s prior on 4 Mbit/s links) at 1 MiB on S1/S2:
+delivery 8-15 of 15, p99 5-35 s, swing 285x.
+
+| # | Observation | Evidence | Cause | Fix / test (fails on 32e2a6c2) |
+|---|---|---|---|---|
+| 1 | B S2 r2: rate 3800 -> 1000 -> 674 -> 100 kbit/s, 18 queue trips and 2 stall restarts with no queue | rounds 7-33: rtt 147, 147, 94, 144, 107 ms against an rtprop of 42; every trip took the rate to 80 %; round 33 is the floor (1000 = 25 % of 4 Mbit/s); round 34 is CRUISE at 1284 | (a) the round trips that tripped the guard were tail samples (the watermark reaching the last unit sent, accepted whatever its advance since 74df5385): after a recovery they are the time of the repair, not a queue; (b) at the floor with `draining` still set the wrong-prior rule fired (`at_floor && (low || draining)`) and stepped to the measured delivery x 1.05 - under the floor - into CRUISE, which has no floor and whose guards go on cutting: this is the path that bypassed AP_PRIOR_FLOOR_PCT | (a) a tail sample feeds the queue guard only when no repair went out in the last two round trips (RTprop still takes it); test (1) - fails: the guard got the samples. (b) the floor needs two low-delivery rounds to be a wrong prior, a queue alone never is; test (2) - fails: state CRUISE at 950 kbit/s |
+| 2 | The decrease on `drain` with no real fall in the held units; BtlBw follows the falling paced rate | rounds 9-33: samples 2.8 -> 1.0 Mbit/s equal to the paced rate; `bw` follows it | in ANCHOR the queue guard cut at its first trip (two samples in a row) and the wrong-prior step took its measure from deliveries made at a rate the library had lowered itself: delivery at the paced rate says nothing of the link | a queue is congestion on a believed prior only when it lasts into a second round (`AP_ANCHOR_QUEUE_ROUNDS`; the guard only flags it); recovery waits for a round without one; the wrong-prior step needs low delivery against what was sent (the existing 60 % of the round before) - the measure is never delivery at a paced-down rate; test (c): one round of a queue does not decrease, a lasting one does (fails: 22.8 Mbit/s after one) |
+| 3 | C at 1 MiB on S1/S2: 8-15 of 15 delivered, p99 5-35 s, swing 285x; the prior never seen to be wrong | S2 c30 r2: samples 24-30 Mbit/s on a 4 Mbit/s link in 42 ms rounds (150 kB per round), 721 of 722 units "held" in 0.5 s; `drop_trips` 42 | the reader leaves out of the bitmap of its answer the units it named within the last round trip and a half (their repairs are on the way, `answer_ack_request`); the count of units held took them as received, so at 70 % loss the delivery read was the rate of the requests and equal to the paced rate: no low round, no wrong prior | on a believed prior the units of the repairs sent in the last round trip (at the rate of the last two rounds, when repairs are a quarter of the bytes and at least 24 kB) are taken off the held count before it is used; `ap_note_repair` now also stamps `last_repair_ns` (the send path says "repair" to `ap_note_send` never, so the 2 RTT excuse of the stall rule was dead). Test (3): 400 units shown held, 300 of them repairs in the last round trip: 100 (fails: 400) |
+
+Tried and left out: the same subtraction without a prior. In the model's multi-reader runs, whose reader leaves nothing out,
+it under-read the delivery (a drop of 2.1 s and a rise of 7.6 s against 0.9 and 2.7), so it is in ANCHOR only; the search
+without a prior (arm A) reads as before.
+
+Test (4) of `check_quick10_causes` - the model with 30 Mbit/s on 4 Mbit/s, 1 % loss and a reader that omits - passes on 32e2a6c2
+as well and is a guard. Not measured on the Pis.

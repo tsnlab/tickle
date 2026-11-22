@@ -844,24 +844,30 @@ static void check_anchor_causes(void) {
     CHECK(ap_rate_bps(&lossy) == ceiling && lossy.state == AP_ANCHOR, "loss moved the rate to %llu bit/s (state %d)",
           (unsigned long long)ap_rate_bps(&lossy), (int)lossy.state);
 
-    // (c) a queue steps the rate down by a fifth; it stays down while the queue is there and recovers when it is gone.
+    // (c) a queue that lasts into a second round steps the rate down by a fifth; one round of it does not (a
+    // sample or two of a recovery is no queue); it comes back when the queue is gone.
     struct ap_pacer queued;
     ap_init(&queued, 100000ULL, prior, 0, 0, UNIT_WIRE);
     ap_filter_put(&queued.rtt, 10 * MS, 1U);
     queued.recent_n = AP_RECENT_RTTS;
-    for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
-        queued.recent_rtt[idx] = 60 * MS;
-    }
     now = 1000ULL * SEC;
-    for (uint32_t trip = 0; trip < AP_QUEUE_TRIPS; trip++) {
-        ap_queue_guard(&queued, now);
+    for (int round = 0; round < 3; round++) {
+        for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
+            queued.recent_rtt[idx] = 60 * MS;
+        }
+        for (uint32_t trip = 0; trip < AP_QUEUE_TRIPS; trip++) {
+            ap_queue_guard(&queued, now);
+        }
+        feed_round(&queued, &now, 100, round_bytes, 0, round_bytes);
+        if (round == 0) {
+            CHECK(ap_rate_bps(&queued) == ceiling && queued.state == AP_ANCHOR,
+                  "one round of a queue took the rate to %llu bit/s", (unsigned long long)ap_rate_bps(&queued));
+        }
     }
     uint64_t lowered = ap_rate_bps(&queued);
-    CHECK(queued.state == AP_ANCHOR && lowered == ceiling * 80U / 100U,
-          "a queue took the rate to %llu bit/s (state %d)", (unsigned long long)lowered, (int)queued.state);
-    feed_round(&queued, &now, 100, round_bytes, 0, round_bytes); // still queued: no recovery
-    CHECK(ap_rate_bps(&queued) == lowered, "the rate recovered with the queue still there: %llu",
-          (unsigned long long)ap_rate_bps(&queued));
+    CHECK(queued.state == AP_ANCHOR && lowered < ceiling && lowered >= ceiling * 64U / 100U,
+          "three rounds of a queue took the rate to %llu bit/s (state %d)", (unsigned long long)lowered,
+          (int)queued.state);
     for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
         queued.recent_rtt[idx] = 10 * MS;
     }
@@ -952,6 +958,89 @@ static void check_anchor_causes(void) {
           ms(without.queue_delay_n != 0U ? without.queue_delay_sum_ns / without.queue_delay_n : 0U));
     CHECK(with_prior.rate_after_step_ok_ns[0] != 0 && with_prior.rate_after_step_ok_ns[0] < 2 * SEC,
           "the wrong prior took %.0f ms to find the link", ms(with_prior.rate_after_step_ok_ns[0]));
+}
+
+// Pi quick test 10 (32e2a6c2): the ratchet of 1 MiB S2 with a right prior (3.8 Mbit/s down to 100 kbit/s in ten rounds,
+// 2 of 15 delivered), and the wrong prior (30 on 4 Mbit/s) that was never seen.
+static void check_quick10_causes(void) {
+    const uint64_t SEC = 1000000000ULL;
+    const uint64_t prior = 4000000ULL;
+    const uint64_t ceiling = 3800000ULL;
+    const uint64_t round_bytes = ceiling / 8U / 10U;
+
+    // (1) tail samples after a recovery are no queue: the watermark reaching the last unit sent 150 ms after it left, a
+    // repair in the last round trip, on a path of 40 ms. Twice: the guard needs two samples (it tripped 18 times).
+    struct ap_pacer tail;
+    ap_init(&tail, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    ap_filter_put(&tail.rtt, 40 * MS, 1U);
+    uint64_t t_tail = 1000ULL * SEC;
+    for (int burst = 0; burst < 2; burst++) {
+        for (int unit = 0; unit < 20; unit++) {
+            ap_note_send(&tail, t_tail, UNIT_WIRE, false);
+            ap_note_data_sent(&tail, t_tail, UNIT_WIRE, 1U);
+        }
+        ap_note_repair(&tail, t_tail + (140 * MS), UNIT_WIRE);
+        t_tail += 150 * MS;
+        ap_on_feedback(&tail, t_tail, tail.units_sent, tail.units_sent);
+    }
+    CHECK(tail.recent_n == 0U && !tail.anchor_qtrip && tail.queue_trips == 0U,
+          "a tail sample after a recovery reached the queue guard (%u, %llu trips)", (unsigned)tail.recent_n,
+          (unsigned long long)tail.queue_trips);
+
+    // (2) at the floor of the prior with a queue and nothing wrong with the delivery, the prior is still believed (the
+    // step to the measured delivery x 1.05 took the rate under the floor, into a CRUISE without one).
+    struct ap_pacer floor_ctl;
+    ap_init(&floor_ctl, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    floor_ctl.rate_bps = ap_clamp_rate(&floor_ctl, 1000ULL);
+    floor_ctl.draining = true;
+    uint64_t now = 1000ULL * SEC;
+    for (int round = 0; round < 8; round++) {
+        feed_round(&floor_ctl, &now, 100, round_bytes / 4U, 0, round_bytes / 4U);
+    }
+    CHECK(floor_ctl.state == AP_ANCHOR && ap_rate_bps(&floor_ctl) >= prior / 4U,
+          "at the floor the state went to %d at %llu bit/s", (int)floor_ctl.state,
+          (unsigned long long)ap_rate_bps(&floor_ctl));
+
+    // (3) units a reader leaves out of its bitmap because their repairs are on the way are not delivered: 300 of 400
+    // units sent were repairs in the last round trip, all 400 shown held - 100 are.
+    struct ap_pacer omitted;
+    ap_init(&omitted, 100000ULL, 30000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_om = 1000ULL * SEC;
+    omitted.round_start_ns = t_om;
+    omitted.round_delivered = omitted.delivered;
+    for (int unit = 0; unit < 400; unit++) {
+        ap_note_send(&omitted, t_om, UNIT_WIRE, unit >= 100);
+        ap_note_data_sent(&omitted, t_om, UNIT_WIRE, 1U);
+    }
+    omitted.round_repair = (uint64_t)300U * UNIT_WIRE;
+    ap_on_feedback(&omitted, t_om + (10 * MS), 400U, 400U);
+    CHECK(omitted.held_units <= 120U, "the omitted units were counted held: %llu of 400",
+          (unsigned long long)omitted.held_units);
+
+    // (4) the model: a 30 Mbit/s prior on a 4 Mbit/s link with 1 % loss and a reader that leaves out the units it named
+    // lately, 1 MiB every 6 s: the wrong prior is found, and it is no worse than none in samples and median.
+    struct link_cfg lossy_s1 = {{4000000ULL, 4000000ULL, 4000000ULL},
+                                1000 * SEC,
+                                2000 * SEC,
+                                40U * UNIT_WIRE,
+                                5 * MS,
+                                0,
+                                10000U,
+                                3 * MS,
+                                true,
+                                true};
+    struct result with_prior;
+    struct result without;
+    g_model_prior = true;
+    run(&lossy_s1, MODE_ADAPTIVE, 0, 30000000ULL, 100000ULL, 6 * SEC, 60 * SEC, 1U, &with_prior);
+    g_model_prior = false;
+    run(&lossy_s1, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 6 * SEC, 60 * SEC, 1U, &without);
+    print_result("wrong prior, 1 % loss, omitting reader", &with_prior);
+    print_result("no prior, same link", &without);
+    CHECK(with_prior.samples_done >= without.samples_done, "the wrong prior completed %u samples, none %u",
+          with_prior.samples_done, without.samples_done);
+    CHECK(median_ns(&with_prior) <= median_ns(&without) + (median_ns(&without) / 4U),
+          "the wrong prior's median %.0f ms, none %.0f ms", ms(median_ns(&with_prior)), ms(median_ns(&without)));
 }
 
 // Pi v7 (7c6e4fe3), the user's decision (c) of 2026-11-21: a prior for START, no false stalls, and a restart that
@@ -1406,6 +1495,7 @@ int main(void) {
     check_quick6_causes();
     check_quick7_causes();
     check_next_causes();
+    check_quick10_causes();
 
     // 5. several readers on one link: the estimator is the link's, pooled over its readers' reports. Bulk sends of 1
     // MiB to each of N readers for 40 s; the link carries every copy. Utilisation is what the readers hold, in link
