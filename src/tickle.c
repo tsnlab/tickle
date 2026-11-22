@@ -4118,7 +4118,7 @@ static bool pace_repair_allowed(struct tt_Context* node, const struct tt_Peer* t
     if (backlog == 0 || backlog + pace_cost_ns(pacer, len) <= 2U * pacer->burst_ns) {
         uint8_t link = pace_link(node, target->ip);
         if (__builtin_expect(node->rate[link].adaptive, 0)) {
-            ap_note_repair(&node->rate[link].ap, pace_wire_bytes(pacer, len));
+            ap_note_repair(&node->rate[link].ap, tt_get_ns(), pace_wire_bytes(pacer, len));
             node->rate[link].repair_next =
                 true; // the next data datagram charged is that repair (one: a repair not sent costs one stamp)
         }
