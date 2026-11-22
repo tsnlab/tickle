@@ -305,6 +305,7 @@ frames by the link MTU), through a token bucket of `pacing_burst` bytes. T1S pac
 the plan's 70-80%, the middle, leaving a quarter of the bus for the other nodes' PLCA turns and for what this node sends
 unpaced; a burst of 4 frames of the link MTU (6152 B at 1500) is a few PLCA turns' worth, the large-run cap. ETHERNET,
 TSN and WIFI are off (`tt_PACING_OFF`), and so is a context with no links configured.
+The library applies no margin to a rate you set; the guideline for choosing one (about 95% of the expected bandwidth) is in section 14, "Wi-Fi tuning".
 
 | rule | detail |
 |---|---|
@@ -1263,18 +1264,27 @@ struct tt_InitOptions init = {0};
 init.net.links[0].broadcast = "192.168.1.255";
 init.net.links[0].profile = tt_LINK_PROFILE_WIFI;
 init.net.links[0].link_rate = 54000000;      // pacing_rate may not exceed it; the link's nominal or measured rate, bit/s
-init.net.links[0].pacing_rate = 12000000;    // bit/s; see below for how to choose
+init.net.links[0].pacing_rate = 28500000;    // bit/s: 95% of the 30 Mbit/s the link is expected to sustain (see below)
 init.net.links[0].pacing_burst = 0;          // 0 = 4 frames of the MTU
 init.net.link_count = 1;
 tt_Context_create_with(&ctx, &init);
 ```
 
-**This document gives no pacing rate as a recommended value, and the WIFI profile stays unpaced.** Pacing helps where a link or its queue
-drops back-to-back bursts (a large sample is sent as one burst, and every repair round is another); it cannot help where the link carries
-less than the sample rate offers. If you set a rate: measure the link's sustained throughput with an unpaced UDP flood that you count at the
-receiver, and choose well under it (the nominal PHY rate is an upper bound, not a target); keep `pacing_burst` at the default unless you
-measure otherwise; leave `large_fragmentation` at AUTO (IP and MTU modes can each be worse); and test your own link at your own sample size.
-Adaptive repair-burst limiting (the sender estimating what the link takes) is a roadmap item, `docs/ROADMAP.md` "Later".
+**Guideline: set `pacing_rate` to the bandwidth you expect the link to sustain, less 5%.** The library applies no margin of its own:
+the bucket runs at exactly the `pacing_rate` you give it (only the T1S default is derived, 75% of `link_rate`; the WIFI profile stays
+unpaced, `tt_PACING_OFF`). So set `pacing_rate` to about 95% of the expected bandwidth (30 Mbit/s expected: 28,500,000), counted on the wire.
+The expected bandwidth is the rate the link carries in practice, not its nominal PHY rate: the nominal rate is an upper bound, not a
+target, and a rate far above what the link carries is harmful (see the evidence below). Measure it with an unpaced UDP flood that you count at
+the receiver. Pacing helps where a link or its queue drops back-to-back bursts (a large sample is sent as one burst, and every repair round is
+another); it cannot help where the link carries less than the sample rate offers. Keep `pacing_burst` at the default unless you measure
+otherwise; leave `large_fragmentation` at AUTO (IP and MTU modes can each be worse); and test your own link at your own sample size.
+
+Evidence, `tc`/netem emulation on the two-Pi rig only, not real Wi-Fi (netem has no airtime contention, rate adaptation or interference, and no real
+wireless hardware was used): on four Wi-Fi-like links (M1 30 Mbit/s, 10 ms, 1% loss; M2 30 Mbit/s, 40 ms, bursty loss; S1 4 Mbit/s; S2
+4 Mbit/s, bursty loss), fixed pacing at 95% of the link rate scored 65 WIN / 31 TIE / 0 LOSE / 16 VOID against Fast DDS and CycloneDDS. A rate far
+above the real link (30 Mbit/s set on a 4 Mbit/s link) was harmful. Whether 95% is the best factor on a real Wi-Fi link is not established.
+Adaptive rate control (the sender estimating what the link takes) is experimental and still under evaluation; this guideline is about the fixed
+rate you set.
 
 ## 15. Configuration reference
 

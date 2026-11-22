@@ -36,8 +36,9 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
   `tc`/netem on the two-Pi rig (delay, burst loss, rate limit, a short queue; an emulation, not Wi-Fi performance and no real
   wireless hardware). RESULTS section 5 holds a marked placeholder until those runs finish; no figure is quoted before.
   Large samples on a link that drops back-to-back bursts are the area to watch: `tt_LinkOptions.pacing_rate`,
-  `pacing_burst` and `large_fragmentation` exist and are documented in DESIGN "Wi-Fi tuning" (measure your own link; no
-  recommended value); adaptive repair-burst limiting is a later-version item (ROADMAP).
+  `pacing_burst` and `large_fragmentation` exist and are documented in DESIGN "Wi-Fi tuning" (guideline: set `pacing_rate` to about 95% of the
+  bandwidth you expect the link to sustain; the library applies no margin itself, and T1S alone defaults to 75% of `link_rate`; WIFI stays
+  unpaced; measure your own link); adaptive repair-burst limiting is experimental, under evaluation (ROADMAP).
 - **Decision (the user, 2026-11-17): the `mac80211_hwsim` + `wmediumd` simulation is not used for any 2.2.0 figure.** Its
   link starts in one of two rate states chosen at bring-up, not by the application (72 of 157 topologies slow at 1.0 Mbit/s,
   85 fast), and the DDS stacks' start-up frames flip a slow link to fast while TickLE's do not, so a scored comparison was
