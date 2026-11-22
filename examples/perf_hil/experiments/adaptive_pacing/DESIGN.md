@@ -545,3 +545,25 @@ gap's range, low_bit > 0) leave positions below low_bit as zero bits that mean n
 them from full ones, an over-count it already had.
 
 Not measured on the Pis.
+
+## 22. The prior-anchored experiment (2026-11-22, base 6b05d93c)
+
+quick9/v8 (arm B: the cap is the right prior; arm C: a 30 Mbit/s cap on the 4 Mbit/s links): B is about the fixed 95 % arm on M1
+and on the slow links, but worse than A on M2 (128 KiB p50 165 ms against an oracle of 79; 1 MiB p50 523 / p99 1.1 s against
+367 / 488; 26 stall restarts in 2 runs); C is bad at 1 MiB (delivery down to 4/15, p99 25-55 s, swing up to 181x). The adaptation
+hurts when the prior is right, and backs off too slowly when it is wrong. The decision: the cap the user sets is the expected
+bandwidth (the guideline: set it to what you expect), and the library takes 95 % of it. No wire change.
+
+| Change | Cause | Test (fails on 6b05d93c unless noted) |
+|---|---|---|
+| With a prior (a cap below the 1 Gbit/s default) the state is ANCHOR: the rate is 95 % of the prior from the first datagram - no half-prior START, no doubling, no CRUISE probes; the ceiling is 95 % of the prior (the cap of the estimator is set to it), nothing above | the half-prior START and the CRUISE after a verified prior kept searching and probing a link the user had described; a right prior was only as good as the search | `check_anchor_causes` (a): START at 28.5 Mbit/s under 30, and no raise above it with delivery at twice the rate |
+| Decrease on congestion only: the queue guard (RTT above RTprop by its target twice) takes the rate to 80 %, and no recovery while the queue is there; low delivery - under 60 % of what the previous round sent - for 3 rounds takes it to 80 %; neither is loss | a loss exit (repairs above half the bytes) and the CRUISE drop guard read random and bursty Wi-Fi loss as congestion: the M2/S2 misreading | (b) a fifth of every round repairs and a tail of repairs: the rate stays at 28.5, state ANCHOR; (c) the queue takes it to 22.8, it stays there while the queue does, comes back after (the last part passes on 6b05d93c); (d) two low rounds: no change, three: 80 % |
+| Recovery: a tenth a round, up to the ceiling, while the queue is clean (`draining` off) | a decrease that is not undone keeps the rate under the link | (c) |
+| Floor: 25 % of the prior (`AP_PRIOR_FLOOR_PCT`) while the prior is believed; the floor reached with congestion still there is a wrong prior | a rate that falls to the minimum floor starves the repairs and the samples | (g) the clamp of the estimator goes to 7.5 Mbit/s, not 100 kbit/s |
+| A wrong prior is found within the first rounds and the rate steps down to the measured delivery x 1.05, in CRUISE with gentle probes under the ceiling: two low rounds in a row among the first 4, a loss storm (repairs above half the bytes, at least 24 kB, at more than twice the delivery), or the floor with congestion | arm C: the 30 Mbit/s cap on a 4 Mbit/s link never left its cap | (e) 4 Mbit/s delivered under 30: CRUISE at 4.2 Mbit/s after four rounds; (f) a storm: CRUISE at the round's delivery (both pass on 6b05d93c, which went to the measured rate too: guards); (h) the model: 30 Mbit/s on a 4 Mbit/s link finds the link within 2 s, completes the same samples with the same median and queue as no prior |
+| The stall clock restarts at a send after a quiet spell (200 ms): a stall is silence while sending | the model of a right prior fell to the floor at its second sample: units of the last sample were still unanswered, the first send after 6 s of quiet found the last report 6 s old - a stall (the same false stall as v5, by another door) | (i2) fails on 6b05d93c; (h) right prior on M2-like 3 % loss: rate never below 28.5 Mbit/s (fails: 5.4), p50 395 ms against 579 without a prior |
+
+The ceiling and the floor are fractions of the prior; the user's own `rate_min_rate` still applies (the clamp takes the larger).
+Without a prior (the cap at the 1 Gbit/s default) nothing changes: arm A. Not measured on the Pis. Known: ANCHOR has no
+estimate of the link above the prior, so a link faster than the user said is never found; that is the guideline (set it to the
+expected bandwidth), a slow probe to 100 % was left out.

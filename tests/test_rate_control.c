@@ -376,7 +376,7 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     opts.net.links[0].rate_min_rate = 0;
     opts.net.links[0].pacing_rate = 500000ULL;
     create(&opts);
-    EXPECT_EQ_U64(250000ULL, node.rate[0].ap.rate_bps); // a cap below the default is a prior: START at half of it
+    EXPECT_EQ_U64(475000ULL, node.rate[0].ap.rate_bps); // a cap below the default is a prior: 95 % of it
     destroy();
 
     // FIXED and OFF links have no estimator and keep their bucket.
