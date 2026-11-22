@@ -221,7 +221,8 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
     ap_init(&ap, min_bps, cap_bps, 0, 2 * cfg->one_way_ns, UNIT_WIRE);
     if (!g_model_prior) { // the cap of these scenarios is a cap, not a statement of the link
         ap.prior_bps = 0;
-        ap.verify_prior = false;
+        ap.cap_bps = cap_bps;
+        ap.state = AP_START;
         ap.rate_bps = ap_clamp_rate(&ap, ap_start_rate_bps(&ap));
     }
 
@@ -795,6 +796,164 @@ static uint64_t median_ns(const struct result* res) {
     return count != 0U ? sorted[count / 2U] : 0U;
 }
 
+// Feeds one full round to a pacer: `sent` bytes sent (`repair` of them repairs), `delivered` bytes delivered, `ms`
+// long.
+static void feed_round(struct ap_pacer* ctl, uint64_t* now, uint64_t ms, uint64_t sent, uint64_t repair,
+                       uint64_t delivered) {
+    ctl->round_start_ns = *now;
+    ctl->round_delivered = ctl->delivered;
+    ctl->delivered += delivered;
+    ctl->round_sent = sent;
+    ctl->round_repair = repair;
+    ctl->round_units0 = ctl->units_sent;
+    ctl->units_sent += sent / UNIT_WIRE;
+    ctl->held_units = ctl->units_sent;
+    *now += ms * MS;
+    ap_end_round(ctl, *now);
+}
+
+// The prior-anchored experiment (2026-11-22): with a prior the rate is 95 % of it, no search, and goes down only on
+// congestion, not on loss.
+static void check_anchor_causes(void) {
+    const uint64_t SEC = 1000000000ULL;
+    const uint64_t prior = 30000000ULL;
+    const uint64_t ceiling = 28500000ULL;
+    const uint64_t round_bytes = ceiling / 8U / 10U; // 100 ms at the ceiling
+
+    // (a) START at 95 % of the prior, in ANCHOR (no half-prior, no doubling), and nothing above it.
+    struct ap_pacer anchor;
+    ap_init(&anchor, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    CHECK(ap_rate_bps(&anchor) == ceiling && anchor.state == AP_ANCHOR, "START began at %llu bit/s in state %d",
+          (unsigned long long)ap_rate_bps(&anchor), (int)anchor.state);
+    uint64_t now = 1000ULL * SEC;
+    for (int round = 0; round < 6; round++) { // delivering more than was sent: no raise above the ceiling
+        feed_round(&anchor, &now, 100, round_bytes, 0, 2U * round_bytes);
+    }
+    CHECK(ap_rate_bps(&anchor) == ceiling, "the rate went to %llu bit/s above 95 %% of the prior",
+          (unsigned long long)ap_rate_bps(&anchor));
+
+    // (b) loss is not congestion: a fifth of every round's bytes repairs, the rest delivered; a tail of repairs; no
+    // decrease and no search (a loss exit and a CRUISE of 6b05d93c moved the rate here).
+    struct ap_pacer lossy;
+    ap_init(&lossy, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    now = 1000ULL * SEC;
+    for (int round = 0; round < 12; round++) {
+        feed_round(&lossy, &now, 100, round_bytes, round_bytes / 5U, round_bytes - (round_bytes / 5U));
+    }
+    feed_round(&lossy, &now, 90, 1718, 1718, 32298); // the tail of a sample
+    CHECK(ap_rate_bps(&lossy) == ceiling && lossy.state == AP_ANCHOR, "loss moved the rate to %llu bit/s (state %d)",
+          (unsigned long long)ap_rate_bps(&lossy), (int)lossy.state);
+
+    // (c) a queue steps the rate down by a fifth; it stays down while the queue is there and recovers when it is gone.
+    struct ap_pacer queued;
+    ap_init(&queued, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    ap_filter_put(&queued.rtt, 10 * MS, 1U);
+    queued.recent_n = AP_RECENT_RTTS;
+    for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
+        queued.recent_rtt[idx] = 60 * MS;
+    }
+    now = 1000ULL * SEC;
+    for (uint32_t trip = 0; trip < AP_QUEUE_TRIPS; trip++) {
+        ap_queue_guard(&queued, now);
+    }
+    uint64_t lowered = ap_rate_bps(&queued);
+    CHECK(queued.state == AP_ANCHOR && lowered == ceiling * 80U / 100U,
+          "a queue took the rate to %llu bit/s (state %d)", (unsigned long long)lowered, (int)queued.state);
+    feed_round(&queued, &now, 100, round_bytes, 0, round_bytes); // still queued: no recovery
+    CHECK(ap_rate_bps(&queued) == lowered, "the rate recovered with the queue still there: %llu",
+          (unsigned long long)ap_rate_bps(&queued));
+    for (uint32_t idx = 0; idx < AP_RECENT_RTTS; idx++) {
+        queued.recent_rtt[idx] = 10 * MS;
+    }
+    ap_queue_guard(&queued, now);
+    feed_round(&queued, &now, 100, round_bytes, 0, round_bytes);
+    CHECK(ap_rate_bps(&queued) > lowered, "the rate did not recover when the queue was gone: %llu",
+          (unsigned long long)ap_rate_bps(&queued));
+
+    // (d) persistently low delivery (three rounds, after the first few) steps the rate down; two do not.
+    struct ap_pacer starved;
+    ap_init(&starved, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    now = 1000ULL * SEC;
+    for (int round = 0; round < 6; round++) {
+        feed_round(&starved, &now, 100, round_bytes, 0, round_bytes);
+    }
+    feed_round(&starved, &now, 100, round_bytes, 0, round_bytes / 4U);
+    feed_round(&starved, &now, 100, round_bytes, 0, round_bytes / 4U);
+    CHECK(ap_rate_bps(&starved) == ceiling, "two low rounds took the rate to %llu bit/s",
+          (unsigned long long)ap_rate_bps(&starved));
+    feed_round(&starved, &now, 100, round_bytes, 0, round_bytes / 4U);
+    CHECK(ap_rate_bps(&starved) == ceiling * 80U / 100U, "three low rounds took the rate to %llu bit/s",
+          (unsigned long long)ap_rate_bps(&starved));
+
+    // (e) a wrong prior (4 Mbit/s under 30): two low rounds among the first, and the rate is the measured delivery
+    // x 1.05 in CRUISE, with the ceiling still the prior's.
+    struct ap_pacer wrong;
+    ap_init(&wrong, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    now = 1000ULL * SEC;
+    for (int round = 0; round < 4; round++) {
+        feed_round(&wrong, &now, 100, round_bytes, 0, 50000U); // 4 Mbit/s over 100 ms
+    }
+    CHECK(wrong.state == AP_CRUISE && ap_rate_bps(&wrong) < 6000000ULL && ap_rate_bps(&wrong) > 3500000ULL,
+          "a wrong prior went to state %d at %llu bit/s", (int)wrong.state, (unsigned long long)ap_rate_bps(&wrong));
+
+    // (f) a loss storm on a believed prior: repairs above half the bytes at more than twice the delivery.
+    struct ap_pacer storm;
+    ap_init(&storm, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    now = 1000ULL * SEC;
+    feed_round(&storm, &now, 100, round_bytes, 0, round_bytes);
+    feed_round(&storm, &now, 100, round_bytes, round_bytes * 6U / 10U, round_bytes / 3U);
+    CHECK(storm.state == AP_CRUISE && ap_rate_bps(&storm) < ceiling / 2U, "a loss storm left state %d at %llu bit/s",
+          (int)storm.state, (unsigned long long)ap_rate_bps(&storm));
+
+    // (g) the floor: the rate does not go below 25 % of the prior while the prior is believed (a queue that is
+    // already at the floor is a wrong prior).
+    struct ap_pacer floor_ctl;
+    ap_init(&floor_ctl, 100000ULL, prior, 0, 0, UNIT_WIRE);
+    floor_ctl.rate_bps = ap_clamp_rate(&floor_ctl, 1000ULL);
+    CHECK(ap_rate_bps(&floor_ctl) == prior / 4U, "the floor of the prior is %llu bit/s",
+          (unsigned long long)ap_rate_bps(&floor_ctl));
+
+    // (h) the model. A right prior on M2-like bursty loss keeps the rate at 95 %; the same loss without queue growth
+    // does not lower it; a wrong prior (30 Mbit/s on a 4 Mbit/s link) finds the link within a few round trips and
+    // is no worse than no prior in samples, median and queue.
+    struct link_cfg lossy_m2 = {{30000000ULL, 30000000ULL, 30000000ULL},
+                                1000 * SEC,
+                                2000 * SEC,
+                                100U * UNIT_WIRE,
+                                20 * MS,
+                                0,
+                                30000U,
+                                8 * MS,
+                                true};
+    struct result right;
+    g_model_prior = true;
+    run(&lossy_m2, MODE_ADAPTIVE, 0, prior, 100000ULL, 6 * SEC, 60 * SEC, 1U, &right);
+    print_result("right prior 30 Mbit/s, M2-like 3 % loss", &right);
+    CHECK(right.samples_done >= 8U, "right prior: %u of 10 samples", right.samples_done);
+    CHECK(right.min_rate_bps >= ceiling * 95U / 100U, "right prior: the rate fell to %llu bit/s",
+          (unsigned long long)right.min_rate_bps);
+    struct link_cfg slow = {{4000000ULL, 4000000ULL, 4000000ULL}, 1000 * SEC, 2000 * SEC, 40U * UNIT_WIRE, 10000000ULL};
+    struct result with_prior;
+    struct result without;
+    run(&slow, MODE_ADAPTIVE, 0, prior, 100000ULL, 4 * SEC, 40 * SEC, 1U, &with_prior);
+    g_model_prior = false;
+    run(&slow, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &without);
+    print_result("wrong prior 30 Mbit/s on 4 Mbit/s", &with_prior);
+    print_result("no prior", &without);
+    CHECK(with_prior.samples_done >= without.samples_done, "the wrong prior completed %u samples, none %u",
+          with_prior.samples_done, without.samples_done);
+    CHECK(median_ns(&with_prior) <= median_ns(&without) + (median_ns(&without) / 4U),
+          "the wrong prior's median %.0f ms, none %.0f ms", ms(median_ns(&with_prior)), ms(median_ns(&without)));
+    CHECK(with_prior.queue_delay_n == 0U || without.queue_delay_n == 0U ||
+              with_prior.queue_delay_sum_ns / with_prior.queue_delay_n <=
+                  (without.queue_delay_sum_ns / without.queue_delay_n) + (10 * MS),
+          "the wrong prior's mean queue delay %.1f ms, none %.1f ms",
+          ms(with_prior.queue_delay_n != 0U ? with_prior.queue_delay_sum_ns / with_prior.queue_delay_n : 0U),
+          ms(without.queue_delay_n != 0U ? without.queue_delay_sum_ns / without.queue_delay_n : 0U));
+    CHECK(with_prior.rate_after_step_ok_ns[0] != 0 && with_prior.rate_after_step_ok_ns[0] < 2 * SEC,
+          "the wrong prior took %.0f ms to find the link", ms(with_prior.rate_after_step_ok_ns[0]));
+}
+
 // Pi v7 (7c6e4fe3), the user's decision (c) of 2026-11-21: a prior for START, no false stalls, and a restart that
 // resumes where the link was.
 static void check_next_causes(void) {
@@ -814,6 +973,20 @@ static void check_next_causes(void) {
     }
     CHECK(quiet.stall_restarts == 0U, "five silent seconds of live reports were %llu stalls",
           (unsigned long long)quiet.stall_restarts);
+
+    // (i2) a quiet spell with units still unanswered is no silence of the path: the first send after it is no stall
+    // (the model of a right prior fell to the floor of the prior at the second sample).
+    struct ap_pacer spell;
+    ap_init(&spell, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    uint64_t t_spell = 1000ULL * SEC;
+    for (int unit = 0; unit < 20; unit++) {
+        ap_note_send(&spell, t_spell, UNIT_WIRE, false);
+        ap_note_data_sent(&spell, t_spell, UNIT_WIRE, 1U);
+    }
+    ap_on_feedback(&spell, t_spell + (10 * MS), 5U, 5U); // 15 units never answered
+    ap_note_send(&spell, t_spell + (3 * SEC), 90U, false);
+    CHECK(spell.stall_restarts == 0U, "the first send after a quiet spell was a stall (%llu)",
+          (unsigned long long)spell.stall_restarts);
 
     // (ii) repairs sent in the last two round trips are waiting for their answer: no stall while they are.
     struct ap_pacer waiting;
@@ -841,69 +1014,15 @@ static void check_next_causes(void) {
         ap_note_send(&resumed, t_res, UNIT_WIRE, false);
         ap_note_data_sent(&resumed, t_res, UNIT_WIRE, 1U);
     }
-    ap_note_send(&resumed, t_res + (2 * SEC), 90U, false);
+    for (int tick = 1; tick <= 20; tick++) { // a datagram every 100 ms into the silence
+        ap_note_send(&resumed, t_res + ((uint64_t)tick * 100U * MS), 90U, false);
+    }
     CHECK(resumed.stall_restarts == 1U && resumed.state == AP_CRUISE && ap_rate_bps(&resumed) == 10000000ULL &&
               resumed.damp_probe_rounds != 0U,
           "the restart went to state %d at %llu bit/s (restarts %llu)", (int)resumed.state,
           (unsigned long long)ap_rate_bps(&resumed), (unsigned long long)resumed.stall_restarts);
 
-    // (iv) a prior: START at half of it; the first full round that delivers it is believed (CRUISE, probing), one that
-    // does not falls back to the measured rate.
-    struct ap_pacer right;
-    ap_init(&right, 100000ULL, 30000000ULL, 0, 0, UNIT_WIRE);
-    CHECK(ap_rate_bps(&right) == 15000000ULL, "START began at %llu bit/s under a 30 Mbit/s prior",
-          (unsigned long long)ap_rate_bps(&right));
-    uint64_t t_right = 1000ULL * SEC;
-    right.round_start_ns = t_right;
-    right.round_delivered = right.delivered;
-    right.delivered += 200000U; // 14.4 Mbit/s over 111 ms: the prior is right
-    right.round_sent = 208000U;
-    right.round_units0 = right.units_sent;
-    right.units_sent += 140U;
-    t_right += 111 * MS;
-    ap_end_round(&right, t_right);
-    CHECK(right.state == AP_CRUISE && ap_rate_bps(&right) > 25000000ULL, "a right prior went to state %d at %llu bit/s",
-          (int)right.state, (unsigned long long)ap_rate_bps(&right));
-    struct ap_pacer wrong;
-    ap_init(&wrong, 100000ULL, 30000000ULL, 0, 0, UNIT_WIRE);
-    uint64_t t_wrong = 1000ULL * SEC;
-    wrong.round_start_ns = t_wrong;
-    wrong.round_delivered = wrong.delivered;
-    wrong.delivered += 60000U; // 4.3 Mbit/s over 111 ms: a 4 Mbit/s link under the prior
-    wrong.round_sent = 208000U;
-    wrong.round_units0 = wrong.units_sent;
-    wrong.units_sent += 140U;
-    t_wrong += 111 * MS;
-    ap_end_round(&wrong, t_wrong);
-    CHECK(wrong.state == AP_START && ap_rate_bps(&wrong) < 7000000ULL, "a wrong prior went to state %d at %llu bit/s",
-          (int)wrong.state, (unsigned long long)ap_rate_bps(&wrong));
-    struct ap_pacer none;
-    ap_init(&none, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
-    CHECK(ap_rate_bps(&none) == 8000000ULL, "no prior: START began at %llu bit/s",
-          (unsigned long long)ap_rate_bps(&none));
-
-    // (v) the model: a 4 Mbit/s link (queue 40 frames, 1 MiB every 4 s) under a 30 Mbit/s prior against none (v7
-    // start): not worse in the samples completed, the median completion or the queue it makes.
-    struct link_cfg slow = {{4000000ULL, 4000000ULL, 4000000ULL}, 1000 * SEC, 2000 * SEC, 40U * UNIT_WIRE, 10000000ULL};
-    struct result with_prior;
-    struct result without;
-    g_model_prior = true;
-    run(&slow, MODE_ADAPTIVE, 0, 30000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &with_prior);
-    g_model_prior = false;
-    run(&slow, MODE_ADAPTIVE, 0, 1000000000ULL, 100000ULL, 4 * SEC, 40 * SEC, 1U, &without);
-    printf("-- 4 Mbit/s link under a 30 Mbit/s prior, against none --\n");
-    print_result("prior 30 Mbit/s", &with_prior);
-    print_result("no prior", &without);
-    CHECK(with_prior.samples_done >= without.samples_done, "the prior completed %u samples, none %u",
-          with_prior.samples_done, without.samples_done);
-    CHECK(median_ns(&with_prior) <= median_ns(&without) + (median_ns(&without) / 4U),
-          "the prior's median %.0f ms, none %.0f ms", ms(median_ns(&with_prior)), ms(median_ns(&without)));
-    CHECK(with_prior.queue_delay_n == 0U || without.queue_delay_n == 0U ||
-              with_prior.queue_delay_sum_ns / with_prior.queue_delay_n <=
-                  (without.queue_delay_sum_ns / without.queue_delay_n) + (10 * MS),
-          "the prior's mean queue delay %.1f ms, none %.1f ms",
-          ms(with_prior.queue_delay_n != 0U ? with_prior.queue_delay_sum_ns / with_prior.queue_delay_n : 0U),
-          ms(without.queue_delay_n != 0U ? without.queue_delay_sum_ns / without.queue_delay_n : 0U));
+    check_anchor_causes();
 }
 
 int main(void) {
@@ -1277,7 +1396,9 @@ int main(void) {
         CHECK(gap_ctl.stall_restarts == 0U, "a report with nothing new was taken as a stall (%llu)",
               (unsigned long long)gap_ctl.stall_restarts);
         // ... a real stall is units in flight and no report at all for the window.
-        ap_note_send(&gap_ctl, t_gap + (2300 * MS), 90U, false);
+        for (int tick = 1; tick <= 12; tick++) { // sending on into a silent path
+            ap_note_send(&gap_ctl, t_gap + (1100 * MS) + ((uint64_t)tick * 100U * MS), 90U, false);
+        }
         CHECK(gap_ctl.stall_restarts == 1U, "a real stall of 1 s was missed (%llu)",
               (unsigned long long)gap_ctl.stall_restarts);
     }

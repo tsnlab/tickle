@@ -81,11 +81,19 @@
 #define AP_STAMPS 256U // send times kept, one per data unit sent: the round trip of a unit shown delivered
 #define AP_STALL_RTPROPS 8U            // the stall window is at least this many RTprop
 #define AP_PRIOR_MAX_BPS 1000000000ULL // a cap below the 1 Gbit/s default is the user's statement of the link: a prior
-#define AP_PRIOR_START_PCT 50U         // START begins at this share of the prior ...
-#define AP_PRIOR_VERIFY_PCT 60U // ... and the prior is believed when the first full round delivered this share of it
+#define AP_PRIOR_CEIL_PCT 95U          // with a prior the rate starts at, and never goes above, this share of it
+#define AP_PRIOR_FLOOR_PCT 25U         // while the prior is believed the rate never goes below this share of it
+#define AP_PRIOR_VERIFY_PCT 60U // a round that delivered less than this share of what the round before it sent is low
+#define AP_ANCHOR_VERIFY_ROUNDS 4U    // the first rounds: two low ones in a row mean the prior is wrong
+#define AP_ANCHOR_DELIVERY_ROUNDS 3U  // later: this many low rounds in a row are congestion
+#define AP_ANCHOR_DECREASE_PCT 80U    // a decrease takes the rate to this share of itself ...
+#define AP_ANCHOR_RECOVER_PCT 110U    // ... and a clean round gives back this much, up to the ceiling
+#define AP_ANCHOR_STEP_PCT 105U       // a wrong prior steps down to the measured delivery times this
 #define AP_DAMPED_PROBE_GAIN_PCT 110U // after a stall restart the probes are gentle ...
 #define AP_DAMPED_PROBE_ROUNDS 16U    // ... for this many rounds
-#define AP_STALL_NS 1000000000ULL     // sending this long with nothing delivered restarts the search
+#define AP_STALL_QUIET_NS \
+    200000000ULL // a send after this long quiet starts the silence afresh: a stall is silence while sending
+#define AP_STALL_NS 1000000000ULL // sending this long with nothing delivered restarts the search
 #define AP_BW_RESET_FRACTION \
     2U // a guard trip lowers BtlBw to at most this fraction of it in one step (half)     // a guard trip lowers BtlBw
        // to at most this fraction of it in one step
@@ -109,7 +117,7 @@ struct ap_filter {
     bool max; // max filter (empty = 0), else min filter (empty = UINT64_MAX)
 };
 
-enum ap_state { AP_START, AP_CRUISE };
+enum ap_state { AP_START, AP_CRUISE, AP_ANCHOR }; // ANCHOR: the user's prior is believed (95 % of it, no search)
 enum ap_phase { AP_PH_CRUISE, AP_PH_PROBE, AP_PH_DRAIN };
 
 struct ap_pacer {
@@ -119,7 +127,10 @@ struct ap_pacer {
     uint64_t queue_cfg_ns; // 0 = max(AP_QUEUE_TARGET_MIN_NS, RTprop / AP_QUEUE_TARGET_RTT_DIV)
     uint64_t seed_rtt_ns;
     uint64_t prior_bps;       // the user's statement of the link (a cap below AP_PRIOR_MAX_BPS), 0 = none
-    bool verify_prior;        // START began at the prior: its first full round decides whether to believe it
+    uint32_t anchor_rounds;   // ANCHOR: full rounds seen
+    uint32_t anchor_low;      // ... low ones in a row
+    uint64_t anchor_prev_bps; // ... the rate the previous full round sent at (0: none, or it was not full)
+    uint64_t anchor_ewma_bps; // ... the delivery rate, smoothed over rounds
     uint64_t last_repair_ns;  // when a repair last went out
     uint64_t last_cruise_bps; // BtlBw at the last CRUISE round: what a stall restart resumes from
     uint32_t damp_probe_rounds;
@@ -289,14 +300,18 @@ static inline uint64_t ap_queue_target_ns(const struct ap_pacer* ctl) {
 }
 
 static inline uint64_t ap_clamp_rate(const struct ap_pacer* ctl, uint64_t rate) {
-    return ap_min_u64(ap_max_u64(rate, ctl->min_bps), ctl->cap_bps);
+    uint64_t floor_bps = ctl->min_bps;
+    if (ctl->state == AP_ANCHOR) {
+        floor_bps = ap_max_u64(floor_bps, ctl->prior_bps * AP_PRIOR_FLOOR_PCT / AP_PERCENT);
+    }
+    return ap_min_u64(ap_max_u64(rate, floor_bps), ctl->cap_bps);
 }
 
 // Where a search starts: a sixteenth of the link rate or cap when one is set, at most AP_START_MAX_BPS (a 30 Mbit/s
 // link at 1 Mbit/s needed five doublings of 100-200 ms each, longer than a 128 KiB sample), else AP_START_RATE_BPS.
 static inline uint64_t ap_start_rate_bps(const struct ap_pacer* ctl) {
     if (ctl->prior_bps != 0) {
-        return ctl->prior_bps * AP_PRIOR_START_PCT / AP_PERCENT;
+        return ctl->prior_bps * AP_PRIOR_CEIL_PCT / AP_PERCENT;
     }
     bool capped = ctl->cap_bps != 0 && ctl->cap_bps < AP_CAP_UNSET_BPS;
     return capped ? ap_min_u64(ap_max_u64(AP_START_RATE_BPS, ctl->cap_bps / AP_START_CAP_DIV), AP_START_MAX_BPS)
@@ -310,14 +325,17 @@ static inline void ap_init(struct ap_pacer* ctl, uint64_t min_bps, uint64_t cap_
     ctl->min_bps = min_bps;
     ctl->cap_bps = cap_bps;
     ctl->prior_bps = cap_bps != 0 && cap_bps < AP_PRIOR_MAX_BPS ? cap_bps : 0;
-    ctl->verify_prior = ctl->prior_bps != 0;
+    if (ctl->prior_bps != 0) {
+        ctl->cap_bps =
+            ctl->prior_bps * AP_PRIOR_CEIL_PCT / AP_PERCENT; // the user says the bandwidth, the library takes 95 %
+    }
     ctl->queue_cfg_ns = queue_cfg_ns;
     ctl->unit_bytes = unit_bytes;
     ctl->dgram_bytes = unit_bytes;
     ctl->seed_rtt_ns = seed_rtt_ns != 0 ? seed_rtt_ns : AP_SEED_RTT_NS;
     ap_filter_init(&ctl->bw, true, AP_BW_BUCKET_ROUNDS);
     ap_filter_init(&ctl->rtt, false, AP_RTT_WINDOW_NS / AP_BUCKETS);
-    ctl->state = AP_START;
+    ctl->state = ctl->prior_bps != 0 ? AP_ANCHOR : AP_START;
     ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
     ctl->rate_bps = ap_clamp_rate(ctl, ap_start_rate_bps(ctl));
 }
@@ -366,6 +384,11 @@ static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
 // CRUISE and probes upward after its first round (a link that got slower meanwhile is caught by the queue guard);
 // without one it starts in START.
 static inline void ap_restart_after_idle(struct ap_pacer* ctl, uint64_t now) {
+    if (ctl->state == AP_ANCHOR) {
+        ctl->anchor_prev_bps = 0;
+        ap_round_begin(ctl, now);
+        return; // the prior holds through a quiet spell
+    }
     uint64_t bandwidth = ap_btlbw_bps(ctl);
     ctl->state = bandwidth != 0 ? AP_CRUISE : AP_START;
     ctl->stalls = 0;
@@ -407,6 +430,9 @@ static inline void ap_note_send(struct ap_pacer* ctl, uint64_t now, uint64_t byt
     if (ctl->round_start_ns == 0) {
         ctl->round_start_ns = now;
         ctl->round_delivered = ctl->delivered;
+    }
+    if (ctl->last_active_ns != 0 && now - ctl->last_active_ns > AP_STALL_QUIET_NS) {
+        ctl->stall_start_ns = ctl->units_sent > ctl->held_units ? now : 0; // a quiet spell is no silence of the path
     }
     ctl->last_active_ns = now;
     ctl->round_sent += bytes;
@@ -493,6 +519,15 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
 static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
     ctl->stall_restarts++;
     ctl->stall_start_ns = 0;
+    if (ctl->state == AP_ANCHOR) {
+        // Silence on a believed prior: the path was down. Back to the floor of the prior and up again as the queue
+        // allows.
+        ctl->anchor_low = 0;
+        ctl->anchor_prev_bps = 0;
+        ctl->rate_bps = ap_clamp_rate(ctl, 0);
+        ap_round_begin(ctl, now);
+        return;
+    }
     uint64_t resume = ap_max_u64(ctl->last_cruise_bps, ap_btlbw_bps(ctl));
     if (resume != 0) {
         // A search that found the link once does not start over from the bottom: it resumes at half what the link last
@@ -526,27 +561,6 @@ static inline void ap_restart_search(struct ap_pacer* ctl, uint64_t now) {
 }
 
 // START: the rate doubles while the delivery rate still grows, and BtlBw is found when it stops growing.
-// START began at half the user's prior (a cap the user set below the default): its first full round says whether the
-// link is what was said. Delivering a good share of what was sent - the prior is believed and the doubling START is
-// skipped: CRUISE, probing at the run gain so the prior is reached in a round or two, with the drain after a probe that
-// finds nothing. Delivering less - the link is not what was said (S1/S2: 4 Mbit/s under a 30 Mbit/s prior): START goes
-// on from what was measured.
-static inline void ap_verify_prior(struct ap_pacer* ctl, const struct ap_round* round, uint64_t bandwidth) {
-    if (round->sample_bps * AP_PERCENT >= ctl->rate_bps * AP_PRIOR_VERIFY_PCT) {
-        ctl->state = AP_CRUISE;
-        ctl->phase = AP_PH_PROBE;
-        ctl->probe_base_bps = bandwidth;
-        ctl->probe_gain_pct = AP_PROBE_RUN_GAIN_PCT;
-        ctl->rounds_since_probe = 0;
-        ctl->rate_bps = ap_clamp_rate(ctl, bandwidth * AP_PROBE_RUN_GAIN_PCT / AP_PERCENT);
-        return;
-    }
-    ctl->prev_round_bps = round->sample_bps;
-    ctl->stalls = 0;
-    ctl->rate_bps =
-        ap_clamp_rate(ctl, ap_max_u64(round->sample_bps * AP_START_HOLD_PCT / AP_PERCENT, AP_START_RATE_BPS));
-}
-
 static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* round, uint64_t bandwidth) {
     if (round->idle) {
         return;
@@ -556,11 +570,6 @@ static inline void ap_start_round(struct ap_pacer* ctl, const struct ap_round* r
         // double here, and between samples (control traffic only) ran to the cap in a handful of rounds (Pi quick test
         // 4: 81 of 84 rounds at more than 8 x the link were app-limited), so the next sample and its repairs went out
         // at 1 Gbit/s.
-        return;
-    }
-    if (ctl->verify_prior) {
-        ctl->verify_prior = false;
-        ap_verify_prior(ctl, round, bandwidth);
         return;
     }
     bool grew = ctl->prev_round_bps == 0 || round->sample_bps * AP_PERCENT >= ctl->prev_round_bps * AP_START_GROWTH_PCT;
@@ -666,6 +675,12 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
     }
     ctl->queue_trips++;
     ctl->queue_over = 0;
+    if (ctl->state == AP_ANCHOR) {
+        // A queue on a believed prior: step down, and no recovery until it is gone (the guard clears draining).
+        ctl->draining = true;
+        ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_DECREASE_PCT / AP_PERCENT);
+        return;
+    }
     ctl->phase = AP_PH_CRUISE;
     ctl->draining = true;
     ctl->drain_rounds = 0;
@@ -681,6 +696,59 @@ static inline void ap_queue_guard(struct ap_pacer* ctl, uint64_t now) {
     }
     ctl->rate_bps = ap_clamp_rate(ctl, (bandwidth != 0 ? bandwidth : ctl->rate_bps) * AP_DRAIN_GAIN_PCT / AP_PERCENT);
     ctl->rounds_since_probe = 0;
+}
+
+// The prior is wrong: the link carries less than was said (or more congestion than a prior allows for). The measured
+// delivery is BtlBw, the search goes on from it as CRUISE under the ceiling of the prior, with gentle probes.
+static inline void ap_anchor_wrong(struct ap_pacer* ctl, uint64_t measured) {
+    measured = ap_max_u64(measured, ctl->min_bps);
+    ctl->state = AP_CRUISE;
+    ctl->anchor_low = 0;
+    ap_filter_reset(&ctl->bw, measured, ctl->rounds);
+    ctl->phase = AP_PH_CRUISE;
+    ctl->draining = false;
+    ctl->low_rounds = 0;
+    ctl->queue_over = 0;
+    ctl->rounds_since_probe = 0;
+    ctl->damp_probe_rounds = AP_DAMPED_PROBE_ROUNDS;
+    ctl->prev_round_bps = 0;
+    ctl->rate_bps = ap_clamp_rate(ctl, measured * AP_ANCHOR_STEP_PCT / AP_PERCENT);
+}
+
+// One round on a believed prior. The rate is 95 % of it and stays, with three exceptions, none of them loss alone (loss
+// on a wireless link is not congestion, and the repairs have their own budget): a queue (the queue guard, above) and
+// persistently low delivery step the rate down by a fifth, and it recovers by a tenth a round while the queue is clean;
+// a prior that is wrong - two low rounds among the first few, a loss storm (repairs above half the bytes at more than
+// twice the delivery), or the floor reached with the congestion still there - steps down to what was measured.
+static inline void ap_anchor_round(struct ap_pacer* ctl, const struct ap_round* round, uint64_t elapsed) {
+    if (round->idle) {
+        return;
+    }
+    if (round->app_limited) {
+        ctl->anchor_prev_bps = 0; // nothing learned of the link, and the next round has nothing to compare with
+        return;
+    }
+    uint64_t sample = round->sample_bps;
+    ctl->anchor_ewma_bps = ctl->anchor_ewma_bps == 0 ? sample : (3U * ctl->anchor_ewma_bps + sample) / 4U;
+    ctl->anchor_rounds++;
+    // A round delivers what the one before it sent (a round trip lags): low is under 60 % of that.
+    uint64_t prev = ctl->anchor_prev_bps;
+    ctl->anchor_prev_bps = ctl->round_sent * AP_BITS_PER_BYTE * AP_NS_PER_SECOND / ap_max_u64(elapsed, 1U);
+    bool low = prev != 0 && sample * AP_PERCENT < prev * AP_PRIOR_VERIFY_PCT;
+    ctl->anchor_low = low ? ctl->anchor_low + 1U : 0U;
+    bool storm = ctl->round_repair >= AP_MIN_SAMPLE_BYTES &&
+                 ctl->round_repair * AP_PERCENT > ctl->round_sent * AP_START_DROP_REPAIR_PCT && sample != 0 &&
+                 ctl->rate_bps > 2U * sample;
+    uint64_t floor_bps = ctl->prior_bps * AP_PRIOR_FLOOR_PCT / AP_PERCENT;
+    bool at_floor = ctl->rate_bps <= floor_bps;
+    if (storm || (low && ctl->anchor_low >= 2U && ctl->anchor_rounds <= AP_ANCHOR_VERIFY_ROUNDS) ||
+        (at_floor && (low || ctl->draining))) {
+        ap_anchor_wrong(ctl, storm ? ap_min_u64(sample, ctl->anchor_ewma_bps) : ctl->anchor_ewma_bps);
+    } else if (ctl->anchor_low >= AP_ANCHOR_DELIVERY_ROUNDS) {
+        ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_DECREASE_PCT / AP_PERCENT);
+    } else if (!low && !ctl->draining && ctl->rate_bps < ctl->cap_bps) {
+        ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_RECOVER_PCT / AP_PERCENT);
+    }
 }
 
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
@@ -718,6 +786,11 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
         (unsigned long long)ctl->held_units, (unsigned long long)ctl->units_sent, (unsigned long long)ctl->jump_units,
         (unsigned long long)ctl->jump_events, (unsigned)ctl->queue_over, (int)ctl->draining);
 #endif
+    if (ctl->state == AP_ANCHOR) {
+        ap_anchor_round(ctl, &round, elapsed);
+        ap_round_begin(ctl, now);
+        return;
+    }
     bandwidth = ap_drop_guard(ctl, &round, bandwidth);
     if (ctl->state == AP_START) {
         ap_start_round(ctl, &round, bandwidth);
