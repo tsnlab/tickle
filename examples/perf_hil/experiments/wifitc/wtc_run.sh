@@ -87,6 +87,7 @@ variant_env() {
         ad) TV_ENV="$TV_ENV TT_RATE_CONTROL=adaptive"; TV_BIN=lg ;; # rate_control ADAPTIVE (ADAPTIVE_PLAN.md)
         lg) TV_BIN=lg ;;                                              # the large-samples small-sample node, no option: ad's control
         c[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#c} * 1000000))" ;; # with ad: the cap, Mbit/s
+        k[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#k} * 1000))" ;; # a fixed rate in kbit/s (without ad), e.g. tickle-k3770
         b[0-9]*) TV_ENV="$TV_ENV TT_PACING_BURST=${part#b}" ;;
         fip | fmtu) TV_ARGS="$TV_ARGS -F ${part#f}" ;;
         *) echo "unknown variant part $part in $1" >&2; return 1 ;;
@@ -112,9 +113,9 @@ cmd_for() {
     tickle)
         if [ "$cell" = rel_large ]; then
             if [ $role = pub ]; then
-                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/large pub -s $LARGE_SZ -r $LARGE_HZ -d $DUR -R -b $BCAST -P wifi$TV_ARGS"
+                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/${LARGE_BIN:-large} pub -s $LARGE_SZ -r $LARGE_HZ -d $DUR -R -b $BCAST -P wifi$TV_ARGS"
             else
-                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/large sub -s $LARGE_SZ -d $((DUR + 8)) -R -b $BCAST -P wifi$TV_ARGS"
+                echo "env TT_UDP_OFFLOAD=0$TV_ENV $PB/${LARGE_BIN:-large} sub -s $LARGE_SZ -d $((DUR + 8)) -R -b $BCAST -P wifi$TV_ARGS"
             fi
         else
             local ctx=1 d=$DUR
