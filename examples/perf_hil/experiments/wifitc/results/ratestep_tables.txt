@@ -1,0 +1,18 @@
+
+=== 1 MiB, M1 stepped 30 -> 4 (45 s) -> 30 Mbit/s (90 s), 0.25 Hz, 135 s, 3 runs per arm ===
+arm | delivered by phase (before / at 4 Mbit / after) | p50 / p99 ms by phase | recovery after step down / up (samples; 1 sample = 4 s) | tx / retx (median) | swing, final rate
+tickle-ad | 36/36 / 33/33 / 33/33 | 331 / 510 / 9207 ; 2267 / 2331 / 5811 ; 348 / 406 / 717 | down 0 up 0 | tx 29225 retx 1815 | swing med 88x max 144x, final 33.6M
+tickle-ad-c30 | 36/36 / 27/33 / 33/33 | 322 / 329 / 25279 ; 8757 / 20231 / 26492 ; 330 / 419 / 2131 | down 7 up 0 | tx 35303 retx 7840 | swing med 30x max 108x, final 28.5M
+tickle-p95 | 36/36 / 33/33 / 33/33 | 324 / 334 / 6831 ; 5307 / 6297 / 9592 ; 323 / 325 / 360 | down 1 up 0 | tx 54362 retx 28873 | -
+tickle-k3770 | 36/36 / 33/33 / 33/33 | 2372 / 2387 / 2402 ; 2379 / 2392 / 2458 ; 2369 / 2389 / 2425 | down 0 up 0 | tx 24928 retx 267 | -
+cyclonedds | 36/36 / 33/33 / 30/30 | 754 / 818 / 818 ; 820 / 919 / 2373 ; 2541 / 3497 / 3655 | down 0 up 10 | tx - retx - | -
+fastdds | 36/36 / 33/33 / 30/30 | 1067 / 1086 / 1095 ; 2916 / 5606 / 6282 ; 25331 / 33844 / 35738 | down 0 up 10 | tx - retx - | -
+
+=== 128 KiB, M1 stepped 30 -> 4 (45 s) -> 30 Mbit/s (90 s), 0.25 Hz, 135 s, 3 runs per arm ===
+arm | delivered by phase (before / at 4 Mbit / after) | p50 / p99 ms by phase | recovery after step down / up (samples; 1 sample = 4 s) | tx / retx (median) | swing, final rate
+tickle-ad | 36/36 / 33/33 / 33/33 | 50 / 108 / 280 ; 281 / 290 / 334 ; 93 / 191 / 216 | down 0 up 5 | tx 3923 retx 40 | swing med 15x max 21x, final 21.9M
+tickle-ad-c30 | 36/36 / 33/33 / 33/33 | 44 / 55 / 285 ; 280 / 285 / 295 ; 43 / 51 / 60 | down 0 up 0 | tx 3586 retx 40 | swing med 1x max 1x, final 28.5M
+tickle-p95 | 36/36 / 33/33 / 33/33 | 44 / 68 / 281 ; 279 / 281 / 349 ; 44 / 56 / 146 | down 0 up 0 | tx 3635 retx 38 | -
+tickle-k3770 | 36/36 / 33/33 / 33/33 | 290 / 296 / 310 ; 293 / 296 / 296 ; 290 / 293 / 301 | down 0 up 0 | tx 3562 retx 32 | -
+cyclonedds | 36/36 / 33/33 / 30/30 | 41 / 55 / 59 ; 62 / 268 / 276 ; 313 / 359 / 373 | down 0 up 10 | tx - retx - | -
+fastdds | 36/36 / 33/33 / 30/30 | 88 / 91 / 91 ; 91 / 92 / 512 ; 618 / 621 / 621 | down 0 up 10 | tx - retx - | -
