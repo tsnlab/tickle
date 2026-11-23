@@ -286,7 +286,7 @@ clamped to the cap).
 Harness: `examples/perf_hil/experiments/wifitc/` (this branch has `ab/wifi-tc` merged). New in it: the arm `tickle-ad`
 (`tickle-ad-c<Mbit/s>` capped) which sets `TT_RATE_CONTROL=adaptive` for the `large` and `node_d100` programs,
 `RATE_STEP`, `READERS`. See `wifitc/ADAPTIVE_PLAN.md` for the plan and `wifitc/wtc_chainD.sh` for the chains. Build and
-ship the binaries of this branch first: `examples/perf_hil/experiments/t1pi/t1pi_build.sh`.
+ship the binaries of this branch first (the t1pi scripts were removed from the tree; last at cb9c8606: `git show cb9c8606:examples/perf_hil/experiments/t1pi/t1pi_build.sh`).
 
 1. **S1 stage (ADAPTIVE vs the DDS stacks, one reader):**
    `OUT_BASE=$HOME/rig_results_safe/wtc_adaptive_$(date +%Y%m%d) examples/perf_hil/experiments/wifitc/wtc_chainD.sh s1`

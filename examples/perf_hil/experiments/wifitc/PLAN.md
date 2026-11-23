@@ -47,7 +47,7 @@ anything else runs.
 * Cells: `be_small` (100 B at 100 Hz, BEST_EFFORT, ping-pong RTT), `rel_small` (same, RELIABLE), `rel_large` 128 KiB and 1 MiB at 0.25 Hz
   (15 samples, RELIABLE KEEP_LAST 10, publisher on the client, subscriber on the server, sub 8 s past the last publish).
   Small cells run 30 s (3000 samples at 100 Hz), large cells 60 s. Same node programs, command lines and readout rules as the earlier Pi comparison
-  (`t1pi_fw.sh`), `TT_UDP_OFFLOAD=0` for TickLE.
+  (`t1pi_fw.sh`, removed from the tree; last at cb9c8606 under experiments/t1pi/), `TT_UDP_OFFLOAD=0` for TickLE.
 * Arms per cell: TickLE `tickle` (the library as shipped: profile `wifi` = `tt_LINK_PROFILE_WIFI`, no pacing, `large_fragmentation` AUTO);
   `tickle-pace` (the same plus the documented link options: `pacing_rate` set by the DESIGN.md guideline below, `pacing_burst` default,
   `large_fragmentation` AUTO); CycloneDDS 0.10.5 (`cyclonedds_node`, interface set by address); Fast DDS 2.14.6 (UDPv4 only, `maxMessageSize` 1472);

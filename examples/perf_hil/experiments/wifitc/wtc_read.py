@@ -6,7 +6,7 @@ Per cell, profile and metric TickLE against each scored vendor (cyclonedds, fast
 WIN when every TickLE run strictly beats every vendor run, LOSE when every vendor run strictly beats every TickLE run, else TIE. VOID for a
 framework-metric when |median(A2) - median(A)| > 10% of median(A); a pair with a VOID side is VOID. zenohpico is printed, never scored. Latency
 with no scored sample counts as infinity (worst). rel_large one-way latencies cross two hosts: the clock offset measured before and after the
-run (t1pi_clock.py) is subtracted.
+run (t1pi_clock.py, removed from the tree; last at cb9c8606 under experiments/t1pi/) is subtracted.
 Usage: wtc_read.py <run dir> [--md]     env TICKLE_ROWS="tickle tickle-pace" (default)
 """
 import os, re, sys, statistics

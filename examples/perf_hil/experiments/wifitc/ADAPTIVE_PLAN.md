@@ -24,5 +24,5 @@ Known before the run: the model and a one-host loopback check only (DESIGN.md se
 a start-up ramp of 10-20 ms per sample; on these links the ramp is expected to be a small part of a sample's time, but
 that is a prediction, not a result.
 
-How to run: build and ship this branch (`../t1pi/t1pi_build.sh`), then
+How to run: build and ship this branch (the t1pi scripts were removed from the tree; last at cb9c8606: `git show cb9c8606:examples/perf_hil/experiments/t1pi/t1pi_build.sh`), then
 `OUT_BASE=$HOME/rig_results_safe/wtc_adaptive_<date> ./wtc_chainD.sh s1` (detached, under the rig lock; the runner takes it).

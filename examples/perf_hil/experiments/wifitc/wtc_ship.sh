@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2086
-# Copies the topology script and the calibration probe of this directory to both Pis (~/wtc_scripts); the node programs are those already in ~/t1pi_bin.
+# Copies the topology script and the calibration probe of this directory to both Pis (~/wtc_scripts); the node programs are those already in ~/t1pi_bin (built by the t1pi scripts, removed from the tree; last at cb9c8606 under experiments/t1pi/).
 set -eu
 S=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 KEY=${PI_KEY:-$HOME/.ssh/tickle_ci_ed25519}

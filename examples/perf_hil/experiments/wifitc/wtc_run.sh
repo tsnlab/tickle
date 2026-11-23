@@ -151,7 +151,7 @@ kill_ns_procs() { # every process of ours still in the namespaces
     cli "for p in \$(sudo -n ip netns pids $NS_NEAR 2>/dev/null); do sudo -n kill -KILL \$p 2>/dev/null; done"
 }
 
-clock_offset() { # t1pi_clock.py is shipped with the t1pi scripts (both Pis)
+clock_offset() { # t1pi_clock.py is shipped with the t1pi scripts (both Pis; removed from the tree, last at cb9c8606 under experiments/t1pi/)
     # run: measures CLOCK_MONOTONIC(rpi-0) - CLOCK_MONOTONIC(rpi-1) over the wired link, microseconds, into $1
     srv "setsid nohup python3 \$HOME/t1pi_scripts/t1pi_clock.py serve $SRV_ETH 47911 >/dev/null 2>&1 </dev/null &" || true
     sleep 1
