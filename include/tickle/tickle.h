@@ -16,6 +16,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/pacing_adaptive.h>
 
 // _Alignas is a C11 keyword, not a C++ one (C++11's own equivalent is the unprefixed `alignas`,
 // a real keyword there rather than a macro) - a plain `_Alignas` fails to parse under a C++
@@ -946,6 +947,19 @@ struct tt_HybridState {
 #define tt_LINK_T1S_PACING_PCT 75U // a T1S link's pacing rate, in percent of its link_rate
 #define tt_PACING_BURST_FRAMES 4U  // a paced link's default burst, in frames of its MTU
 #define tt_PACING_BURST_MIN 1538U  // pacing_burst's least: one full 1500-byte frame on the wire (+ 38 framing)
+// Rate control (tt_LinkOptions.rate_control, docs/DESIGN.md "Send pacing"): how a link's send rate is set. OFF, the
+// zero value, is "what pacing_rate says" - FIXED at that rate if one is set (or the profile's), else not paced - so a
+// program that sets only pacing_rate is unchanged. After resolution rate_control holds the concrete mode.
+#define tt_RATE_CONTROL_OFF \
+    0U // no rate set: pacing_rate absent or tt_PACING_OFF (resolved), or "as pacing_rate says" (given)
+#define tt_RATE_CONTROL_FIXED 1U // paced at pacing_rate, as tt_LinkOptions.pacing_rate has always meant
+// ADAPTIVE: EXPERIMENTAL, opt-in (the default is OFF). Paced at the rate the link is found to deliver, up to
+// pacing_rate (the cap); with a pacing_rate (or link_rate) below the 1 Gbit/s default that is the prior - see
+// tt_LinkOptions.rate_control.
+#define tt_RATE_CONTROL_ADAPTIVE 2U
+#define tt_RATE_MIN_DEFAULT \
+    100000U // tt_LinkOptions.rate_min_rate 0: this, or the cap if that is lower (bits per second)
+#define tt_RATE_QUEUE_MIN_NS 100000U // tt_LinkOptions.rate_queue_ns' least
 // A RELIABLE reader's re-ask when a repair arrives above its watermark while a gap is open
 // (tt_LinkOptions.repair_reveal, docs/DESIGN.md "Repair reveal"). On a path that keeps the writer's order, such a
 // repair shows that every repair the writer sent before it, and that has not arrived, is lost.
@@ -1017,6 +1031,29 @@ struct tt_LinkOptions {
     // The bucket's depth in bytes on the wire: what a paced link may send back to back. 0 = tt_PACING_BURST_FRAMES
     // frames of the link MTU. At least tt_PACING_BURST_MIN; only on a paced link.
     uint32_t pacing_burst;
+    // How the link's send rate is set (tt_RATE_CONTROL_*; docs/DESIGN.md "Send pacing"). 0 = what pacing_rate says:
+    // FIXED at it when set (T1S's profile sets one), not paced otherwise. FIXED needs a pacing_rate. ADAPTIVE finds the
+    // rate the link delivers from what its readers report, keeps the queue short, and never goes above pacing_rate
+    // (0 = link_rate) or below rate_min_rate; it needs a build with tt_LARGE_SAMPLES. One estimator per link, fed by
+    // every reader on it.
+    //
+    // ADAPTIVE is EXPERIMENTAL and opt-in: the default stays OFF, the WIFI profile stays unpaced, and nothing on the
+    // wire changes. It requires tt_LARGE_SAMPLES. Without a prior (pacing_rate 0 and link_rate at its default) it
+    // tracks a changing link: it searches for the rate the readers report delivered and holds the queue short. With a
+    // pacing_rate (or a link_rate) below 1 Gbit/s that value is the user's prior - the bandwidth expected of the link:
+    // the rate starts at 95 % of it, never goes above, falls on congestion (a lasting queue, or delivery persistently
+    // short of what was sent) but not on loss alone, and steps down to the measured delivery when the prior proves
+    // wrong. A prior LARGER than the real link is harmful: it costs the first rounds at the wrong rate (a queue,
+    // repairs, a late sample) before the step down, and one that is too large by a good factor has delivered late or
+    // not at all on emulated links. Set it to the bandwidth the link sustains, as for FIXED; docs/DESIGN.md "Send
+    // pacing" has the evidence (tc/netem emulation, not real Wi-Fi).
+    uint8_t rate_control;
+    // ADAPTIVE only: the least rate, bits per second; 0 = tt_RATE_MIN_DEFAULT (100 kbit/s) or the cap if that is lower.
+    // At least tt_LINK_RATE_MIN, at most the cap.
+    uint64_t rate_min_rate;
+    // ADAPTIVE only: the queueing delay it holds the link to, ns; 0 = the larger of 2 ms and a quarter of the least
+    // round trip seen. At least tt_RATE_QUEUE_MIN_NS.
+    uint32_t rate_queue_ns;
     // A RELIABLE reader's retry estimate for a lossy, jittery link (tt_SWITCH_*; 0 = the profile's: WIFI on, the rest
     // off; docs/DESIGN.md "Link profiles"). On: a writer proxy's first recovery is timed even past the back-off, and
     // after it only a recovery its first request answered (Karn's rule) - on such a link a recovery that needed a
@@ -1335,6 +1372,22 @@ struct tt_Pacer {
     uint64_t burst_ns;
     uint64_t ns_per_byte_q16;
     uint32_t frame_payload;
+    uint32_t burst_bytes; // the bucket's depth on the wire: burst_ns follows it when an adaptive link's rate moves
+};
+
+// One link's adaptive rate control (tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE; struct tt_Context.rate):
+// the estimator, which every reader on the link feeds, and what turns ACKNACKs into its input. All 0 - not adaptive -
+// on any other link.
+struct tt_RateControl {
+    struct ap_pacer ap;
+    uint64_t held_units;  // the same in units (a unit is a datagram a reader holds), pooled the same way
+    uint64_t mark_units;  // the watermarks alone, pooled: what is certainly received
+                          // have been seen
+    uint64_t applied_bps; // the rate struct tt_Pacer was last given
+    uint32_t unit_wire;   // a full frame of the link on the wire, bytes
+                          // unit counts as
+    bool repair_next; // pace_repair_allowed() let a repair go and the seam has not yet counted it: it is not a new unit
+    bool adaptive;
 };
 
 struct tt_Context {
@@ -2282,6 +2335,9 @@ struct tt_Context {
     // writer proxy's least repair transit.
     uint8_t repair_reveal;
     uint32_t repair_reveal_pace_ns;
+    // Each link's adaptive rate control (tt_LinkOptions.rate_control), set by link_profiles_apply(); all 0 - not
+    // adaptive - on a hand-built context. After every other field, so none of them moves.
+    struct tt_RateControl rate[tt_MAX_LINK_COUNT];
 #ifdef tt_ESTIMATOR_TRACE
     // When this context last printed its ESTTRACE lines (estimator_trace(), tickle.c); 0: never. Only in a build with
     // -Dtt_ESTIMATOR_TRACE, after every other field, so the default build's layout is untouched.
@@ -3117,6 +3173,11 @@ struct tt_PeerAck {
     // naming nothing is answered without the order, so a later one's prev_ack can lie past repairs nobody freed.
     uint32_t repair_seen_ack;
     bool repair_seen_valid;
+    // Adaptive rate control: what this reader's last ACKNACK showed it holds (its watermark and the received units its
+    // bitmap names), in units; the next one's advance is what it received since (rate_acknack()).
+    uint32_t rate_units;
+    uint32_t rate_mark; // and its watermark
+    bool rate_units_valid;
 #endif
 };
 
@@ -3444,6 +3505,8 @@ struct tt_Publisher { // extends endpoint
     // anything of it has gone; and the datagram count of a large publish KEEP_ALL refused, which
     // tt_Publisher_writable() answers about (0: none).
     struct tt_LargeRecord large[tt_LARGE_RETAINED];
+    bool rate_solicit_armed; // an adaptive link's solicitation timer is set while this Publisher's large send runs
+                             // (rate_solicit_timer())
     struct tt_LargeCursor large_cursor;
     struct tt_LargeRecord large_pending;
     // The end-of-sample HEARTBEAT asked again while a sent large sample stays unacknowledged (large_ack_chase(),

@@ -28,5 +28,5 @@ for h in "$CLI" "$SRV"; do
     tar -C "$S" -c t1pi_topo.sh t1pi_run.sh | ssh $SSHO "$h" "tar -x -C t1pi_scripts"
 done
 # shellcheck disable=SC2086
-ssh $SSHO "$CLI" "tar -C $BIN -c node_d100 node_base large" | ssh $SSHO "$SRV" "tar -x -C $BIN"
+ssh $SSHO "$CLI" "tar -C $BIN -c node_d100 node_d100lg node_base large" | ssh $SSHO "$SRV" "tar -x -C $BIN"
 echo "T1PI_BUILD_OK tree=$HEADREV"
