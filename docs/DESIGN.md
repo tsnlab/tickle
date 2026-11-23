@@ -326,9 +326,7 @@ what its readers report, holds the queue short, and never goes above `pacing_rat
 round trip is the least over all of them. It reads each ACKNACK's advance in units held, and a large send on an
 adaptive link solicits a report (a HEARTBEAT) now and then, at most once per round trip and per two units of send time,
 so that a clean stream answers. The round trip is read from the send time of the newest unit a report shows received. Small samples, discovery,
-HEARTBEATs and ACKNACKs go at once and are counted, as above. No wire change. **Status: implemented and unit-tested
-against a synthetic link; not yet measured on a real or emulated link, so no recommendation is made, and the WIFI
-profile stays off.** Design, model and the plan to validate it: `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`.
+HEARTBEATs and ACKNACKs go at once and are counted, as above. No wire change. **Status: EXPERIMENTAL, opt-in; the default is OFF, the WIFI profile stays unpaced and nothing on the wire changes.** Measured only on `tc`/netem links, not on Wi-Fi; the numbers are in "Wi-Fi tuning" (section 14) and RESULTS section 5. With a `pacing_rate` set it is a prior and the cap: the rate starts at 95% of it, and a prior larger than the real link is harmful. Design, model and the plan to validate it: `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`.
 
 Refused at creation: a `pacing_rate` below `tt_LINK_RATE_MIN` or above the link's `link_rate`, a `pacing_burst` below
 `tt_PACING_BURST_MIN` (one full 1500-byte frame on the wire) or on a link that is not paced. An EPOLLOUT wake for
@@ -1286,21 +1284,31 @@ tt_Context_create_with(&ctx, &init);
 
 **Guideline: set `pacing_rate` to the bandwidth you expect the link to sustain, less 5%.** The library applies no margin of its own:
 the bucket runs at exactly the `pacing_rate` you give it (only the T1S default is derived, 75% of `link_rate`; the WIFI profile stays
-unpaced, `tt_PACING_OFF`). So set `pacing_rate` to about 95% of the expected bandwidth (30 Mbit/s expected: 28,500,000), counted on the wire.
+unpaced, `tt_PACING_OFF`). So set `pacing_rate` to about 95% of the expected sustained bandwidth (30 Mbit/s expected: 28,500,000), counted on the wire.
 The expected bandwidth is the rate the link carries in practice, not its nominal PHY rate: the nominal rate is an upper bound, not a
-target, and a rate far above what the link carries is harmful (see the evidence below). Measure it with an unpaced UDP flood that you count at
-the receiver. Pacing helps where a link or its queue drops back-to-back bursts (a large sample is sent as one burst, and every repair round is
+target, and a rate above what the link carries is harmful (below). Measure it with an unpaced UDP flood that you count at the
+receiver. Pacing helps where a link or its queue drops back-to-back bursts (a large sample is sent as one burst, and every repair round is
 another); it cannot help where the link carries less than the sample rate offers. Keep `pacing_burst` at the default unless you measure
 otherwise; leave `large_fragmentation` at AUTO (IP and MTU modes can each be worse); and test your own link at your own sample size.
 
-Evidence, `tc`/netem emulation on the two-Pi rig only, not real Wi-Fi (netem has no airtime contention, rate adaptation or interference, and no real
-wireless hardware was used): on four Wi-Fi-like links (M1 30 Mbit/s, 10 ms, 1% loss; M2 30 Mbit/s, 40 ms, bursty loss; S1 4 Mbit/s; S2
-4 Mbit/s, bursty loss), fixed pacing at 95% of the link rate scored 65 WIN / 31 TIE / 0 LOSE / 16 VOID against Fast DDS and CycloneDDS. A rate far
-above the real link (30 Mbit/s set on a 4 Mbit/s link) was harmful. Whether 95% is the best factor on a real Wi-Fi link is not established.
-Adaptive rate control (`rate_control = tt_RATE_CONTROL_ADAPTIVE`, "Send pacing") is the sender estimating what the link takes. It is opt-in and
-experimental (the default is OFF, and the WIFI profile stays unpaced); it needs a build with `tt_LARGE_SAMPLES`. With a `pacing_rate` set under it, that
-rate is the prior and the cap: the library starts at 95% of it and never goes above, so a prior larger than the real link is harmful here too (it
-steps down when it sees the delivery fall short, but not at no cost). Without one it tracks a changing link. This guideline is about the rate you set.
+**Which mode.** For a link whose rate you know and that stays put, use the fixed rate above (`rate_control` left OFF, which means FIXED at `pacing_rate`).
+For a link whose rate changes, `rate_control = tt_RATE_CONTROL_ADAPTIVE` is available, **experimental and opt-in** (default OFF; no wire change; it needs a build with
+`tt_LARGE_SAMPLES`), and **without a prior**: leave `pacing_rate` 0 (and `link_rate` at its default) and it searches for the rate the readers report delivered and
+holds the queue short. A `pacing_rate` set under ADAPTIVE is both the prior and the cap (the rate starts at 95% of it and never goes above it). Give one only when it is
+the sustained bandwidth, as for the fixed rate; `rate_min_rate` and `rate_queue_ns` stay at their defaults unless you measure otherwise.
+
+**A prior larger than the real link is harmful**, with a fixed rate and with ADAPTIVE. On the emulated 4 Mbit/s links, ADAPTIVE with a 30 Mbit/s prior delivered 1-11 of 15
+1 MiB samples on S2 and 4-15 of 15 on S1 (p99 12-27 s, rate swings of 148-266x), where the same build without a prior delivered 15 of 15; in the rate-step run (30 -> 4 -> 30 Mbit/s)
+a 30 Mbit/s prior delivered 27 of 33 samples in the 4 Mbit/s phase (p50 8.8 s, against 2.3 s without a prior).
+
+**Evidence, and its limits.** Everything here comes from `tc`/netem emulation on the two-Pi rig, **not real Wi-Fi** (netem has no airtime contention, MAC retries or rate adaptation;
+no real wireless hardware was used). Links: M1 30 Mbit/s, 5 ms each way, 1% loss; M2 30 Mbit/s, 20 ms each way, bursty loss; S1 and S2 the same at 4 Mbit/s. Full tables: RESULTS section 5.
+- Fixed pacing at 95% of the carried rate scored **65 WIN / 31 TIE / 0 LOSE / 16 VOID** against Fast DDS and CycloneDDS (112 verdicts); the unpaced default had LOSEs. 95% is the top of the
+  range tested (75-95%), not a found optimum.
+- ADAPTIVE without a prior, on the static links, did not beat the fixed rate (54 / 32 / 1 / 25); on a link that stepped 30 -> 4 -> 30 Mbit/s it followed the change at 1 MiB (p50 in the
+  4 Mbit/s phase 2,267 against 5,307 ms for the fixed rate set for the fast link, 16x fewer retransmissions), which no single fixed rate does.
+- Its limits: the rate swings widely (median 88x, maximum 144x at 1 MiB); after a step up it took about 20 s to recover at 128 KiB (p50 93 against 44 ms); the rate-step run was one flow,
+  one loss pattern, 3 runs per arm; one CycloneDDS cell (1 MiB in the 4 Mbit/s phase, 820 ms) is unexplained.
 
 ## 15. Configuration reference
 
