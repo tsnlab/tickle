@@ -32,13 +32,12 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
 - **Against DDS** (rig, `KS`, rerun 2026-11-10, 3 reps): core cells WIN 136, TIE 14, LOSE 0 of 150 on main `d2de7c3d`
   and WIN 137, TIE 13, LOSE 0 on `836665bb`; rmw cross-host round trip fastest in all 8 combinations measured. The
   139 / 11 / 0 above is the October campaign (RESULTS tables).
-- **Wi-Fi comparison against CycloneDDS and Fast DDS: results pending.** The comparison is done on a link emulated with
-  `tc`/netem on the two-Pi rig (delay, burst loss, rate limit, a short queue; an emulation, not Wi-Fi performance and no real
-  wireless hardware). RESULTS section 5 holds a marked placeholder until those runs finish; no figure is quoted before.
-  Large samples on a link that drops back-to-back bursts are the area to watch: `tt_LinkOptions.pacing_rate`,
-  `pacing_burst` and `large_fragmentation` exist and are documented in DESIGN "Wi-Fi tuning" (guideline: set `pacing_rate` to about 95% of the
-  bandwidth you expect the link to sustain; the library applies no margin itself, and T1S alone defaults to 75% of `link_rate`; WIFI stays
-  unpaced; measure your own link); adaptive repair-burst limiting is experimental, under evaluation (ROADMAP).
+- **Wi-Fi comparison against CycloneDDS and Fast DDS** (RESULTS section 5; an emulation with `tc`/netem on the two-Pi rig, not Wi-Fi
+  performance and no real wireless hardware). Fixed pacing at 95% of the carried rate: WIN 65 / TIE 31 / LOSE 0 / VOID 16 of 112
+  verdicts on four emulated links. **Guideline** (DESIGN "Wi-Fi tuning"): set `tt_LinkOptions.pacing_rate` to about 95% of the
+  bandwidth you expect the link to sustain; the library applies no margin itself (T1S alone defaults to 75% of `link_rate`; the WIFI
+  profile stays unpaced), and a rate above what the link carries is harmful. For a link whose rate changes, ADAPTIVE rate control
+  (below) without a prior.
 - **Decision (the user, 2026-11-17): the `mac80211_hwsim` + `wmediumd` simulation is not used for any 2.2.0 figure.** Its
   link starts in one of two rate states chosen at bring-up, not by the application (72 of 157 topologies slow at 1.0 Mbit/s,
   85 fast), and the DDS stacks' start-up frames flip a slow link to fast while TickLE's do not, so a scored comparison was
@@ -55,6 +54,13 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
 
 ### Added
 
+- **ADAPTIVE rate control, opt-in and EXPERIMENTAL** (`tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE`, `rate_min_rate`,
+  `rate_queue_ns`; DESIGN "Send pacing" and "Wi-Fi tuning"). `rate_control` defaults to OFF (what `pacing_rate` says, as before), the WIFI
+  profile stays unpaced, **no wire change**, and it needs a build with `tt_LARGE_SAMPLES`. The sender finds the rate the readers report delivered
+  and holds the queue short; a `pacing_rate` under it is the prior and the cap (the rate starts at 95% of it). Recommended without a prior; a
+  prior larger than the real link is harmful (emulated 4 Mbit/s links with a 30 Mbit/s prior: 1 MiB delivered 1-11 of 15 on S2). On a link stepped
+  30 -> 4 -> 30 Mbit/s it followed the change at 1 MiB; limits: rate swings (median 88x), about 20 s to recover at 128 KiB after a step up, one flow,
+  3 runs per arm (RESULTS section 5). Not Wi-Fi measurements.
 - **Announce round trip from a tag and its echo, and the reader's first retry interval** (`tt_VERSION` unchanged). Every
   announce carries a tag and a reply echoes the tag it answers, in the 2 bytes of `tt_AnnounceHeader` that were zero and
   read by no build (`marks`; DESIGN.md section 3). The announce's sender times the round trip exactly

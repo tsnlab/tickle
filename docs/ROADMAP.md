@@ -17,7 +17,7 @@ Older text: `git show 0a7926a0:docs/ROADMAP.md`. Pre-2026-10-05 documents: `git 
 
 ## Now
 
-Open: the Wi-Fi comparison on a `tc`/netem link (RESULTS section 5, pending). Otherwise the wireless stage and the time-varying stage are closed for 2.2.0; their sections below are
+The Wi-Fi comparison on a `tc`/netem link is in RESULTS section 5. The wireless stage and the time-varying stage are closed for 2.2.0; their sections below are
 the record, not a task list. What remains is under "Parked": the 32-Pi testbed items (slow-reader flow control `C7W`,
 branch `c7-wire-room`; link broadcast against per-reader unicast above 2 readers, `tt_UNICAST_PEER_THRESHOLD`), Security
 for v3.0, rmw_tickle at REP-2004 Quality Level 2 (after Security), and the items that wait on hardware. Next release
@@ -174,12 +174,10 @@ wireless").
 
 ## Later
 
-- **Adaptive repair-burst limiting** (a later version, the user, 2026-11-15). The sender estimates what the link takes and
-  limits each repair round to about what the last round delivered, so a link or queue that drops back-to-back bursts needs no
-  hand-set `pacing_rate`. Until then Wi-Fi users set `tt_LinkOptions.pacing_rate` and `pacing_burst` by the guideline in
-  DESIGN "Wi-Fi tuning". A new rule in the retransmit path: needs a burst-dropping test link (`tc`/netem with a short queue)
-  and the rig core gate (no default or wire change decided yet). Whether it is worth it depends on the pending Wi-Fi
-  comparison (RESULTS section 5).
+- **Adaptive repair-burst limiting, beyond the 2.2.0 experimental ADAPTIVE rate control** (the user, 2026-11-15). 2.2.0 ships ADAPTIVE as an
+  opt-in experimental option (default OFF, no wire change; CHANGELOG, DESIGN "Wi-Fi tuning"). Open: the rate swing, the slow recovery after a
+  step up at small samples, a gradual ramp, several readers, and any real Wi-Fi link (none was ever available). Wi-Fi users set
+  `tt_LinkOptions.pacing_rate` to about 95% of the expected bandwidth (DESIGN "Wi-Fi tuning").
 - The time-varying stage moved to Now on 2026-11-08 and is closed for 2.2.0.
 
 ## Parked (only on the user's explicit go)
