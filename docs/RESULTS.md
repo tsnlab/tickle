@@ -7,7 +7,7 @@
 - ROS 2 (rmw), cross-host: WIN 21, DRAW 6, LOSE 1 of 28 (row 63c). Same host: WIN 52 of 52.
 - Large messages (L4): WIN 58, DRAW 21, LOSE 1 of 80: subscriber CPU per MB against FastDDS at 4 MB, 15 Hz.
 - Latency is measured from creation time, throughput is goodput, and nothing is pinned.
-- Wireless-like links (2.2.0): emulation only (`tc`/netem), never Wi-Fi performance; no real wireless hardware was used. Wi-Fi comparison against the DDS stacks: pending. Table: [section 5](#5-wireless-like-links-220-emulation-only).
+- Wireless-like links (2.2.0): emulation only (`tc`/netem), never Wi-Fi performance; no real wireless hardware was used. Wi-Fi comparison against the DDS stacks: fixed pacing at 95% of the carried rate WIN 65 / TIE 31 / LOSE 0 / VOID 16 of 112 verdicts, on the emulated links only. Table: [section 5](#5-wireless-like-links-220-emulation-only).
 
 Full text before this shortening (per-run histories, traces, every rule's reading): `git show e6b23b63:docs/RESULTS.md`.
 Older still (provenance prose, pinned figures, zenoh columns): `git show a89aefe2:docs/RESULTS.md`.
@@ -538,11 +538,98 @@ emulated with `tc`/netem (delay, loss, rate, queue limit) in a network namespace
 absolute delivery and latency describe the emulation, **not Wi-Fi performance**, and none may be quoted as such. Netem has no airtime
 contention, no MAC retries and no congestion control.
 
-### Wi-Fi comparison against CycloneDDS and Fast DDS (zenoh-pico reference, not scored): RESULTS PENDING
+### Wi-Fi comparison against CycloneDDS and Fast DDS (netem emulation, one link family, not Wi-Fi)
 
-**No figure yet.** The comparison runs on the two-Pi rig over a `tc`/netem link (profiles, repetitions and the verdict rule are registered
-in a plan before the first run). This subsection is filled when those runs finish; until then nothing in this document claims a Wi-Fi
-win, tie or loss against either DDS.
+**Emulation only.** Every figure below is from `tc`/netem on two Raspberry Pi 5 (a network namespace and a GRE tap over the rig's Ethernet; the Pis' real
+`eth0` and `wlan0` untouched). Not Wi-Fi performance; no real wireless hardware was used. Netem has no airtime contention, no MAC retries and no rate
+adaptation. Fast DDS 2.14.6 and CycloneDDS 0.10.5, default settings, the same binaries and command lines as TickLE's. Raw data and per-run scorers are
+on the rig PC (`~/rig_results_safe/wtc_20261117/`, `wtc_ratestep_20261122/`), the reports in `~/claude_reports/WIFI_TC_PACING_SWEEP_2026-11-19.md`,
+`WIFI_ADAPTIVE_S1_RESULTS_v8_2026-11-22.md`, `..._quick10_...`, `..._quick11_...`, `WIFI_ADAPTIVE_RATESTEP_2026-11-23.md`.
+
+Links (delay is one way; round trip is twice it): **M1** 30 Mbit/s (carried 29.73), 5 ms, 1% independent loss; **M2** 30 Mbit/s, 20 ms, bursty loss;
+**S1** 4 Mbit/s (carried 3.97), 5 ms, 1% loss; **S2** 4 Mbit/s, 20 ms, bursty loss; queue 100 packets. 1 MiB and 128 KiB RELIABLE samples
+(15 per run), plus small samples. Verdict rule: WIN only if every TickLE run strictly beats every DDS run; TIE otherwise; VOID when a stack's own copies disagree by more than 10%.
+
+#### Stage C: fixed pacing at 95% of the carried rate (`pacing_rate`) against both DDS stacks
+
+**WIN 65, TIE 31, LOSE 0, VOID 16 of 112 verdicts** (metric x profile x {CycloneDDS, Fast DDS}); the shipped unpaced default had 7 LOSE in the earlier stage.
+
+| cell (verdicts) | WIN | TIE | LOSE | VOID |
+|---|---:|---:|---:|---:|
+| 1 MiB (24) | 15 | 6 | 0 | 3 |
+| 128 KiB (24) | 10 | 12 | 0 | 2 |
+| be_small + rel_small (64, 4 DDS runs each) | 40 | 13 | 0 | 11 |
+| total (112) | 65 | 31 | 0 | 16 |
+
+p50 / p99 in ms, median of 10 runs (DDS: 8 at 128 KiB), `tickle-p95` against the DDS stacks:
+
+| cell | TickLE, 95% fixed | CycloneDDS | Fast DDS | p50 verdicts (v Cyclone / v Fast DDS) |
+|---|---|---|---|---|
+| 1 MiB M1 | 323 / 334 | 818 / 919 | 1082 / 1101 | WIN / WIN |
+| 1 MiB M2 | 367 / 488 | 866 / 1313 | 1220 / 1272 | WIN / WIN |
+| 1 MiB S1 | 2374 / 2402 | 2514 / 2662 | 31069 / 32906 (8-9 of 15 delivered) | WIN / WIN |
+| 1 MiB S2 | 2497 / 2660 | 3803 / 4658 | 29326 / 31829 (8-9 of 15) | VOID / WIN |
+| 128 KiB M1 | 43.8 / 54.7 | 55.2 / 126 | 91.2 / 91.9 | TIE / WIN |
+| 128 KiB M2 | 78.9 / 135 | 99.7 / 257 | 106 / 119 | TIE / WIN |
+| 128 KiB S1 | 292 / 304 | 307 / 439 | 3562 / 3848 | WIN / WIN |
+| 128 KiB S2 | 325 / 570 | 439 / 944 | 2327 / 2749 | WIN / WIN |
+
+Unpaced TickLE (the default), 1 MiB p50: M1 1127, M2 3255, S1 5907, S2 14108 ms. With 95% pacing the 1 MiB runs send 1.0-1.08x the datagrams they need
+(unpaced: 4x-23x). The rate was chosen by a sweep of 75/85/90/95% (8 runs per arm); latency fell monotonically with the rate, so **95% is the top of the
+tested range, not a found optimum** (97-100% was not tested). The TIEs and VOIDs are delivery at 100% on both sides, p99 outliers (one run in ten has a
+lost tail waiting a repair round) and 128 KiB p50 where CycloneDDS's fastest runs already sit at the link's serialization floor.
+
+#### A link whose rate changes: 30 -> 4 -> 30 Mbit/s (rate-step stage)
+
+One link (M1 delay, 1% loss), the rate stepped to 4 Mbit/s at 45 s and back to 30 Mbit/s at 90 s, 135 s runs, 0.25 Hz (11-12 samples per phase), one
+RELIABLE KEEP_LAST 10 flow, **3 runs per arm and size, pooled**; library `ae5c192a`. Arms: ADAPTIVE without a prior; ADAPTIVE with a 30 Mbit/s prior (wrong after
+the step down); fixed 95% of 30 (28.2 Mbit/s; wrong after the step down); fixed 95% of 4 (3.77 Mbit/s; wrong in the two fast phases). Phase = sample's
+publish time; the sample in flight at a step lands in the earlier phase with the later link's latency, so the phase max carries that boundary effect.
+
+1 MiB, delivered / p50 / p90 / max (ms):
+
+| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | retransmissions per run (median) | rate swing |
+|---|---|---|---|---|---|
+| ADAPTIVE, no prior | 36/36 / 331 / 510 / 9,207 | 33/33 / 2,267 / 2,331 / 5,811 | 33/33 / 348 / 406 / 717 | 1,815 | median 88x, max 144x |
+| ADAPTIVE, prior 30 (wrong) | 36/36 / 322 / 329 / 25,279 | **27/33** / 8,757 / 20,231 / 26,492 | 33/33 / 330 / 419 / 2,131 | 7,840 | median 30x, max 108x |
+| fixed 95% of 30 | 36/36 / 324 / 334 / 6,831 | 33/33 / 5,307 / 6,297 / 9,592 | 33/33 / 323 / 325 / 360 | 28,873 | - |
+| fixed 95% of 4 | 36/36 / 2,372 / 2,387 / 2,402 | 33/33 / 2,379 / 2,392 / 2,458 | 33/33 / 2,369 / 2,389 / 2,425 | 267 | - |
+| CycloneDDS | 36/36 / 754 / 818 / 818 | 33/33 / 820 / 919 / 2,373 | 30/30 / 2,541 / 3,497 / 3,655 | - | - |
+| Fast DDS | 36/36 / 1,067 / 1,086 / 1,095 | 33/33 / 2,916 / 5,606 / 6,282 | 30/30 / 25,331 / 33,844 / 35,738 | - | - |
+
+128 KiB, delivered / p50 / p90 / max (ms):
+
+| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | rate swing |
+|---|---|---|---|---|
+| ADAPTIVE, no prior | 36/36 / 50 / 108 / 280 | 33/33 / 281 / 290 / 334 | 33/33 / 93 / 191 / 216 | median 15x, max 21x |
+| ADAPTIVE, prior 30 (wrong) | 36/36 / 44 / 55 / 285 | 33/33 / 280 / 285 / 295 | 33/33 / 43 / 51 / 60 | 1x |
+| fixed 95% of 30 | 36/36 / 44 / 68 / 281 | 33/33 / 279 / 281 / 349 | 33/33 / 44 / 56 / 146 | - |
+| fixed 95% of 4 | 36/36 / 290 / 296 / 310 | 33/33 / 293 / 296 / 296 | 33/33 / 290 / 293 / 301 | - |
+| CycloneDDS | 36/36 / 41 / 55 / 59 | 33/33 / 62 / 268 / 276 | 30/30 / 313 / 359 / 373 | - |
+| Fast DDS | 36/36 / 88 / 91 / 91 | 33/33 / 91 / 92 / 512 | 30/30 / 618 / 621 / 621 | - |
+
+Reading. At 1 MiB ADAPTIVE without a prior followed the link: within 8% of the best fixed rate in each phase, and in the 4 Mbit/s phase p50 2,267 against 5,307 ms
+and 16x fewer retransmissions than the fixed rate set for the fast link; no single fixed rate does that (fixed 30 loses the slow phase by 2.3x, fixed 4 loses the
+fast phases by 7x). The DDS stacks queue the backlog and had not recovered by the end of the run after the step up (1 MiB p50 2.5 s and 25 s). At 128 KiB the
+fixed 30 Mbit/s and the 30 Mbit/s-prior arms are as good as or better than ADAPTIVE in every phase, and **ADAPTIVE takes about 20 s (5 samples) to recover after the
+step up (p50 93 against 44 ms)**. A prior that becomes wrong does not help: at 1 MiB it delivered 27 of 33 in the slow phase (p50 8.8 s, p90 20 s).
+
+Limits, stated plainly: one flow, one loss pattern (1% independent), one step pair, 3 runs per arm and size, a gradual ramp was not run; the **ADAPTIVE rate swings widely
+(88x median, 144x max at 1 MiB)**; the 128 KiB recovery of about 20 s; the CycloneDDS 1 MiB p50 of 820 ms in the 4 Mbit/s phase is **unexplained** (a 1 MiB sample cannot cross
+4 Mbit/s in 0.8 s; its samples may not all be sent at the new rate, or the phase attribution by publish time does not hold for it) and is reported as measured.
+
+#### ADAPTIVE on the static links: right prior, no prior, wrong prior
+
+`rate_control = ADAPTIVE` (experimental, opt-in, default OFF; no wire change). A prior is `pacing_rate` set under ADAPTIVE (the rate starts at 95% of it). Static links M1, M2, S1, S2.
+
+| arm | result |
+|---|---|
+| no prior (v8, 10 runs per cell, scored with Stage C's DDS runs) | WIN 54 / TIE 32 / LOSE 1 / VOID 25 of 112 (fixed 95%: 65 / 31 / 0 / 16); the one LOSE is 128 KiB M1 p99 against Fast DDS, 101 against 91.9 ms; 15/15 delivery in 78 of 80 large-sample runs; p50 within 10% of the fixed 95% rate in 3 of 8 cells, tails worse (1 MiB M2 p99 x2.3, S2 x2.2) |
+| right prior (quick11: 1 MiB S2 x10, S1 x5, M1 and M2 x2) | equal to the fixed 95% rate: 1 MiB S2 15/15 in all 10 runs, p50 2,474-2,534 ms (fixed 2,497), swing 1.0x; 1 MiB S1 p50 2,384-2,396 (fixed 2,374); M1 321-328 ms (323). An earlier build collapsed once in two 1 MiB S2 runs (quick10); not seen in the 10 of quick11 |
+| wrong prior, 30 Mbit/s on a 4 Mbit/s link (quick11, 5 runs per cell; v8 10 runs) | **harmful**: 1 MiB S1 delivered 4-15 of 15, p99 13-27 s; 1 MiB S2 delivered 1-11 of 15, p99 12-25 s, final rate 0.1-0.2 Mbit/s in four runs, swing 148-266x. v8: 3 of 10 runs short at S1 and 3 of 10 at S2 (down to 4 of 15, p99 55 s). Without a prior the same cells deliver 15/15 (14 twice). 128 KiB: no worse than no prior |
+
+On a static link ADAPTIVE did not beat the fixed 95% rate in any cell; a prior-anchored ADAPTIVE can at best equal it. What it adds is following a link whose rate changes (above).
+**No result here is a statement about real Wi-Fi.**
 
 ### Wi-Fi-like loss and the time-varying stage (netem)
 
