@@ -120,7 +120,7 @@ case "$role $cmd" in
     mkdir -p "$DIR/run"; tap_up wtc_srv wtcgs "$LOCAL_IP" "$REMOTE_IP" "$SRV_IP" && echo "WTC_SRV_UP srv=$SRV_IP netem='$NETEM'" ;;
 "srv down") tap_down wtc_srv wtcgs; echo WTC_SRV_DOWN ;;
 "snap "*) snap ;;
-"cli setnetem") setnetem wtc_sta wtcgc && echo "WTC_CLI_NETEM $NETEM" ;;
+"cli setnetem") setnetem wtc_sta wtcgc && echo "WTC_CLI_NETEM $NETEM" && python3 -c "import time; print('WTC_CLI_STEP_MONO_NS', time.monotonic_ns())" ;;
 "srv setnetem") setnetem wtc_srv wtcgs && echo "WTC_SRV_NETEM $NETEM" ;;
 *) [ "$role" = snap ] && { snap; exit 0; }; echo "usage: $0 cli up|down|setnetem | srv up|down|setnetem | modules load|unload | snap"; exit 2 ;;
 esac

@@ -132,6 +132,7 @@ cmd_for() {
             [ $role = ping ] && args="$args -d $DUR" || args="$args -d $((DUR + 40))"
         fi
         args="$args $stop_arg -l $lat.$role -i $ip -I $wl"
+        [ "${DDS_TRACE:-0}" = 1 ] && args="$args -L ${lat%.lat}.trace.$role" # per-sample trace, arrival order (t1fw_common.h -L)
         case $fw in
         cyclonedds) echo "env LD_LIBRARY_PATH=$ROSLIB CYCLONEDDS_URI=file://$RD/$id.cyclone.xml $PB/cyclonedds_node $args" ;;
         fastdds) echo "env LD_LIBRARY_PATH=$ROSLIB FASTDDS_DEFAULT_PROFILES_FILE=$RD/$id.fastdds.xml FASTRTPS_DEFAULT_PROFILES_FILE=$RD/$id.fastdds.xml $PB/fastdds_node $args" ;;
@@ -242,6 +243,10 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
         for ((extra = 2; extra <= ${READERS:-1}; extra++)); do srv "cat $RD/$id.far$extra" >"$dir/$run.far$extra" 2>&1; done
         for role in echo sub; do srv "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
         for role in ping pub; do cli "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
+        if [ "${DDS_TRACE:-0}" = 1 ]; then
+            srv "cat $RD/$id.trace.sub 2>/dev/null" >"$dir/$run.trace.sub" 2>/dev/null
+            cli "cat $RD/$id.trace.pub 2>/dev/null" >"$dir/$run.trace.pub" 2>/dev/null
+        fi
         srv "rm -rf $RD"
         cli "rm -rf $RD"
         { echo "end=$(date -Is)"; echo "cli $(cpu_state cli)"; echo "srv $(cpu_state srv)"; } >>"$dir/$run.meta"

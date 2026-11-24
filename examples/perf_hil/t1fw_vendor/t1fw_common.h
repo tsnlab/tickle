@@ -58,7 +58,20 @@ struct t1_opts {
     const char* iface; // -I interface name
     const char* stop;  // -q stop file
     const char* lat;   // -l latency file (us, sorted, one per line)
+    const char* trace; // -L per-sample trace, unsorted, arrival order: sub "seq send_ns recv_ns", pub "seq send_ns" (monotonic ns)
 };
+
+// -L trace (rate-step stage): one entry per first-copy sample at the subscriber (seq, the sender's send_ns from the sample header, own receive
+// time), one per published sample at the publisher (seq, send_ns); written unsorted by t1_result(). The -l file stays sorted and unchanged.
+static uint32_t* t1_tr_seq;
+static uint64_t* t1_tr_send;
+static uint64_t* t1_tr_recv;
+static uint32_t t1_tr_n;
+static int t1_tr_rx; // subscriber side on
+static uint32_t* t1_tx_seq;
+static uint64_t* t1_tx_send;
+static uint32_t t1_tx_n;
+static int t1_tx_on; // publisher side on
 
 static inline uint64_t t1_now_ns(void) {
     struct timespec ts;
@@ -90,7 +103,7 @@ static inline int t1_parse(int argc, char** argv, struct t1_opts* o) {
     }
     int c;
     optind = 2;
-    while ((c = getopt(argc, argv, "d:m:s:r:K:Q:B:i:I:q:l:")) != -1) {
+    while ((c = getopt(argc, argv, "d:m:s:r:K:Q:B:i:I:q:l:L:")) != -1) {
         switch (c) {
         case 'd':
             o->seconds = atof(optarg);
@@ -125,12 +138,27 @@ static inline int t1_parse(int argc, char** argv, struct t1_opts* o) {
         case 'l':
             o->lat = optarg;
             break;
+        case 'L':
+            o->trace = optarg;
+            break;
         default:
             return -1;
         }
     }
     if (o->size < T1_HDR) {
         o->size = T1_HDR;
+    }
+    if (o->trace != NULL) {
+        if (o->role == T1_PUB) {
+            t1_tx_seq = (uint32_t*)malloc(sizeof(uint32_t) * T1_MAX_SEQ);
+            t1_tx_send = (uint64_t*)malloc(sizeof(uint64_t) * T1_MAX_SEQ);
+            t1_tx_on = t1_tx_seq != NULL && t1_tx_send != NULL;
+        } else {
+            t1_tr_seq = (uint32_t*)malloc(sizeof(uint32_t) * T1_MAX_SEQ);
+            t1_tr_send = (uint64_t*)malloc(sizeof(uint64_t) * T1_MAX_SEQ);
+            t1_tr_recv = (uint64_t*)malloc(sizeof(uint64_t) * T1_MAX_SEQ);
+            t1_tr_rx = t1_tr_seq != NULL && t1_tr_send != NULL && t1_tr_recv != NULL;
+        }
     }
     return 0;
 }
@@ -140,6 +168,10 @@ static inline int t1_stop_asked(const struct t1_opts* o) {
 }
 
 static inline void t1_hdr_put(uint8_t* buf, uint64_t send_ns, uint32_t seq) {
+    if (t1_tx_on && t1_tx_n < T1_MAX_SEQ) {
+        t1_tx_seq[t1_tx_n] = seq;
+        t1_tx_send[t1_tx_n++] = send_ns;
+    }
     memcpy(buf, &send_ns, 8);
     memcpy(buf + 8, &seq, 4);
     uint32_t zero = 0;
@@ -177,6 +209,11 @@ static inline int t1_record(struct t1_score* s, uint32_t seq, uint64_t send_ns, 
         s->below_warmup++;
         return 1;
     }
+    if (t1_tr_rx && t1_tr_n < T1_MAX_SEQ) {
+        t1_tr_seq[t1_tr_n] = seq;
+        t1_tr_send[t1_tr_n] = send_ns;
+        t1_tr_recv[t1_tr_n++] = now;
+    }
     s->lat_ns[s->scored++] = now - send_ns;
     return 1;
 }
@@ -199,6 +236,26 @@ static inline double t1_q_us(const struct t1_score* s, uint32_t percent) {
     uint32_t i = (uint32_t)(((uint64_t)s->scored * percent) / 100U);
     i = i >= s->scored ? s->scored - 1U : i;
     return (double)s->lat_ns[i] / 1000.0;
+}
+
+static inline void t1_write_trace(const struct t1_opts* o) {
+    if (o->trace == NULL) {
+        return;
+    }
+    FILE* f = fopen(o->trace, "we");
+    if (f == NULL) {
+        return;
+    }
+    if (t1_tx_on) {
+        for (uint32_t i = 0; i < t1_tx_n; i++) {
+            fprintf(f, "%u %llu\n", t1_tx_seq[i], (unsigned long long)t1_tx_send[i]);
+        }
+    } else if (t1_tr_rx) {
+        for (uint32_t i = 0; i < t1_tr_n; i++) {
+            fprintf(f, "%u %llu %llu\n", t1_tr_seq[i], (unsigned long long)t1_tr_send[i], (unsigned long long)t1_tr_recv[i]);
+        }
+    }
+    fclose(f);
 }
 
 static inline void t1_write_lat(const struct t1_opts* o, const struct t1_score* s) {
@@ -236,6 +293,7 @@ static inline void t1_result(const char* fw, const struct t1_opts* o, struct t1_
                              uint32_t published, uint32_t failed, uint64_t start_ns, uint64_t end_ns,
                              const char* extra) {
     static const char* names[] = {"ping", "echo", "pub", "sub"};
+    t1_write_trace(o); // before the sort: the trace is in arrival order
     t1_sort(s);
     t1_write_lat(o, s);
     printf("RESULT fw=%s role=%s reliable=%d size=%u rate_hz=%.3f depth=%u matched=%d start_ns=%llu end_ns=%llu "
