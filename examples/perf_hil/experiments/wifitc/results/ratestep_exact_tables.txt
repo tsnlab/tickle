@@ -1,0 +1,26 @@
+
+=== 1 MiB: M1 stepped 30 -> 4 -> 30 Mbit/s, phases by send time vs the step times ===
+arm | runs | delivered by phase (sum over runs) | p50 / p90 / max ms by phase (pooled) | recovery s after step down / up (median over runs; 'never' = not within the run) | tx / retx median
+tickle-ad | 5 | 55/55 ; 59/60 ; 55/55 | 329 / 502 / 800 ; 2266 / 9454 / 17999 ; 338 / 433 / 868 | down 17 up 4 | 30449 / 2726
+tickle-p95 | 5 | 55/55 ; 60/60 ; 55/55 | 324 / 333 / 533 ; 6062 / 10477 / 15718 ; 324 / 332 / 354 | down 1 up 4 | 49053 / 24262
+cyclonedds | 5 | 60/60 ; 55/55 ; 50/50 | 818 / 855 / 1018 ; 2541 / 3462 / 4637 ; 818 / 918 / 1018 | down 3 up 2 | -
+fastdds | 5 | 60/60 ; 55/55 ; 50/50 | 1086 / 1107 / 5595 ; 23727 / 34436 / 38322 ; 1948 / 3954 / 3979 | down 31 up 16 (3/5 never) | -
+tickle-ad-c30 - no runs
+tickle-k3770 - no runs
+per-phase verdicts of tickle-ad (every ADAPTIVE run's phase p50 against every other-arm run's; lower p50 wins; a run with <3 delivered samples in the phase counts as infinity):
+  vs cyclonedds: before WIN (321 v 818 ms); at 4 Mbit/s TIE (2265 v 2541 ms); after WIN (335 v 818 ms)
+  vs fastdds: before WIN (321 v 1090 ms); at 4 Mbit/s WIN (2265 v 24001 ms); after WIN (335 v 2910 ms)
+  vs tickle-p95: before TIE (321 v 324 ms); at 4 Mbit/s WIN (2265 v 6623 ms); after TIE (335 v 324 ms)
+
+=== 128 KiB: M1 stepped 30 -> 4 -> 30 Mbit/s, phases by send time vs the step times ===
+arm | runs | delivered by phase (sum over runs) | p50 / p90 / max ms by phase (pooled) | recovery s after step down / up (median over runs; 'never' = not within the run) | tx / retx median
+tickle-ad | 5 | 55/55 ; 60/60 ; 55/55 | 46 / 109 / 233 ; 281 / 290 / 307 ; 102 / 203 / 281 | down 1 up 36 | 3706 / 50
+tickle-p95 | 5 | 55/55 ; 60/60 ; 55/55 | 44 / 47 / 54 ; 279 / 282 / 299 ; 43 / 51 / 55 | down 1 up 4 | 3230 / 43
+cyclonedds | 5 | 60/60 ; 55/55 ; 50/50 | 56 / 73 / 127 ; 301 / 339 / 407 ; 55 / 69 / 218 | down 3 up 2 | -
+fastdds | 5 | 60/60 ; 55/55 ; 50/50 | 89 / 92 / 93 ; 618 / 621 / 621 ; 90 / 93 / 93 | down 3 up 2 | -
+tickle-ad-c30 - no runs
+tickle-k3770 - no runs
+per-phase verdicts of tickle-ad (every ADAPTIVE run's phase p50 against every other-arm run's; lower p50 wins; a run with <3 delivered samples in the phase counts as infinity):
+  vs cyclonedds: before TIE (48 v 56 ms); at 4 Mbit/s TIE (281 v 276 ms); after TIE (104 v 55 ms)
+  vs fastdds: before TIE (48 v 88 ms); at 4 Mbit/s WIN (281 v 618 ms); after TIE (104 v 90 ms)
+  vs tickle-p95: before TIE (48 v 44 ms); at 4 Mbit/s LOSE (281 v 279 ms); after LOSE (104 v 43 ms)
