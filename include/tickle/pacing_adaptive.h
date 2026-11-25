@@ -92,6 +92,10 @@
 #define AP_ANCHOR_STEP_PCT 105U       // a wrong prior steps down to the measured delivery times this
 #define AP_DAMPED_PROBE_GAIN_PCT 110U // after a stall restart the probes are gentle ...
 #define AP_DAMPED_PROBE_ROUNDS 16U    // ... for this many rounds
+#define AP_PROBE_CARRY_ROUNDS 3U      // a probe that no full round has judged is carried over this many quiet rounds
+#define AP_DROP_STREAK_ROUNDS 4U      // drop trips this close are one cascade
+#define AP_FAST_PROBE_GAIN_PCT 110U   // the first probe after a cut ...
+#define AP_FAST_PROBE_ROUNDS 1U       // after a cut the next probe comes after this many rounds (it was 8)
 #define AP_STALL_QUIET_NS \
     200000000ULL // a send after this long quiet starts the silence afresh: a stall is silence while sending
 #define AP_STALL_NS 1000000000ULL // sending this long with nothing delivered restarts the search
@@ -138,6 +142,10 @@ struct ap_pacer {
     uint64_t prev_repair_bytes; // repairs sent in the previous round ...
     uint64_t prev_round_ns;     // ... and how long that round was
     uint64_t last_repair_ns;    // when a repair last went out
+    uint32_t drop_streak;       // drop trips in a row, within AP_DROP_STREAK_ROUNDS of each other
+    uint64_t last_drop_round;   // the round of the last drop trip
+    uint32_t probe_carried;     // quiet rounds the running probe has been carried over
+    bool fast_probe;            // a cut was made: probe again at once, until a probe finds nothing
     uint64_t last_cruise_bps;   // BtlBw at the last CRUISE round: what a stall restart resumes from
     uint32_t damp_probe_rounds;
     uint64_t
@@ -507,6 +515,7 @@ struct ap_round {
     uint64_t sample_bps; // delivered over the round, bits per second
     bool app_limited;    // the pacer sent less than AP_APP_LIMITED_PCT of its allowance
     bool idle;           // it sent nothing
+    bool quiet;          // it held a quiet stretch: more than AP_MAX_ROUND_RTTS round trips
 };
 
 // The rate-drop guard: most of what was sent was a repair, or the link delivers under half of what it did, twice.
@@ -540,6 +549,12 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
         return bandwidth;
     }
     ctl->drop_trips++;
+    // A cut that came in a cascade - a second drop trip within a few rounds of the first - has gone under the link as
+    // likely as not (3.8 -> 1.9 -> 0.95 Mbit/s on a 4 Mbit/s link, Pi rate-step run): it is made good by probing at
+    // once, not every eighth round, which at 0.7 s a round was six seconds. A single trip is a cut that was right.
+    ctl->drop_streak = ctl->rounds - ctl->last_drop_round <= AP_DROP_STREAK_ROUNDS ? ctl->drop_streak + 1U : 1U;
+    ctl->last_drop_round = ctl->rounds;
+    ctl->fast_probe = ctl->drop_streak >= 2U;
     uint64_t lowered = ap_max_u64(round->sample_bps, bandwidth / AP_BW_RESET_FRACTION);
     ap_filter_reset(&ctl->bw, lowered, ctl->rounds);
     ctl->low_rounds = 0;
@@ -642,21 +657,35 @@ static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* 
     ctl->rounds_since_probe++;
     if (ctl->phase == AP_PH_PROBE) {
         // A probe that raised the delivery rate is followed by another at once (the link got faster); one that did
-        // not is followed by a drain round for whatever queue it made.
+        // not is followed by a drain round for whatever queue it made. A round that was application-limited - the
+        // tail of a small sample, or the quiet stretch before the next one - has no say in a probe that found
+        // nothing: it read what the application gave it, not what the link takes. It used to, and a 128 KiB sample
+        // every 4 s lost every probe at the quiet round after it (the rate fell to 0.75 BtlBw, so the run began again
+        // at each sample: 36 s to follow a step up, Pi rate-step run).
         if (round->sample_bps * AP_PERCENT >= ctl->probe_base_bps * AP_PROBE_RISE_PCT) {
             ctl->probe_base_bps = bandwidth;
             ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_PROBE_GAIN_PCT : AP_PROBE_RUN_GAIN_PCT;
+            ctl->probe_carried = 0;
+        } else if (round->app_limited && round->quiet && ctl->probe_carried < AP_PROBE_CARRY_ROUNDS) {
+            ctl->probe_carried++; // carried over: the next full round judges it
         } else {
             ctl->phase = AP_PH_DRAIN;
             ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
+            ctl->probe_carried = 0;
+            ctl->fast_probe = false; // a probe found the limit: the cut is made good
         }
     } else if (ctl->phase == AP_PH_DRAIN) {
         ctl->phase = AP_PH_CRUISE;
         ctl->rounds_since_probe = 0;
-    } else if (ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS && !ctl->draining && !round->app_limited) {
+    } else if (ctl->rounds_since_probe >= (ctl->fast_probe ? AP_FAST_PROBE_ROUNDS : AP_PROBE_EVERY_ROUNDS) &&
+               !ctl->draining && !round->app_limited) {
         ctl->phase = AP_PH_PROBE;
         ctl->probe_base_bps = bandwidth;
         ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_DAMPED_PROBE_GAIN_PCT : AP_PROBE_GAIN_PCT;
+        if (ctl->fast_probe) {
+            ctl->probe_gain_pct = AP_FAST_PROBE_GAIN_PCT; // a cut that was right costs a tenth, not a quarter, more
+        }
+        ctl->probe_carried = 0;
     }
     if (ctl->damp_probe_rounds != 0) {
         ctl->damp_probe_rounds--;
@@ -791,10 +820,11 @@ static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     uint64_t round_bps = ap_delivery_rate_bps(ctl, elapsed);
     struct ap_round round = {.sample_bps = ap_min_u64(round_bps, ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
                              .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
-                             .idle = ctl->round_sent == 0};
+                             .idle = ctl->round_sent == 0,
+                             .quiet = elapsed > AP_MAX_ROUND_RTTS * ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS)};
     uint64_t bandwidth = ap_btlbw_bps(ctl);
     ctl->samples++;
-    bool quiet = elapsed > AP_MAX_ROUND_RTTS * ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS); // a gap between samples
+    bool quiet = round.quiet; // a gap between samples
     if (!round.idle && (!round.app_limited || round.sample_bps > bandwidth || !quiet)) {
         // The quiet round between two samples (nothing to send, little read) does not age the filter: it did, and a
         // 128 KiB sample every 4 s on S1 left BtlBw 0 in 10 rounds (Pi quick test 6).
