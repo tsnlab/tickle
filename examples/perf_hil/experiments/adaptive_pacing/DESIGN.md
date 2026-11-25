@@ -586,3 +586,21 @@ without a prior (arm A) reads as before.
 
 Test (4) of `check_quick10_causes` - the model with 30 Mbit/s on 4 Mbit/s, 1 % loss and a reader that omits - passes on 32e2a6c2
 as well and is a guard. Not measured on the Pis.
+
+## 24. The exact rate-step run (2026-11-25): a probe lost at the quiet round, and a cut made good one probe in eight
+
+Report `WIFI_ADAPTIVE_RATESTEP_EXACT_2026-11-25.md`: after the step up (4 -> 30 Mbit/s) ADAPTIVE took 36 s to recover at 128 KiB (DDS 2 s, the
+fixed rate 4 s; p50 102 ms against 43), and after the step down (30 -> 4) 17 s at 1 MiB (CycloneDDS 3 s; phase maximum 18 s).
+
+| Change | Cause | Test (fails on ae5c192a) |
+|---|---|---|
+| A probe running when a round that was application-limited **and quiet** (more than 8 round trips: the gap before the next sample) ends is carried over, for up to 3 such rounds, instead of being scored a failed probe; the next full round judges it. A probe that raised the delivery rate still goes on at the run gain, application-limited round or not | at 128 KiB a sample is about 5 rounds: the probe at 1.25x succeeds, the run doubles, the sample ends, and the quiet round after it (3.8 s, sample 58 kbit) failed the probe - DRAIN at 0.75 BtlBw, so the run began again at each sample and BtlBw rose 4.05 -> 4.8 -> 9.0 -> 9.05 -> 10.2 -> 11.9 -> 13.4 Mbit/s (+1.3x a sample); at 1 MiB a sample is 28 rounds, several probe/run cycles fit in it | `check_ratestep_causes` (1): a running probe survives the quiet round (phase PROBE, rate 16 Mbit/s; was DRAIN at 6) and goes on to more than 20 Mbit/s at the next round (was 9); a probe nobody judges for five quiet rounds is still dropped (a guard) |
+| Two drop trips within 4 rounds (a cascade) set `fast_probe`: the next probe comes at the next round (it was after 8), its first gain is 110 % (a cut that was right costs a tenth more, not a quarter), and the first probe that finds nothing clears it. One trip does not | the drop guard cut 3.8 -> 1.9 -> 0.95 Mbit/s in two rounds on the 4 Mbit/s link (a quarter of it) and the probe came every eighth round, 0.6-0.86 s each at that rate: 6 s of waiting, 8 s at a quarter of the link, a phase maximum of 18 s | (2): two rounds of mostly repairs set `fast_probe` (was not); a fluid 4 Mbit/s link, rounds of 0.7 s, from 0.95 Mbit/s: 3 rounds (2.1 s) to 3 Mbit/s (was 10 rounds, 7.0 s); one trip leaves it off (a guard) |
+
+What the model did not do: reproduce the 36 s. The model (128 KiB every 4 s, 4 -> 30 Mbit/s at 20 s) recovers in 8 s with or without the change - it has
+no feedback in the quiet gap, so its probe is not scored there - and is kept as a guard (`check_ratestep_causes` (3)); the two causes are tested on
+the estimator with the rounds of the Pi trace. The limit of the 3-reader rise in the model's step run is now 5 s (it was 3): that time is chaotic in the probe
+cadence (2.7 s on ae5c192a, 3.2 s with this change, 4.2 and 8.8 s with other settings of the cadence tried, 0.2-2.5 s for the other readers' counts) and
+no setting is better in any other number; nothing else in the model moved (the right-prior, wrong-prior and queue-guard checks of the earlier
+sections are unchanged and pass). The prior-anchored mode is untouched (no probes there); the carry and the fast probe act in CRUISE, so a wrong prior
+that has stepped down gets them. Not measured on the Pis.
