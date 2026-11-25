@@ -1,0 +1,37 @@
+viewok
+
+=== 1 MiB: M1 stepped 30 -> 4 -> 30 Mbit/s, phases by send time vs the step times ===
+arm | runs | delivered by phase (sum over runs) | p50 / p90 / max ms by phase (pooled) | recovery s after step down / up (median over runs; 'never' = not within the run) | tx / retx median
+tickle-ad | 5 | 55/55 ; 59/60 ; 55/55 | 329 / 502 / 800 ; 2266 / 9454 / 17999 ; 338 / 433 / 868 | down 17 up 4 | 30449 / 2726
+tickle-ad1054 | 5 | 55/55 ; 51/60 ; 45/55 | 332 / 482 / 806 ; 2267 / 12432 / 42794 ; 349 / 513 / 43475 | down 13 up 4 (1/5 never) | 30151 / 2887
+tickle-ad448 | 12 | 132/132 ; 139/144 ; 132/132 | 338 / 461 / 727 ; 2269 / 7727 / 16033 ; 327 / 440 / 1263 | down 17 up 4 | 31254 / 3314
+tickle-p95 | 5 | 55/55 ; 60/60 ; 55/55 | 324 / 333 / 533 ; 6062 / 10477 / 15718 ; 324 / 332 / 354 | down 1 up 4 | 49053 / 24262
+cyclonedds | 5 | 60/60 ; 55/55 ; 50/50 | 818 / 855 / 1018 ; 2541 / 3462 / 4637 ; 818 / 918 / 1018 | down 3 up 2 | -
+fastdds | 5 | 60/60 ; 55/55 ; 50/50 | 1086 / 1107 / 5595 ; 23727 / 34436 / 38322 ; 1948 / 3954 / 3979 | down 31 up 16 (3/5 never) | -
+per-phase verdicts of tickle-ad (every ADAPTIVE run's phase p50 against every other-arm run's; lower p50 wins; a run with <3 delivered samples in the phase counts as infinity):
+  vs cyclonedds: before WIN (337 v 818 ms); at 4 Mbit/s TIE (2269 v 2541 ms); after WIN (331 v 818 ms)
+  vs fastdds: before WIN (337 v 1090 ms); at 4 Mbit/s WIN (2269 v 24001 ms); after WIN (331 v 2910 ms)
+  vs tickle-p95: before TIE (337 v 324 ms); at 4 Mbit/s WIN (2269 v 6623 ms); after TIE (331 v 324 ms)
+  vs tickle-ad: before TIE (337 v 321 ms); at 4 Mbit/s TIE (2269 v 2265 ms); after TIE (331 v 335 ms)
+  vs tickle-ad1054: before TIE (337 v 335 ms); at 4 Mbit/s TIE (2269 v 2263 ms); after TIE (331 v 335 ms)
+
+=== 128 KiB: M1 stepped 30 -> 4 -> 30 Mbit/s, phases by send time vs the step times ===
+arm | runs | delivered by phase (sum over runs) | p50 / p90 / max ms by phase (pooled) | recovery s after step down / up (median over runs; 'never' = not within the run) | tx / retx median
+tickle-ad | 5 | 55/55 ; 60/60 ; 55/55 | 46 / 109 / 233 ; 281 / 290 / 307 ; 102 / 203 / 281 | down 1 up 36 | 3706 / 50
+tickle-ad1054 | 5 | 55/55 ; 60/60 ; 55/55 | 48 / 98 / 127 ; 281 / 303 / 404 ; 49 / 76 / 172 | down 1 up 8 | 3770 / 43
+tickle-ad448 | 5 | 55/55 ; 60/60 ; 55/55 | 44 / 98 / 114 ; 281 / 293 / 333 ; 47 / 161 / 202 | down 1 up 24 | 3314 / 46
+tickle-p95 | 5 | 55/55 ; 60/60 ; 55/55 | 44 / 47 / 54 ; 279 / 282 / 299 ; 43 / 51 / 55 | down 1 up 4 | 3230 / 43
+cyclonedds | 5 | 60/60 ; 55/55 ; 50/50 | 56 / 73 / 127 ; 301 / 339 / 407 ; 55 / 69 / 218 | down 3 up 2 | -
+fastdds | 5 | 60/60 ; 55/55 ; 50/50 | 89 / 92 / 93 ; 618 / 621 / 621 ; 90 / 93 / 93 | down 3 up 2 | -
+per-phase verdicts of tickle-ad (every ADAPTIVE run's phase p50 against every other-arm run's; lower p50 wins; a run with <3 delivered samples in the phase counts as infinity):
+  vs cyclonedds: before TIE (44 v 56 ms); at 4 Mbit/s TIE (281 v 276 ms); after TIE (43 v 55 ms)
+  vs fastdds: before WIN (44 v 88 ms); at 4 Mbit/s WIN (281 v 618 ms); after TIE (43 v 90 ms)
+  vs tickle-p95: before TIE (44 v 44 ms); at 4 Mbit/s TIE (281 v 279 ms); after TIE (43 v 43 ms)
+  vs tickle-ad: before TIE (44 v 48 ms); at 4 Mbit/s TIE (281 v 281 ms); after TIE (43 v 104 ms)
+  vs tickle-ad1054: before TIE (44 v 47 ms); at 4 Mbit/s TIE (281 v 281 ms); after TIE (43 v 49 ms)
+ae5c192a rl1m failed runs 0/5 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 13.5s) r2:ok(miss 1, max 12.8s) r3:ok(miss 0, max 18.0s) r4:ok(miss 0, max 5.5s) r5:ok(miss 0, max 3.7s)
+ae5c192a rl128k failed runs 0/5 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 0.3s) r2:ok(miss 0, max 0.3s) r3:ok(miss 0, max 0.3s) r4:ok(miss 0, max 0.3s) r5:ok(miss 0, max 0.3s)
+1054f2ff rl1m failed runs 1/5 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 3.2s) r2:FAIL(miss 17, max 43.5s) r3:ok(miss 0, max 4.8s) r4:ok(miss 0, max 7.8s) r5:ok(miss 2, max 12.4s)
+1054f2ff rl128k failed runs 0/5 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 0.3s) r2:ok(miss 0, max 0.4s) r3:ok(miss 0, max 0.4s) r4:ok(miss 0, max 0.3s) r5:ok(miss 0, max 0.3s)
+448b685f rl1m failed runs 0/12 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 6.7s) r2:ok(miss 0, max 7.5s) r3:ok(miss 1, max 10.7s) r4:ok(miss 2, max 14.1s) r5:ok(miss 0, max 11.8s) r6:ok(miss 2, max 14.8s) r7:ok(miss 0, max 8.1s) r8:ok(miss 0, max 2.3s) r9:ok(miss 0, max 16.0s) r10:ok(miss 0, max 9.8s) r11:ok(miss 0, max 6.4s) r12:ok(miss 0, max 6.8s)
+448b685f rl128k failed runs 0/5 (fail = 3+ samples undelivered or any latency over 20 s): r1:ok(miss 0, max 0.3s) r2:ok(miss 0, max 0.3s) r3:ok(miss 0, max 0.3s) r4:ok(miss 0, max 0.3s) r5:ok(miss 0, max 0.3s)
