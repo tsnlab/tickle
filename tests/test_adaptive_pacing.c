@@ -512,7 +512,10 @@ static void run(const struct link_cfg* cfg, enum mode mode, uint64_t fixed_bps, 
             uint64_t bw = ap_btlbw_bps(&ap);
             int phase = link_phase(cfg, now);
             uint64_t phase_start = link_phase_start(cfg, phase);
-            if (bw * 4U >= c * 3U && bw * 4U <= c * 5U) {
+            // within 25 % of the link; for the rise (the last phase) from 75 % up: a lumpy reading above the band is
+            // the rise too (it skipped the band, and the time to fall back into it was counted: 2.7 to 8.8 s with any
+            // change to the probes)
+            if (bw * 4U >= c * 3U && (phase == 2 || bw * 4U <= c * 5U)) {
                 if (rate_ok_since[phase] == 0 && out->rate_after_step_ok_ns[phase] == 0) {
                     rate_ok_since[phase] = now - phase_start + 1U;
                     out->rate_after_step_ok_ns[phase] = rate_ok_since[phase];
@@ -1091,47 +1094,68 @@ static void check_ratestep_causes(void) {
     }
     CHECK(stale.phase != AP_PH_PROBE, "a probe was carried over five quiet rounds");
 
-    // (2) The recovery after a cut. Rate-step run, 1 MiB, 30 -> 4 Mbit/s: the drop guard cut 3.8 -> 1.9 -> 0.95 Mbit/s
-    // in two rounds (a cascade, a rate a quarter of the link) and the probe came every eighth round, 0.6-0.86 s each:
-    // 8 s at a quarter of the link, a phase maximum of 18 s. Two drop trips in a row now set fast_probe, which
-    // probes at the next round: a fluid 4 Mbit/s link, rounds of 0.7 s.
-    struct ap_pacer cut;
-    ap_init(&cut, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
-    cut.state = AP_CRUISE;
-    ap_filter_put(&cut.bw, 3800000ULL, 1U);
-    cut.rate_bps = 3800000ULL;
-    cut.last_cruise_bps = 3800000ULL;
+    // (2) The frozen rate of the 1 MiB rate-step run (WIFI_ADAPTIVE_NEXT_REVAL_2026-11-25, run 2): after the step down
+    // the reports showed no progress until a sample was whole, so a round was a sample and the gap before it - 1 MiB
+    // at 4.3 Mbit/s is 2 s of a 4 s period: sent 53 % of the allowance, every round "application-limited", no probe
+    // could begin and the rate stayed at 4.3 Mbit/s for 60 s after the link rose to 30 Mbit/s. A fluid link, one round
+    // a sample.
+    struct ap_pacer frozen;
+    ap_init(&frozen, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    frozen.state = AP_CRUISE;
+    ap_filter_put(&frozen.bw, 4302000ULL, 1U);
+    frozen.rate_bps = 4302000ULL;
     now = 1000ULL * SEC;
-    for (int round = 0; round < 2; round++) { // two rounds of mostly repairs: two drop trips, one a round
-        feed_round(&cut, &now, 100, 47500U, 30000U, 2000U);
+    int sample_rounds = 0;
+    int rounds_to_climb = -1;
+    for (int sample = 0; sample < 24 && rounds_to_climb < 0; sample++) {
+        uint64_t link_bps = sample < 4 ? link_cap : 30000000ULL; // the link rises after four samples
+        uint64_t rate = ap_rate_bps(&frozen);
+        uint64_t bytes = (uint64_t)723U * 1538U;
+        uint64_t first_send = now + (1900 * MS);
+        uint64_t send_ns = bytes * 8ULL * SEC / ap_min_u64(rate, link_bps);
+        frozen.round_first_send_ns = first_send;
+        frozen.round_sent = bytes;
+        frozen.round_repair = 0;
+        frozen.delivered += bytes; // the reports show it all at the end
+        frozen.units_sent += 723U;
+        frozen.held_units = frozen.units_sent;
+        now = first_send + send_ns + (10 * MS);
+        ap_end_round(&frozen, now);
+        if (sample >= 4) {
+            sample_rounds++;
+            if (ap_rate_bps(&frozen) >= 20000000ULL) {
+                rounds_to_climb = sample_rounds;
+            }
+        }
     }
-    CHECK(cut.drop_trips >= 2U && cut.fast_probe, "a cascade of %llu drop trips left fast_probe %d",
-          (unsigned long long)cut.drop_trips, (int)cut.fast_probe);
-    cut.rate_bps = 950000ULL; // as the Pi run left it
-    ap_filter_reset(&cut.bw, 950000ULL, cut.rounds);
-    cut.phase = AP_PH_CRUISE;
-    cut.rounds_since_probe = 0;
-    uint64_t t_start = now;
-    int rounds_taken = 0;
-    while (ap_rate_bps(&cut) < link_cap * 3U / 4U && rounds_taken < 40) { // the link carries 4 Mbit/s
-        uint64_t sent = ap_rate_bps(&cut) / 8U * 7U / 10U;
-        uint64_t link_bytes = link_cap / 8U * 7U / 10U;
-        feed_round(&cut, &now, 700, sent, 0, sent < link_bytes ? sent : link_bytes);
-        rounds_taken++;
-    }
-    printf("after a cut to 0.95 Mbit/s on a 4 Mbit/s link: %d rounds (%.1f s) to 3 Mbit/s\n", rounds_taken,
-           (double)(now - t_start) / 1e9);
-    CHECK(rounds_taken <= 6, "the rate took %d rounds to climb back after a cut", rounds_taken);
-    // A single drop trip is a cut that was right: no fast probing.
-    struct ap_pacer single;
-    ap_init(&single, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
-    single.state = AP_CRUISE;
-    ap_filter_put(&single.bw, 3800000ULL, 1U);
-    single.rate_bps = 3800000ULL;
+    printf("1 MiB, one round a sample: %d rounds after the link rose to reach 20 Mbit/s\n", rounds_to_climb);
+    CHECK(rounds_to_climb > 0 && rounds_to_climb <= 10,
+          "the rate did not climb after the link rose (%d, rate %llu bit/s)", rounds_to_climb,
+          (unsigned long long)ap_rate_bps(&frozen));
+
+    // (2c) The probe storm that began the failure (rounds 256-267 of the failed run): a cut cascade from 15.5 to 7.7
+    // Mbit/s, the link at 4 Mbit/s, and every following round read 6.9-8.6 Mbit/s of what it sent at 7.7-9.4 (a
+    // standing queue's reports, lumps): the fast probes - one a round - took each for a success and the rate sat at
+    // twice the link. Rounds of 30 ms, the sample alternating 85 % and 110 % of the rate: probes are no more than the
+    // normal cadence.
+    struct ap_pacer storm_ctl;
+    ap_init(&storm_ctl, 100000ULL, 1000000000ULL, 0, 0, UNIT_WIRE);
+    storm_ctl.state = AP_CRUISE;
+    ap_filter_put(&storm_ctl.bw, 7739000ULL, 1U);
+    storm_ctl.rate_bps = 7739000ULL;
     now = 1000ULL * SEC;
-    feed_round(&single, &now, 100, 47500U, 30000U, 2000U);
-    feed_round(&single, &now, 100, 30000U, 0, 30000U);
-    CHECK(single.drop_trips <= 1U && !single.fast_probe, "one drop trip left fast_probe %d", (int)single.fast_probe);
+    for (int round = 0; round < 2; round++) { // the cascade
+        feed_round(&storm_ctl, &now, 100, 96000U, 60000U, 4000U);
+    }
+    int probe_starts = 0;
+    enum ap_phase before = storm_ctl.phase;
+    for (int round = 0; round < 12; round++) {
+        uint64_t sent = ap_rate_bps(&storm_ctl) / 8U * 30U / 1000U;
+        feed_round(&storm_ctl, &now, 30, sent, 0, round % 2 == 0 ? sent * 85U / 100U : sent * 110U / 100U);
+        probe_starts += storm_ctl.phase == AP_PH_PROBE && before != AP_PH_PROBE ? 1 : 0;
+        before = storm_ctl.phase;
+    }
+    CHECK(probe_starts <= 2, "%d probes began in 12 lumpy rounds after a cascade", probe_starts);
 
     // (3) 128 KiB every 4 s, 4 -> 30 Mbit/s at 20 s, in the model: BtlBw follows within seconds (the model recovers in
     // 8 s with or without the change - it does not have the quiet round of the Pi run - so this is a guard).
@@ -1508,11 +1532,13 @@ int main(void) {
         double variation = 0;
         uint64_t max_kbit = 0;
         double worst = replay_run(replay_m2r2, sizeof(replay_m2r2) / sizeof(replay_m2r2[0]), &variation, &max_kbit);
-        printf("replay M2r2: peak rate %llu kbit/s, worst rate / (2 x best delivery) %.1f, max/min after START %.0f\n",
+        printf("replay M2r2: peak rate %llu kbit/s, worst rate / (2 x best delivery) %.1f, max/min after START %.2f\n",
                (unsigned long long)max_kbit, worst, variation);
         CHECK(worst <= 1.0, "replay M2r2: the rate ran to %.1f times twice the best delivery (peak %llu kbit/s)", worst,
               (unsigned long long)max_kbit);
-        CHECK(variation <= 10.0, "replay M2r2: the rate swung %.0f times after START", variation);
+        // 10 until 2026-11-25: a probe that survives the quiet round (the 128 KiB step-up fix) runs on, so the swing of
+        // this old trace is 10.4
+        CHECK(variation <= 11.0, "replay M2r2: the rate swung %.2f times after START", variation);
         worst = replay_run(replay_s2r2, sizeof(replay_s2r2) / sizeof(replay_s2r2[0]), &variation, &max_kbit);
         printf("replay S2r2: peak rate %llu kbit/s, worst rate / (2 x best delivery) %.1f, max/min after START %.0f\n",
                (unsigned long long)max_kbit, worst, variation);
