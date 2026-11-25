@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2086
+# shellcheck disable=SC2086,SC2030,SC2031  # the rate-step part runs in a subshell on purpose (its ROUNDS and arms are local)
 # Re-validation of an ADAPTIVE build: (1) the exact rate-step run for the new tickle-ad only (30 -> 4 at 45 s -> 30 Mbit/s at 90 s, 135 s runs, 5 runs, 1 MiB and
 # 128 KiB; the other arms' data are reused from the earlier exact run), (2) a static test: arm A (tickle-ad, no prior) and arm B (right prior) on M1/M2 at 128 KiB and
 # 1 MiB and on S1/S2 at 1 MiB, 3 runs each. Usage: OUT_BASE=<dir> ./wtc_chainRV.sh

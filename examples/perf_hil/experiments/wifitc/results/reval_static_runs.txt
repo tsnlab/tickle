@@ -1,0 +1,49 @@
+1 MiB M1 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=363/570 stall=0 queue_trips=12 drop_trips=30 swing=14.8x min/peak kbit 6435/95022 final=15.24M btlbw=15.24M tx=12334 retx=1132
+1 MiB M1 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=344/516 stall=0 queue_trips=7 drop_trips=42 swing=34.1x min/peak kbit 2921/99611 final=31.29M btlbw=31.29M tx=13076 retx=1563
+1 MiB M1 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=357/698 stall=0 queue_trips=13 drop_trips=39 swing=13.3x min/peak kbit 4627/61656 final=15.54M btlbw=15.54M tx=12742 retx=1154
+1 MiB M1 arm B (tickle-ad-c30) r1A: delivered=15/15 p50/p99=322/337 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=29.40M tx=9476 retx=164
+1 MiB M1 arm B (tickle-ad-c30) r2A: delivered=15/15 p50/p99=322/333 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=31.90M tx=11632 retx=129
+1 MiB M1 arm B (tickle-ad-c30) r3A: delivered=15/15 p50/p99=325/332 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=28.52M tx=8420 retx=174
+1 MiB M2 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=479/1061 stall=0 queue_trips=2 drop_trips=14 swing=19.0x min/peak kbit 3756/71459 final=12.89M btlbw=12.89M tx=12670 retx=1387
+1 MiB M2 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=592/1046 stall=0 queue_trips=3 drop_trips=9 swing=8.2x min/peak kbit 6826/82284 final=24.34M btlbw=24.34M tx=12231 retx=900
+1 MiB M2 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=386/490 stall=0 queue_trips=2 drop_trips=12 swing=4.4x min/peak kbit 16318/71489 final=8.31M btlbw=8.31M tx=12414 retx=1165
+1 MiB M2 arm B (tickle-ad-c30) r1A: delivered=15/15 p50/p99=356/512 stall=0 queue_trips=1 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=38.76M tx=11526 retx=306
+1 MiB M2 arm B (tickle-ad-c30) r2A: delivered=15/15 p50/p99=367/416 stall=0 queue_trips=3 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=42.75M tx=11540 retx=303
+1 MiB M2 arm B (tickle-ad-c30) r3A: delivered=15/15 p50/p99=350/390 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=42.75M tx=11529 retx=309
+1 MiB S1 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=2282/6359 stall=0 queue_trips=9 drop_trips=69 swing=26.8x min/peak kbit 877/23529 final=9.14M btlbw=9.14M tx=15920 retx=2189
+1 MiB S1 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=2264/3136 stall=0 queue_trips=15 drop_trips=28 swing=9.7x min/peak kbit 1215/11829 final=4.03M btlbw=4.03M tx=14883 retx=1116
+1 MiB S1 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=2267/4024 stall=0 queue_trips=14 drop_trips=26 swing=24.7x min/peak kbit 896/32570 final=2.35M btlbw=3.13M tx=14771 retx=987
+1 MiB S1 arm B (tickle-ad-c4) r1A: delivered=15/15 p50/p99=2388/2429 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.75M tx=13583 retx=119
+1 MiB S1 arm B (tickle-ad-c4) r2A: delivered=15/15 p50/p99=2395/2429 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.78M tx=9691 retx=174
+1 MiB S1 arm B (tickle-ad-c4) r3A: delivered=15/15 p50/p99=2388/2425 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.76M tx=13587 retx=112
+1 MiB S2 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=3172/5647 stall=0 queue_trips=5 drop_trips=31 swing=17.4x min/peak kbit 935/16295 final=4.06M btlbw=4.06M tx=13818 retx=1663
+1 MiB S2 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=3220/8807 stall=0 queue_trips=8 drop_trips=55 swing=19.5x min/peak kbit 641/19543 final=2.81M btlbw=3.75M tx=14662 retx=2289
+1 MiB S2 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=2857/6734 stall=0 queue_trips=4 drop_trips=60 swing=18.9x min/peak kbit 799/15126 final=3.94M btlbw=3.94M tx=14801 retx=2638
+1 MiB S2 arm B (tickle-ad-c4) r1A: delivered=15/15 p50/p99=2522/3434 stall=0 queue_trips=6 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.90M tx=12603 retx=605
+1 MiB S2 arm B (tickle-ad-c4) r2A: delivered=15/15 p50/p99=2486/2762 stall=0 queue_trips=1 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.95M tx=12577 retx=588
+1 MiB S2 arm B (tickle-ad-c4) r3A: delivered=15/15 p50/p99=2516/2776 stall=0 queue_trips=8 drop_trips=0 swing=1.0x min/peak kbit 3800/3800 final=3.80M btlbw=3.98M tx=12666 retx=656
+128 KiB M1 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=44/98 stall=0 queue_trips=2 drop_trips=1 swing=3.0x min/peak kbit 22266/67426 final=26.91M btlbw=35.88M tx=1669 retx=19
+128 KiB M1 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=55/108 stall=0 queue_trips=1 drop_trips=2 swing=2.6x min/peak kbit 14327/61032 final=22.66M btlbw=22.66M tx=1457 retx=20
+128 KiB M1 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=48/98 stall=0 queue_trips=1 drop_trips=1 swing=5.1x min/peak kbit 11838/60327 final=22.88M btlbw=30.51M tx=1516 retx=16
+128 KiB M1 arm B (tickle-ad-c30) r1A: delivered=15/15 p50/p99=44/54 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=30.44M tx=1432 retx=18
+128 KiB M1 arm B (tickle-ad-c30) r2A: delivered=15/15 p50/p99=44/48 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=30.63M tx=1258 retx=20
+128 KiB M1 arm B (tickle-ad-c30) r3A: delivered=15/15 p50/p99=44/60 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=29.52M tx=1302 retx=19
+128 KiB M2 arm A (tickle-ad) r1A: delivered=15/15 p50/p99=92/1196 stall=0 queue_trips=0 drop_trips=0 swing=1.9x min/peak kbit 8000/15550 final=15.55M btlbw=16.61M tx=1731 retx=62
+128 KiB M2 arm A (tickle-ad) r2A: delivered=15/15 p50/p99=97/221 stall=0 queue_trips=0 drop_trips=0 swing=2.4x min/peak kbit 8000/19467 final=19.47M btlbw=19.39M tx=1426 retx=36
+128 KiB M2 arm A (tickle-ad) r3A: delivered=15/15 p50/p99=93/203 stall=0 queue_trips=0 drop_trips=0 swing=3.4x min/peak kbit 8000/26907 final=26.91M btlbw=14.51M tx=1394 retx=15
+128 KiB M2 arm B (tickle-ad-c30) r1A: delivered=15/15 p50/p99=81/108 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=24.19M tx=1686 retx=58
+128 KiB M2 arm B (tickle-ad-c30) r2A: delivered=15/15 p50/p99=84/130 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=25.00M tx=1681 retx=43
+128 KiB M2 arm B (tickle-ad-c30) r3A: delivered=15/15 p50/p99=79/129 stall=0 queue_trips=0 drop_trips=0 swing=1.0x min/peak kbit 28500/28500 final=28.50M btlbw=25.03M tx=1697 retx=66
+== aggregates: cell: runs, delivered min/median, p50 median, p99 median [max], stall total, queue_trips median
+('1 MiB', 'M1', 'tickle-ad') 3 deliv 15/15 p50 357 p99 570 [max 698] stall 0 qtrips 12
+('1 MiB', 'M1', 'tickle-ad-c30') 3 deliv 15/15 p50 322 p99 333 [max 337] stall 0 qtrips 0
+('1 MiB', 'M2', 'tickle-ad') 3 deliv 15/15 p50 479 p99 1046 [max 1061] stall 0 qtrips 2
+('1 MiB', 'M2', 'tickle-ad-c30') 3 deliv 15/15 p50 356 p99 416 [max 512] stall 0 qtrips 1
+('1 MiB', 'S1', 'tickle-ad') 3 deliv 15/15 p50 2267 p99 4024 [max 6359] stall 0 qtrips 14
+('1 MiB', 'S1', 'tickle-ad-c4') 3 deliv 15/15 p50 2388 p99 2429 [max 2429] stall 0 qtrips 0
+('1 MiB', 'S2', 'tickle-ad') 3 deliv 15/15 p50 3172 p99 6734 [max 8807] stall 0 qtrips 5
+('1 MiB', 'S2', 'tickle-ad-c4') 3 deliv 15/15 p50 2516 p99 2776 [max 3434] stall 0 qtrips 6
+('128 KiB', 'M1', 'tickle-ad') 3 deliv 15/15 p50 48 p99 98 [max 108] stall 0 qtrips 1
+('128 KiB', 'M1', 'tickle-ad-c30') 3 deliv 15/15 p50 44 p99 54 [max 60] stall 0 qtrips 0
+('128 KiB', 'M2', 'tickle-ad') 3 deliv 15/15 p50 93 p99 221 [max 1196] stall 0 qtrips 0
+('128 KiB', 'M2', 'tickle-ad-c30') 3 deliv 15/15 p50 81 p99 129 [max 130] stall 0 qtrips 0
