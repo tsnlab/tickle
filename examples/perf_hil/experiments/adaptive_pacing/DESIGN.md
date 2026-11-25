@@ -604,3 +604,28 @@ cadence (2.7 s on ae5c192a, 3.2 s with this change, 4.2 and 8.8 s with other set
 no setting is better in any other number; nothing else in the model moved (the right-prior, wrong-prior and queue-guard checks of the earlier
 sections are unchanged and pass). The prior-anchored mode is untouched (no probes there); the carry and the fast probe act in CRUISE, so a wrong prior
 that has stepped down gets them. Not measured on the Pis.
+
+## 25. Re-validation of 1054f2ff (2026-11-25): the 1 MiB rate step that never recovered
+
+`WIFI_ADAPTIVE_NEXT_REVAL_2026-11-25.md`: the 128 KiB fix works (recovery after the step up 36 s -> 8 s, p50 102 -> 49 ms). 1 MiB rate step, run 2 of 5: 5 of 12
+samples delivered in the 4 Mbit/s phase and 1 of 11 after the step up, ended at 2.2 Mbit/s, 8,425 retransmissions.
+
+Trace of the failed run (`RS/rl1m/rel_large/M1/r2_tickle-ad_A.near`, step down at about t = 44.2 s, step up at 88.2 s):
+
+| When | What the rounds show | Cause |
+|---|---|---|
+| t = 48.5-49.2 s, rounds 256-270 | probe, drain, probe, drain every round at 5.8-9.4 Mbit/s on a 4 Mbit/s link; readings of 6.9-8.6 Mbit/s from 26 kB per 30 ms | `fast_probe` (probe at the next round, set by a cascade of two drop trips) taking lumpy readings of a standing queue for successes |
+| t = 49.8-63 s, rounds 272-284 | loss, then drop trips halve BtlBw 7.7 -> 3.8 -> 1.8 -> 0.9 Mbit/s; rounds of 0.3-3.2 s | the overshoot above |
+| t = 63-67 s | the probes climb back to 8.6 Mbit/s, a 1.28 MB round at 9.5 Mbit/s on the 4 Mbit/s link | probing from a BtlBw that a lump had set above the link |
+| t = 70-117 s, rounds 304-315 | **one round a sample**: 3.1-4.0 s long, bytes 1,111,974 = 723 units every time, sent 53 % of the allowance (rate x 4 s) - every round "application-limited"; the rate stays at 4,302 kbit/s after the step up at 88 s, and the carried probe holds 4,732 for 3 rounds | the reports showed no progress until a sample was whole (the first hole's repair is deferred behind the paced send), so a round held the whole period, the idle half included; the rate of such a round is diluted and its app-limited flag always true, and a probe needs a round that is not application-limited: **no probe could begin** |
+
+Changes (all on the CRUISE path; the prior-anchored mode is not touched):
+- **`fast_probe` is removed.** It probed every round on lumps; the re-validation measured the 17 s -> 13 s it bought within noise and the cost above (arm A static: drop trips 26-69 against 7-19, retransmissions 987-2,189 against 262-781 on 1 MiB S1; queue trips on M1 about 3x). The carry of a running probe over the quiet round (the 128 KiB fix) stays.
+- A round that delivered a whole sample at once (196,608 bytes or more) is read over the time from its first data unit to its end, not over the gap before it: its rate and its application-limited flag are the sample's. And a probe is due after 8 s, once two rounds have passed, when the round was such a one.
+
+Not changed, though the trace shows it: the queue guard's counter stays at 1 from round 254 to the end of the run (no round trip sample renews it). Resetting it in a round without a new sample made the model's S2 run collapse to the floor (100 kbit/s), so it is left.
+
+Tests (`check_ratestep_causes`): (2) the failed run's frozen state - one round a sample on a fluid link that rises 4 -> 30 Mbit/s after four samples: the rate reaches 20 Mbit/s 2 rounds after (1054f2ff: never, 4.3 Mbit/s after 20 rounds) - fails on 1054f2ff; (2c) twelve lumpy rounds after a cascade begin no more than two probes (a guard: passes on 1054f2ff, whose fast probes cleared themselves in this construction, not as on the Pi). The cut-recovery test of 1054f2ff is gone with `fast_probe`.
+Limits moved: the replay of M2r2 may swing 11x after START (10x: the carry that makes the 128 KiB fix runs a probe on, 10.4x); the pooled readers' rise 5 s (it moves between 1 and 9 s with any change of cadence).
+
+Static regressions of 1054f2ff (1 MiB, arm A, no prior): the extra drop trips, retransmissions and M1 queue trips are what `fast_probe` explains (more probes, each an overload); the S1 p99 of 4,024 ms is within the 2.8-5.8 s that ae5c192a showed in quick10, so it is not shown to be a regression. Not measured on the Pis.

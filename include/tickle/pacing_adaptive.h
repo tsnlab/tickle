@@ -92,10 +92,11 @@
 #define AP_ANCHOR_STEP_PCT 105U       // a wrong prior steps down to the measured delivery times this
 #define AP_DAMPED_PROBE_GAIN_PCT 110U // after a stall restart the probes are gentle ...
 #define AP_DAMPED_PROBE_ROUNDS 16U    // ... for this many rounds
-#define AP_PROBE_CARRY_ROUNDS 3U      // a probe that no full round has judged is carried over this many quiet rounds
-#define AP_DROP_STREAK_ROUNDS 4U      // drop trips this close are one cascade
-#define AP_FAST_PROBE_GAIN_PCT 110U   // the first probe after a cut ...
-#define AP_FAST_PROBE_ROUNDS 1U       // after a cut the next probe comes after this many rounds (it was 8)
+#define AP_BIG_ROUND_BYTES 196608U    // a round that delivered this much at once is read over its active time
+#define AP_PROBE_EVERY_NS \
+    8000000000ULL // with a round that delivered a whole sample at once a probe is due after this long, once two rounds
+                  // have passed
+#define AP_PROBE_CARRY_ROUNDS 3U // a probe that no full round has judged is carried over this many quiet rounds
 #define AP_STALL_QUIET_NS \
     200000000ULL // a send after this long quiet starts the silence afresh: a stall is silence while sending
 #define AP_STALL_NS 1000000000ULL // sending this long with nothing delivered restarts the search
@@ -131,22 +132,22 @@ struct ap_pacer {
     uint64_t rate_bps;
     uint64_t queue_cfg_ns; // 0 = max(AP_QUEUE_TARGET_MIN_NS, RTprop / AP_QUEUE_TARGET_RTT_DIV)
     uint64_t seed_rtt_ns;
-    uint64_t prior_bps;         // the user's statement of the link (a cap below AP_PRIOR_MAX_BPS), 0 = none
-    uint32_t anchor_rounds;     // ANCHOR: full rounds seen
-    bool anchor_qtrip;          // ... the queue guard tripped in this round
-    uint32_t anchor_qrounds;    // ... rounds in a row it did
-    uint32_t anchor_low;        // ... low ones in a row
-    uint64_t anchor_prev_bps;   // ... the rate the previous full round sent at (0: none, or it was not full)
-    uint64_t anchor_ewma_bps;   // ... the delivery rate, smoothed over rounds
-    uint64_t prev_sent_bytes;   // ... what it sent, in all
-    uint64_t prev_repair_bytes; // repairs sent in the previous round ...
-    uint64_t prev_round_ns;     // ... and how long that round was
-    uint64_t last_repair_ns;    // when a repair last went out
-    uint32_t drop_streak;       // drop trips in a row, within AP_DROP_STREAK_ROUNDS of each other
-    uint64_t last_drop_round;   // the round of the last drop trip
-    uint32_t probe_carried;     // quiet rounds the running probe has been carried over
-    bool fast_probe;            // a cut was made: probe again at once, until a probe finds nothing
-    uint64_t last_cruise_bps;   // BtlBw at the last CRUISE round: what a stall restart resumes from
+    uint64_t prior_bps;           // the user's statement of the link (a cap below AP_PRIOR_MAX_BPS), 0 = none
+    uint32_t anchor_rounds;       // ANCHOR: full rounds seen
+    bool anchor_qtrip;            // ... the queue guard tripped in this round
+    uint32_t anchor_qrounds;      // ... rounds in a row it did
+    uint32_t anchor_low;          // ... low ones in a row
+    uint64_t anchor_prev_bps;     // ... the rate the previous full round sent at (0: none, or it was not full)
+    uint64_t anchor_ewma_bps;     // ... the delivery rate, smoothed over rounds
+    uint64_t prev_sent_bytes;     // ... what it sent, in all
+    uint64_t prev_repair_bytes;   // repairs sent in the previous round ...
+    uint64_t prev_round_ns;       // ... and how long that round was
+    uint64_t last_repair_ns;      // when a repair last went out
+    uint64_t round_first_send_ns; // when the round's first data unit left (0: none yet)
+    uint64_t last_probe_ns;       // when a probe last began
+    uint64_t round_end_ns;        // the end of the round being scored
+    uint32_t probe_carried;       // quiet rounds the running probe has been carried over
+    uint64_t last_cruise_bps;     // BtlBw at the last CRUISE round: what a stall restart resumes from
     uint32_t damp_probe_rounds;
     uint64_t
         announce_rtt_ns; // the idle round trip to a reader (tt_Context.announce_rtt_ns), 0 = none: a floor for RTprop
@@ -386,6 +387,7 @@ static inline uint64_t ap_inflight_limit(const struct ap_pacer* ctl) {
 
 // A new round starts at `now`.
 static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
+    ctl->round_first_send_ns = 0;
     ctl->prev_repair_bytes = ctl->round_repair;
     ctl->prev_sent_bytes = ctl->round_sent;
     ctl->prev_round_ns = ctl->round_start_ns != 0 && now > ctl->round_start_ns ? now - ctl->round_start_ns : 0;
@@ -495,6 +497,9 @@ static inline void ap_note_data_sent(struct ap_pacer* ctl, uint64_t now, uint64_
     if (ctl->held_units >= ctl->units_sent) {
         ctl->stall_start_ns = now; // sending into an empty pipe: the stall clock starts here, not at the round start
     }
+    if (ctl->round_first_send_ns == 0) {
+        ctl->round_first_send_ns = now;
+    }
     for (uint32_t unit = 0; unit < units; unit++) {
         ctl->stamp_ns[ctl->units_sent % AP_STAMPS] = now;
         ctl->units_sent++;
@@ -515,6 +520,7 @@ struct ap_round {
     uint64_t sample_bps; // delivered over the round, bits per second
     bool app_limited;    // the pacer sent less than AP_APP_LIMITED_PCT of its allowance
     bool idle;           // it sent nothing
+    bool big;            // it delivered a whole sample at once: AP_BIG_ROUND_BYTES or more
     bool quiet;          // it held a quiet stretch: more than AP_MAX_ROUND_RTTS round trips
 };
 
@@ -549,12 +555,6 @@ static inline uint64_t ap_drop_guard(struct ap_pacer* ctl, const struct ap_round
         return bandwidth;
     }
     ctl->drop_trips++;
-    // A cut that came in a cascade - a second drop trip within a few rounds of the first - has gone under the link as
-    // likely as not (3.8 -> 1.9 -> 0.95 Mbit/s on a 4 Mbit/s link, Pi rate-step run): it is made good by probing at
-    // once, not every eighth round, which at 0.7 s a round was six seconds. A single trip is a cut that was right.
-    ctl->drop_streak = ctl->rounds - ctl->last_drop_round <= AP_DROP_STREAK_ROUNDS ? ctl->drop_streak + 1U : 1U;
-    ctl->last_drop_round = ctl->rounds;
-    ctl->fast_probe = ctl->drop_streak >= 2U;
     uint64_t lowered = ap_max_u64(round->sample_bps, bandwidth / AP_BW_RESET_FRACTION);
     ap_filter_reset(&ctl->bw, lowered, ctl->rounds);
     ctl->low_rounds = 0;
@@ -672,20 +672,24 @@ static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* 
             ctl->phase = AP_PH_DRAIN;
             ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
             ctl->probe_carried = 0;
-            ctl->fast_probe = false; // a probe found the limit: the cut is made good
         }
     } else if (ctl->phase == AP_PH_DRAIN) {
         ctl->phase = AP_PH_CRUISE;
         ctl->rounds_since_probe = 0;
-    } else if (ctl->rounds_since_probe >= (ctl->fast_probe ? AP_FAST_PROBE_ROUNDS : AP_PROBE_EVERY_ROUNDS) &&
-               !ctl->draining && !round->app_limited) {
-        ctl->phase = AP_PH_PROBE;
-        ctl->probe_base_bps = bandwidth;
-        ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_DAMPED_PROBE_GAIN_PCT : AP_PROBE_GAIN_PCT;
-        if (ctl->fast_probe) {
-            ctl->probe_gain_pct = AP_FAST_PROBE_GAIN_PCT; // a cut that was right costs a tenth, not a quarter, more
+    } else {
+        // A probe is due every AP_PROBE_EVERY_ROUNDS rounds, and - when a round delivers a whole sample at once, so
+        // that eight rounds are eight samples - after AP_PROBE_EVERY_NS (1 MiB at 4.3 Mbit/s: one round a sample, 32 s
+        // between probes, and none at all while every round counted as application-limited).
+        bool due = ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS ||
+                   (round->big && ctl->rounds_since_probe >= 2U &&
+                    ctl->round_end_ns - ctl->last_probe_ns >= AP_PROBE_EVERY_NS);
+        if (due && !ctl->draining && !round->app_limited) {
+            ctl->phase = AP_PH_PROBE;
+            ctl->probe_base_bps = bandwidth;
+            ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_DAMPED_PROBE_GAIN_PCT : AP_PROBE_GAIN_PCT;
+            ctl->probe_carried = 0;
+            ctl->last_probe_ns = ctl->round_end_ns;
         }
-        ctl->probe_carried = 0;
     }
     if (ctl->damp_probe_rounds != 0) {
         ctl->damp_probe_rounds--;
@@ -816,11 +820,23 @@ static inline void ap_anchor_round(struct ap_pacer* ctl, const struct ap_round* 
 
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {
     uint64_t elapsed = now - ctl->round_start_ns;
-    uint64_t allowance = (ctl->rate_bps / AP_BITS_PER_BYTE) * elapsed / AP_NS_PER_SECOND;
-    uint64_t round_bps = ap_delivery_rate_bps(ctl, elapsed);
+    // A round that delivered a whole sample at once (the reports showed no progress until the last repair: one round
+    // per sample, 1 MiB at 4.3 Mbit/s, Pi rate-step run) holds the gap before the sample as well: read over the time
+    // the sample was being sent, or its rate is diluted by the gap, it is always "application-limited", no probe can
+    // begin and BtlBw stays where it was for ever after the link rises.
+    uint64_t span = elapsed;
+    if (ctl->state != AP_ANCHOR && ctl->delivered - ctl->round_delivered >= AP_BIG_ROUND_BYTES &&
+        ctl->round_first_send_ns > ctl->round_start_ns && now > ctl->round_first_send_ns &&
+        now - ctl->round_first_send_ns >= AP_MIN_ROUND_NS) {
+        span = now - ctl->round_first_send_ns;
+    }
+    ctl->round_end_ns = now;
+    uint64_t allowance = (ctl->rate_bps / AP_BITS_PER_BYTE) * span / AP_NS_PER_SECOND;
+    uint64_t round_bps = ap_delivery_rate_bps(ctl, span);
     struct ap_round round = {.sample_bps = ap_min_u64(round_bps, ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
                              .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
                              .idle = ctl->round_sent == 0,
+                             .big = ctl->delivered - ctl->round_delivered >= AP_BIG_ROUND_BYTES,
                              .quiet = elapsed > AP_MAX_ROUND_RTTS * ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS)};
     uint64_t bandwidth = ap_btlbw_bps(ctl);
     ctl->samples++;
