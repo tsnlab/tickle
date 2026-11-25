@@ -1,0 +1,108 @@
+
+=== P7, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 133/135 | 557 / 1311 / 12503 | 561, 547, 568 | 39000 / 4465
+tickle-p95 | 3 | 135/135 | 520 / 1303 / 3034 | 514, 521, 520 | 53133 / 19787
+cyclonedds | 3 | 135/135 | 819 / 1122 / 1707 | 821, 819, 819 | -
+fastdds | 3 | 135/135 | 2220 / 4192 / 5817 | 2267, 2220, 2212 | -
+tickle-ad vs cyclonedds: WIN (561 v 819 ms);  fastdds: WIN (561 v 2220 ms);  tickle-p95: LOSE (561 v 520 ms)
+tickle-ad rate / capacity (time-weighted over 3450 rounds): median 0.97; within +-30 %: 52 %; over capacity 46 %, over 1.3x 16 %, under 0.7x 32 %
+
+=== P7, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 85 / 162 / 211 | 89, 84, 84 | 4869 / 52
+tickle-p95 | 3 | 135/135 | 66 / 142 / 239 | 64, 66, 66 | 4153 / 59
+cyclonedds | 3 | 135/135 | 74 / 161 / 271 | 75, 74, 74 | -
+fastdds | 3 | 135/135 | 131 / 252 / 414 | 131, 129, 131 | -
+tickle-ad vs cyclonedds: LOSE (84 v 74 ms);  fastdds: WIN (84 v 131 ms);  tickle-p95: LOSE (84 v 66 ms)
+tickle-ad rate / capacity (time-weighted over 551 rounds): median 1.02; within +-30 %: 50 %; over capacity 55 %, over 1.3x 27 %, under 0.7x 23 %
+
+=== P5a, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 890 / 1227 / 1603 | 893, 890, 884 | 40446 / 4446
+tickle-p95 | 3 | 135/135 | 790 / 884 / 1311 | 790, 791, 785 | 51309 / 18003
+cyclonedds | 3 | 135/135 | 873 / 1030 / 1222 | 829, 918, 918 | -
+fastdds | 3 | 132/135 | 1304 / 4369 / 8088 | 1305, 1309, 1297 | -
+tickle-ad vs cyclonedds: TIE (890 v 918 ms);  fastdds: WIN (890 v 1305 ms);  tickle-p95: LOSE (890 v 790 ms)
+tickle-ad rate / capacity (time-weighted over 3798 rounds): median 0.77; within +-30 %: 49 %; over capacity 39 %, over 1.3x 8 %, under 0.7x 43 %
+
+=== P5a, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 105 / 116 / 149 | 101, 107, 107 | 5030 / 59
+tickle-p95 | 3 | 135/135 | 47 / 116 / 230 | 45, 52, 48 | 4049 / 55
+cyclonedds | 3 | 135/135 | 114 / 153 / 234 | 114, 114, 114 | -
+fastdds | 3 | 135/135 | 91 / 252 / 1192 | 91, 91, 91 | -
+tickle-ad vs cyclonedds: WIN (107 v 114 ms);  fastdds: LOSE (107 v 91 ms);  tickle-p95: LOSE (107 v 48 ms)
+tickle-ad rate / capacity (time-weighted over 537 rounds): median 1.15; within +-30 %: 31 %; over capacity 63 %, over 1.3x 44 %, under 0.7x 25 %
+
+=== P5b, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 884 / 1005 / 1638 | 882, 886, 884 | 37547 / 1916
+tickle-p95 | 3 | 135/135 | 787 / 882 / 1864 | 796, 779, 783 | 50006 / 17085
+cyclonedds | 3 | 135/135 | 918 / 1032 / 1199 | 918, 918, 919 | -
+fastdds | 3 | 132/135 | 3946 / 8358 / 9376 | 3458, 2788, 3958 | -
+tickle-ad vs cyclonedds: WIN (884 v 918 ms);  fastdds: WIN (884 v 3458 ms);  tickle-p95: LOSE (884 v 783 ms)
+tickle-ad rate / capacity (time-weighted over 3753 rounds): median 1.02; within +-30 %: 67 %; over capacity 57 %, over 1.3x 6 %, under 0.7x 27 %
+
+=== P5b, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 104 / 120 / 236 | 100, 104, 114 | 4995 / 53
+tickle-p95 | 3 | 135/135 | 50 / 116 / 125 | 48, 51, 50 | 3653 / 62
+cyclonedds | 3 | 135/135 | 113 / 143 / 246 | 112, 113, 113 | -
+fastdds | 3 | 135/135 | 92 / 252 / 253 | 92, 92, 92 | -
+tickle-ad vs cyclonedds: TIE (104 v 113 ms);  fastdds: LOSE (104 v 92 ms);  tickle-p95: LOSE (104 v 50 ms)
+tickle-ad rate / capacity (time-weighted over 544 rounds): median 1.03; within +-30 %: 58 %; over capacity 66 %, over 1.3x 24 %, under 0.7x 18 %
+
+=== P6, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 114/114 | 328 / 473 / 3686 | 326, 322, 331 | 31982 / 2597
+tickle-p95 | 3 | 114/114 | 324 / 334 / 5606 | 324, 323, 324 | 29146 / 2257
+cyclonedds | 3 | 111/111 | 818 / 917 / 2385 | 818, 818, 817 | -
+fastdds | 3 | 111/111 | 1088 / 1117 / 6074 | 1088, 1102, 1081 | -
+tickle-ad vs cyclonedds: WIN (326 v 818 ms);  fastdds: WIN (326 v 1088 ms);  tickle-p95: TIE (326 v 324 ms)
+tickle-ad rate / capacity (time-weighted over 1870 rounds): median 0.95; within +-30 %: 57 %; over capacity 47 %, over 1.3x 13 %, under 0.7x 31 %
+
+=== P6, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 114/114 | 44 / 78 / 282 | 45, 42, 48 | 4102 / 46
+tickle-p95 | 3 | 114/114 | 44 / 53 / 281 | 44, 44, 45 | 3989 / 43
+cyclonedds | 3 | 111/111 | 55 / 119 / 313 | 55, 55, 55 | -
+fastdds | 3 | 111/111 | 91 / 92 / 621 | 91, 91, 91 | -
+tickle-ad vs cyclonedds: WIN (45 v 55 ms);  fastdds: WIN (45 v 91 ms);  tickle-p95: TIE (45 v 44 ms)
+tickle-ad rate / capacity (time-weighted over 320 rounds): median 1.04; within +-30 %: 64 %; over capacity 63 %, over 1.3x 16 %, under 0.7x 20 %
+
+=== P3, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 634 / 2258 / 2355 | 640, 628, 638 | 37788 / 940
+tickle-p95 | 3 | 135/135 | 680 / 3432 / 5995 | 696, 682, 661 | 82925 / 49294
+cyclonedds | 3 | 135/135 | 822 / 2540 / 3557 | 825, 819, 820 | -
+fastdds | 3 | 117/135 | 2095 / 22439 / 30768 | 2087, 2305, 2077 | -
+tickle-ad vs cyclonedds: WIN (638 v 820 ms);  fastdds: WIN (638 v 2087 ms);  tickle-p95: WIN (638 v 682 ms)
+tickle-ad rate / capacity (time-weighted over 4046 rounds): median 1.02; within +-30 %: 77 %; over capacity 60 %, over 1.3x 5 %, under 0.7x 18 %
+
+=== P3, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 95 / 282 / 306 | 90, 97, 90 | 5192 / 49
+tickle-p95 | 3 | 135/135 | 80 / 281 / 288 | 78, 78, 83 | 3155 / 70
+cyclonedds | 3 | 135/135 | 101 / 278 / 362 | 101, 101, 101 | -
+fastdds | 3 | 135/135 | 162 / 618 / 721 | 162, 172, 158 | -
+tickle-ad vs cyclonedds: WIN (90 v 101 ms);  fastdds: WIN (90 v 162 ms);  tickle-p95: LOSE (90 v 78 ms)
+tickle-ad rate / capacity (time-weighted over 605 rounds): median 1.02; within +-30 %: 76 %; over capacity 62 %, over 1.3x 9 %, under 0.7x 15 %
+
+=== P4, 1 MiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 133/135 | 521 / 1440 / 21769 | 523, 482, 521 | 36505 / 1280
+tickle-p95 | 3 | 135/135 | 448 / 1692 / 6469 | 450, 448, 448 | 54401 / 20974
+cyclonedds | 3 | 135/135 | 820 / 1516 / 2673 | 819, 858, 820 | -
+fastdds | 3 | 135/135 | 3921 / 14838 / 18458 | 3921, 3932, 3917 | -
+tickle-ad vs cyclonedds: WIN (521 v 820 ms);  fastdds: WIN (521 v 3921 ms);  tickle-p95: LOSE (521 v 448 ms)
+tickle-ad rate / capacity (time-weighted over 3438 rounds): median 1.00; within +-30 %: 72 %; over capacity 50 %, over 1.3x 7 %, under 0.7x 21 %
+
+=== P4, 128 KiB ===
+arm | runs | delivered | p50 / p90 / max ms (pooled) | per-run p50 medians | tx / retx median
+tickle-ad | 3 | 135/135 | 76 / 201 / 349 | 66, 79, 87 | 4669 / 58
+tickle-p95 | 3 | 135/135 | 63 / 166 / 292 | 63, 63, 63 | 4778 / 52
+cyclonedds | 3 | 135/135 | 82 / 183 / 316 | 76, 87, 78 | -
+fastdds | 3 | 135/135 | 131 / 355 / 618 | 134, 133, 120 | -
+tickle-ad vs cyclonedds: TIE (79 v 78 ms);  fastdds: WIN (79 v 133 ms);  tickle-p95: LOSE (79 v 63 ms)
+tickle-ad rate / capacity (time-weighted over 571 rounds): median 0.92; within +-30 %: 72 %; over capacity 33 %, over 1.3x 9 %, under 0.7x 19 %
