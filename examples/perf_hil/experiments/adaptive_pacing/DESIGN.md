@@ -629,3 +629,98 @@ Tests (`check_ratestep_causes`): (2) the failed run's frozen state - one round a
 Limits moved: the replay of M2r2 may swing 11x after START (10x: the carry that makes the 128 KiB fix runs a probe on, 10.4x); the pooled readers' rise 5 s (it moves between 1 and 9 s with any change of cadence).
 
 Static regressions of 1054f2ff (1 MiB, arm A, no prior): the extra drop trips, retransmissions and M1 queue trips are what `fast_probe` explains (more probes, each an overload); the S1 p99 of 4,024 ms is within the 2.8-5.8 s that ae5c192a showed in quick10, so it is not shown to be a regression. Not measured on the Pis.
+
+## 26. DRAFT (2026-11-26, not committed): following a changing bandwidth faster - causes, candidates, model comparison
+
+Analysis only: the library (448b685f) and the tests are untouched. Evidence: `WIFI_ADAPTIVE_VARYING_BW_2026-11-26.md`, RATETRACE of
+`wtc_varybw_20261126` (3 runs a cell, step times from the `.steps` monotonic markers, which share the clock of the RATETRACE lines);
+the offline model comparison is a scratch harness outside the repository (`~/tmp_build/exp`: the model of test_adaptive_pacing.c with a
+rate schedule, and a copy of pacing_adaptive.h with the candidates behind `-DEXP_*`).
+
+### 26.1 Why the rate is wrong, from the traces
+
+Time-weighted by round length, all runs of the cell pooled, by what the rate and BtlBw were doing (`rate / capacity`, capacity = netem rate x 0.991):
+
+| cell | within 0.7-1.3 | over 1.3x: BtlBw itself stale-high in CRUISE | over 1.3x: probe or run (rate = gain x BtlBw) | under 0.7x: BtlBw itself low (cut by a guard, climbing back) | under 0.7x: drain |
+|---|---|---|---|---|---|
+| P5a 128 KiB | 19.6 % | **33.4 %** | 3.8 % | **28.2 %** | 11.2 % |
+| P5a 1 MiB | 48.8 % | 7.2 % | 0.9 % | **30.8 %** | 12.3 % |
+| P7 128 KiB | 40.2 % | **22.7 %** | 6.7 % | 20.7 % | 6.7 % |
+| P7 1 MiB | 44.9 % | **19.9 %** | 1.9 % | 24.3 % | 8.9 % |
+
+(the rest is "other", 0-4 %). So over capacity is mostly **a BtlBw that was not brought down**, and under capacity mostly **a BtlBw that a guard cut too far
+and that then climbs slowly** - not the probes themselves.
+
+**Over capacity after a step down, 128 KiB** (P5a r1, step 30 -> 10 Mbit/s at mono 6,544,031,850; rounds 8-14): the first sample after the step is
+read exactly (round 12: 9,990 kbit/s, round 14: 9,999 kbit/s - the capacity), yet BtlBw stays at 30,542 and the rate at 60,995 (the carried 2x run
+of the last probe) for **8.0 s of the 10 s phase**; the first cut comes at round 14 (+8.05 s): the queue guard (it needs two round trip samples over
+the target, and one sample a 4 s sample is all it gets) takes BtlBw to 15,271 and the rate to 11,453, still 1.15x. Second down step the same: BtlBw 29,881 held
+at rounds 27-28, halved to 14,940 at round 29 (+7.93 s). The causes are in the estimator:
+- *the filter window*: since quick test 6 a round that is application-limited and reads no more than BtlBw neither enters the filter nor ages it (a 128 KiB
+  sample every 4 s emptied BtlBw otherwise). Round 12 is flagged application-limited (it sent 90 bytes: the sample's data left in the quiet round before it
+  and sits in the bottleneck queue, delivering at the link rate) - so the correct reading of the new capacity is ignored by the one rule that would age it;
+- *the evidence*: the round trip samples that feed the queue guard are accepted in 25 % of the rounds at 128 KiB and 13 % at 1 MiB on the Pi (the watermark advances by more than 4
+  units a report), 85 % / 76 % in the model; the guard needs two, so one sample a sample period means two periods = 8 s;
+- *the carried run* (1054f2ff) keeps 2x BtlBw in force across the idle gap: rate 61 Mbit/s on a 30 Mbit/s link before the step, and again in P6 128 KiB after the
+  step up (rounds 71-77: rate 46-60 Mbit/s for 8 s, BtlBw 25 -> 30 Mbit/s).
+
+**Slow to follow a step up, 128 KiB** (P6 r1, 4 -> 30 at mono 6,553,304,275; P5a r1 step 2, 10 -> 30): BtlBw rises by one probe a sample or less - P6 rounds 57-69: BtlBw
+19.9-20.7 Mbit/s for 12 s (+0.96 s to +12.9 s), rate = BtlBw, every sample read at the rate it was sent at (delivery = rate says nothing of the headroom);
+the next probe is due after 8 rounds, a 128 KiB sample is 3-4 rounds including the quiet one, so one probe every 2-3 samples (9-12 s): +12.98 s (round 71),
+and the run gets to 30.4 at +16.97 s. P5a: 10 -> 30 reaches 0.7x in **6.0 s** (4 of 8 up steps), 10 s once, and **never within the 10 s phase** twice (11.9 s under 0.7x).
+The limit is the probe cadence in rounds against a flow of 3-4 rounds a sample, and the 1.5x cap of a sample at the rate in force.
+
+**Under capacity at 1 MiB after a step down** (P5a r1 step 3, 30 -> 10 at about 30 s, rounds 173-206): the first reading is right (round 178: 10,167) and BtlBw is halved
+to 14,944, then a single 13 ms round reads 20,357 (a lump) and BtlBw goes back to 22,838; the drop guard then halves it each round on 6-9 Mbit/s readings: 8,108,
+5,198, 3,898, 2,924 kbit/s by +1.05 s = **0.29x capacity**, and it stays there until the next sample's first round (+4.4 s), when the run gain takes it to 10.1 in 0.15 s.
+14-21 such cuts below 0.7x per run (P5a 1 MiB 17, 17, 20; P7 1 MiB 14, 18, 21), clustered 0.1-1.2 s after each down step (30.7-31.1, 49.9-51.1, 70.6-71.2 s).
+The down reaction itself is fast (0.0-0.5 s to the band); the cost is the over-cut and the wait for the next sample to probe. The model does not reproduce this
+(no lumps): P5a 1 MiB under 0.7x is 3 % in the model, 43 % on the Pi.
+
+### 26.2 Candidate designs
+
+| | what | wire | cost | risk | in the model |
+|---|---|---|---|---|---|
+| (a) train | the first part of each sample sent as a train, capacity read from its dispersion | **not without a wire change**: the writer sees only when reports arrive; the reader's receive times are not on the wire. A variant with no wire change: dense solicitations (about 10 of 156 bytes at 2 ms spacing per sample) and the growth of the held count between two reports - unproven, the counts are lumpy (26.1) | a train of 30-50 kB is a burst into a 100-packet queue; dense control traffic at every sample | the same lumps that break the round readings break a 2 ms dispersion | oracle bound only (the model knows the link): 128 KiB step-up recovery 4.1 -> 0.2 s, nothing else moves - the only candidate that helps **up** |
+| (b) shorter window / decay | BtlBw aged by stretch, not by round: a stretch (the rounds between quiet gaps) of at least two saturated rounds (the pipe held at least what the round delivered) that reads under 0.7 BtlBw replaces it; or BtlBw halved when delivery stays below the rate | yes | a counter and a max per stretch | a lump or a short stretch cuts BtlBw (the over-cut of 26.1) | B: P5a 128 KiB unchanged, P7 128 KiB median 1.12 -> 1.30; the 2-reader rise 9.8 s (that time is chaotic); no gain alone |
+| (b') backlog-corrected app-limited flag | a round whose pipe held at least what it delivered is not application-limited, whatever it sent in the round | yes | one comparison; the in-flight count is already kept | lumps count as saturated readings: the M2r2 replay swing 19.6x (limit 11x) | E: **P5a 128 KiB median 1.41 -> 1.00, in +-30 % 35 -> 55 %, over 1.3x 56 -> 31 %**; P7 128 KiB 43 -> 34 % in band; 1 MiB neutral |
+| (c) faster down on delay | the queue guard trips on one sample when the queue is at least 3x its target (it needs two) | yes | none | a round trip sample delayed by a repair trips it (quick test 10: 18 trips with no queue); the tail hygiene covers tail samples, not regular ones | C: P5a 128 KiB median 1.41 -> 1.06, in band 35 -> 44 %, over 1.3x 56 -> 41 %; P7 128 KiB 43 -> 53 % in band, over 1.3x 42 -> 32 %; **every existing model check passes** |
+| (d) gated up | a probe only when the queue is empty and delivery is at least 90 % of the rate; run gain 1.5x when there is queue evidence | yes | two comparisons | slows every rise: the 128 KiB step-up of the existing model 8 -> 24 s (the Pi's 24 s), mean queue delay up in 3 existing checks | D: P5a 128 KiB over 1.3x 56 -> 36 %, but 4 existing checks fail; **rejected** |
+| (e) more frequent probes | a probe every 3 or 4 rounds (it is 8) | yes | none | the queue delay of the pooled-reader checks 25-41 ms (limit 20), a watermark-jump run that collapses | F: no change in the 128 KiB step-up (4.1 s), 2-4 existing checks fail; **rejected** (the lesson of fast_probe) |
+
+### 26.3 Model comparison
+
+The model as it is does not reproduce the Pi: it accepts a round trip sample in 76-85 % of the rounds (the Pi 13-25 %) and reads no lumps. Calibration: with one round trip
+sample in 12 accepted (`-DEXP_SPARSE=12`) the 128 KiB P5a run reads median 1.41, 35 % within +-30 %, 56 % over 1.3x (Pi: 1.15, 31 %, 44 %) and P7 128 KiB 43 % / 42 % (Pi 50 % / 27 %): the
+128 KiB behaviour is reproduced, the 1 MiB over-cut and the 24-36 s step-up are not (the model's 128 KiB step-up takes 4 s, 4 -> 30 Mbit/s). Offline results in the sparse model, 3-4 patterns,
+one run each (schedules of the real runs: P5a and P5b 30 <-> 10 Mbit/s with 20 s and 60 s periods, P7 the seed 20261126 walk, P6 the 5 s dip, a 4 -> 30 step; M1 link, 1 % loss, queue 100):
+
+| design | P5a 128 KiB: median / in +-30 % / over 1.3x | P7 128 KiB | 128 KiB step 4 -> 30: recovery | existing model checks failing |
+|---|---|---|---|---|
+| current 448b685f | 1.41 / 35 % / 56 % | 1.12 / 43 % / 42 % | 4.1 s | 0 |
+| (c) | 1.06 / 44 % / 41 % | 1.07 / 53 % / 32 % | 4.1 s | 0 |
+| (b') | 1.00 / 55 % / 31 % | 1.09 / 34 % / 48 % | 4.1 s | 1 (M2r2 replay swing 19.6x) |
+| (b) | 1.41 / 35 % / 56 % | 1.30 / 38 % / 49 % | 4.1 s | 1 (the 2-reader rise 9.8 s) |
+| (b) + (b') + (c) | 1.00 / 66 % / 25 % | 1.07 / 48 % / 36 % | 4.1 s | 1 (the replay swing) |
+| (c) + (b') | 1.00 / 66 % / 25 % | 1.28 / 41 % / 47 % | 4.1 s | 1 (the replay swing) |
+| (d) | 1.10 / 51 % / 36 % | 1.10 / 37 % / 47 % | 4.2 s | 4 (128 KiB step up 24 s, queue delay) |
+| (e) every 3 rounds | 1.41 / 35 % / 56 % | 1.12 / 43 % / 42 % | 4.1 s | 4 |
+| (a) oracle train | 1.41 / 35 % / 56 % | 1.08 / 44 % / 43 % | **0.2 s** | 0 |
+
+The model gives completion p50 within 5 ms of the current (83-87 ms for the candidates that help, fixed 95 % 76 ms) - the model's absolute latencies are not the Pi's (47 against 105 ms on P5a), so
+no latency claim is made from it. What it **cannot** show: lumps in the delivery readings (the cause of the 1 MiB over-cut), the quiet-gap feedback of the Pi (the 24-36 s step-up), the Pi's
+round trip sample sparsity beyond the one calibrated parameter, repairs delaying a round trip sample (the risk of (c)), and the interaction with a real link's loss and queue.
+
+### 26.4 Recommendation
+
+- **Rejected on the evidence**: (d) gated up (it reproduces the slow rise), (e) more probes (queue delay, a collapse), and (b) alone (no effect).
+- **Candidate for a change**: (c) the one-sample queue cut, **with corroboration** - the same round's delivery under 90 % of the rate - since the one risk it adds is the repair-delayed round trip sample that
+  made 18 false trips in quick test 10, which the model cannot test; it is wire-compatible, passes every existing model check, and moves the 128 KiB sawtooth from 56 % to 41 % of the time over 1.3x.
+  Collapse to expect and test first: a ratchet of cuts on a link that is fine - the test is lumpy and repair-delayed round trip samples injected into a steady CRUISE (the rate must stay), like the
+  frozen-state test of section 25; the cut is bounded (BtlBw not under half, a drain of 0.75), so a collapse needs repeated trips.
+- **Not for 2.2.0**: (b') has the larger effect (median 1.41 -> 1.00 on the 128 KiB sawtooth) but fails the swing guard and counts lumps as saturated readings - it needs a smoothing companion
+  and Pi evidence; (a) is the only design that makes the **rise** faster (the model's oracle: 4.1 -> 0.2 s) but needs the reader's receive times (a wire change) or an unproven dense-solicitation variant.
+- **Release**: none of this fits 2.2.0 on the evidence available. The model reproduces half of the problem (128 KiB over capacity), none of the rise or of the 1 MiB over-cut, and every earlier change made
+  in the face of that (fast_probe, the quiet-gap carry) needed a Pi round to find its failure. ADAPTIVE stays the opt-in experimental option, its limits stated (it follows slow changes, 72-77 % of the time
+  within +-30 %; fast ones 31-49 %, and it is over capacity for about half the time). If a change is wanted in 2.2.0 anyway, (c) with corroboration only, validated by the same varying-bandwidth run
+  (about 3-4 h on the Pis); (b'), the smoothing, and a measured answer for (a) belong in the next release.

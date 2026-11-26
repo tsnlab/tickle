@@ -1305,10 +1305,13 @@ a 30 Mbit/s prior delivered 27 of 33 samples in the 4 Mbit/s phase (p50 8.8 s, a
 no real wireless hardware was used). Links: M1 30 Mbit/s, 5 ms each way, 1% loss; M2 30 Mbit/s, 20 ms each way, bursty loss; S1 and S2 the same at 4 Mbit/s. Full tables: RESULTS section 5.
 - Fixed pacing at 95% of the carried rate scored **65 WIN / 31 TIE / 0 LOSE / 16 VOID** against Fast DDS and CycloneDDS (112 verdicts); the unpaced default had LOSEs. 95% is the top of the
   range tested (75-95%), not a found optimum.
-- ADAPTIVE without a prior, on the static links, did not beat the fixed rate (54 / 32 / 1 / 25); on a link that stepped 30 -> 4 -> 30 Mbit/s it followed the change at 1 MiB (p50 in the
-  4 Mbit/s phase 2,267 against 5,307 ms for the fixed rate set for the fast link, 16x fewer retransmissions), which no single fixed rate does.
-- Its limits: the rate swings widely (median 88x, maximum 144x at 1 MiB); after a step up it took about 20 s to recover at 128 KiB (p50 93 against 44 ms); the rate-step run was one flow,
-  one loss pattern, 3 runs per arm; one CycloneDDS cell (1 MiB in the 4 Mbit/s phase, 820 ms) is unexplained.
+- ADAPTIVE without a prior, on the static links, did not beat the fixed rate (54 / 32 / 1 / 25). On a link stepped 30 -> 4 -> 30 Mbit/s (library `448b685f`, 12 runs at 1 MiB) it followed the change:
+  1 MiB p50 338 / 2,269 / 327 ms by phase (CycloneDDS 818 / 2,541 / 818; Fast DDS 1,086 / 23,727 / 1,948; the fixed rate set for the fast link 324 / 6,062 / 324), which no single fixed rate does.
+- **Six time-varying patterns, 144 runs** (RESULTS section 5): against CycloneDDS 8 WIN / 3 TIE / 1 LOSE, against Fast DDS 10 / 0 / 2 (both together 18 / 3 / 3 of 24), **against the fixed 95%: 1 / 2 / 9: the fixed rate is the best
+  choice when the bandwidth is known.** "ADAPTIVE wins in all cases against the DDS stacks" is **not** claimed: it loses 128 KiB P7 to CycloneDDS and 128 KiB P5a and P5b to Fast DDS.
+- Its limits: it follows slow changes within +-30% of the capacity 72-77% of the time, a 20 s sawtooth 31-49%, and it is over the capacity 33-66% of the time in every pattern; the worst 1 MiB tails are 12-22 s; after a step down it
+  needs 17 s to recover at 1 MiB (CycloneDDS 3 s), after a step up 24 s at 128 KiB (the DDS stacks 2 s, the fixed rate 4 s); the rate swings widely; one flow and one reader, one loss pattern, 3 to 12 runs per cell. **Faster
+  tracking of bandwidth changes is deferred** (not in 2.2.0; the causes found in the traces and the candidate designs are in `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`, section 26). An emulation; not Wi-Fi, not 5G.
 
 ## 15. Configuration reference
 

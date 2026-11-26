@@ -37,7 +37,7 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
   verdicts on four emulated links. **Guideline** (DESIGN "Wi-Fi tuning"): set `tt_LinkOptions.pacing_rate` to about 95% of the
   bandwidth you expect the link to sustain; the library applies no margin itself (T1S alone defaults to 75% of `link_rate`; the WIFI
   profile stays unpaced), and a rate above what the link carries is harmful. For a link whose rate changes, ADAPTIVE rate control
-  (below) without a prior.
+  (below, experimental) without a prior follows slow changes and fast ones only in part; the fixed rate is best when the bandwidth is known.
 - **Decision (the user, 2026-11-17): the `mac80211_hwsim` + `wmediumd` simulation is not used for any 2.2.0 figure.** Its
   link starts in one of two rate states chosen at bring-up, not by the application (72 of 157 topologies slow at 1.0 Mbit/s,
   85 fast), and the DDS stacks' start-up frames flip a slow link to fast while TickLE's do not, so a scored comparison was
@@ -58,9 +58,11 @@ carry `marks` (an announce tag and its echo); a 2.1.0 node ignores them and a no
   `rate_queue_ns`; DESIGN "Send pacing" and "Wi-Fi tuning"). `rate_control` defaults to OFF (what `pacing_rate` says, as before), the WIFI
   profile stays unpaced, **no wire change**, and it needs a build with `tt_LARGE_SAMPLES`. The sender finds the rate the readers report delivered
   and holds the queue short; a `pacing_rate` under it is the prior and the cap (the rate starts at 95% of it). Recommended without a prior; a
-  prior larger than the real link is harmful (emulated 4 Mbit/s links with a 30 Mbit/s prior: 1 MiB delivered 1-11 of 15 on S2). On a link stepped
-  30 -> 4 -> 30 Mbit/s it followed the change at 1 MiB; limits: rate swings (median 88x), about 20 s to recover at 128 KiB after a step up, one flow,
-  3 runs per arm (RESULTS section 5). Not Wi-Fi measurements.
+  prior larger than the real link is harmful (emulated 4 Mbit/s links with a 30 Mbit/s prior: 1 MiB delivered 1-11 of 15 on S2). Measured, library `448b685f`
+  (RESULTS section 5, emulation, one flow, one reader, not Wi-Fi or 5G): rate step 30 -> 4 -> 30 Mbit/s, 1 MiB p50 338 / 2,269 / 327 ms by phase, 17 s to recover after the step down (CycloneDDS 3 s), 0 of 12 runs
+  failed; 128 KiB after the step up p50 47 ms but **24 s to recover** (DDS stacks 2 s, fixed rate 4 s). Six time-varying patterns (144 runs): against CycloneDDS 8 WIN / 3 TIE / 1 LOSE, against Fast DDS 10 / 0 / 2 (DDS stacks
+  together 18 / 3 / 3 of 24), against the fixed 95% rate 1 / 2 / 9 (**the fixed rate is best when the bandwidth is known**); within +-30% of the capacity 72-77% of the time for slow changes and 31-49% for a 20 s sawtooth,
+  over the capacity 33-66% of the time, worst 1 MiB tails 12-22 s. **It does not win in all cases against the DDS stacks, and that is not claimed.** Faster tracking is deferred.
 - **Announce round trip from a tag and its echo, and the reader's first retry interval** (`tt_VERSION` unchanged). Every
   announce carries a tag and a reply echoes the tag it answers, in the 2 bytes of `tt_AnnounceHeader` that were zero and
   read by no build (`marks`; DESIGN.md section 3). The announce's sender times the round trip exactly

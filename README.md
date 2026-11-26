@@ -66,7 +66,7 @@ tt_Context_create_with(&ctx, &opts); // tt_RET_INVALID_ARGUMENT, with a log line
 Each link in `net.links[]` takes a `profile` - `tt_LINK_PROFILE_ETHERNET` (0, the defaults), `_T1S`, `_TSN` or `_WIFI` -
 whose values fill the link's zero fields (MTU, batching, unicast threshold, retry floor, idle HEARTBEAT, ...; DESIGN.md
 section 2, "Link profiles"). A link's `pacing_rate` and `pacing_burst` pace its sends through a token bucket - T1S at
-75% of its link rate by default, every other profile not at all (DESIGN.md section 2, "Send pacing"). On a Wi-Fi link set `pacing_rate` to about 95% of the bandwidth you expect it to sustain (DESIGN.md section 14, "Wi-Fi tuning"); `rate_control = ADAPTIVE` is an experimental opt-in for a link whose rate changes. A WIFI link also
+75% of its link rate by default, every other profile not at all (DESIGN.md section 2, "Send pacing"). On a Wi-Fi link set `pacing_rate` to about 95% of the bandwidth you expect it to sustain (DESIGN.md section 14, "Wi-Fi tuning"); `rate_control = ADAPTIVE` is an experimental opt-in for a link whose rate changes (it follows slow changes, fast ones only in part, and the fixed rate is better when the bandwidth is known; DESIGN.md section 14). A WIFI link also
 sends its discovery summary by unicast to its known peers, judges silence over 6 summaries instead of 3 and repeats a
 change's announce (DESIGN.md section 2, "Wi-Fi discovery").
 

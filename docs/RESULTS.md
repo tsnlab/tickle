@@ -543,8 +543,9 @@ contention, no MAC retries and no congestion control.
 **Emulation only.** Every figure below is from `tc`/netem on two Raspberry Pi 5 (a network namespace and a GRE tap over the rig's Ethernet; the Pis' real
 `eth0` and `wlan0` untouched). Not Wi-Fi performance; no real wireless hardware was used. Netem has no airtime contention, no MAC retries and no rate
 adaptation. Fast DDS 2.14.6 and CycloneDDS 0.10.5, default settings, the same binaries and command lines as TickLE's. Raw data and per-run scorers are
-on the rig PC (`~/rig_results_safe/wtc_20261117/`, `wtc_ratestep_20261122/`), the reports in `~/claude_reports/WIFI_TC_PACING_SWEEP_2026-11-19.md`,
-`WIFI_ADAPTIVE_S1_RESULTS_v8_2026-11-22.md`, `..._quick10_...`, `..._quick11_...`, `WIFI_ADAPTIVE_RATESTEP_2026-11-23.md`.
+on the rig PC (`~/rig_results_safe/wtc_20261117/`, `wtc_ratestep_exact_20261124/`, `wtc_adaptive_reval2_20261125/`, `wtc_varybw_20261126/`), the reports in `~/claude_reports/WIFI_TC_PACING_SWEEP_2026-11-19.md`,
+`WIFI_ADAPTIVE_S1_RESULTS_v8_2026-11-22.md`, `..._quick10_...`, `..._quick11_...`, `WIFI_ADAPTIVE_RATESTEP_EXACT_2026-11-25.md`, `WIFI_ADAPTIVE_NEXT_REVAL2_2026-11-25.md`, `WIFI_ADAPTIVE_VARYING_BW_2026-11-26.md`
+(`WIFI_ADAPTIVE_RATESTEP_2026-11-23.md` is superseded: its DDS phase attribution was wrong).
 
 Links (delay is one way; round trip is twice it): **M1** 30 Mbit/s (carried 29.73), 5 ms, 1% independent loss; **M2** 30 Mbit/s, 20 ms, bursty loss;
 **S1** 4 Mbit/s (carried 3.97), 5 ms, 1% loss; **S2** 4 Mbit/s, 20 ms, bursty loss; queue 100 packets. 1 MiB and 128 KiB RELIABLE samples
@@ -582,41 +583,93 @@ lost tail waiting a repair round) and 128 KiB p50 where CycloneDDS's fastest run
 #### A link whose rate changes: 30 -> 4 -> 30 Mbit/s (rate-step stage)
 
 One link (M1 delay, 1% loss), the rate stepped to 4 Mbit/s at 45 s and back to 30 Mbit/s at 90 s, 135 s runs, 0.25 Hz (11-12 samples per phase), one
-RELIABLE KEEP_LAST 10 flow, **3 runs per arm and size, pooled**; library `ae5c192a`. Arms: ADAPTIVE without a prior; ADAPTIVE with a 30 Mbit/s prior (wrong after
-the step down); fixed 95% of 30 (28.2 Mbit/s; wrong after the step down); fixed 95% of 4 (3.77 Mbit/s; wrong in the two fast phases). Phase = sample's
-publish time; the sample in flight at a step lands in the earlier phase with the later link's latency, so the phase max carries that boundary effect.
+RELIABLE KEEP_LAST 10 flow. **Every sample of every arm is placed in a phase by its send time** (an earlier scorer attributed the DDS samples by the order of a sorted latency
+file, which was wrong: the DDS rows of that scorer are replaced by the rows below, and what was concluded from them is withdrawn). ADAPTIVE (no prior): library `448b685f`, **12 runs at 1 MiB, 5 at 128 KiB**;
+fixed 95% of 30 (28.2 Mbit/s), CycloneDDS 0.10.5 and Fast DDS 2.14.6: 5 runs per size (`wtc_ratestep_exact_20261124`). The sample in flight at a step lands in the earlier phase with the later
+link's latency, so a phase max carries that boundary effect. Recovery = seconds from the step to the first sample after it whose latency is within 1.5x of the new phase's steady value (and the next two too).
 
 1 MiB, delivered / p50 / p90 / max (ms):
 
-| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | retransmissions per run (median) | rate swing |
+| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | recovery after the step down / up (s, median) | failed runs |
 |---|---|---|---|---|---|
-| ADAPTIVE, no prior | 36/36 / 331 / 510 / 9,207 | 33/33 / 2,267 / 2,331 / 5,811 | 33/33 / 348 / 406 / 717 | 1,815 | median 88x, max 144x |
-| ADAPTIVE, prior 30 (wrong) | 36/36 / 322 / 329 / 25,279 | **27/33** / 8,757 / 20,231 / 26,492 | 33/33 / 330 / 419 / 2,131 | 7,840 | median 30x, max 108x |
-| fixed 95% of 30 | 36/36 / 324 / 334 / 6,831 | 33/33 / 5,307 / 6,297 / 9,592 | 33/33 / 323 / 325 / 360 | 28,873 | - |
-| fixed 95% of 4 | 36/36 / 2,372 / 2,387 / 2,402 | 33/33 / 2,379 / 2,392 / 2,458 | 33/33 / 2,369 / 2,389 / 2,425 | 267 | - |
-| CycloneDDS | 36/36 / 754 / 818 / 818 | 33/33 / 820 / 919 / 2,373 | 30/30 / 2,541 / 3,497 / 3,655 | - | - |
-| Fast DDS | 36/36 / 1,067 / 1,086 / 1,095 | 33/33 / 2,916 / 5,606 / 6,282 | 30/30 / 25,331 / 33,844 / 35,738 | - | - |
+| ADAPTIVE, no prior (12 runs) | 132/132 / 338 / 461 / 727 | 139/144 / 2,269 / 7,727 / 16,033 | 132/132 / 327 / 440 / 1,263 | 17 / 4 | 0 of 12 |
+| fixed 95% of 30 | 55/55 / 324 / 333 / 533 | 60/60 / 6,062 / 10,477 / 15,718 | 55/55 / 324 / 332 / 354 | 1 / 4 | 0 of 5 |
+| CycloneDDS | 60/60 / 818 / 855 / 1,018 | 55/55 / 2,541 / 3,462 / 4,637 | 50/50 / 818 / 918 / 1,018 | 3 / 2 | - |
+| Fast DDS | 60/60 / 1,086 / 1,107 / 5,595 | 55/55 / 23,727 / 34,436 / 38,322 | 50/50 / 1,948 / 3,954 / 3,979 | 3 of 5 runs not within 1.5x (stays about 1.8x slower) | - |
 
 128 KiB, delivered / p50 / p90 / max (ms):
 
-| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | rate swing |
+| arm | 30 Mbit/s (before) | 4 Mbit/s | 30 Mbit/s (after) | recovery after the step down / up (s, median; per run) |
 |---|---|---|---|---|
-| ADAPTIVE, no prior | 36/36 / 50 / 108 / 280 | 33/33 / 281 / 290 / 334 | 33/33 / 93 / 191 / 216 | median 15x, max 21x |
-| ADAPTIVE, prior 30 (wrong) | 36/36 / 44 / 55 / 285 | 33/33 / 280 / 285 / 295 | 33/33 / 43 / 51 / 60 | 1x |
-| fixed 95% of 30 | 36/36 / 44 / 68 / 281 | 33/33 / 279 / 281 / 349 | 33/33 / 44 / 56 / 146 | - |
-| fixed 95% of 4 | 36/36 / 290 / 296 / 310 | 33/33 / 293 / 296 / 296 | 33/33 / 290 / 293 / 301 | - |
-| CycloneDDS | 36/36 / 41 / 55 / 59 | 33/33 / 62 / 268 / 276 | 30/30 / 313 / 359 / 373 | - |
-| Fast DDS | 36/36 / 88 / 91 / 91 | 33/33 / 91 / 92 / 512 | 30/30 / 618 / 621 / 621 | - |
+| ADAPTIVE, no prior (5 runs) | 55/55 / 44 / 98 / 114 | 60/60 / 281 / 293 / 333 | 55/55 / 47 / 161 / 202 | 1 / **24** (36, 28, 24, 4, 8) |
+| fixed 95% of 30 | 55/55 / 44 / 47 / 54 | 60/60 / 279 / 282 / 299 | 55/55 / 43 / 51 / 55 | 1 / 4 |
+| CycloneDDS | 60/60 / 56 / 73 / 127 | 55/55 / 301 / 339 / 407 | 50/50 / 55 / 69 / 218 | 3 / 2 |
+| Fast DDS | 60/60 / 89 / 92 / 93 | 55/55 / 618 / 621 / 621 | 50/50 / 90 / 93 / 93 | 3 / 2 |
 
-Reading. At 1 MiB ADAPTIVE without a prior followed the link: within 8% of the best fixed rate in each phase, and in the 4 Mbit/s phase p50 2,267 against 5,307 ms
-and 16x fewer retransmissions than the fixed rate set for the fast link; no single fixed rate does that (fixed 30 loses the slow phase by 2.3x, fixed 4 loses the
-fast phases by 7x). The DDS stacks queue the backlog and had not recovered by the end of the run after the step up (1 MiB p50 2.5 s and 25 s). At 128 KiB the
-fixed 30 Mbit/s and the 30 Mbit/s-prior arms are as good as or better than ADAPTIVE in every phase, and **ADAPTIVE takes about 20 s (5 samples) to recover after the
-step up (p50 93 against 44 ms)**. A prior that becomes wrong does not help: at 1 MiB it delivered 27 of 33 in the slow phase (p50 8.8 s, p90 20 s).
+p50 in ms before / at 4 Mbit/s / after the step up (the corrected DDS rows): CycloneDDS 1 MiB 818 / 2,541 / 818, 128 KiB 56 / 301 / 55; Fast DDS 1 MiB 1,086 / 23,727 / 1,948, 128 KiB 89 / 618 / 90.
 
-Limits, stated plainly: one flow, one loss pattern (1% independent), one step pair, 3 runs per arm and size, a gradual ramp was not run; the **ADAPTIVE rate swings widely
-(88x median, 144x max at 1 MiB)**; the 128 KiB recovery of about 20 s; the CycloneDDS 1 MiB p50 of 820 ms in the 4 Mbit/s phase is **unexplained** (a 1 MiB sample cannot cross
-4 Mbit/s in 0.8 s; its samples may not all be sent at the new rate, or the phase attribution by publish time does not hold for it) and is reported as measured.
+Strict per-phase verdicts of ADAPTIVE (every ADAPTIVE run's phase p50 against every run of the other arm; before / at 4 Mbit/s / after): 1 MiB against CycloneDDS WIN / TIE / WIN, against Fast DDS
+WIN / WIN / WIN, against fixed 95% TIE / WIN / TIE; 128 KiB against CycloneDDS TIE / TIE / TIE, against Fast DDS WIN / WIN / TIE, against fixed 95% TIE / TIE / TIE.
+
+Reading. At 1 MiB ADAPTIVE without a prior followed the link: 338 and 327 ms in the fast phases (CycloneDDS 818, Fast DDS 1,086 and 1,948), 2,269 ms in the slow phase (CycloneDDS 2,541, the fixed rate set
+for the fast link 6,062, Fast DDS 23,727); no single fixed rate does that. **It reacts slowly to the step down: 17 s to recover (CycloneDDS 3 s), phase p90 7.7 s and max 16.0 s**, and 5 of the 144
+samples of the slow phase were not delivered in the run window (1, 2 and 2 in three runs); no run failed (three or more samples undelivered, or a latency over 20 s). At 128 KiB the p50 after the step up
+(47 ms) is level with the fixed rate (43) and CycloneDDS (55) and ahead of Fast DDS (90), but **the recovery takes 24 s (median of 5: 36, 28, 24, 4, 8 s) against 2 s for both DDS stacks and 4 s for the fixed
+rate**, and the p90 is 161 ms. The DDS stacks do recover after the step up, in about 2-3 s (CycloneDDS; Fast DDS at 128 KiB); Fast DDS at 1 MiB stays about 1.8x slower than before the step in 3 of the 5 runs.
+(The earlier statement that they "had not recovered by the end of the run" came from the wrong attribution and is withdrawn, as is the CycloneDDS 820 ms "unexplained" in the slow phase: it was the scorer.)
+A prior that becomes wrong does not help (earlier 3-run stage, library `ae5c192a`): ADAPTIVE with a 30 Mbit/s prior delivered 27 of 33 in the slow phase (p50 8.8 s, p90 20 s).
+
+Limits, stated plainly: one flow, one loss pattern (1% independent), one step pair; 12 runs (1 MiB) and 5 (128 KiB) of ADAPTIVE; the ADAPTIVE rate swings widely (the earlier build: median 88x, max 144x at 1 MiB);
+an emulation, not Wi-Fi.
+
+#### ADAPTIVE under time-varying bandwidth (six patterns, 144 runs)
+
+Library `448b685f`, M1 link (5 ms one way, 1% loss, queue 100 packets), the netem rate following a schedule; 3 runs per cell, 6 patterns x 2 sizes x 4 arms (ADAPTIVE without a prior, fixed 95% of 30, CycloneDDS,
+Fast DDS), one flow and one reader, 0.25 Hz, per-sample traces placed by send time; report `WIFI_ADAPTIVE_VARYING_BW_2026-11-26.md`, data `~/rig_results_safe/wtc_varybw_20261126`. Patterns: **P7** random walk (integer
+Mbit/s uniform 5-30 every 5 s, seed 20261126, 180 s); **P5a / P5b** square wave 30 <-> 10 Mbit/s with a 20 s / 60 s period; **P6** 30 Mbit/s with a 5 s dip to 4; **P3** 30 -> 4 linearly over 150 s; **P4** 4 -> 30 linearly over
+150 s. Verdicts: strict rule on per-run p50, 12 cells per rival (6 patterns x 2 sizes), no VOID (one copy per arm).
+
+| ADAPTIVE against | WIN | TIE | LOSE |
+|---|---|---|---|
+| CycloneDDS | 8 | 3 | 1 |
+| Fast DDS | 10 | 0 | 2 |
+| both DDS stacks together | **18** | **3** | **3** (of 24) |
+| fixed 95% of 30 | 1 | 2 | **9** (of 12) |
+
+**ADAPTIVE does not win in all cases against the DDS stacks, and that is not claimed.** Its three LOSEs: 128 KiB P7 against CycloneDDS (85 against 74 ms), 128 KiB P5a and P5b against Fast DDS (105 against 91 and 104 against 92 ms).
+**The fixed 95% rate is the best choice when the bandwidth is known** (it beats or ties ADAPTIVE in 11 of 12 cells; its price is repair traffic: 2,257-49,294 retransmissions a run against ADAPTIVE's 940-4,465).
+
+1 MiB, delivered / p50 / p90 / max (ms), 3 runs pooled:
+
+| pattern | ADAPTIVE | fixed 95% | CycloneDDS | Fast DDS |
+|---|---|---|---|---|
+| P7 random walk | 133/135; 557 / 1,311 / **12,503** | 135/135; 520 / 1,303 / 3,034 | 135/135; 819 / 1,122 / 1,707 | 135/135; 2,220 / 4,192 / 5,817 |
+| P5a sawtooth 20 s | 135/135; 890 / 1,227 / 1,603 | 135/135; 790 / 884 / 1,311 | 135/135; 873 / 1,030 / 1,222 | 132/135; 1,304 / 4,369 / 8,088 |
+| P5b sawtooth 60 s | 135/135; 884 / 1,005 / 1,638 | 135/135; 787 / 882 / 1,864 | 135/135; 918 / 1,032 / 1,199 | 132/135; 3,946 / 8,358 / 9,376 |
+| P6 5 s dip | 114/114; 328 / 473 / 3,686 | 114/114; 324 / 334 / 5,606 | 111/111; 818 / 917 / 2,385 | 111/111; 1,088 / 1,117 / 6,074 |
+| P3 gradual fall | 135/135; 634 / 2,258 / 2,355 | 135/135; 680 / 3,432 / 5,995 | 135/135; 822 / 2,540 / 3,557 | 117/135; 2,095 / 22,439 / 30,768 |
+| P4 gradual rise | 133/135; 521 / 1,440 / **21,769** | 135/135; 448 / 1,692 / 6,469 | 135/135; 820 / 1,516 / 2,673 | 135/135; 3,921 / 14,838 / 18,458 |
+
+(The P7 and P4 ADAPTIVE tails, 12.5 s and 21.8 s, are single runs with undelivered samples: 133 of 135 delivered in both.) 128 KiB, p50 / p90 / max (ms), all 135 of 135 delivered except P6 (114):
+
+| pattern | ADAPTIVE | fixed 95% | CycloneDDS | Fast DDS |
+|---|---|---|---|---|
+| P7 | 85 / 162 / 211 | 66 / 142 / 239 | 74 / 161 / 271 | 131 / 252 / 414 |
+| P5a | 105 / 116 / 149 | 47 / 116 / 230 | 114 / 153 / 234 | 91 / 252 / 1,192 |
+| P5b | 104 / 120 / 236 | 50 / 116 / 125 | 113 / 143 / 246 | 92 / 252 / 253 |
+| P6 | 44 / 78 / 282 | 44 / 53 / 281 | 55 / 119 / 313 | 91 / 92 / 621 |
+| P3 | 95 / 282 / 306 | 80 / 281 / 288 | 101 / 278 / 362 | 162 / 618 / 721 |
+| P4 | 76 / 201 / 349 | 63 / 166 / 292 | 82 / 183 / 316 | 131 / 355 / 618 |
+
+How well the estimate follows the capacity (the RATETRACE rate against the netem rate x 0.991, time-weighted): **within +-30% of the capacity 72-77% of the time for the slow changes (P3, P4), 31-49% on the 20 s
+sawtooth (P5a: 49% at 1 MiB, 31% at 128 KiB), 50-67% on P7, P5b and P6; over the capacity 33-66% of the time in every pattern** (P5a at 128 KiB: over 1.3x for 44% of the time; at 1 MiB under 0.7x for 43% of the time, median
+rate / capacity 0.77). Worst tails at 1 MiB: 12.5 s (P7) and 21.8 s (P4), single runs, each with 2 of 135 samples undelivered. After a step up at 128 KiB the recovery takes 24 s (above).
+Cause, from the traces (experiments/adaptive_pacing/DESIGN.md section 26, a draft): at 128 KiB the BtlBw estimate is not brought down after a step down (a correct reading is discarded as application-limited, the queue guard gets one
+round trip sample per sample period), and a step up is followed by one probe every two or three samples; at 1 MiB a guard over-cuts after a step down (28.8 -> 2.9 Mbit/s in one second on a 10 Mbit/s link) and waits for the next
+sample to probe. **Faster tracking is deferred** (candidates and an offline model comparison are in that draft; none is in 2.2.0).
+
+Limits, stated plainly: a `tc`/netem emulation on two Raspberry Pi 5, **not Wi-Fi and not 5G**; one flow and one reader; one link and loss pattern (1% independent); 3 runs per cell (verdicts over 3 against 3 runs;
+the 1 MiB differences of 5-10% are not always outside the run-to-run spread); a sample's latency includes the sample in flight at each change.
 
 #### ADAPTIVE on the static links: right prior, no prior, wrong prior
 
