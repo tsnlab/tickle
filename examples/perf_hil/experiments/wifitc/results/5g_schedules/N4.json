@@ -1,0 +1,1095 @@
+{
+"name": "N4",
+"seed": 20261130,
+"duration_s": 180,
+"base": {
+"limit_pkts": 200,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+"steps": [
+{
+"t_ms": 0,
+"rate_kbit": 25000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 1000,
+"rate_kbit": 25268,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 2000,
+"rate_kbit": 21303,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 3000,
+"rate_kbit": 27066,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 4000,
+"rate_kbit": 29225,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 5000,
+"rate_kbit": 30526,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 6000,
+"rate_kbit": 30420,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 7000,
+"rate_kbit": 27899,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 8000,
+"rate_kbit": 23705,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 9000,
+"rate_kbit": 27458,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 10000,
+"rate_kbit": 23551,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 11000,
+"rate_kbit": 26572,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 12000,
+"rate_kbit": 32021,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 13000,
+"rate_kbit": 31306,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 14000,
+"rate_kbit": 30140,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 15000,
+"rate_kbit": 29917,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 16000,
+"rate_kbit": 24062,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 17000,
+"rate_kbit": 21744,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 18000,
+"rate_kbit": 25278,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 19000,
+"rate_kbit": 27628,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 20000,
+"rate_kbit": 27498,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 21000,
+"rate_kbit": 28985,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 22000,
+"rate_kbit": 25325,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 23000,
+"rate_kbit": 18400,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 24000,
+"rate_kbit": 15073,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 25000,
+"rate_kbit": 17778,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 26000,
+"rate_kbit": 19099,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 27000,
+"rate_kbit": 18200,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 28000,
+"rate_kbit": 19904,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 29000,
+"rate_kbit": 21214,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 30000,
+"rate_kbit": 19589,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 31000,
+"rate_kbit": 18841,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 32000,
+"rate_kbit": 19933,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 33000,
+"rate_kbit": 24380,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 34000,
+"rate_kbit": 20216,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 35000,
+"rate_kbit": 21681,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 36000,
+"rate_kbit": 17964,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 37000,
+"rate_kbit": 19366,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 38000,
+"rate_kbit": 17412,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 39000,
+"rate_kbit": 18180,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 40000,
+"rate_kbit": 19000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 41000,
+"rate_kbit": 23418,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 42000,
+"rate_kbit": 22883,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 43000,
+"rate_kbit": 20367,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 44000,
+"rate_kbit": 21208,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 45000,
+"rate_kbit": 23630,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 46000,
+"rate_kbit": 23247,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 47000,
+"rate_kbit": 25419,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 48000,
+"rate_kbit": 23552,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 49000,
+"rate_kbit": 19924,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 50000,
+"rate_kbit": 18757,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 51000,
+"rate_kbit": 17117,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 52000,
+"rate_kbit": 18080,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 53000,
+"rate_kbit": 13293,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 54000,
+"rate_kbit": 13044,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 55000,
+"rate_kbit": 15528,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 56000,
+"rate_kbit": 17410,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 57000,
+"rate_kbit": 21530,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 58000,
+"rate_kbit": 23733,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 59000,
+"rate_kbit": 24801,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 60000,
+"rate_kbit": 24617,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 61000,
+"rate_kbit": 25044,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 62000,
+"rate_kbit": 21655,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 63000,
+"rate_kbit": 20080,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 64000,
+"rate_kbit": 18343,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 65000,
+"rate_kbit": 12709,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 66000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 67000,
+"rate_kbit": 10894,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 68000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 69000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 70000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 71000,
+"rate_kbit": 10302,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 72000,
+"rate_kbit": 11246,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 73000,
+"rate_kbit": 11256,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 74000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 75000,
+"rate_kbit": 10027,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 76000,
+"rate_kbit": 10638,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 77000,
+"rate_kbit": 15523,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 78000,
+"rate_kbit": 10906,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 79000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 80000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 81000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 82000,
+"rate_kbit": 10228,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 83000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 84000,
+"rate_kbit": 10953,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 85000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 86000,
+"rate_kbit": 10975,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 87000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 88000,
+"rate_kbit": 12285,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 89000,
+"rate_kbit": 15269,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 90000,
+"rate_kbit": 12826,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 91000,
+"rate_kbit": 10299,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 92000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 93000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 94000,
+"rate_kbit": 11436,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 95000,
+"rate_kbit": 14510,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 96000,
+"rate_kbit": 12157,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 97000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 98000,
+"rate_kbit": 10934,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 99000,
+"rate_kbit": 11805,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 100000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 101000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 102000,
+"rate_kbit": 13127,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 103000,
+"rate_kbit": 10803,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 104000,
+"rate_kbit": 13673,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 105000,
+"rate_kbit": 12551,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 106000,
+"rate_kbit": 14204,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 107000,
+"rate_kbit": 12643,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 108000,
+"rate_kbit": 11392,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 109000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 110000,
+"rate_kbit": 14526,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 111000,
+"rate_kbit": 13624,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 112000,
+"rate_kbit": 15829,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 113000,
+"rate_kbit": 11161,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 114000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 115000,
+"rate_kbit": 10144,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 116000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 117000,
+"rate_kbit": 11501,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 118000,
+"rate_kbit": 18320,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 119000,
+"rate_kbit": 19192,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 120000,
+"rate_kbit": 18565,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 121000,
+"rate_kbit": 17026,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 122000,
+"rate_kbit": 20237,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 123000,
+"rate_kbit": 19619,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 124000,
+"rate_kbit": 19790,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 125000,
+"rate_kbit": 20135,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 126000,
+"rate_kbit": 20929,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 127000,
+"rate_kbit": 19121,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 128000,
+"rate_kbit": 18286,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 129000,
+"rate_kbit": 14773,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 130000,
+"rate_kbit": 16402,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 131000,
+"rate_kbit": 15067,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 132000,
+"rate_kbit": 10503,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 133000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 134000,
+"rate_kbit": 10286,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 135000,
+"rate_kbit": 13667,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 136000,
+"rate_kbit": 12043,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 137000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 138000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 139000,
+"rate_kbit": 10646,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 140000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 141000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 142000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 143000,
+"rate_kbit": 13902,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 144000,
+"rate_kbit": 12167,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 145000,
+"rate_kbit": 14060,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 146000,
+"rate_kbit": 14262,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 147000,
+"rate_kbit": 13015,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 148000,
+"rate_kbit": 15710,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 149000,
+"rate_kbit": 16719,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 150000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 151000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 152000,
+"rate_kbit": 14553,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 153000,
+"rate_kbit": 16380,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 154000,
+"rate_kbit": 22086,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 155000,
+"rate_kbit": 22985,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 156000,
+"rate_kbit": 25353,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 157000,
+"rate_kbit": 23244,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 158000,
+"rate_kbit": 25590,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 159000,
+"rate_kbit": 28981,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 160000,
+"rate_kbit": 29952,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 161000,
+"rate_kbit": 27638,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 162000,
+"rate_kbit": 26202,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 163000,
+"rate_kbit": 23802,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 164000,
+"rate_kbit": 23723,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 165000,
+"rate_kbit": 15023,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 166000,
+"rate_kbit": 10674,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 167000,
+"rate_kbit": 11491,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 168000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 169000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 170000,
+"rate_kbit": 10427,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 171000,
+"rate_kbit": 11358,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 172000,
+"rate_kbit": 10000,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 173000,
+"rate_kbit": 14621,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 174000,
+"rate_kbit": 14856,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 175000,
+"rate_kbit": 14493,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 176000,
+"rate_kbit": 18054,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 177000,
+"rate_kbit": 20259,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 178000,
+"rate_kbit": 23984,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+},
+{
+"t_ms": 179000,
+"rate_kbit": 23290,
+"delay_ms": 15,
+"loss": "gemodel 1% 15% 60% 0.5%"
+}
+],
+"mean_rate_kbit": 17170,
+"min_rate_kbit": 10000,
+"max_rate_kbit": 32021
+}

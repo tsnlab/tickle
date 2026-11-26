@@ -87,7 +87,7 @@ variant_env() {
         ad) TV_ENV="$TV_ENV TT_RATE_CONTROL=adaptive"; TV_BIN=lg ;; # rate_control ADAPTIVE (ADAPTIVE_PLAN.md)
         lg) TV_BIN=lg ;;                                              # the large-samples small-sample node, no option: ad's control
         c[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#c} * 1000000))" ;; # with ad: the cap, Mbit/s
-        k[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#k} * 1000))" ;; # a fixed rate in kbit/s (without ad), e.g. tickle-k3770
+        k[0-9]*) TV_ENV="$TV_ENV TT_PACING_BPS=$((${part#k} * 1000)) TT_LINK_RATE_BPS=1000000000" ;; # a fixed rate in kbit/s (without ad), e.g. tickle-k3770
         b[0-9]*) TV_ENV="$TV_ENV TT_PACING_BURST=${part#b}" ;;
         fip | fmtu) TV_ARGS="$TV_ARGS -F ${part#f}" ;;
         *) echo "unknown variant part $part in $1" >&2; return 1 ;;
@@ -222,6 +222,12 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
         done
         sleep 1
         local steppid=""
+        if [ -n "${NETEM_SCHEDULE:-}" ]; then # a netem player on each Pi (wtc_netem_player.py), started together; its cli-side log is the schedule on the sender clock
+            cat "$S/results/5g_schedules/$NETEM_SCHEDULE.json" | srv_in "cat > $RD/sched.json"
+            cat "$S/results/5g_schedules/$NETEM_SCHEDULE.json" | cli_in "cat > $RD/sched.json"
+            srv "setsid nohup python3 \$HOME/wtc_scripts/wtc_netem_player.py --ns $NS_FAR --tap wtcgs --schedule $RD/sched.json --log $RD/$id.netemlog.srv >/dev/null 2>&1 </dev/null &"
+            cli "setsid nohup python3 \$HOME/wtc_scripts/wtc_netem_player.py --ns $NS_NEAR --tap wtcgc --schedule $RD/sched.json --log $RD/$id.netemlog >/dev/null 2>&1 </dev/null &"
+        fi
         if [ -n "${RATE_STEP:-}" ]; then
             NETEM_BASE=$NETEM rate_step_driver "$dir/$run" &
             steppid=$!
@@ -243,6 +249,10 @@ run_one() { # run_one <cell> <arm> <round> <fw> <copy> <idx>
         for ((extra = 2; extra <= ${READERS:-1}; extra++)); do srv "cat $RD/$id.far$extra" >"$dir/$run.far$extra" 2>&1; done
         for role in echo sub; do srv "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
         for role in ping pub; do cli "cat $RD/$id.lat.$role 2>/dev/null" >"$dir/$run.lat.$role" 2>/dev/null; done
+        if [ -n "${NETEM_SCHEDULE:-}" ]; then
+            cli "cat $RD/$id.netemlog 2>/dev/null; pkill -f "[w]tc_netem_player.py" 2>/dev/null; true" >"$dir/$run.netemlog" 2>/dev/null
+            srv "pkill -f "[w]tc_netem_player.py" 2>/dev/null; true" >/dev/null 2>&1
+        fi
         if [ "${DDS_TRACE:-0}" = 1 ]; then
             srv "cat $RD/$id.trace.sub 2>/dev/null" >"$dir/$run.trace.sub" 2>/dev/null
             cli "cat $RD/$id.trace.pub 2>/dev/null" >"$dir/$run.trace.pub" 2>/dev/null

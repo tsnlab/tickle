@@ -1,0 +1,3111 @@
+{
+"name": "N1",
+"seed": 20261127,
+"duration_s": 180,
+"base": {
+"limit_pkts": 500,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+"steps": [
+{
+"t_ms": 0,
+"rate_kbit": 60000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 218,
+"rate_kbit": 40817,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 695,
+"rate_kbit": 31687,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 970,
+"rate_kbit": 35894,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 1307,
+"rate_kbit": 44582,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 1551,
+"rate_kbit": 48271,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 1834,
+"rate_kbit": 36928,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 2138,
+"rate_kbit": 79976,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 2588,
+"rate_kbit": 97944,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 2865,
+"rate_kbit": 89376,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 3079,
+"rate_kbit": 57641,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 3306,
+"rate_kbit": 33211,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 3801,
+"rate_kbit": 40279,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 4280,
+"rate_kbit": 40131,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 4497,
+"rate_kbit": 30224,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 4966,
+"rate_kbit": 46480,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 5427,
+"rate_kbit": 50645,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 5713,
+"rate_kbit": 43909,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 5992,
+"rate_kbit": 49817,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 6332,
+"rate_kbit": 46673,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 6766,
+"rate_kbit": 34851,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 7086,
+"rate_kbit": 29986,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 7555,
+"rate_kbit": 61247,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 7809,
+"rate_kbit": 47311,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 8145,
+"rate_kbit": 30116,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 8394,
+"rate_kbit": 34696,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 8634,
+"rate_kbit": 29438,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 9083,
+"rate_kbit": 30981,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 9295,
+"rate_kbit": 33920,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 9515,
+"rate_kbit": 36641,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 9884,
+"rate_kbit": 31288,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 10311,
+"rate_kbit": 27330,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 10558,
+"rate_kbit": 24011,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 10918,
+"rate_kbit": 33375,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 11390,
+"rate_kbit": 44083,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 11853,
+"rate_kbit": 30188,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 12141,
+"rate_kbit": 32526,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 12559,
+"rate_kbit": 34922,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 12810,
+"rate_kbit": 57340,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 13060,
+"rate_kbit": 44722,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 13406,
+"rate_kbit": 72732,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 13627,
+"rate_kbit": 63678,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 13855,
+"rate_kbit": 58515,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 14340,
+"rate_kbit": 80647,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 14677,
+"rate_kbit": 76229,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 15082,
+"rate_kbit": 74549,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 15524,
+"rate_kbit": 80636,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 15753,
+"rate_kbit": 75054,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 16090,
+"rate_kbit": 117370,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 16364,
+"rate_kbit": 100005,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 16839,
+"rate_kbit": 114722,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 17191,
+"rate_kbit": 80571,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 17604,
+"rate_kbit": 86819,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 17854,
+"rate_kbit": 93722,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 18346,
+"rate_kbit": 106740,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 18732,
+"rate_kbit": 125604,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 19178,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 19606,
+"rate_kbit": 77431,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 20030,
+"rate_kbit": 62502,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 20386,
+"rate_kbit": 60275,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 20838,
+"rate_kbit": 52986,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 21132,
+"rate_kbit": 33779,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 21459,
+"rate_kbit": 31952,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 21776,
+"rate_kbit": 42037,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 22021,
+"rate_kbit": 39859,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 22297,
+"rate_kbit": 41526,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 22570,
+"rate_kbit": 38201,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 23069,
+"rate_kbit": 33130,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 23407,
+"rate_kbit": 20251,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 23749,
+"rate_kbit": 33496,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 24065,
+"rate_kbit": 50600,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 24562,
+"rate_kbit": 52783,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 24992,
+"rate_kbit": 35366,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 25469,
+"rate_kbit": 25342,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 25955,
+"rate_kbit": 22299,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 26419,
+"rate_kbit": 22379,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 26876,
+"rate_kbit": 21230,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 27344,
+"rate_kbit": 28379,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 27660,
+"rate_kbit": 34949,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 27929,
+"rate_kbit": 39692,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 28169,
+"rate_kbit": 41223,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 28649,
+"rate_kbit": 44389,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 29085,
+"rate_kbit": 33978,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 29370,
+"rate_kbit": 46958,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 29715,
+"rate_kbit": 39212,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 30095,
+"rate_kbit": 33945,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 30297,
+"rate_kbit": 22009,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 30570,
+"rate_kbit": 28320,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 30781,
+"rate_kbit": 31051,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 31197,
+"rate_kbit": 29594,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 31511,
+"rate_kbit": 38436,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 31986,
+"rate_kbit": 39138,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 32392,
+"rate_kbit": 32036,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 32837,
+"rate_kbit": 52515,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 33037,
+"rate_kbit": 60115,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 33341,
+"rate_kbit": 62560,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 33748,
+"rate_kbit": 123884,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 34136,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 34494,
+"rate_kbit": 126893,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 34703,
+"rate_kbit": 69364,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 34932,
+"rate_kbit": 69202,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 35176,
+"rate_kbit": 76848,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 35570,
+"rate_kbit": 49203,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 36053,
+"rate_kbit": 58740,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 36295,
+"rate_kbit": 102055,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 36553,
+"rate_kbit": 135796,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 36760,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 37012,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 37243,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 37698,
+"rate_kbit": 116585,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 38013,
+"rate_kbit": 132951,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 38419,
+"rate_kbit": 131079,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 38626,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 38873,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 39112,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 39404,
+"rate_kbit": 145127,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 39696,
+"rate_kbit": 123166,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 40033,
+"rate_kbit": 126149,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 40492,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 40789,
+"rate_kbit": 144212,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 41112,
+"rate_kbit": 128961,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 41517,
+"rate_kbit": 139870,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 41918,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 42192,
+"rate_kbit": 133409,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 42430,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 42871,
+"rate_kbit": 126385,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 43289,
+"rate_kbit": 118203,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 43728,
+"rate_kbit": 82304,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 44017,
+"rate_kbit": 83066,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 44229,
+"rate_kbit": 80898,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 44718,
+"rate_kbit": 146238,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 45120,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 45353,
+"rate_kbit": 108361,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 45675,
+"rate_kbit": 73301,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 46139,
+"rate_kbit": 103193,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 46383,
+"rate_kbit": 116293,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 46810,
+"rate_kbit": 82566,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 47027,
+"rate_kbit": 68767,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 47326,
+"rate_kbit": 75711,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 47699,
+"rate_kbit": 91873,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 48129,
+"rate_kbit": 96262,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 48539,
+"rate_kbit": 97965,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 48826,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 49087,
+"rate_kbit": 132588,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 49574,
+"rate_kbit": 110448,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 49887,
+"rate_kbit": 102602,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 50182,
+"rate_kbit": 116713,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 50399,
+"rate_kbit": 69753,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 50891,
+"rate_kbit": 71265,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 51210,
+"rate_kbit": 79534,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 51558,
+"rate_kbit": 71547,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 51813,
+"rate_kbit": 57792,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 52167,
+"rate_kbit": 89430,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 52404,
+"rate_kbit": 141599,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 52692,
+"rate_kbit": 99589,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 52964,
+"rate_kbit": 120917,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 53225,
+"rate_kbit": 96498,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 53572,
+"rate_kbit": 83473,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 53837,
+"rate_kbit": 114349,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 54090,
+"rate_kbit": 123045,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 54465,
+"rate_kbit": 130831,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 54815,
+"rate_kbit": 148294,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 55184,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 55681,
+"rate_kbit": 142009,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 56096,
+"rate_kbit": 125862,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 56538,
+"rate_kbit": 69452,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 56882,
+"rate_kbit": 58863,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 57086,
+"rate_kbit": 50621,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 57321,
+"rate_kbit": 49943,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 57645,
+"rate_kbit": 66257,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 58026,
+"rate_kbit": 76655,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 58446,
+"rate_kbit": 73523,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 58831,
+"rate_kbit": 71470,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 59276,
+"rate_kbit": 104495,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 59525,
+"rate_kbit": 80787,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 59920,
+"rate_kbit": 93402,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 60226,
+"rate_kbit": 87350,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 60540,
+"rate_kbit": 65931,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 60744,
+"rate_kbit": 58315,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 61209,
+"rate_kbit": 72112,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 61682,
+"rate_kbit": 95661,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 62182,
+"rate_kbit": 76292,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 62649,
+"rate_kbit": 62138,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 62881,
+"rate_kbit": 80514,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 63156,
+"rate_kbit": 92714,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 63576,
+"rate_kbit": 117497,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 63776,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 64091,
+"rate_kbit": 148240,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 64339,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 64596,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 64993,
+"rate_kbit": 133691,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 65211,
+"rate_kbit": 95499,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 65603,
+"rate_kbit": 78923,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 65989,
+"rate_kbit": 80805,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 66419,
+"rate_kbit": 103211,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 66842,
+"rate_kbit": 83889,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 67290,
+"rate_kbit": 59411,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 67636,
+"rate_kbit": 61041,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 68043,
+"rate_kbit": 62558,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 68505,
+"rate_kbit": 92164,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 68725,
+"rate_kbit": 126581,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 69224,
+"rate_kbit": 142467,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 69675,
+"rate_kbit": 130393,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 69929,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 70265,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 70698,
+"rate_kbit": 115998,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 71145,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 71469,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 71697,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 71946,
+"rate_kbit": 103819,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 72212,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 72675,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 73121,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 73335,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 73565,
+"rate_kbit": 128525,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 73932,
+"rate_kbit": 147055,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 74176,
+"rate_kbit": 141572,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 74572,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 75009,
+"rate_kbit": 148606,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 75292,
+"rate_kbit": 138159,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 75722,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 76093,
+"rate_kbit": 131381,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 76312,
+"rate_kbit": 132444,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 76745,
+"rate_kbit": 128932,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 77132,
+"rate_kbit": 121661,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 77610,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 77855,
+"rate_kbit": 105396,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 78250,
+"rate_kbit": 81204,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 78552,
+"rate_kbit": 69606,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 78847,
+"rate_kbit": 80127,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 79325,
+"rate_kbit": 133025,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 79667,
+"rate_kbit": 148587,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 80099,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 80599,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 80871,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 81071,
+"rate_kbit": 149878,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 81391,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 81843,
+"rate_kbit": 130771,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 82241,
+"rate_kbit": 78680,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 82553,
+"rate_kbit": 78599,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 82912,
+"rate_kbit": 52794,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 83222,
+"rate_kbit": 66417,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 83632,
+"rate_kbit": 86137,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 83906,
+"rate_kbit": 87425,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 84362,
+"rate_kbit": 96743,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 84838,
+"rate_kbit": 73643,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 85189,
+"rate_kbit": 75844,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 85434,
+"rate_kbit": 94883,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 85694,
+"rate_kbit": 119929,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 86025,
+"rate_kbit": 114977,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 86249,
+"rate_kbit": 96105,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 86522,
+"rate_kbit": 81782,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 86882,
+"rate_kbit": 76051,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 87110,
+"rate_kbit": 70403,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 87310,
+"rate_kbit": 67836,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 87641,
+"rate_kbit": 75019,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 87933,
+"rate_kbit": 71544,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 88253,
+"rate_kbit": 39952,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 88635,
+"rate_kbit": 39362,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 89034,
+"rate_kbit": 41482,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 89259,
+"rate_kbit": 55754,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 89612,
+"rate_kbit": 42723,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 90031,
+"rate_kbit": 39226,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 90315,
+"rate_kbit": 36292,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 90552,
+"rate_kbit": 52695,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 90883,
+"rate_kbit": 56232,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 91123,
+"rate_kbit": 47878,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 91617,
+"rate_kbit": 51151,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 92039,
+"rate_kbit": 35158,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 92446,
+"rate_kbit": 28029,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 92757,
+"rate_kbit": 23537,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 93127,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 93519,
+"rate_kbit": 30019,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 93975,
+"rate_kbit": 29650,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 94453,
+"rate_kbit": 49266,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 94653,
+"rate_kbit": 57591,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 94919,
+"rate_kbit": 34794,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 95258,
+"rate_kbit": 33077,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 95466,
+"rate_kbit": 28551,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 95677,
+"rate_kbit": 22134,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 96173,
+"rate_kbit": 26259,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 96585,
+"rate_kbit": 30698,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 96963,
+"rate_kbit": 29074,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 97309,
+"rate_kbit": 25485,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 97804,
+"rate_kbit": 21021,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 98219,
+"rate_kbit": 24974,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 98592,
+"rate_kbit": 26679,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 98849,
+"rate_kbit": 32255,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 99275,
+"rate_kbit": 55940,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 99764,
+"rate_kbit": 59777,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 99993,
+"rate_kbit": 94170,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 100202,
+"rate_kbit": 106448,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 100448,
+"rate_kbit": 67429,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 100721,
+"rate_kbit": 53934,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 101082,
+"rate_kbit": 54216,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 101526,
+"rate_kbit": 49137,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 101778,
+"rate_kbit": 40250,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 102266,
+"rate_kbit": 43568,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 102740,
+"rate_kbit": 30582,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 102961,
+"rate_kbit": 20782,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 103390,
+"rate_kbit": 25562,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 103743,
+"rate_kbit": 26131,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 104138,
+"rate_kbit": 25712,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 104573,
+"rate_kbit": 23999,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 104787,
+"rate_kbit": 27807,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 105049,
+"rate_kbit": 24850,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 105426,
+"rate_kbit": 22446,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 105681,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 105887,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 106372,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 106679,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 107006,
+"rate_kbit": 24054,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 107495,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 107711,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 107934,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 108316,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 108652,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 109075,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 109517,
+"rate_kbit": 24175,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 109719,
+"rate_kbit": 38121,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 110021,
+"rate_kbit": 37665,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 110457,
+"rate_kbit": 28415,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 110777,
+"rate_kbit": 25939,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 111067,
+"rate_kbit": 39360,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 111443,
+"rate_kbit": 38665,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 111671,
+"rate_kbit": 55863,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 112073,
+"rate_kbit": 57604,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 112529,
+"rate_kbit": 67762,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 112859,
+"rate_kbit": 42994,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 113213,
+"rate_kbit": 39959,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 113584,
+"rate_kbit": 55804,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 113941,
+"rate_kbit": 56917,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 114237,
+"rate_kbit": 76402,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 114583,
+"rate_kbit": 82456,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 115020,
+"rate_kbit": 121364,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 115283,
+"rate_kbit": 82068,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 115662,
+"rate_kbit": 88286,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 116019,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 116380,
+"rate_kbit": 116200,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 116758,
+"rate_kbit": 90889,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 117064,
+"rate_kbit": 99669,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 117543,
+"rate_kbit": 82419,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 118035,
+"rate_kbit": 51367,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 118312,
+"rate_kbit": 87273,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 118664,
+"rate_kbit": 92642,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 118942,
+"rate_kbit": 69960,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 119159,
+"rate_kbit": 61666,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 119449,
+"rate_kbit": 69057,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 119745,
+"rate_kbit": 70898,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 119997,
+"rate_kbit": 66739,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 120414,
+"rate_kbit": 77707,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 120835,
+"rate_kbit": 76317,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 121252,
+"rate_kbit": 82552,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 121494,
+"rate_kbit": 148797,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 121886,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 122138,
+"rate_kbit": 97360,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 122409,
+"rate_kbit": 99660,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 122705,
+"rate_kbit": 109140,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 123136,
+"rate_kbit": 114745,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 123397,
+"rate_kbit": 137048,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 123683,
+"rate_kbit": 85740,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 123982,
+"rate_kbit": 81453,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 124329,
+"rate_kbit": 125480,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 124606,
+"rate_kbit": 135941,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 124831,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 125301,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 125646,
+"rate_kbit": 133794,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 125969,
+"rate_kbit": 84482,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 126186,
+"rate_kbit": 72990,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 126617,
+"rate_kbit": 108766,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 127088,
+"rate_kbit": 102346,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 127453,
+"rate_kbit": 115739,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 127946,
+"rate_kbit": 145342,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 128329,
+"rate_kbit": 138616,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 128797,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 129273,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 129541,
+"rate_kbit": 119019,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 129754,
+"rate_kbit": 135238,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 130036,
+"rate_kbit": 75001,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 130279,
+"rate_kbit": 87221,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 130674,
+"rate_kbit": 79266,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 130900,
+"rate_kbit": 117737,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 131383,
+"rate_kbit": 81583,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 131795,
+"rate_kbit": 71326,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 132266,
+"rate_kbit": 75041,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 132515,
+"rate_kbit": 65695,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 132727,
+"rate_kbit": 50608,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 132979,
+"rate_kbit": 51838,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 133199,
+"rate_kbit": 77765,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 133668,
+"rate_kbit": 65472,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 133949,
+"rate_kbit": 59468,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 134268,
+"rate_kbit": 71819,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 134650,
+"rate_kbit": 85473,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 134986,
+"rate_kbit": 79372,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 135462,
+"rate_kbit": 86272,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 135705,
+"rate_kbit": 71805,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 135931,
+"rate_kbit": 62744,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 136294,
+"rate_kbit": 69882,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 136534,
+"rate_kbit": 82396,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 136758,
+"rate_kbit": 60331,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 137153,
+"rate_kbit": 55291,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 137574,
+"rate_kbit": 39947,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 137800,
+"rate_kbit": 34745,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 138283,
+"rate_kbit": 42606,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 138671,
+"rate_kbit": 41740,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 138884,
+"rate_kbit": 49800,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 139329,
+"rate_kbit": 54606,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 139691,
+"rate_kbit": 53956,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 140137,
+"rate_kbit": 46967,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 140550,
+"rate_kbit": 44271,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 141041,
+"rate_kbit": 57325,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 141496,
+"rate_kbit": 58805,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 141701,
+"rate_kbit": 70684,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 142183,
+"rate_kbit": 79478,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 142582,
+"rate_kbit": 84783,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 143003,
+"rate_kbit": 93117,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 143474,
+"rate_kbit": 103433,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 143830,
+"rate_kbit": 52032,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 144233,
+"rate_kbit": 108076,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 144626,
+"rate_kbit": 135162,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 144946,
+"rate_kbit": 99484,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 145253,
+"rate_kbit": 66334,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 145458,
+"rate_kbit": 56303,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 145790,
+"rate_kbit": 66237,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 146146,
+"rate_kbit": 125342,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 146454,
+"rate_kbit": 94469,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 146675,
+"rate_kbit": 75842,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 146883,
+"rate_kbit": 68627,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 147172,
+"rate_kbit": 61551,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 147495,
+"rate_kbit": 72120,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 147746,
+"rate_kbit": 71230,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 148213,
+"rate_kbit": 70334,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 148709,
+"rate_kbit": 65414,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 149178,
+"rate_kbit": 78589,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 149611,
+"rate_kbit": 76942,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 149986,
+"rate_kbit": 57727,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 150379,
+"rate_kbit": 56508,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 150741,
+"rate_kbit": 73240,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 151121,
+"rate_kbit": 87376,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 151595,
+"rate_kbit": 101278,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 152017,
+"rate_kbit": 116556,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 152328,
+"rate_kbit": 133552,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 152747,
+"rate_kbit": 106642,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 153019,
+"rate_kbit": 118445,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 153325,
+"rate_kbit": 124217,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 153794,
+"rate_kbit": 101804,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 154288,
+"rate_kbit": 109787,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 154710,
+"rate_kbit": 128974,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 155017,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 155242,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 155693,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 156178,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 156471,
+"rate_kbit": 140506,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 156920,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 157400,
+"rate_kbit": 107463,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 157835,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 158267,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 158550,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 159027,
+"rate_kbit": 111754,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 159234,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 159594,
+"rate_kbit": 128996,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 159822,
+"rate_kbit": 109512,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 160292,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 160650,
+"rate_kbit": 148775,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 160855,
+"rate_kbit": 92903,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 161349,
+"rate_kbit": 105474,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 161656,
+"rate_kbit": 107798,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 161950,
+"rate_kbit": 118838,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 162252,
+"rate_kbit": 115061,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 162572,
+"rate_kbit": 105692,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 162828,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 163295,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 163705,
+"rate_kbit": 132889,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 164181,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 164474,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 164914,
+"rate_kbit": 150000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 165315,
+"rate_kbit": 139987,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 165750,
+"rate_kbit": 109224,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 165956,
+"rate_kbit": 97164,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 166425,
+"rate_kbit": 87863,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 166689,
+"rate_kbit": 51910,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 167117,
+"rate_kbit": 61574,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 167401,
+"rate_kbit": 64698,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 167670,
+"rate_kbit": 45213,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 168104,
+"rate_kbit": 28932,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 168402,
+"rate_kbit": 23533,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 168823,
+"rate_kbit": 23905,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 169051,
+"rate_kbit": 22075,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 169510,
+"rate_kbit": 29784,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 169873,
+"rate_kbit": 29136,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 170217,
+"rate_kbit": 31631,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 170620,
+"rate_kbit": 29329,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 170927,
+"rate_kbit": 32414,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 171219,
+"rate_kbit": 28031,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 171535,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 171908,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 172394,
+"rate_kbit": 40052,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 172707,
+"rate_kbit": 47677,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 173088,
+"rate_kbit": 50163,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 173380,
+"rate_kbit": 72549,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 173686,
+"rate_kbit": 78715,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 174177,
+"rate_kbit": 106592,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 174513,
+"rate_kbit": 62987,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 174750,
+"rate_kbit": 61184,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 175099,
+"rate_kbit": 39967,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 175596,
+"rate_kbit": 26328,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 175891,
+"rate_kbit": 34181,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 176383,
+"rate_kbit": 38026,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 176724,
+"rate_kbit": 53390,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 177213,
+"rate_kbit": 32880,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 177468,
+"rate_kbit": 27647,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 177930,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 178364,
+"rate_kbit": 20000,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 178843,
+"rate_kbit": 27661,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 179067,
+"rate_kbit": 26189,
+"delay_ms": 10,
+"loss": "0.5%"
+},
+{
+"t_ms": 179549,
+"rate_kbit": 20710,
+"delay_ms": 10,
+"loss": "0.5%"
+}
+],
+"mean_rate_kbit": 79304,
+"min_rate_kbit": 20000,
+"max_rate_kbit": 150000
+}

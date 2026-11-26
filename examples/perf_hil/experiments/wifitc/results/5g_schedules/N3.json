@@ -1,0 +1,189 @@
+{
+"name": "N3",
+"seed": 20261129,
+"duration_s": 180,
+"base": {
+"limit_pkts": 500,
+"delay_ms": 10,
+"loss": "0.1%"
+},
+"steps": [
+{
+"t_ms": 0,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "0.1%"
+},
+{
+"t_ms": 10117,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "100%"
+},
+{
+"t_ms": 10200,
+"rate_kbit": 100000,
+"delay_ms": 15,
+"loss": "0.1%"
+},
+{
+"t_ms": 24475,
+"rate_kbit": 100000,
+"delay_ms": 15,
+"loss": "100%"
+},
+{
+"t_ms": 24527,
+"rate_kbit": 100000,
+"delay_ms": 19,
+"loss": "0.1%"
+},
+{
+"t_ms": 38123,
+"rate_kbit": 100000,
+"delay_ms": 19,
+"loss": "100%"
+},
+{
+"t_ms": 38214,
+"rate_kbit": 100000,
+"delay_ms": 16,
+"loss": "0.1%"
+},
+{
+"t_ms": 51342,
+"rate_kbit": 100000,
+"delay_ms": 16,
+"loss": "100%"
+},
+{
+"t_ms": 51395,
+"rate_kbit": 100000,
+"delay_ms": 14,
+"loss": "0.1%"
+},
+{
+"t_ms": 61660,
+"rate_kbit": 100000,
+"delay_ms": 14,
+"loss": "100%"
+},
+{
+"t_ms": 61728,
+"rate_kbit": 100000,
+"delay_ms": 12,
+"loss": "0.1%"
+},
+{
+"t_ms": 75657,
+"rate_kbit": 100000,
+"delay_ms": 12,
+"loss": "100%"
+},
+{
+"t_ms": 75739,
+"rate_kbit": 100000,
+"delay_ms": 23,
+"loss": "0.1%"
+},
+{
+"t_ms": 88810,
+"rate_kbit": 100000,
+"delay_ms": 23,
+"loss": "100%"
+},
+{
+"t_ms": 88890,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "0.1%"
+},
+{
+"t_ms": 103532,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "100%"
+},
+{
+"t_ms": 103612,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "0.1%"
+},
+{
+"t_ms": 114801,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "100%"
+},
+{
+"t_ms": 114886,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "0.1%"
+},
+{
+"t_ms": 125000,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "100%"
+},
+{
+"t_ms": 125071,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "0.1%"
+},
+{
+"t_ms": 139769,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "100%"
+},
+{
+"t_ms": 139851,
+"rate_kbit": 100000,
+"delay_ms": 19,
+"loss": "0.1%"
+},
+{
+"t_ms": 152699,
+"rate_kbit": 100000,
+"delay_ms": 19,
+"loss": "100%"
+},
+{
+"t_ms": 152779,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "0.1%"
+},
+{
+"t_ms": 166444,
+"rate_kbit": 100000,
+"delay_ms": 11,
+"loss": "100%"
+},
+{
+"t_ms": 166517,
+"rate_kbit": 100000,
+"delay_ms": 23,
+"loss": "0.1%"
+},
+{
+"t_ms": 177618,
+"rate_kbit": 100000,
+"delay_ms": 23,
+"loss": "100%"
+},
+{
+"t_ms": 177697,
+"rate_kbit": 100000,
+"delay_ms": 10,
+"loss": "0.1%"
+}
+],
+"mean_rate_kbit": 100000,
+"min_rate_kbit": 100000,
+"max_rate_kbit": 100000
+}

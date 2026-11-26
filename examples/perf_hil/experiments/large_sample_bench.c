@@ -932,7 +932,8 @@ int main(int argc, char** argv) {
                                                     // second; unset: the profile's (off)
         if (pace != NULL && pace[0] != 0) {
             init.net.links[0].pacing_rate = strtoull(pace, NULL, 10);
-            init.net.links[0].link_rate = PACED_LINK_RATE_BPS;
+            const char* declared = getenv("TT_LINK_RATE_BPS"); // the link_rate this run declares; default 54 Mbit/s (a fixed rate above it needs this)
+            init.net.links[0].link_rate = (declared != NULL && declared[0] != 0) ? strtoull(declared, NULL, 10) : PACED_LINK_RATE_BPS;
         }
         const char* burst =
             getenv("TT_PACING_BURST"); // tt_LinkOptions.pacing_burst, bytes on the wire; unset: the default

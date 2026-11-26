@@ -31,6 +31,12 @@ profile_netem() { # PROFILE -> NETEM
     S1) NETEM="limit 40 delay 5ms rate 4mbit loss 1%" ;;
     S2) NETEM="limit 40 delay 20ms rate 4mbit loss gemodel 2% 25% 70% 0.1%" ;;
     C1) NETEM="limit 100 delay 5ms rate 30mbit" ;;
+    N1) NETEM="limit 500 delay 10ms rate 60mbit loss 0.5%" ;;   # synthetic 5G-like patterns (wtc_schedules5g.py): the first step's state; the player changes it
+    N2) NETEM="limit 500 delay 8ms rate 200mbit loss 0.1%" ;;
+    N3) NETEM="limit 500 delay 10ms rate 100mbit loss 0.1%" ;;
+    N4) NETEM="limit 200 delay 15ms rate 25mbit loss gemodel 1% 15% 60% 0.5%" ;;
+    F100) NETEM="limit 500 delay 8ms rate 100mbit" ;;           # calibration of the rig's headroom
+    F200) NETEM="limit 500 delay 8ms rate 200mbit" ;;
     *) echo "unknown profile $1"; return 1 ;;
     esac
 }
