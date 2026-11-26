@@ -1,0 +1,202 @@
+--- a/tickle/pacing_adaptive.h
++++ b/tickle/pacing_adaptive.h
+@@ -123,6 +123,10 @@
+     bool max; // max filter (empty = 0), else min filter (empty = UINT64_MAX)
+ };
+ 
++#ifdef EXP_A
++extern uint64_t g_oracle_bps;
++extern int g_oracle_noise_pct;
++#endif
+ enum ap_state { AP_START, AP_CRUISE, AP_ANCHOR }; // ANCHOR: the user's prior is believed (95 % of it, no search)
+ enum ap_phase { AP_PH_CRUISE, AP_PH_PROBE, AP_PH_DRAIN };
+ 
+@@ -146,6 +150,14 @@
+     uint64_t round_first_send_ns; // when the round's first data unit left (0: none yet)
+     uint64_t last_probe_ns;       // when a probe last began
+     uint64_t round_end_ns;        // the end of the round being scored
++    uint64_t round_backlog;     // EXP: bytes in flight (sent, not yet held) when the round began
++    uint64_t last_full_bps;     // EXP: the delivery rate of the last full round
++    uint64_t last_full_rate_bps; // EXP: the rate it was sent at
++    uint64_t lk_carry;          // EXP: delivery credit above the cap, carried to the next rounds
++    uint64_t rc_ns;             // EXP: end of the previous round
++    uint32_t xs_n;              // EXP: qualifying rounds in this stretch
++    uint64_t xs_max;            // EXP: their best delivery rate
++    bool xa_armed;              // EXP: the next round starts a stretch (a train)
+     uint32_t probe_carried;       // quiet rounds the running probe has been carried over
+     uint64_t last_cruise_bps;     // BtlBw at the last CRUISE round: what a stall restart resumes from
+     uint32_t damp_probe_rounds;
+@@ -387,6 +399,7 @@
+ 
+ // A new round starts at `now`.
+ static inline void ap_round_begin(struct ap_pacer* ctl, uint64_t now) {
++    ctl->round_backlog = ctl->units_sent > ctl->held_units ? (ctl->units_sent - ctl->held_units) * ctl->unit_bytes : 0U;
+     ctl->round_first_send_ns = 0;
+     ctl->prev_repair_bytes = ctl->round_repair;
+     ctl->prev_sent_bytes = ctl->round_sent;
+@@ -665,6 +678,11 @@
+         if (round->sample_bps * AP_PERCENT >= ctl->probe_base_bps * AP_PROBE_RISE_PCT) {
+             ctl->probe_base_bps = bandwidth;
+             ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_PROBE_GAIN_PCT : AP_PROBE_RUN_GAIN_PCT;
++#ifdef EXP_D
++            if (ctl->queue_over != 0U) {
++                ctl->probe_gain_pct = AP_PROBE_GAIN_PCT;
++            }
++#endif
+             ctl->probe_carried = 0;
+         } else if (round->app_limited && round->quiet && ctl->probe_carried < AP_PROBE_CARRY_ROUNDS) {
+             ctl->probe_carried++; // carried over: the next full round judges it
+@@ -680,9 +698,18 @@
+         // A probe is due every AP_PROBE_EVERY_ROUNDS rounds, and - when a round delivers a whole sample at once, so
+         // that eight rounds are eight samples - after AP_PROBE_EVERY_NS (1 MiB at 4.3 Mbit/s: one round a sample, 32 s
+         // between probes, and none at all while every round counted as application-limited).
++#ifdef EXP_F
++        bool due = ctl->rounds_since_probe >= EXP_F ||
++#else
+         bool due = ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS ||
++#endif
+                    (round->big && ctl->rounds_since_probe >= 2U &&
+                     ctl->round_end_ns - ctl->last_probe_ns >= AP_PROBE_EVERY_NS);
++#ifdef EXP_D
++        if (due && (ctl->queue_over != 0U || round->sample_bps * AP_PERCENT < ctl->rate_bps * 90U)) {
++            due = false; // up only when the queue is empty and the delivery equals the rate
++        }
++#endif
+         if (due && !ctl->draining && !round->app_limited) {
+             ctl->phase = AP_PH_PROBE;
+             ctl->probe_base_bps = bandwidth;
+@@ -736,7 +763,20 @@
+         return;
+     }
+     ctl->queue_over++;
++#ifdef EXP_CC
++    {
++        bool strong = queue_ns >= 3U * target_ns && ctl->last_full_rate_bps != 0 &&
++                      ctl->last_full_bps * AP_PERCENT < ctl->last_full_rate_bps * 90U;
++        if (ctl->queue_over < (strong ? 1U : AP_QUEUE_TRIPS)) {
++            return;
++        }
++    }
++    if (false) {
++#elif defined(EXP_C)
++    if (ctl->queue_over < (queue_ns >= 3U * target_ns ? 1U : AP_QUEUE_TRIPS)) {
++#else
+     if (ctl->queue_over < AP_QUEUE_TRIPS) {
++#endif
+         return;
+     }
+     ctl->queue_trips++;
+@@ -833,11 +873,59 @@
+     ctl->round_end_ns = now;
+     uint64_t allowance = (ctl->rate_bps / AP_BITS_PER_BYTE) * span / AP_NS_PER_SECOND;
+     uint64_t round_bps = ap_delivery_rate_bps(ctl, span);
++#ifdef EXP_LK
++    if (ctl->state == AP_CRUISE && span != 0 && ap_btlbw_bps(ctl) != 0) {
++        // delivery credit is spread: no more than EXP_LK % of the larger of the rate and BtlBw can be credited to a round, the rest is carried
++        uint64_t cap_bps = ap_max_u64(ctl->rate_bps, ap_btlbw_bps(ctl)) * EXP_LK / AP_PERCENT;
++        uint64_t avail = ctl->delivered - ctl->round_delivered + ctl->lk_carry;
++        uint64_t max_bytes = cap_bps / AP_BITS_PER_BYTE * span / AP_NS_PER_SECOND;
++        if (max_bytes != 0 && avail > max_bytes) {
++            ctl->lk_carry = avail - max_bytes;
++            round_bps = max_bytes * AP_BITS_PER_BYTE * AP_NS_PER_SECOND / span;
++        } else {
++            ctl->lk_carry = 0;
++            round_bps = avail * AP_BITS_PER_BYTE * AP_NS_PER_SECOND / span;
++        }
++    } else {
++        ctl->lk_carry = 0;
++    }
++#endif
+     struct ap_round round = {.sample_bps = ap_min_u64(round_bps, ctl->rate_bps * AP_SAMPLE_CAP_PCT / AP_PERCENT),
+                              .app_limited = ctl->round_sent * AP_PERCENT < allowance * AP_APP_LIMITED_PCT,
+                              .idle = ctl->round_sent == 0,
+                              .big = ctl->delivered - ctl->round_delivered >= AP_BIG_ROUND_BYTES,
+                              .quiet = elapsed > AP_MAX_ROUND_RTTS * ap_max_u64(ap_rtprop_ns(ctl), AP_MIN_ROUND_NS)};
++#ifdef EXP_ES
++    if (round.app_limited && !round.idle && ctl->round_backlog >= ctl->delivered - ctl->round_delivered &&
++        ctl->delivered - ctl->round_delivered >= AP_MIN_SAMPLE_BYTES && round.sample_bps <= ap_btlbw_bps(ctl)) {
++        round.app_limited = false; // a low reading from a pipe that was full: it counts, and ages BtlBw; it cannot raise it
++    }
++#endif
++#if defined(EXP_CC) || defined(EXP_CCX)
++    if (!round.idle && !round.quiet && ctl->delivered - ctl->round_delivered >= AP_MIN_SAMPLE_BYTES) {
++        ctl->last_full_bps = round_bps;
++        ctl->last_full_rate_bps = ctl->rate_bps;
++    }
++#endif
++#ifdef EXP_E
++    if (round.app_limited && !round.idle && ctl->round_backlog >= ctl->delivered - ctl->round_delivered && ctl->delivered - ctl->round_delivered >= AP_MIN_SAMPLE_BYTES) {
++        round.app_limited = false;
++    }
++#endif
++#ifdef EXP_RC
++    if (ctl->state == AP_CRUISE && ap_btlbw_bps(ctl) != 0 && ctl->rc_ns != 0 && now > ctl->rc_ns) {
++        // BtlBw rises by at most EXP_RC % per 100 ms of wall time (not per round): a burst of credit - the watermark
++        // passing what a repair filled - is not a faster link; an idle gap gives the estimate all the room it needs
++        uint64_t dt = now - ctl->rc_ns;
++        if (dt < 1000000000ULL) {
++            uint64_t base = ap_btlbw_bps(ctl);
++            uint64_t allowed = base + base * EXP_RC / AP_PERCENT * dt / 100000000ULL;
++            allowed = ap_max_u64(allowed, ctl->rate_bps);
++            round.sample_bps = ap_min_u64(round.sample_bps, allowed);
++        }
++    }
++    ctl->rc_ns = now;
++#endif
+     uint64_t bandwidth = ap_btlbw_bps(ctl);
+     ctl->samples++;
+     bool quiet = round.quiet; // a gap between samples
+@@ -848,6 +936,38 @@
+         ap_filter_put(&ctl->bw, round.sample_bps, ctl->rounds);
+         bandwidth = ap_btlbw_bps(ctl);
+     }
++#ifdef EXP_B
++    if (round.quiet) {
++        ctl->xs_n = 0;
++        ctl->xs_max = 0;
++    } else if (!round.idle || ctl->round_backlog != 0U) {
++        uint64_t got_bytes = ctl->delivered - ctl->round_delivered;
++        // a round whose pipe held at least what it delivered was not application-limited, whatever it sent itself
++        if (got_bytes >= AP_MIN_SAMPLE_BYTES && ctl->round_backlog >= got_bytes && ctl->state == AP_CRUISE) {
++            ctl->xs_n++;
++            ctl->xs_max = ap_max_u64(ctl->xs_max, round_bps);
++        }
++        if (ctl->xs_n >= 2U && ctl->xs_max * AP_PERCENT < bandwidth * 70U) {
++            ap_filter_reset(&ctl->bw, ctl->xs_max, ctl->rounds);
++            bandwidth = ap_btlbw_bps(ctl);
++            ctl->xs_n = 0;
++            ctl->xs_max = 0;
++        }
++    }
++#endif
++#ifdef EXP_A
++    if (round.quiet) {
++        ctl->xa_armed = true;
++    } else if (!round.idle && ctl->xa_armed && ctl->state == AP_CRUISE) {
++        static uint32_t lcg_a = 7;
++        lcg_a = lcg_a * 1103515245U + 12345U;
++        int noise = g_oracle_noise_pct == 0 ? 0 : (int)((lcg_a >> 8) % (uint32_t)(2 * g_oracle_noise_pct + 1)) - g_oracle_noise_pct;
++        uint64_t est = g_oracle_bps * (uint64_t)(100 + noise) / 100U;
++        ap_filter_reset(&ctl->bw, est, ctl->rounds);
++        bandwidth = ap_btlbw_bps(ctl);
++        ctl->xa_armed = false;
++    }
++#endif
+ #ifdef tt_RATE_TRACE
+     // One line a round, for a run that has to be read afterwards (the bench build for the Pis sets tt_RATE_TRACE): what
+     // the round delivered and sent, the estimates it ended with, and the counts the round trip and the guards stand on.
+@@ -908,6 +1028,14 @@
+     if (now <= sent_ns) {
+         return;
+     }
++#ifdef EXP_SPARSE
++    {
++        static uint32_t sparse_n = 0;
++        if ((sparse_n++ % EXP_SPARSE) != 0U) {
++            return; // the Pi accepts a round trip sample in 13-25 % of its rounds, the model in 76-85 %
++        }
++    }
++#endif
+     uint64_t rtt_ns = now - sent_ns;
+     if (rtt_ns > AP_RTT_MAX_NS || (ctl->rtt_samples >= 3U && rtt_ns > AP_RTT_OUTLIER_X * ap_rtprop_ns(ctl))) {
+         return; // a unit repaired or held in a queue: Pi quick test 4 took a 2.1 s sample and moved rtprop from 42 to
