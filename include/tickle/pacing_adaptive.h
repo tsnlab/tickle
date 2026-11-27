@@ -898,14 +898,56 @@ static inline void ap_train_apply(struct ap_pacer* ctl, uint64_t now, uint64_t e
     ap_round_begin(ctl, now);
 }
 
+// Whether a sample is a measurement at all.
+static inline bool ap_train_plausible(const struct ap_pacer* ctl, uint64_t sample_bps, uint64_t span_ns) {
+    uint64_t line = ctl->cap_bps != 0 && ctl->cap_bps < AP_CAP_UNSET_BPS ? ctl->cap_bps : AP_PRIOR_MAX_BPS;
+    if (span_ns < AP_TRAIN_MIN_SPAN_NS || span_ns > AP_TRAIN_MAX_SPAN_NS || sample_bps == 0) {
+        return false;
+    }
+    return sample_bps <= line * AP_TRAIN_LINE_PCT / AP_PERCENT &&
+           (ctl->train_est_bps == 0 || sample_bps <= ctl->train_est_bps * AP_TRAIN_MAX_JUMP_X);
+}
+
+// A new round (the first reader's train of a large sample): did the rate the last train gave hold - guards that tripped
+// since say it did not - and the sample joins the three kept.
+static inline void ap_train_new_round(struct ap_pacer* ctl, uint32_t round, uint64_t sample_bps) {
+    if (ctl->train_est_bps != 0) {
+        uint64_t trips = ctl->queue_trips + ctl->drop_trips;
+        if (ctl->train_block != 0) {
+            ctl->train_block--;
+        } else {
+            ctl->train_bad = trips - ctl->train_trips0 >= AP_TRAIN_BAD_TRIPS ? ctl->train_bad + 1U : 0U;
+            if (ctl->train_bad >= AP_TRAIN_BAD_SAMPLES) {
+                ctl->train_block = AP_TRAIN_BLOCK_SAMPLES;
+                ctl->train_bad = 0;
+            }
+        }
+    }
+    if (ctl->train_hist_n == AP_TRAIN_HIST) {
+        for (uint32_t i = 1; i < AP_TRAIN_HIST; i++) {
+            ctl->train_hist[i - 1U] = ctl->train_hist[i];
+        }
+        ctl->train_hist_n--;
+    }
+    ctl->train_hist[ctl->train_hist_n++] = sample_bps;
+    ctl->train_round = round;
+}
+
+// The estimate to take from this round's value: lower at once, higher by at most 1.5 x or as far as the median of three
+// agrees.
+static inline uint64_t ap_train_choose(const struct ap_pacer* ctl, uint64_t candidate) {
+    uint64_t prev = ctl->train_est_bps;
+    if (prev == 0 || candidate <= prev) {
+        return candidate;
+    }
+    return ap_min_u64(candidate, ap_max_u64(prev * AP_TRAIN_RISE_PCT / AP_PERCENT, ap_train_median(ctl)));
+}
+
 // One reader's train of `round`: `sample_bps` on the wire over a span of `span_ns`. True when it was read.
 static inline bool ap_train_sample(struct ap_pacer* ctl, uint64_t now, uint32_t round, uint64_t sample_bps,
                                    uint64_t span_ns) {
     ctl->train_samples++;
-    uint64_t line = ctl->cap_bps != 0 && ctl->cap_bps < AP_CAP_UNSET_BPS ? ctl->cap_bps : AP_PRIOR_MAX_BPS;
-    uint64_t prev = ctl->train_est_bps;
-    if (span_ns < AP_TRAIN_MIN_SPAN_NS || span_ns > AP_TRAIN_MAX_SPAN_NS || sample_bps == 0 ||
-        sample_bps > line * AP_TRAIN_LINE_PCT / AP_PERCENT || (prev != 0 && sample_bps > prev * AP_TRAIN_MAX_JUMP_X)) {
+    if (!ap_train_plausible(ctl, sample_bps, span_ns)) {
         ctl->train_rejected++;
         return false;
     }
@@ -917,29 +959,8 @@ static inline bool ap_train_sample(struct ap_pacer* ctl, uint64_t now, uint32_t 
         }
         return true;
     }
-    bool first_of_round = ctl->train_hist_n == 0 || round != ctl->train_round;
-    if (first_of_round) {
-        if (prev != 0) {
-            // Did the rate the last train gave hold? Guards that tripped since say it did not.
-            uint64_t trips = ctl->queue_trips + ctl->drop_trips;
-            if (ctl->train_block != 0) {
-                ctl->train_block--;
-            } else {
-                ctl->train_bad = trips - ctl->train_trips0 >= AP_TRAIN_BAD_TRIPS ? ctl->train_bad + 1U : 0U;
-                if (ctl->train_bad >= AP_TRAIN_BAD_SAMPLES) {
-                    ctl->train_block = AP_TRAIN_BLOCK_SAMPLES;
-                    ctl->train_bad = 0;
-                }
-            }
-        }
-        if (ctl->train_hist_n == AP_TRAIN_HIST) {
-            for (uint32_t i = 1; i < AP_TRAIN_HIST; i++) {
-                ctl->train_hist[i - 1U] = ctl->train_hist[i];
-            }
-            ctl->train_hist_n--;
-        }
-        ctl->train_hist[ctl->train_hist_n++] = sample_bps;
-        ctl->train_round = round;
+    if (ctl->train_hist_n == 0 || round != ctl->train_round) {
+        ap_train_new_round(ctl, round, sample_bps);
     } else {
         uint64_t* newest = &ctl->train_hist[ctl->train_hist_n - 1U];
         *newest = ap_min_u64(*newest, sample_bps); // the least over the round's readers
@@ -956,12 +977,7 @@ static inline bool ap_train_sample(struct ap_pacer* ctl, uint64_t now, uint32_t 
         }
         return true;
     }
-    uint64_t estimate = candidate;
-    if (prev != 0 && candidate > prev) {
-        uint64_t limit = ap_max_u64(prev * AP_TRAIN_RISE_PCT / AP_PERCENT, ap_train_median(ctl));
-        estimate = ap_min_u64(candidate, limit);
-    }
-    ap_train_apply(ctl, now, estimate);
+    ap_train_apply(ctl, now, ap_train_choose(ctl, candidate));
     return true;
 }
 

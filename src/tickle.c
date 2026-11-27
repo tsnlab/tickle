@@ -3914,7 +3914,7 @@ static uint8_t pace_link(struct tt_Context* node, uint32_t ip) {
     return link_count(node) <= 1 ? 0U : link_of_ip(node, ip);
 }
 
-#define TRAIN_RATE_UNIT_NS 8000ULL // tt_AckNackHeader.reserved's unit, as a reader counts it (TRAIN_UNIT_NS)
+#define TRAIN_UNIT_US 8U // tt_AckNackHeader.reserved's unit, in microseconds
 
 // ---- Adaptive rate control (tt_LinkOptions.rate_control = tt_RATE_CONTROL_ADAPTIVE; the estimator is
 // tickle/pacing_adaptive.h, the design examples/perf_hil/experiments/adaptive_pacing/DESIGN.md). One estimator per
@@ -4031,7 +4031,7 @@ static void rate_train_answer(struct tt_Context* node, struct tt_RateControl* ra
     UNUSED(node);
     ack->train_open = false;
     ack->train_misses = 0;
-    uint64_t span_ns = (uint64_t)span_units * TRAIN_RATE_UNIT_NS;
+    uint64_t span_ns = (uint64_t)span_units * TRAIN_UNIT_US * tt_MICROSECOND;
     uint64_t bytes = (uint64_t)(ack->train_k - 1U) * ack->train_wire;
     uint64_t bps = (bytes * LINK_BITS_PER_BYTE * tt_SECOND) / span_ns;
     (void)ap_train_sample(&rate->ap, now, ack->train_round, bps, span_ns);
@@ -8680,6 +8680,8 @@ static void reset_node_state(struct tt_Context* node) {
     memset(node->announce_rtt_ns, 0, sizeof(node->announce_rtt_ns));
 #if tt_LARGE_SAMPLES
     memset(node->peer_large_ns, 0, sizeof(node->peer_large_ns));
+    memset(node->train_rx, 0, sizeof(node->train_rx)); // no packet train stamped yet
+    node->train_rx_next = 0;
 #endif
     node->announce_tag = 0;
     node->announce_tag_out = 0;
@@ -13334,7 +13336,6 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
 }
 #endif
 
-#if tt_LARGE_SAMPLES
 // ---- The packet train, sending side (adaptive_pacing/DESIGN.md 28). On an ADAPTIVE link (tt_RATE_CONTROL_ADAPTIVE)
 // the first K datagrams of a large sample go out back to back - past the link's bucket, which they are charged to, so
 // the rest of the sample waits for them at the pacing rate and the average rate stands - and a HEARTBEAT with
@@ -13363,9 +13364,23 @@ static uint32_t train_length(const struct tt_RateControl* rate) {
     if (rate->ap.train_est_bps != 0) {
         uint64_t bytes = rate->ap.train_est_bps * TRAIN_TARGET_NS / (LINK_BITS_PER_BYTE * tt_SECOND);
         uint64_t fit = bytes / rate->unit_wire;
-        datagrams = fit < TRAIN_MIN_K ? TRAIN_MIN_K : (fit > tt_TRAIN_MAX_K ? tt_TRAIN_MAX_K : (uint32_t)fit);
+        datagrams = fit > tt_TRAIN_MAX_K ? tt_TRAIN_MAX_K : (uint32_t)fit;
+        datagrams = datagrams < TRAIN_MIN_K ? TRAIN_MIN_K : datagrams;
     }
     return datagrams;
+}
+
+// The size of a continuation datagram of the train, noted from the batch it is in (the wire size of one follows from
+// it).
+static void train_note_len(struct tt_LargeCursor* cursor, uint32_t index, const struct tt_OutDatagram* datagram) {
+    if (cursor->train_left != 0 && index == 1U) {
+        cursor->train_len = (uint16_t)(datagram->head_len + datagram->body_len);
+    }
+}
+
+// A batch of the head is cut at the train's end (the datagram after it is the first to be paced).
+static uint32_t train_cut(const struct tt_LargeCursor* cursor, uint32_t batch_count) {
+    return cursor->train_left != 0 && batch_count > cursor->train_left ? cursor->train_left : batch_count;
 }
 
 // Decides whether the sample's send to the current destination begins with a train, and sets the cursor.
@@ -13427,6 +13442,9 @@ static void train_begin(struct tt_Context* node, struct tt_Publisher* pub, const
 static void train_sent(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_LargeRecord* record,
                        const struct tt_Peer* dest, uint32_t sent) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (cursor->train_left == 0 || sent == 0) {
+        return; // no train, or nothing of it went
+    }
     cursor->train_left = (uint8_t)(cursor->train_left - (sent < cursor->train_left ? sent : cursor->train_left));
     uint32_t first = 0;
     if (cursor->train_left != 0 || cursor->train_len == 0 || !publisher_oldest_seq_no(pub, &first)) {
@@ -13447,7 +13465,6 @@ static void train_sent(struct tt_Context* node, struct tt_Publisher* pub, const 
     }
     encode_heartbeat_range(node, pub, first, last, true, dest, 1, tt_HEARTBEAT_FLAG_TRAIN);
 }
-#endif
 
 // large_send_some() for a destination this sample goes to in MTU units: true when all of it has gone to the cursor's
 // destination. A record its publish is still encoding is encoded through the last fragment a send call carries just
@@ -13467,9 +13484,7 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
     while (cursor->next_index < stop) {
         uint32_t batch_count = stop - cursor->next_index;
         batch_count = batch_count < batch_max ? batch_count : batch_max;
-        if (cursor->train_left != 0 && batch_count > cursor->train_left) {
-            batch_count = cursor->train_left; // the datagram after the train's last is the first to be paced
-        }
+        batch_count = train_cut(cursor, batch_count);
         batch_count = large_paced_count(node, pub, record,
                                         (uint32_t)LARGE_FRAMING_MAX + large_length(cursor->next_index, record->cdr_len),
                                         batch_count, failed);
@@ -13490,9 +13505,7 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
                 large_write_framing(node, framings[k], data, index, record->count, length, tt_SUBMESSAGE_ID_ALL, &skip);
             batch[k] = (struct tt_OutDatagram) {
                 framings[k] + skip, framing_length - skip, cdr + large_offset(index), length, dest->ip, dest->port};
-            if (cursor->train_left != 0 && index == 1U) {
-                cursor->train_len = (uint16_t)(batch[k].head_len + batch[k].body_len); // a continuation datagram's size
-            }
+            train_note_len(cursor, index, &batch[k]);
         }
         int32_t sent = large_send_batch(node, batch, batch_count, dest);
         if (sent < 0) {
@@ -13506,9 +13519,7 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
             *progress = true;
         }
         cursor->next_index = (uint16_t)(cursor->next_index + (uint32_t)sent);
-        if (cursor->train_left != 0 && sent > 0) {
-            train_sent(node, pub, record, dest, (uint32_t)sent);
-        }
+        train_sent(node, pub, record, dest, (uint32_t)sent > 0 ? (uint32_t)sent : 0U);
         if ((uint32_t)sent < batch_count) {
             // The send buffer is full, and holds more wire time than the rest of the sample takes to encode: the
             // rest is encoded now, while it drains, rather than a send call at a time with a retry after each.
@@ -13520,6 +13531,26 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
         }
     }
     return true;
+}
+
+// The packet train's head of the sample for the current destination, when it has one: decided once (train_begin()),
+// then sent as MTU units, back to back, whatever transport the rest of the sample takes. HEAD_WAIT: the send buffer
+// filled, the cursor stands in the head; HEAD_FAILED: the encode failed.
+enum { HEAD_GO_ON, HEAD_WAIT, HEAD_FAILED };
+static int large_send_head(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                           bool* progress, bool* failed) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (cursor->next_index == 0 && cursor->train_for != cursor->next_dest + 1U && __builtin_expect(node->pacing, 0)) {
+        cursor->train_for = (uint8_t)(cursor->next_dest + 1U);
+        train_begin(node, pub, record, &cursor->dests[cursor->next_dest]); // may set train_left
+    }
+    if (cursor->train_left == 0) {
+        return HEAD_GO_ON;
+    }
+    if (!large_send_mtu(node, pub, record, progress, failed, cursor->next_index + cursor->train_left)) {
+        return HEAD_WAIT;
+    }
+    return *failed ? HEAD_FAILED : HEAD_GO_ON;
 }
 
 // Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn - in runs to a
@@ -13549,19 +13580,9 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
             }
         }
 #endif
-        if (cursor->next_index == 0 && cursor->train_for != cursor->next_dest + 1U &&
-            __builtin_expect(node->pacing, 0)) {
-            cursor->train_for = (uint8_t)(cursor->next_dest + 1U);
-            train_begin(node, pub, record, &cursor->dests[cursor->next_dest]); // may set train_left
-        }
-        if (cursor->train_left != 0) {
-            // The head goes as MTU units, back to back, whatever transport the rest of the sample takes.
-            if (!large_send_mtu(node, pub, record, progress, failed, cursor->next_index + cursor->train_left)) {
-                return false;
-            }
-            if (*failed) {
-                return true;
-            }
+        int head = large_send_head(node, pub, record, progress, failed);
+        if (head != HEAD_GO_ON) {
+            return head == HEAD_FAILED;
         }
         bool done = false;
 #if tt_HYBRID_TRANSPORT
@@ -13585,10 +13606,6 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
     }
     return true;
 }
-
-static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
-                                   uint32_t last_seq_no, bool is_flush, const struct tt_Peer* peers, uint8_t peer_count,
-                                   uint8_t flags);
 
 // A RELIABLE large sample's last fragment has gone: a non-FINAL HEARTBEAT, so every reader answers with an ACKNACK at
 // once - one that names a lost tail, which nothing else would reveal until the next sample, and one that acknowledges
@@ -17115,7 +17132,6 @@ static uint64_t bitmap_range_in_word(int word, int low, int high) {
 // fragments as it is handled (one clock read each, per remote writer), and answers the HEARTBEAT's ACKNACK with the
 // span between the first and the last, in 8 us units, in tt_AckNackHeader.reserved: 0 unless every one of them arrived,
 // in order.
-#define TRAIN_UNIT_NS 8000U                         // the span's unit on the wire
 #define TRAIN_PENDING_NS (1000ULL * tt_MILLISECOND) // a span not sent by then is stale
 
 static struct tt_TrainRx* train_rx_find(struct tt_Context* node, uint8_t source, uint32_t entity_id, bool create) {
@@ -17160,8 +17176,8 @@ static void train_rx_note(struct tt_Context* node, uint8_t source, uint32_t enti
     if (slot->valid == 0 || seq_no != slot->base_seq + index || now < slot->t0_ns) {
         return; // fragment 0 of this sample has not been seen: nothing to measure from
     }
-    uint64_t us = (now - slot->t0_ns) / 1000U;
-    slot->us[index] = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+    uint64_t micros = (now - slot->t0_ns) / tt_MICROSECOND;
+    slot->us[index] = micros > UINT32_MAX ? UINT32_MAX : (uint32_t)micros;
     slot->valid |= 1ULL << index;
 }
 
@@ -17186,7 +17202,7 @@ static void train_rx_close(struct tt_Context* node, uint8_t source, uint32_t ent
             return; // out of order
         }
     }
-    uint32_t units = (slot->us[last] + (TRAIN_UNIT_NS / 2000U)) / (TRAIN_UNIT_NS / 1000U);
+    uint32_t units = (slot->us[last] + (TRAIN_UNIT_US / 2U)) / TRAIN_UNIT_US;
     slot->pending = units > UINT16_MAX ? (uint16_t)UINT16_MAX : (uint16_t)units;
     slot->pending_ns = tt_get_ns();
 }
