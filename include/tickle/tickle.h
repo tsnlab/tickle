@@ -1374,7 +1374,28 @@ struct tt_RateControl {
                           // unit counts as
     bool repair_next; // pace_repair_allowed() let a repair go and the seam has not yet counted it: it is not a new unit
     bool adaptive;
+    uint32_t train_round; // one per large sample sent with a train: the readers' trains of one sample share it
+    uint16_t train_skip;  // samples still to go without a train (the last ones went unanswered)
 };
+
+#if tt_LARGE_SAMPLES
+// The arrival times of the first fragments of the latest large sample of one remote writer, which a packet train
+// (tt_HEARTBEAT_FLAG_TRAIN) is measured from: fragment i of the sample whose fragment 0 has seq_no base_seq arrived
+// us[i] microseconds after fragment 0, when bit i of valid is set. pending is the span of the train its HEARTBEAT
+// closed, in 8 us units, for the next ACKNACK to that writer (0: none).
+#define tt_TRAIN_MAX_K 40U
+#define tt_TRAIN_RX_WRITERS 4U
+struct tt_TrainRx {
+    uint8_t source; // the writer's context id; tt_CONTEXT_ID_INVALID (0) = unused
+    uint16_t pending;
+    uint32_t entity_id;
+    uint32_t base_seq;
+    uint64_t t0_ns;
+    uint64_t valid;
+    uint64_t pending_ns;
+    uint32_t us[tt_TRAIN_MAX_K];
+};
+#endif
 
 struct tt_Context {
     uint8_t id;
@@ -2324,6 +2345,11 @@ struct tt_Context {
     // Each link's adaptive rate control (tt_LinkOptions.rate_control), set by link_profiles_apply(); all 0 - not
     // adaptive - on a hand-built context. After every other field, so none of them moves.
     struct tt_RateControl rate[tt_MAX_LINK_COUNT];
+#if tt_LARGE_SAMPLES
+    // The packet train's arrival times, per remote writer (tt_TrainRx); the next slot to take when all are in use.
+    struct tt_TrainRx train_rx[tt_TRAIN_RX_WRITERS];
+    uint8_t train_rx_next;
+#endif
 #ifdef tt_ESTIMATOR_TRACE
     // When this context last printed its ESTTRACE lines (estimator_trace(), tickle.c); 0: never. Only in a build with
     // -Dtt_ESTIMATOR_TRACE, after every other field, so the default build's layout is untouched.
@@ -3080,6 +3106,12 @@ struct tt_LargeCursor {
     bool on_writable;    // the wait is for the socket's room (tt_tx_await_writable()), the timer only its fallback
     bool active;         // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
     uint64_t pace_at_ns; // set when the send stopped for its link's pacing: when the bucket has room again; else 0
+    // The packet train of the current destination: datagrams of it still to send unpaced, its length, and the UDP
+    // payload of one continuation datagram (the wire size of one is that and the frames' headers).
+    uint16_t train_len;
+    uint8_t train_left;
+    uint8_t train_k;
+    uint8_t train_for; // the destination (index + 1) a train was decided for, in this sample: 0 = none yet
 #if tt_HYBRID_TRANSPORT
     uint8_t run_n[tt_LARGE_DESTINATIONS];      // units per datagram to each destination, fixed for the sample (1: MTU)
     uint16_t run_until[tt_LARGE_DESTINATIONS]; // units [0, run_until) go in runs; a re-probe sends only its first
@@ -3164,6 +3196,15 @@ struct tt_PeerAck {
     uint32_t rate_units;
     uint32_t rate_mark; // and its watermark
     bool rate_units_valid;
+    // The packet train sent to this reader and not yet answered (tt_HEARTBEAT_FLAG_TRAIN): train_open while one is; its
+    // last seq_no, length in datagrams, the wire bytes of one datagram, and the round (one per large sample, all its
+    // readers' trains) it belongs to. train_misses: trains in a row never answered with a span (an older reader).
+    uint32_t train_seq;
+    uint32_t train_round;
+    uint16_t train_wire;
+    uint8_t train_k;
+    uint8_t train_misses;
+    bool train_open;
 #endif
 };
 
@@ -5319,6 +5360,9 @@ struct tt_AckNackHeader {
     uint32_t sender_entity_id;
     uint32_t seq_no;       // cumulative ack: every seq_no below this was received
     uint16_t bitmap_words; // how many 64-bit words of bitmap[] follow - see below
+    // Written 0 by every build until the packet train (tt_HEARTBEAT_FLAG_TRAIN), and read by none: the arrival span, in
+    // 8 us units (saturating), of the train the writer's last TRAIN HEARTBEAT closed, in the one ACKNACK that answers
+    // it; 0 in every other ACKNACK. A writer reads it only while it has a train outstanding to this reader.
     uint16_t reserved;
     // bit j set: (seq_no + j) is still missing, please resend - same direction as RTPS's own
     // AckNack SequenceNumberSet. Word 0 holds bits 0-63, word 1 bits 64-127, and so on, each
@@ -5349,6 +5393,12 @@ struct tt_AckNackHeader {
 // carries nothing else - receivers refresh the lease of the MANUAL_BY_TOPIC Publisher it names and stop
 // there, whatever the seq_no fields say. RTPS's liveliness flag, the same role.
 #define tt_HEARTBEAT_FLAG_LIVELINESS (1U << 1)
+// The packet train (adaptive_pacing/DESIGN.md 27.6, 28): this HEARTBEAT follows the first K datagrams of a large
+// sample, sent back to back, K = last_seq_no - (the sample's first seq_no) + 1. FINAL is clear, so the reader answers;
+// its ACKNACK carries the arrival span of those K datagrams in 8 us units in tt_AckNackHeader.reserved (0 = no
+// measurement). A reader built before this reads only FINAL and LIVELINESS: it answers as it would any HEARTBEAT, with
+// 0 in that field.
+#define tt_HEARTBEAT_FLAG_TRAIN (1U << 2)
 
 // QoS roadmap #5 (RELIABILITY) follow-up - a RELIABLE Publisher's own periodic self-announce of
 // what it currently has retained, same role as RTPS's own HEARTBEAT submessage (firstSN/lastSN).

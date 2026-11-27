@@ -2,7 +2,8 @@
 # The packet-train wire design (examples/perf_hil/experiments/adaptive_pacing/DESIGN.md, 27.6) puts a new bit in
 # tt_HeartbeatHeader.flags and a value in tt_AckNackHeader.reserved, both of which every released build must ignore. This
 # builds tests/compat_train_driver.c against each of several trees (default: the v2.1.0 tag and this tree), runs it, and
-# checks per tree that
+# checks per tree (a build with the packet train answers a TRAIN HEARTBEAT with the span in reserved; a build without it,
+# and every build for any other HEARTBEAT, with 0) that
 #   R  a reader answers a HEARTBEAT with bit 2 (and with every unknown high bit) set exactly as without, with and without a
 #      gap, and that the control (FINAL set) differs - the driver can tell an answer from none;
 #   W  a writer treats an ACKNACK with reserved 0xBEEF / 0xFFFF exactly as with 0, and that a different bitmap differs.
@@ -28,6 +29,15 @@ digest_of() { # RUN-OUTPUT NAME -> the "ok=.. sends=.. bytes=.. digest=.." part 
     printf '%s\n' "$1" | awk -v n="$2" '$1 == n { $1 = ""; print }'
 }
 
+expect_reserved() { # what got expected
+    if [ "$2" = "$3" ]; then
+        echo "PASS  $tree: $1"
+    else
+        echo "FAIL  $tree: $1 (reserved=$2, expected $3)"
+        failed=1
+    fi
+}
+
 for tree in "${trees[@]}"; do
     dir="$TMP/$tree"
     mkdir -p "$dir"
@@ -41,7 +51,7 @@ for tree in "${trees[@]}"; do
         }
     fi
     if ! "$CC" -O0 -g -I"$dir/include" -I"$dir/src" -I"$dir/tests" -DTICKLE_C="\"$dir/src/tickle.c\"" \
-        -o "$dir/driver" "$ROOT/tests/compat_train_driver.c" "$dir/src/encoding.c" "$dir/src/log.c" -lm 2> "$dir/build.log"; then
+        -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o "$dir/driver" "$ROOT/tests/compat_train_driver.c" "$dir/src/encoding.c" "$dir/src/log.c" -lm 2> "$dir/build.log"; then
         cat "$dir/build.log" >&2
         echo "FAIL  $tree: build"
         failed=1
@@ -68,6 +78,23 @@ for tree in "${trees[@]}"; do
             failed=1
         fi
     }
+    # A reader's ACKNACK to an ordinary HEARTBEAT carries 0 in reserved in every build.
+    if printf '%s\n' "$out" | grep -Eq '^R-plain-res +reserved=0$'; then
+        echo "PASS  $tree: an ordinary HEARTBEAT is answered with reserved 0"
+    else
+        echo "FAIL  $tree: an ordinary HEARTBEAT is not answered with reserved 0"
+        failed=1
+    fi
+    if printf '%s\n' "$out" | grep -q '^R-train-span *n/a'; then
+        echo "PASS  $tree: no packet train in this build (the reader answers every HEARTBEAT as above)"
+    else
+        span=$(printf '%s\n' "$out" | sed -n 's/^R-train-span .*reserved=//p')
+        short=$(printf '%s\n' "$out" | sed -n 's/^R-train-short .*reserved=//p')
+        ordinary=$(printf '%s\n' "$out" | sed -n 's/^R-train-ordinary .*reserved=//p')
+        expect_reserved "a TRAIN HEARTBEAT is answered with the span (119 units of 8 us)" "$span" 119
+        expect_reserved "a train that did not arrive whole is answered with 0" "$short" 0
+        expect_reserved "an ordinary HEARTBEAT after a train is answered with 0" "$ordinary" 0
+    fi
     same "reader ignores HEARTBEAT bit 2" R-ctl R-bit2
     same "reader ignores every unknown HEARTBEAT flag bit" R-ctl R-bit2-hi
     same "reader ignores bit 2 with a gap open" R-gap-ctl R-gap-bit2

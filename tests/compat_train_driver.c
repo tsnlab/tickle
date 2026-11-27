@@ -189,6 +189,61 @@ static void scenario_r(const char* name, bool gap, uint8_t flags) {
            (unsigned long long)digest());
 }
 
+// The reserved field of the ACKNACK the last send held (offset: tt_Header 4 + submessage header 4 + endpoint_id,
+// entity_id, sender_entity_id and seq_no 16 + bitmap_words 2).
+static uint32_t captured_reserved(void) {
+    uint16_t value = 0;
+    if (captured_len < 28) {
+        return UINT32_MAX; // no ACKNACK went
+    }
+    memcpy(&value, captured + 26, sizeof(value));
+    return value;
+}
+
+#if defined(tt_HEARTBEAT_FLAG_TRAIN) && tt_LARGE_SAMPLES
+// R-train: a build with the packet train answers a TRAIN HEARTBEAT, after `stamped` fragments of its train arrived 50
+// us apart, with their span in the ACKNACK's reserved field (8 us units); 0 for a train that did not arrive whole.
+static void scenario_train(const char* name, uint32_t stamped, uint8_t flags) {
+    test_mock_reset();
+    test_mock_now = 100ULL * 1000000000ULL;
+    struct tt_Context node;
+    struct tt_TypeSupport topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = ENDPOINT_ID;
+    sub.node = &node;
+    sub.topic = &topic;
+    sub.callback = stub_callback;
+    sub.reliable = true;
+    sub.reorder_storage = reorder_storage;
+    sub.reorder_slots = TEST_REORDER_SLOTS;
+    sub.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    memset(reorder_storage, 0, sizeof(reorder_storage));
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&sub;
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 11);
+    (void)process_data(&node, &header, node.rx_buffer, 0, tail, SENDER_IP, SENDER_PORT);
+    uint64_t t0 = test_mock_now;
+    for (uint32_t i = 0; i < stamped; i++) {
+        test_mock_now = t0 + (i * 50000ULL);
+        train_rx_note(&node, REMOTE_NODE_ID, 0, 100U + i, i);
+    }
+    test_mock_send_hook = capture;
+    capture_reset();
+    tail = write_heartbeat(&node, 1, 119, flags);
+    (void)process_heartbeat(&node, &header, node.rx_buffer, 0, tail, SENDER_IP, SENDER_PORT);
+    test_mock_send_hook = NULL;
+    printf("%-14s sends=%d reserved=%u\n", name, captured_count, captured_reserved());
+}
+#endif
+
 // W: a reliable Publisher that has sent sequence numbers 1-3 to one matched peer is handed one ACKNACK.
 static void scenario_w(const char* name, uint32_t seq_no, uint64_t bitmap, uint16_t reserved) {
     test_mock_reset();
@@ -246,5 +301,18 @@ int main(void) {
     scenario_w("W-other", 2, 0x3, 0);
     scenario_w("W-ack-ctl", 4, 0x0, 0);
     scenario_w("W-ack-reserved", 4, 0x0, 0x1234);
+    // The reserved field of a reader's answers. A build without the packet train writes 0 in every ACKNACK; one with it
+    // writes the train's span in the answer to a TRAIN HEARTBEAT and 0 in the answer to any other.
+    scenario_r("R-plain", false, 0);
+    printf("%-14s reserved=%u\n", "R-plain-res", captured_reserved());
+#if defined(tt_HEARTBEAT_FLAG_TRAIN) && tt_LARGE_SAMPLES
+    scenario_train("R-train-span", 20, TRAIN_BIT);  // 19 x 50 us = 950 us = 119 units
+    scenario_train("R-train-short", 12, TRAIN_BIT); // the train did not arrive whole: no measurement
+    scenario_train("R-train-ordinary", 20, 0);      // the same stamps, an ordinary HEARTBEAT: the ACKNACK carries 0
+#else
+    printf("%-14s n/a\n", "R-train-span");
+    printf("%-14s n/a\n", "R-train-short");
+    printf("%-14s n/a\n", "R-train-ordinary");
+#endif
     return 0;
 }
