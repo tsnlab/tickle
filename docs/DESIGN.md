@@ -1312,6 +1312,8 @@ no real wireless hardware was used). Links: M1 30 Mbit/s, 5 ms each way, 1% loss
 - Its limits: it follows slow changes within +-30% of the capacity 72-77% of the time, a 20 s sawtooth 31-49%, and it is over the capacity 33-66% of the time in every pattern; the worst 1 MiB tails are 12-22 s; after a step down it
   needs 17 s to recover at 1 MiB (CycloneDDS 3 s), after a step up 24 s at 128 KiB (the DDS stacks 2 s, the fixed rate 4 s); the rate swings widely; one flow and one reader, one loss pattern, 3 to 12 runs per cell. **Faster
   tracking of bandwidth changes is deferred** (not in 2.2.0; the causes found in the traces and the candidate designs are in `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md`, section 26). An emulation; not Wi-Fi, not 5G.
+- **Synthetic 5G-like links N1-N4, 96 runs** (RESULTS section 5; 100-200 Mbit/s class, library `448b685f`, a `tc`/netem emulation, symmetric, one reader, 3 runs per cell, the fixed arm told the schedule mean, DDS profiles of the earlier stages with `maxMessageSize` 1472, N3 delay changes can reorder): ADAPTIVE without a prior against CycloneDDS 0 WIN / 4 TIE / 4 LOSE, against Fast DDS 3 / 1 / 4 (both together
+  3 / 5 / 8 of 16), against the fixed rate 0 / 1 / 7 of 8; worst tail N3 1 MiB, 1 of 45 undelivered, 18.7 s. **It is not competitive there**: at 128 KiB on N2 and N3 its rate sits at 16-19% of the capacity (cause inferred from the rate trace, not tested: the 8 Mbit/s start rate). Use fixed pacing at about 95% of the known bandwidth; ADAPTIVE is an opt-in experiment for Wi-Fi-class (about 30 Mbit/s) links, not for high-rate links.
 
 ## 15. Configuration reference
 

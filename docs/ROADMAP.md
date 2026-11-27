@@ -177,7 +177,7 @@ wireless").
 - **Adaptive repair-burst limiting, beyond the 2.2.0 experimental ADAPTIVE rate control** (the user, 2026-11-15). 2.2.0 ships ADAPTIVE as an
   opt-in experimental option (default OFF, no wire change; CHANGELOG, DESIGN "Wi-Fi tuning"). Open: **faster tracking of bandwidth changes** (over the capacity 33-66% of the time, 24 s to recover at 128 KiB
   after a step up, the 1 MiB over-cut after a step down; the traces' causes, the candidate designs and an offline model comparison are in `examples/perf_hil/experiments/adaptive_pacing/DESIGN.md` section 26), the rate swing,
-  several readers, and any real Wi-Fi or 5G link (none was ever available). Wi-Fi users set
+  several readers, **high-rate links** (on synthetic 100-200 Mbit/s 5G-like links ADAPTIVE without a prior is not competitive; its 8 Mbit/s start rate is the inferred cause, untested; RESULTS section 5), and any real Wi-Fi or 5G link (none was ever available). Wi-Fi users set
   `tt_LinkOptions.pacing_rate` to about 95% of the expected bandwidth (DESIGN "Wi-Fi tuning").
 - The time-varying stage moved to Now on 2026-11-08 and is closed for 2.2.0.
 

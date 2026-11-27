@@ -671,6 +671,39 @@ sample to probe. **Faster tracking is deferred** (candidates and an offline mode
 Limits, stated plainly: a `tc`/netem emulation on two Raspberry Pi 5, **not Wi-Fi and not 5G**; one flow and one reader; one link and loss pattern (1% independent); 3 runs per cell (verdicts over 3 against 3 runs;
 the 1 MiB differences of 5-10% are not always outside the run-to-run spread); a sample's latency includes the sample in flight at each change.
 
+#### ADAPTIVE on synthetic 5G-like links (N1-N4, 96 runs): **not competitive without a prior**
+
+Library `448b685f`, report `WIFI_ADAPTIVE_5G_2026-11-27.md`, data `~/rig_results_safe/wtc_5g_20261126`; tables, schedules and seeds are in the repository copy on branch `ab/wifi-adaptive-s1`, `examples/perf_hil/experiments/wifitc/results/five_g_tables.txt` and `5g_schedules/N1-N4.json`.
+**Synthetic schedules on an emulated link (`tc netem` in netns on two Raspberry Pi 5), not real 5G and not Wi-Fi**; the parameters follow typical literature figures and were not measured. 4 patterns x 4 arms x 2 sizes x 3 runs, 180 s, 0.25 Hz, one publisher and one subscriber, 0 runs lost.
+N1 mid-band random walk 20-150 Mbit/s, 10 ms, 0.5% loss; N2 mmWave 200 Mbit/s with blockages of 0.2-2 s at 5-10 Mbit/s and outages of 50-100 ms; N3 handover, 100 Mbit/s, an outage of 50-100 ms every 10-15 s after which the delay becomes a new value of 10-25 ms; N4 cell edge, 10-40 Mbit/s drift (mean 17), bursty loss (about 4%), queue 200. The fixed arm is 95% of the schedule's time-weighted mean (N1 75.3, N2 156.7, N3 95.0, N4 16.3 Mbit/s): **an advantage no real user has**. ADAPTIVE had no prior (starts at 8 Mbit/s).
+
+p50 latency (ms), 3 runs pooled; delivered 135 of 135 in every cell except ADAPTIVE N3 1 MiB (134 of 135):
+
+| pattern | ADAPTIVE 1 MiB | fixed 95% | CycloneDDS | Fast DDS | ADAPTIVE 128 KiB | fixed 95% | CycloneDDS | Fast DDS |
+|---|---|---|---|---|---|---|---|---|
+| N1 mid-band | 243 | 149 | 232 | 391 | 37 | 35 | 38 | 42 |
+| N2 mmWave | 221 | 67 | 160 | 146 | 55 | 15 | 14 | 14 |
+| N3 handover | 193 | 114 | 214 | 341 | 73 | 24 | 27 | 27 |
+| N4 cell edge | 891 | 656 | 848 | 3,731 | 147 | 109 | 123 | 116 |
+
+Verdicts (strict rule on per-run p50, 8 cells per rival):
+
+| ADAPTIVE against | WIN | TIE | LOSE |
+|---|---|---|---|
+| CycloneDDS | 0 | 4 | 4 |
+| Fast DDS | 3 | 1 | 4 |
+| both DDS stacks together | **3** | **5** | **8** (of 16) |
+| fixed 95% of the mean | 0 | 1 | **7** (of 8) |
+
+The three WINs are all against Fast DDS at 1 MiB (N1, N3, N4). ADAPTIVE loses to every rival on every 128 KiB cell of N2-N4 and on 1 MiB N2.
+**ADAPTIVE without a prior is not competitive on 100-200 Mbit/s 5G-like links.** At 128 KiB on N2 and N3 its pacing rate sits at 16-19% of the capacity (84-100% of the time under 0.7x; median rate / capacity 0.16 and 0.19), against 0.43-0.74 on the other cells.
+The cause, **inferred from the rate trace and not tested**: it starts at 8 Mbit/s, a 128 KiB sample is about 1 Mbit, and the sample is gone before the estimate climbs. Whether a prior or a higher start rate would change this was not run.
+Worst tail: N3 1 MiB run 1, 1 of 45 samples undelivered and a maximum of **18.7 s** (the only ADAPTIVE run with undelivered samples); otherwise ADAPTIVE's maximum is 1.0-3.0 s at 1 MiB and 0.1-0.6 s at 128 KiB.
+Unlike the Wi-Fi-like patterns there is no repair-traffic advantage: retransmissions per 1 MiB run, ADAPTIVE against fixed, N1 433 / 453, N2 1,773 / 2,033, N3 357 / 138, N4 2,578 / 2,783.
+**Guidance: fixed pacing at about 95% of the known bandwidth is the recommendation. ADAPTIVE is an opt-in experiment for Wi-Fi-class links (about 30 Mbit/s), not for high-rate links.** ADAPTIVE does not win in all cases against the DDS stacks, and that is not claimed.
+Limits: synthetic schedules, not real 5G; the same rate, delay and loss in both directions (a real link is asymmetric); one publisher and one reader; 3 runs per cell (the 128 KiB N2-N4 gaps are large against the run spread, the N1 and the 1 MiB TIEs are not); the fixed arm is given the schedule mean;
+the DDS profiles are the earlier stages' (UDPv4, `maxMessageSize` 1472, needed for the 1500-byte MTU), not literally the vendors' defaults; the N3 delay changes can reorder packets in flight, which is not a 5G behaviour.
+
 #### ADAPTIVE on the static links: right prior, no prior, wrong prior
 
 `rate_control = ADAPTIVE` (experimental, opt-in, default OFF; no wire change). A prior is `pacing_rate` set under ADAPTIVE (the rate starts at 95% of it). Static links M1, M2, S1, S2.
