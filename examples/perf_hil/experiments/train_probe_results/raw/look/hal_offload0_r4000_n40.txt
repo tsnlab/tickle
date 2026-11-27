@@ -1,0 +1,11 @@
+port=51335
+[2026-11-27 14:12:08] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 14:12:08] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 14:12:08] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=0
+mode=hal n=40 size=1468 rate_kbit=4000 overhead=42 drain=0 trains_seen=50 whole=50 (sent 50) ideal_span_us=117780
+  user span - ideal (ns)     p05    -23094 p25     -9566 p50     -6224 p75     -4191 p95     -1669 ns
+  user span / ideal (x1000)  p05       999 p25       999 p50       999 p75       999 p95       999 
+  datagrams per distinct stamp p05        40 p25        40 p50        40 p75        40 p95        40 (n = the whole train under one stamp)

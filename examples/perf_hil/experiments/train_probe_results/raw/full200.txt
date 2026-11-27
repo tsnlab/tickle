@@ -1,0 +1,226 @@
+=== hal_offload0 rate=200000kbit n=10 period=100ms
+port=42001
+[2026-11-27 21:51:38] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:51:38] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:51:38] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=0
+mode=hal n=10 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05    -73265 p25    -64246 p50    -57894 p75    -54562 p95    -50932 ns
+  user span / ideal (x1000)  p05       865 p25       881 p50       893 p75       899 p95       906 
+  datagrams per distinct stamp p05         6 p25         7 p50         9 p75         9 p95        10 (n = the whole train under one stamp)
+=== hal_offload0_drain rate=200000kbit n=10 period=100ms
+[2026-11-27 21:51:59] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:51:59] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+port=38685
+[2026-11-27 21:51:59] [INFO] Node open at 8282
+[2026-11-27 21:51:59] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.1 socket_drops=0
+hal drain: drain_datagrams=515
+hal receive offload: gro_enables=0
+mode=hal n=10 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05    -73413 p25    -68284 p50    -65821 p75    -62710 p95     -4265 ns
+  user span / ideal (x1000)  p05       864 p25       874 p50       878 p75       884 p95       992 
+  datagrams per distinct stamp p05         6 p25         6 p50         6 p75         6 p95        10 (n = the whole train under one stamp)
+=== hal_offload1 rate=200000kbit n=10 period=100ms
+port=52585
+[2026-11-27 21:52:20] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:52:20] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:52:20] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=1
+mode=hal n=10 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05    -79006 p25    -64765 p50    -61432 p75    -58154 p95    -52580 ns
+  user span / ideal (x1000)  p05       854 p25       880 p50       886 p75       893 p95       903 
+  datagrams per distinct stamp p05         6 p25         6 p50         7 p75         7 p95         8 (n = the whole train under one stamp)
+=== hal_offload1_drain rate=200000kbit n=10 period=100ms
+port=41977
+[2026-11-27 21:52:41] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:52:41] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:52:41] [INFO] Node open at 8282
+[2026-11-27 21:52:41] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=537
+hal receive offload: gro_enables=1
+mode=hal n=10 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05    -82154 p25    -69525 p50    -61487 p75    -58506 p95    -55691 ns
+  user span / ideal (x1000)  p05       848 p25       872 p50       886 p75       892 p95       897 
+  datagrams per distinct stamp p05         5 p25         6 p50         6 p75         7 p95         8 (n = the whole train under one stamp)
+=== each rate=200000kbit n=10 period=100ms
+port=39763
+raw reads=2000 merged_reads=0
+mode=each n=10 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05    -98431 p25    -74302 p50    -60802 p75    -41191 p95      9402 ns
+  user span / ideal (x1000)  p05       818 p25       863 p50       888 p75       924 p95      1017 
+  datagrams per distinct stamp p05         6 p25         6 p50         6 p75         6 p95         8 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -65747 p25    -55339 p50    -54006 p75    -53080 p95    -51228 ns
+  user stamp - kernel stamp (ns) p05      7537 p25     14630 p50     26463 p75     57556 p95     84389 ns (last datagram)
+=== batch rate=200000kbit n=10 period=100ms
+port=47408
+raw recvmmsg calls=1093
+mode=batch n=10 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05   -124765 p25    -77228 p50    -49913 p75    -46747 p95      2069 ns
+  user span / ideal (x1000)  p05       770 p25       857 p50       908 p75       914 p95      1003 
+  datagrams per distinct stamp p05         5 p25         5 p50         5 p75         6 p95         7 (n = the whole train under one stamp)
+=== each_gro rate=200000kbit n=10 period=100ms
+port=57131
+raw reads=1987 merged_reads=13
+mode=each-gro n=10 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=543
+  user span - ideal (ns)     p05   -120710 p25    -74561 p50    -59802 p75    -41728 p95      3069 ns
+  user span / ideal (x1000)  p05       777 p25       862 p50       889 p75       923 p95      1005 
+  datagrams per distinct stamp p05         5 p25         6 p50         6 p75         6 p95         8 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -64080 p25    -55136 p50    -54061 p75    -53080 p95    -51432 ns
+  user stamp - kernel stamp (ns) p05      7463 p25     15315 p50     33278 p75     55148 p95     76111 ns (last datagram)
+=== hal_offload0 rate=200000kbit n=20 period=100ms
+port=53294
+[2026-11-27 21:54:06] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:54:06] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:54:06] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=0
+mode=hal n=20 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05    -73041 p25    -65133 p50    -58003 p75    -54504 p95    -52300 ns
+  user span / ideal (x1000)  p05       936 p25       943 p50       949 p75       952 p95       954 
+  datagrams per distinct stamp p05        11 p25        16 p50        18 p75        19 p95        20 (n = the whole train under one stamp)
+=== hal_offload0_drain rate=200000kbit n=20 period=100ms
+[2026-11-27 21:54:27] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:54:27] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+port=47278
+[2026-11-27 21:54:27] [INFO] Node open at 8282
+[2026-11-27 21:54:27] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.1 socket_drops=0
+hal drain: drain_datagrams=882
+hal receive offload: gro_enables=0
+mode=hal n=20 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05    -72244 p25    -67652 p50    -65707 p75    -59725 p95     -5300 ns
+  user span / ideal (x1000)  p05       937 p25       941 p50       942 p75       947 p95       995 
+  datagrams per distinct stamp p05        11 p25        11 p50        11 p75        11 p95        20 (n = the whole train under one stamp)
+=== hal_offload1 rate=200000kbit n=20 period=100ms
+port=57486
+[2026-11-27 21:54:48] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:54:48] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:54:48] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=1
+mode=hal n=20 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05    -84263 p25    -67819 p50    -63985 p75    -60911 p95    -53263 ns
+  user span / ideal (x1000)  p05       926 p25       940 p50       944 p75       946 p95       953 
+  datagrams per distinct stamp p05        11 p25        11 p50        12 p75        13 p95        14 (n = the whole train under one stamp)
+=== hal_offload1_drain rate=200000kbit n=20 period=100ms
+port=34533
+[2026-11-27 21:55:09] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:55:09] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:55:09] [INFO] Node open at 8282
+[2026-11-27 21:55:09] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=1108
+hal receive offload: gro_enables=1
+mode=hal n=20 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05    -77374 p25    -66837 p50    -61170 p75    -58281 p95    -51189 ns
+  user span / ideal (x1000)  p05       932 p25       941 p50       946 p75       949 p95       955 
+  datagrams per distinct stamp p05        11 p25        11 p50        12 p75        13 p95        14 (n = the whole train under one stamp)
+=== each rate=200000kbit n=20 period=100ms
+port=55457
+raw reads=4000 merged_reads=0
+mode=each n=20 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05   -108782 p25    -75587 p50    -43905 p75    -24739 p95      4385 ns
+  user span / ideal (x1000)  p05       905 p25       934 p50       961 p75       978 p95      1003 
+  datagrams per distinct stamp p05        11 p25        11 p50        11 p75        13 p95        14 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -67866 p25    -56782 p50    -54707 p75    -53300 p95    -12134 ns
+  user stamp - kernel stamp (ns) p05      8351 p25     23961 p50     42315 p75     62459 p95     77198 ns (last datagram)
+=== batch rate=200000kbit n=20 period=100ms
+port=52773
+raw recvmmsg calls=2201
+mode=batch n=20 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05   -113896 p25    -81104 p50    -49124 p75    -30625 p95       687 ns
+  user span / ideal (x1000)  p05       900 p25       929 p50       957 p75       973 p95      1000 
+  datagrams per distinct stamp p05        10 p25        10 p50        10 p75        11 p95        13 (n = the whole train under one stamp)
+=== each_gro rate=200000kbit n=20 period=100ms
+port=59087
+raw reads=3972 merged_reads=28
+mode=each-gro n=20 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=1147
+  user span - ideal (ns)     p05   -112284 p25    -75286 p50    -62528 p75    -29938 p95      3912 ns
+  user span / ideal (x1000)  p05       902 p25       934 p50       945 p75       973 p95      1003 
+  datagrams per distinct stamp p05        11 p25        11 p50        11 p75        12 p95        14 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -67100 p25    -56343 p50    -54491 p75    -53120 p95    -50472 ns
+  user stamp - kernel stamp (ns) p05      7777 p25     19554 p50     38720 p75     59477 p95     74828 ns (last datagram)
+=== hal_offload0 rate=200000kbit n=40 period=100ms
+port=54064
+[2026-11-27 21:56:34] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:56:34] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:56:34] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=0
+mode=hal n=40 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05    -73070 p25    -67216 p50    -63587 p75    -56714 p95    -52326 ns
+  user span / ideal (x1000)  p05       968 p25       971 p50       973 p75       975 p95       977 
+  datagrams per distinct stamp p05        21 p25        21 p50        33 p75        36 p95        38 (n = the whole train under one stamp)
+=== hal_offload0_drain rate=200000kbit n=40 period=100ms
+port=37595
+[2026-11-27 21:56:55] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:56:55] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:56:55] [INFO] Node open at 8282
+[2026-11-27 21:56:55] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=1625
+hal receive offload: gro_enables=0
+mode=hal n=40 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05    -73747 p25    -68528 p50    -64819 p75    -14938 p95     -5438 ns
+  user span / ideal (x1000)  p05       968 p25       970 p50       972 p75       993 p95       997 
+  datagrams per distinct stamp p05        21 p25        21 p50        21 p75        39 p95        40 (n = the whole train under one stamp)
+=== hal_offload1 rate=200000kbit n=40 period=100ms
+[2026-11-27 21:57:16] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:57:16] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+port=49697
+[2026-11-27 21:57:16] [INFO] Node open at 8282
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=0
+hal receive offload: gro_enables=1
+mode=hal n=40 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05    -89242 p25    -69614 p50    -64650 p75    -61613 p95    -53446 ns
+  user span / ideal (x1000)  p05       962 p25       970 p50       972 p75       973 p95       977 
+  datagrams per distinct stamp p05        21 p25        21 p50        24 p75        25 p95        28 (n = the whole train under one stamp)
+=== hal_offload1_drain rate=200000kbit n=40 period=100ms
+port=41513
+[2026-11-27 21:57:37] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:57:37] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 21:57:37] [INFO] Node open at 8282
+[2026-11-27 21:57:37] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=3163
+hal receive offload: gro_enables=1
+mode=hal n=40 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05    -79016 p25    -65904 p50    -60865 p75    -58924 p95     -8720 ns
+  user span / ideal (x1000)  p05       966 p25       972 p50       974 p75       974 p95       996 
+  datagrams per distinct stamp p05        21 p25        22 p50        23 p75        24 p95        25 (n = the whole train under one stamp)
+=== each rate=200000kbit n=40 period=100ms
+port=50808
+raw reads=8000 merged_reads=0
+mode=each n=40 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05   -109713 p25    -88359 p50    -44326 p75    -24142 p95     -8624 ns
+  user span / ideal (x1000)  p05       953 p25       962 p50       981 p75       989 p95       996 
+  datagrams per distinct stamp p05        21 p25        21 p50        23 p75        24 p95        25 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -69602 p25    -56122 p50    -54382 p75    -53049 p95     -4459 ns
+  user stamp - kernel stamp (ns) p05      7518 p25     18092 p50     39387 p75     60349 p95     77477 ns (last datagram)
+=== batch rate=200000kbit n=40 period=100ms
+port=46092
+raw recvmmsg calls=4342
+mode=batch n=40 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05   -115872 p25    -99540 p50    -47766 p75    -32488 p95    -15305 ns
+  user span / ideal (x1000)  p05       950 p25       957 p50       979 p75       986 p95       993 
+  datagrams per distinct stamp p05        20 p25        20 p50        21 p75        22 p95        24 (n = the whole train under one stamp)
+=== each_gro rate=200000kbit n=40 period=100ms
+port=52139
+raw reads=7981 merged_reads=19
+mode=each-gro n=40 size=1468 rate_kbit=200000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=2355
+  user span - ideal (ns)     p05   -111386 p25    -94723 p50    -39409 p75    -24873 p95    -11373 ns
+  user span / ideal (x1000)  p05       952 p25       959 p50       983 p75       989 p95       995 
+  datagrams per distinct stamp p05        21 p25        22 p50        23 p75        24 p95        26 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -70258 p25    -55630 p50    -54148 p75    -52779 p95    -14965 ns
+  user stamp - kernel stamp (ns) p05      8814 p25     23313 p50     42794 p75     63090 p95     76440 ns (last datagram)
+done: /home/semih/rig_results_safe/train_probe_20261127/full200

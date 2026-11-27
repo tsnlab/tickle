@@ -70,6 +70,7 @@ cell() {
     period=$((ideal_ms * 2 + 50))
     [ "$period" -lt 100 ] && period=100
     out="$OUTDIR/${label}_r${rate}_n${count}.txt"
+    : > "$out" # the port line is read from this file at once: create it before the (backgrounded) receiver does
     # shellcheck disable=SC2086 # the prefixes are command words
     $RECV_EXEC env BENCH_BROADCAST="$RECV_BCAST" TT_UDP_OFFLOAD="$offload" "$RECV_PROBE" recv --n "$count" --size "$DGRAM" \
         --trains "$TRAINS" --rate-kbit "$rate" --overhead "$OVERHEAD" "$@" > "$out" 2>&1 &

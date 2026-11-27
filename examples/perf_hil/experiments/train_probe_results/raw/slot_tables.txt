@@ -1,0 +1,22 @@
+
+### train of N = 10 datagrams: user span / ideal  p50 (p5-p95) | kernel span / ideal p50 | distinct stamps per train p50 (N = each on its own) | user-kernel lag p50 us | OK = p50 within 10 %, p5-p95 within 20 %
+| mode | 4 Mbit/s | 30 Mbit/s | 100 Mbit/s | 200 Mbit/s |
+|---|---|---|---|---|
+| hal_offload0 | 0.59 (0.59-0.59); st 6 x | 0.01 (0.01-0.01); st 2 x | 0.03 (0.03-0.04); st 2 x | 0.07 (0.07-0.10); st 2 x |
+| hal_offload0_drain | 0.59 (0.59-0.59); st 6 x | 0.01 (0.01-0.03); st 2 x | 0.03 (0.03-0.04); st 2 x | 0.07 (0.06-0.18); st 2 x |
+| hal_offload1 | 0.59 (0.59-0.59); st 5 x | 0.00 (0.00-0.01); st 1 x | 0.01 (0.01-0.02); st 1 x | 0.03 (0.03-0.04); st 1 x |
+| hal_offload1_drain | 0.59 (0.59-0.59); st 5 x | 0.01 (0.00-0.01); st 2 x | 0.01 (0.01-0.02); st 2 x | 0.04 (0.03-0.05); st 2 x |
+| each | 0.59 (0.59-0.59); k 0.59; st 6; lag 45 x | 0.01 (0.01-0.01); k 0.01; st 2; lag 48 x | 0.03 (0.03-0.04); k 0.03; st 2; lag 48 x | 0.06 (0.06-0.20); k 0.07; st 2; lag 47 x |
+| batch | 0.59 (0.59-0.59); st 5 x | 0.00 (0.00-0.03); st 1 x | 0.00 (0.00-0.09); st 1 x | 0.00 (0.00-0.17); st 1 x |
+| each_gro | 0.59 (0.59-0.59); k 0.59; st 5; lag 42 x | 0.00 (0.00-0.03); k 0.01; st 2; lag 33 x | 0.01 (0.01-0.08); k 0.03; st 2; lag 40 x | 0.03 (0.02-0.17); k 0.05; st 2; lag 37 x |
+
+### train of N = 20 datagrams: user span / ideal  p50 (p5-p95) | kernel span / ideal p50 | distinct stamps per train p50 (N = each on its own) | user-kernel lag p50 us | OK = p50 within 10 %, p5-p95 within 20 %
+| mode | 4 Mbit/s | 30 Mbit/s | 100 Mbit/s | 200 Mbit/s |
+|---|---|---|---|---|
+| hal_offload0 | 0.63 (0.63-0.63); st 11 x | 0.54 (0.54-0.54); st 3 x | 0.03 (0.02-0.03); st 2 x | 0.05 (0.05-0.13); st 2 x |
+| hal_offload0_drain | 0.63 (0.63-0.63); st 11 x | 0.54 (0.54-0.55); st 3 x | 0.03 (0.02-0.03); st 2 x | 0.05 (0.05-0.15); st 2 x |
+| hal_offload1 | 0.63 (0.63-0.63); st 10 x | 0.54 (0.54-0.54); st 3 x | 0.01 (0.01-0.06); st 2 x | 0.03 (0.02-0.08); st 2 x |
+| hal_offload1_drain | 0.63 (0.63-0.63); st 10 x | 0.54 (0.53-0.54); st 3 x | 0.01 (0.01-0.02); st 2 x | 0.03 (0.02-0.04); st 2 x |
+| each | 0.63 (0.63-0.63); k 0.63; st 11; lag 36 x | 0.54 (0.54-0.55); k 0.54; st 3; lag 38 x | 0.06 (0.02-0.10); k 0.07; st 3; lag 56 x | 0.09 (0.05-0.19); k 0.14; st 3; lag 57 x |
+| batch | 0.63 (0.63-0.63); st 10 x | 0.54 (0.53-0.54); st 2 x | 0.04 (0.00-0.08); st 3 x | 0.09 (0.00-0.17); st 3 x |
+| each_gro | 0.63 (0.63-0.63); k 0.63; st 10; lag 44 x | 0.54 (0.53-0.54); k 0.54; st 3; lag 30 x | 0.06 (0.02-0.09); k 0.07; st 3; lag 38 x | 0.13 (0.03-0.17); k 0.14; st 3; lag 36 x |

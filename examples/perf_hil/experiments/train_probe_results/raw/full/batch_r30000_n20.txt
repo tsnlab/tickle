@@ -1,0 +1,6 @@
+port=42107
+raw recvmmsg calls=4000
+mode=batch n=20 size=1468 rate_kbit=30000 overhead=42 drain=0 trains_seen=200 whole=200 (sent 200) ideal_span_us=7650
+  user span - ideal (ns)     p05    -37987 p25    -33634 p50    -24616 p75     35143 p95     48402 ns
+  user span / ideal (x1000)  p05       995 p25       995 p50       996 p75      1004 p95      1006 
+  datagrams per distinct stamp p05        20 p25        20 p50        20 p75        20 p95        20 (n = the whole train under one stamp)

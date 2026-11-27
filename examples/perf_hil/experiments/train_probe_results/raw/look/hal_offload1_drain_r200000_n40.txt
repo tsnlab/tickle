@@ -1,0 +1,12 @@
+port=57031
+[2026-11-27 14:19:48] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 14:19:48] [WARNING] Data socket receive buffer is 425984 bytes (asked 1048576) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-11-27 14:19:48] [INFO] Node open at 8282
+[2026-11-27 14:19:48] [WARNING] Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (Invalid argument; asked entries=2048 (a power of two: yes) ring_addr page offset=0 of 4096 bgid=1 flags=0 resv=0, Linux 6.8.0-1064-raspi) and the kernel's own (IOU_PBUF_RING_MMAP: Invalid argument) - classic provided buffers are used instead, handed over again at each drain start
+hal counters: rx_batch_calls=0 rx_batch_datagrams=0 buffered_per_handout=0.0 socket_drops=0
+hal drain: drain_datagrams=567
+hal receive offload: gro_enables=1
+mode=hal n=40 size=1468 rate_kbit=200000 overhead=42 drain=1 trains_seen=50 whole=50 (sent 50) ideal_span_us=2355
+  user span - ideal (ns)     p05    -97150 p25    -71539 p50    -63650 p75    -59409 p95    -55705 ns
+  user span / ideal (x1000)  p05       958 p25       969 p50       972 p75       974 p95       976 
+  datagrams per distinct stamp p05        20 p25        21 p50        22 p75        23 p95        25 (n = the whole train under one stamp)
