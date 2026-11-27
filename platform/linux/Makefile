@@ -556,7 +556,7 @@ LINT_EXCLUDE_RE = ^(third_party|platform/freertos|examples/freertos)/|hal_freert
 #                  (clang-format still covers them): the T1 framework-comparison nodes, written against the vendors' APIs
 #                  (CycloneDDS, Fast DDS, zenoh-pico). One directory, listed once here; lint_rmw.sh reads this line.
 NOT_PRODUCT_DIRS = examples/perf_hil/t1fw_vendor
-LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|$(NOT_PRODUCT_DIRS)|examples/perf_hil/experiments/(rmw_loan_bench|deadline_insn)\.c
+LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)|$(NOT_PRODUCT_DIRS)|examples/perf_hil/experiments/(rmw_loan_bench|deadline_insn)\.c|examples/perf_hil/experiments/adaptive_pacing/algosim
 
 # rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
 # cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),

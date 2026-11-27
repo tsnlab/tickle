@@ -767,3 +767,239 @@ Reading, against the requirements set for this stage (no regression of the stati
 Conclusion: **none of the candidates meets the requirements in this model, so none is implemented in the library** on this branch (`ab/adaptive-next2` carries this section and the harness only). What the evidence supports trying next, each a separate
 change with its own Pi run: (1) a guard that does not halve BtlBw on a reading that a later round contradicts (the cascade), tested against the lumpy model above; (2) the time-based rise cap only if its static cost can be removed
 (the M2 slowdown shows the cap also delays a legitimate rise); (3) the dispersion estimate (a) once the reader's receive times are available. None changes the 2.2.0 position: ADAPTIVE stays opt-in experimental, fixed pacing is the choice for a known link.
+
+## 27. Algorithm selection for Wi-Fi and 5G: an offline comparison (2026-11-27, phase A, model only)
+
+The user's decision of 2026-11-27: find a rate-control algorithm suited to Wi-Fi and 5G and put it into 2.2.0. This section is the **selection**, done offline on the PC; nothing here is in the library, the wire is unchanged, and a wire change needs the user's approval of the design in 27.6. **Every number in this section is a model number**: see 27.7 for what the model cannot show. A model win is not a Pi win.
+
+### 27.1 The question, and the likely root mismatch
+
+BBR-class estimators (the current ADAPTIVE is one) are built for a dense stream of per-ACK delivery and RTT samples. TickLE gets one lumpy receiver report per round, a round trip sample in about 1 of 12 rounds, an 8 ms reader tick, and an application that publishes a 128 KiB or 1 MiB sample every 4 s. A sample is a train of 89 or 723 back-to-back datagrams, and what the sender never has is the receiver's own view of that train. The candidates below differ mostly in what they read from the receiver.
+
+### 27.2 Method
+
+`examples/perf_hil/experiments/adaptive_pacing/algosim/` (27.8): `algosim.c`, a packet-level model with a 100 us clock. It is the link of `tests/test_adaptive_pacing.c` (paced sender, drop-tail queue served at the link rate, a reader that answers solicitations at its 8 ms poll tick, watermark ACKNACKs, repairs deferred behind the paced send) generalised to a schedule of rate, one-way delay and loss, a packet-count queue limit, outages (100% loss), a Gilbert-Elliott loss state (N4: netem `gemodel 1% 15% 60% 0.5%`), a lossy reverse path, and optional stress (27.5). The control, ADAPTIVE (`448b685f`), runs **unmodified** (`include/tickle/pacing_adaptive.h` plus two knobs: the start-rate ceiling and the decimation of round trip samples to the Pi's 1 in 12). Where the model can be checked against the Pi it agrees (ADAPTIVE without a prior, 128 KiB, N3: p50 73 ms in the Pi's 5G run, 73 ms here; N2 55 ms there, 65 ms here; the rate under 0.7x of the capacity for 84-100% of the time on N2/N3 there, 83-100% here), but it is not tuned to them.
+
+**Feedback models.** (a) *Current*: what the library has, with a round trip sample in 1 of 12 rounds (candidates read the held count, the watermark, the sparse round trip). (b) *Enhanced*: (a) plus a receiver report every 100 ms while data arrives, with the fields each candidate needs (arrival time of the first and last datagram and the bytes in the interval, a 15-sample minimum of the relative one-way delay, new gaps, 5 ms send-group arrival times for GCC, an exact round trip echo; for the train candidates, the first and last arrival of the sample's head). The report is delayed by the one-way delay and may be lost like any datagram. TRAIN1 reads one report per sample instead.
+
+**Candidates** (`start` = 8 Mbit/s unless `_hi`: 62.5 Mbit/s):
+
+| name | what it is | deviations from the reference, stated |
+|---|---|---|
+| `oracle` | 95% of the instantaneous link rate | a bound, not realisable |
+| `fixed` | 95% of the schedule's time-weighted mean | as the Pi runs: told the mean, an advantage |
+| `adapt` | current ADAPTIVE | unchanged; `adapt_hi` = start 62.5 Mbit/s |
+| `bbr3` | BBRv3 (STARTUP 2.77, DRAIN, PROBE_BW DOWN/CRUISE/REFILL/UP, bw max filter over 10 samples, bw_lo from a >2% loss round) on delivery-rate samples | no ProbeRTT, no cwnd (a paced sender); a sample is the held count over the report spacing (a) or the receiver's interval (b) |
+| `nada` | NADA, RFC 8698: accelerated ramp-up, gradual update (kappa 0.5, eta 2, tau 500 ms, XREF 10 ms), x_curr = queue delay + loss term | RMAX = twice the best receive rate of the last 10 s (the RFC's RMAX is the application maximum, which a sender that does not know the link does not have: with 1 Gbit/s the equilibrium queue would be XREF x RMAX / r = 333 ms on a 30 Mbit/s link); ramp-up loss threshold 2% (the links lose 1-4% at random); no non-linear warping |
+| `gcc` | GCC: 5 ms send groups, trendline over 20 points, adaptive threshold, over-use detector, AIMD (beta 0.85, 8%/s, additive near the last decrease), loss cap | no ProbeController (WebRTC probes at 3x and 6x at start and after an idle period; without it a bursty sender ramps slowly). Under (a) the gradient comes from the sparse round trips |
+| `train` | **the head of every sample (first 20 datagrams, 29 KB) is sent back to back; the receiver reports the first/last arrival time of the train; the capacity is the dispersion; the rest is paced at 95% of it.** `train` also reads the 100 ms reports (a paced stretch the path spreads, corroborated by queue delay) and raises 25% after two clean readings | Sprout's stochastic forecast is not implemented; the dispersion of a train is the capacity sample and inter-sample gaps are ignored |
+| `train1` | the train alone: **one report per sample**, nothing else read | |
+| `train1t` | `train1` with a train of about 10 ms of the estimated link (at least 20 datagrams, at most half the sample): long against the slots of an aggregating link | the receiver needs the train length (27.6) |
+| `traint` | `train` with the 10 ms train | |
+
+**Workloads.** 19 schedules, each at 128 KiB (89 datagrams) and 1 MiB (723) published every 4 s (the same bursty pattern for all), 6 seeds (the seeds change the loss draws; N1-N4 are the single schedule draw of the Pi's 5G run): P3, P4, P5a, P5b, P6, P7 (the varying-bandwidth patterns of RESULTS section 5); RS (30 -> 4 -> 30 Mbit/s, steps on the 4 s sample grid), RSm (the same, not aligned) and RSd (the step down lands 20 ms into a transfer); M1, M2, S1, S2 (the static links); N1-N4 (the 5G-like schedules of `ab/wifi-adaptive-s1`, `wifitc/results/5g_schedules/`); H100 and H200 (static 100 and 200 Mbit/s, for the start). 11,196 runs with the stress sweep below.
+
+**Metrics.** In +-30% / over 1.3x / under 0.7x: the share of the run (after 2 s) the pacing rate is within 30% of / above 1.3x / below 0.7x of 0.991 x the link rate, as in section 26. Queue>100ms: the share of the time a sample is being sent that the queue ahead of a new datagram is more than 100 ms of the link. p50 x oracle, p99 x oracle: the sample latency percentile, pooled over seeds, divided by the oracle's on the same workload (the geometric mean over the family's workloads; an undelivered sample counts as infinite). Undeliv+late: samples not delivered by the end or later than 4 s. Retx: repairs over datagrams sent. Recovery up~down: the median over the family's capacity steps of at least 1.5x lasting at least 3 s, of the time until the rate is at least 0.9x of the new capacity (up) or at most 1.1x of it (down); it is measured on the pacing rate, which a candidate that learns once per sample can only change once per sample. Startup: the time until the rate is at least 0.9x of the initial capacity (180 s = never; meaningful on H100/H200, N2, N3). Goodput per capacity, feedback bytes/s and two guard proxies are in `results/cells.csv`: slow<10% (rate below a tenth of the capacity while a sample is sent: the frozen state) and over>3x (rate above three times the capacity: the probe storm).
+
+### 27.3 Results, one table per workload family
+
+Each cell is 128 KiB / 1 MiB. `-a` = the current feedback, `-b` = the enhanced feedback. Tables of every candidate including the `_hi` variants, the per-workload numbers and the raw cells are in `algosim/results/`.
+
+**Varying bandwidth (P3 P4 P5a P5b P6 P7)**; each cell: 128 KiB / 1 MiB
+
+| candidate | in +-30% | over 1.3x | under 0.7x | queue>100ms | p50 x oracle | p99 x oracle | undeliv+late | retx | recovery up~down s | startup s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| oracle | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 1.0% / 1.0% | 0.0~0.0 / 0.0~0.0 | 0.0 / 0.0 |
+| fixed | 37% / 37% | 33% / 33% | 29% / 29% | 7.0% / 30.7% | 1.19 / 1.16 | 0.95 / 1.04 | 0.0% / 0.0% | 1.1% / 15.9% | 7.5~7.5 / 7.5~7.5 | 180.0 / 180.0 |
+| adapt-a | 56% / 59% | 27% / 18% | 17% / 23% | 3.2% / 18.4% | 1.22 / 1.17 | 1.11 / 1.56 | 0.0% / 0.2% | 1.1% / 10.5% | 6.1~5.6 / 1.2~2.7 | 4.2 / 0.3 |
+| adapt_hi-a | 58% / 60% | 25% / 18% | 17% / 22% | 3.4% / 17.4% | 1.17 / 1.14 | 0.98 / 1.74 | 0.0% / 0.4% | 1.1% / 11.3% | 3.1~5.2 / 2.3~2.7 | 0.0 / 0.0 |
+| adapt-b | 58% / 62% | 15% / 18% | 27% / 20% | 1.2% / 9.8% | 1.26 / 1.15 | 1.22 / 1.56 | 0.0% / 0.4% | 1.1% / 7.2% | 3.9~2.1 / 1.2~2.1 | 6.1 / 0.3 |
+| bbr3-a | 39% / 19% | 54% / 78% | 7% / 3% | 4.6% / 25.4% | 1.12 / 1.13 | 0.94 / 1.14 | 0.0% / 0.0% | 1.1% / 62.6% | 0.0~7.5 / 0.0~7.5 | 0.1 / 0.1 |
+| bbr3-b | 56% / 67% | 29% / 6% | 14% / 27% | 2.9% / 12.5% | 1.28 / 1.39 | 1.01 / 1.05 | 0.0% / 0.0% | 1.1% / 5.7% | 1.1~7.5 / 13.2~2.7 | 0.3 / 0.3 |
+| nada-b | 44% / 65% | 21% / 5% | 35% / 30% | 1.1% / 5.4% | 1.54 / 1.64 | 2.91 / 1.70 | 0.0% / 0.1% | 1.1% / 3.0% | 17.1~7.5 / 3.8~1.7 | 32.1 / 4.2 |
+| gcc-b | 33% / 58% | 34% / 3% | 33% / 39% | 1.8% / 2.4% | 1.47 / 1.74 | 1.03 / 1.28 | 0.0% / 0.9% | 1.1% / 1.7% | 20.0~7.5 / 20.0~1.8 | 101.1 / 130.1 |
+| train-b | 84% / 81% | 5% / 17% | 11% / 2% | 3.8% / 27.6% | 1.20 / 1.03 | 0.96 / 1.01 | 0.0% / 0.0% | 1.0% / 3.4% | 1.2~2.1 / 1.2~2.1 | 0.2 / 0.2 |
+| train1-b | 93% / 93% | 5% / 5% | 3% / 3% | 3.0% / 7.7% | 1.05 / 1.00 | 0.94 / 0.99 | 0.0% / 0.0% | 1.0% / 1.3% | 2.6~2.1 / 3.3~2.1 | 0.1 / 0.1 |
+| train1t-b | 93% / 93% | 5% / 5% | 3% / 3% | 3.0% / 9.7% | 1.04 / 1.01 | 0.94 / 0.98 | 0.0% / 0.0% | 1.0% / 1.4% | 1.6~2.1 / 1.6~2.1 | 0.1 / 0.1 |
+| traint-b | 83% / 78% | 5% / 20% | 11% / 2% | 3.8% / 27.6% | 1.22 / 1.03 | 0.96 / 1.00 | 0.0% / 0.0% | 1.0% / 3.8% | 2.2~2.1 / 1.2~2.1 | 0.2 / 0.2 |
+
+**Rate step 30 -> 4 -> 30 Mbit/s (RS aligned with the 4 s sample grid, RSm not, RSd steps down inside a transfer)**; each cell: 128 KiB / 1 MiB
+
+| candidate | in +-30% | over 1.3x | under 0.7x | queue>100ms | p50 x oracle | p99 x oracle | undeliv+late | retx | recovery up~down s | startup s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| oracle | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 1.0% / 1.0% | 0.0~0.0 / 0.0~0.0 | 0.0 / 0.0 |
+| fixed | 0% / 0% | 34% / 34% | 66% / 66% | 36.1% / 58.6% | 1.32 / 1.39 | 1.03 / 1.11 | 0.0% / 0.0% | 1.1% / 34.6% | 39.4~40.4 / 39.4~40.4 | 120.0 / 120.0 |
+| adapt-a | 60% / 62% | 21% / 16% | 19% / 23% | 8.6% / 29.7% | 1.25 / 1.09 | 0.98 / 1.93 | 0.0% / 1.9% | 1.1% / 9.4% | 6.5~6.2 / 3.7~1.5 | 4.2 / 0.3 |
+| adapt_hi-a | 57% / 60% | 19% / 15% | 24% / 25% | 10.2% / 31.2% | 1.16 / 1.07 | 1.03 / 2.02 | 0.0% / 2.2% | 1.1% / 10.7% | 4.1~6.9 / 3.5~1.8 | 0.0 / 0.0 |
+| adapt-b | 62% / 64% | 13% / 17% | 25% / 19% | 4.2% / 28.0% | 1.34 / 1.07 | 1.07 / 1.46 | 0.0% / 0.6% | 1.1% / 9.6% | 6.4~2.8 / 2.3~1.6 | 6.1 / 0.3 |
+| bbr3-a | 25% / 22% | 62% / 76% | 14% / 3% | 37.0% / 57.7% | 1.36 / 1.11 | 1.05 / 1.20 | 0.0% / 0.0% | 1.1% / 64.6% | 5.2~40.4 / 0.0~38.3 | 0.1 / 0.1 |
+| bbr3-b | 41% / 66% | 19% / 3% | 40% / 31% | 9.8% / 25.1% | 2.63 / 1.75 | 1.01 / 1.10 | 0.0% / 0.0% | 1.1% / 5.6% | 39.4~12.2 / 27.7~1.1 | 0.3 / 0.3 |
+| nada-b | 45% / 60% | 8% / 3% | 48% / 37% | 2.1% / 8.2% | 2.69 / 2.85 | 2.26 / 1.50 | 0.0% / 0.0% | 1.1% / 2.2% | 28.4~8.2 / 4.5~0.4 | 32.1 / 4.2 |
+| gcc-b | 29% / 30% | 5% / 1% | 66% / 69% | 4.6% / 1.4% | 3.09 / 2.99 | 1.13 / 2.44 | 0.0% / 8.4% | 1.0% / 3.2% | 39.4~9.1 / 39.4~0.5 | 120.0 / 40.1 |
+| train-b | 78% / 76% | 11% / 22% | 11% / 1% | 15.4% / 63.8% | 1.35 / 0.98 | 0.96 / 1.04 | 0.0% / 0.0% | 1.1% / 4.6% | 2.4~0.2 / 2.4~0.2 | 0.2 / 0.2 |
+| train1-b | 96% / 96% | 2% / 2% | 2% / 2% | 5.2% / 9.3% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 1.0% / 3.7% | 5.5~2.8 / 3.5~2.8 | 0.1 / 0.1 |
+| train1t-b | 96% / 96% | 2% / 2% | 2% / 2% | 5.2% / 9.0% | 1.00 / 1.00 | 1.00 / 1.01 | 0.0% / 0.0% | 1.0% / 3.4% | 3.5~2.8 / 2.4~2.8 | 0.1 / 0.1 |
+| traint-b | 79% / 73% | 9% / 26% | 12% / 1% | 15.4% / 63.3% | 1.36 / 1.00 | 0.99 / 1.07 | 0.0% / 0.0% | 1.1% / 5.3% | 2.4~0.2 / 2.4~0.2 | 0.2 / 0.2 |
+
+**Static links (M1 M2 S1 S2)**; each cell: 128 KiB / 1 MiB
+
+| candidate | in +-30% | over 1.3x | under 0.7x | queue>100ms | p50 x oracle | p99 x oracle | undeliv+late | retx | recovery up~down s | startup s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| oracle | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 2.0% / 2.1% | -~- / -~- | 0.0 / 0.0 |
+| fixed | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 2.0% / 2.1% | -~- / -~- | 0.0 / 0.0 |
+| adapt-a | 54% / 56% | 15% / 16% | 31% / 28% | 1.6% / 22.2% | 1.12 / 1.04 | 1.56 / 2.11 | 0.0% / 1.3% | 2.2% / 8.1% | -~- / -~- | 2.1 / 0.1 |
+| adapt_hi-a | 57% / 57% | 13% / 15% | 30% / 28% | 2.3% / 23.5% | 1.14 / 1.03 | 1.21 / 1.70 | 0.0% / 0.7% | 2.1% / 10.0% | -~- / -~- | 0.0 / 0.0 |
+| adapt-b | 55% / 59% | 10% / 14% | 34% / 27% | 0.8% / 16.2% | 1.13 / 1.03 | 1.62 / 2.72 | 0.0% / 2.2% | 2.2% / 7.0% | -~- / -~- | 3.0 / 0.1 |
+| bbr3-a | 58% / 30% | 31% / 65% | 11% / 5% | 3.8% / 32.4% | 1.03 / 1.07 | 1.08 / 1.29 | 0.0% / 0.0% | 2.1% / 54.8% | -~- / -~- | 0.1 / 0.1 |
+| bbr3-b | 67% / 79% | 11% / 2% | 22% / 19% | 0.8% / 13.2% | 1.11 / 1.00 | 1.33 / 1.09 | 0.0% / 0.0% | 2.1% / 3.1% | -~- / -~- | 0.1 / 0.1 |
+| nada-b | 35% / 38% | 5% / 1% | 60% / 61% | 0.5% / 2.2% | 1.88 / 2.37 | 3.93 / 4.01 | 0.0% / 38.8% | 2.1% / 2.3% | -~- / -~- | 16.1 / 2.1 |
+| gcc-b | 59% / 84% | 4% / 0% | 36% / 16% | 0.6% / 0.4% | 1.20 / 1.09 | 1.32 / 1.77 | 0.0% / 0.0% | 2.0% / 2.1% | -~- / -~- | 30.1 / 19.1 |
+| train-b | 81% / 79% | 12% / 21% | 7% / 0% | 9.0% / 39.8% | 1.01 / 0.96 | 1.20 / 1.10 | 0.0% / 0.0% | 2.1% / 5.2% | -~- / -~- | 0.1 / 0.1 |
+| train1-b | 100% / 100% | 0% / 0% | 0% / 0% | 1.3% / 1.1% | 0.95 / 0.98 | 1.02 / 1.03 | 0.0% / 0.0% | 2.0% / 2.1% | -~- / -~- | 0.1 / 0.1 |
+| train1t-b | 100% / 100% | 0% / 0% | 0% / 0% | 1.3% / 1.1% | 0.95 / 0.99 | 0.99 / 1.05 | 0.0% / 0.0% | 2.0% / 2.1% | -~- / -~- | 0.1 / 0.1 |
+| traint-b | 82% / 78% | 12% / 22% | 6% / 0% | 9.0% / 39.8% | 1.00 / 0.97 | 1.17 / 1.10 | 0.0% / 0.0% | 2.1% / 5.4% | -~- / -~- | 0.1 / 0.1 |
+
+**5G-like (N1 N2 N3 N4)**; each cell: 128 KiB / 1 MiB
+
+| candidate | in +-30% | over 1.3x | under 0.7x | queue>100ms | p50 x oracle | p99 x oracle | undeliv+late | retx | recovery up~down s | startup s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| oracle | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 1.1% / 1.3% | 0.1~- / 0.1~- | 0.0 / 0.0 |
+| fixed | 65% / 65% | 23% / 23% | 12% / 12% | 5.0% / 19.1% | 1.04 / 1.26 | 0.95 / 1.15 | 0.0% / 0.0% | 1.2% / 3.1% | 4.5~- / 4.5~- | 90.0 / 90.0 |
+| adapt-a | 12% / 37% | 6% / 17% | 82% / 45% | 0.8% / 12.7% | 2.37 / 1.54 | 1.09 / 1.35 | 0.0% / 0.1% | 1.1% / 2.2% | 4.5~- / 4.2~- | 180.0 / 2.2 |
+| adapt_hi-a | 12% / 40% | 7% / 19% | 81% / 41% | 0.9% / 14.3% | 2.34 / 1.52 | 1.12 / 1.25 | 0.0% / 0.0% | 1.2% / 2.3% | 4.5~- / 4.2~- | 90.0 / 0.1 |
+| adapt-b | 9% / 33% | 4% / 16% | 86% / 51% | 0.0% / 9.7% | 2.69 / 1.64 | 1.46 / 2.43 | 0.0% / 0.2% | 1.3% / 1.9% | 4.5~- / 4.0~- | 180.0 / 7.3 |
+| bbr3-a | 28% / 34% | 35% / 57% | 37% / 9% | 3.2% / 22.6% | 1.32 / 1.40 | 1.03 / 1.15 | 0.0% / 0.0% | 1.2% / 12.9% | 4.5~- / 0.7~- | 2.1 / 0.1 |
+| bbr3-b | 52% / 43% | 24% / 12% | 25% / 45% | 4.1% / 11.0% | 1.18 / 1.77 | 1.13 / 1.28 | 0.0% / 0.0% | 1.3% / 2.5% | 0.0~- / 4.5~- | 8.1 / 0.4 |
+| nada-b | 33% / 42% | 10% / 13% | 57% / 45% | 0.8% / 8.4% | 2.22 / 2.28 | 1.51 / 2.07 | 0.0% / 4.5% | 1.2% / 1.8% | 4.5~- / 4.2~- | 94.1 / 68.1 |
+| gcc-b | 21% / 19% | 18% / 11% | 61% / 70% | 1.3% / 3.1% | 2.10 / 2.98 | 1.09 / 2.77 | 0.0% / 2.7% | 1.1% / 1.3% | 4.5~- / 4.5~- | 146.1 / 137.1 |
+| train-b | 74% / 74% | 11% / 15% | 15% / 11% | 3.0% / 12.4% | 1.09 / 1.33 | 1.00 / 1.13 | 0.0% / 0.0% | 1.2% / 2.2% | 0.0~- / 0.0~- | 0.2 / 0.2 |
+| train1-b | 76% / 76% | 12% / 12% | 12% / 12% | 3.4% / 8.8% | 1.05 / 1.25 | 0.99 / 1.14 | 0.0% / 0.0% | 1.3% / 2.1% | 0.0~- / 0.0~- | 0.1 / 0.1 |
+| train1t-b | 76% / 76% | 12% / 12% | 12% / 11% | 3.5% / 9.9% | 1.05 / 1.26 | 1.09 / 1.12 | 0.0% / 0.0% | 1.2% / 2.2% | 0.0~- / 0.0~- | 0.1 / 0.1 |
+| traint-b | 73% / 72% | 11% / 15% | 16% / 13% | 3.1% / 12.1% | 1.10 / 1.30 | 0.99 / 1.14 | 0.0% / 0.0% | 1.3% / 2.2% | 0.0~- / 0.0~- | 0.2 / 0.2 |
+
+**High-rate static, startup (H100 H200)**; each cell: 128 KiB / 1 MiB
+
+| candidate | in +-30% | over 1.3x | under 0.7x | queue>100ms | p50 x oracle | p99 x oracle | undeliv+late | retx | recovery up~down s | startup s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| oracle | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 0.1% / 0.1% | -~- / -~- | 0.0 / 0.0 |
+| fixed | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 1.00 / 1.00 | 1.00 / 1.00 | 0.0% / 0.0% | 0.1% / 0.1% | -~- / -~- | 0.0 / 0.0 |
+| adapt-a | 0% / 47% | 0% / 10% | 100% / 43% | 0.0% / 0.0% | 3.07 / 1.40 | 2.25 / 7.15 | 0.0% / 0.0% | 0.1% / 1.1% | -~- / -~- | 60.0 / 14.1 |
+| adapt_hi-a | 0% / 49% | 0% / 9% | 100% / 42% | 0.0% / 0.0% | 3.28 / 1.35 | 1.77 / 2.12 | 0.0% / 0.0% | 0.1% / 0.6% | -~- / -~- | 60.0 / 8.2 |
+| adapt-b | 0% / 43% | 0% / 6% | 100% / 52% | 0.0% / 0.0% | 3.04 / 1.64 | 2.25 / 7.16 | 0.0% / 0.0% | 0.1% / 0.9% | -~- / -~- | 60.0 / 10.1 |
+| bbr3-a | 12% / 48% | 28% / 38% | 60% / 14% | 0.0% / 0.0% | 1.49 / 1.48 | 1.60 / 1.68 | 0.0% / 0.0% | 0.1% / 16.0% | -~- / -~- | 32.0 / 0.2 |
+| bbr3-b | 49% / 76% | 23% / 9% | 28% / 14% | 0.0% / 0.0% | 1.02 / 1.24 | 2.59 / 2.99 | 0.0% / 0.0% | 0.1% / 3.6% | -~- / -~- | 6.1 / 2.2 |
+| nada-b | 33% / 52% | 0% / 0% | 67% / 48% | 0.0% / 0.0% | 2.22 / 1.51 | 3.42 / 14.16 | 0.0% / 0.0% | 0.1% / 0.5% | -~- / -~- | 46.1 / 20.1 |
+| gcc-b | 0% / 0% | 0% / 0% | 100% / 100% | 0.0% / 0.0% | 5.29 / 5.93 | 2.71 / 9.89 | 0.0% / 0.0% | 0.1% / 0.1% | -~- / -~- | 60.0 / 60.0 |
+| train-b | 99% / 100% | 0% / 0% | 1% / 0% | 0.0% / 0.0% | 0.98 / 1.13 | 1.99 / 1.71 | 0.0% / 0.0% | 0.1% / 1.4% | -~- / -~- | 0.2 / 0.2 |
+| train1-b | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 0.98 / 0.98 | 1.30 / 1.05 | 0.0% / 0.0% | 0.1% / 0.1% | -~- / -~- | 0.1 / 0.1 |
+| train1t-b | 100% / 100% | 0% / 0% | 0% / 0% | 0.0% / 0.0% | 0.98 / 1.01 | 1.30 / 1.05 | 0.0% / 0.0% | 0.1% / 2.0% | -~- / -~- | 0.1 / 0.1 |
+| traint-b | 98% / 79% | 0% / 0% | 2% / 21% | 0.0% / 0.0% | 0.98 / 1.33 | 1.99 / 1.71 | 0.0% / 0.0% | 0.1% / 3.6% | -~- / -~- | 0.2 / 0.2 |
+
+### 27.4 Ranking
+
+Verdicts over all 38 (workload, size) cells, on the per-seed p50 latency (W or L when at least 5 of 6 seeds are better or worse by 5%):
+
+| candidate | vs current ADAPTIVE (adapt-a) W/T/L | vs fixed 95% of the mean | vs oracle |
+|---|---|---|---|
+| **train1t-b** (train, 10 ms, one report per sample) | **25 / 13 / 0** | 13 / 23 / 2 | 0 / 33 / 5 |
+| **train1-b** (train of 20, one report per sample) | **25 / 13 / 0** | 13 / 24 / 1 | 0 / 33 / 5 |
+| train-b (train + 100 ms reports) | 17 / 20 / 1 | 7 / 29 / 2 | 0 / 27 / 11 |
+| traint-b | 14 / 22 / 2 | 8 / 26 / 4 | 1 / 24 / 13 |
+| bbr3-a (BBRv3 on the current feedback) | 12 / 23 / 3 | 7 / 23 / 8 | 0 / 14 / 24 |
+| bbr3-b | 9 / 20 / 9 | 0 / 19 / 19 | 0 / 17 / 21 |
+| adapt_hi-a (start 62.5 Mbit/s) | 0 / 38 / 0 | 6 / 19 / 13 | 0 / 15 / 23 |
+| adapt-b (dense RTT) | 0 / 36 / 2 | 3 / 19 / 16 | 0 / 12 / 26 |
+| nada-b | 6 / 8 / 24 | 0 / 5 / 33 | 0 / 3 / 35 |
+| gcc-b | 2 / 12 / 24 | 1 / 6 / 31 | 0 / 6 / 32 |
+| train1-a, train-a (the train read off the current feedback) | 0 / 18 / 20 | 0 / 14 / 24 | 0 / 9 / 29 |
+
+1. **TRAIN1 / TRAIN1T on the enhanced feedback is the only candidate that is near the oracle in every family**: within 30% of the capacity 93% of the time on the varying patterns (ADAPTIVE 56-59%), 100% on the static links, 76% on the 5G-like links (ADAPTIVE 12% at 128 KiB, 37% at 1 MiB), within 5% of the oracle's p50 on the varying, static and high-rate families, no loss against ADAPTIVE in any of the 38 cells, startup 0.1 s on 100 and 200 Mbit/s where ADAPTIVE is below 90% of the capacity for the whole 60 s at 128 KiB. It needs a receiver timestamp the library does not report (27.6). Where it is worse than the oracle (5 cells) is after a change that lands inside a long transfer: it measures once per sample.
+2. `train` with the 100 ms reports is **not better than the train alone** in this model (its paced-stretch probing costs queue: queue>100ms 28% on the varying patterns at 1 MiB against 8%); the extra feedback is not worth its wire change.
+3. **BBRv3 on the current feedback is a trap**: it wins 12 cells against ADAPTIVE on latency but at 1 MiB it repairs 55-65% of what it sends on the static, step and varying families and sits above 3x the capacity 33-45% of the time (a lumpy held count read as a delivery rate). With the enhanced feedback it is stable (retx 3-6%) but slow to rise (recovery after a step up 13-39 s) and does not beat ADAPTIVE overall (9/20/9).
+4. NADA and GCC, even with the enhanced feedback, are slower than ADAPTIVE in 24 of 38 cells. Their rise is the limit: NADA ramps 20% per report and a 128 KiB sample is one report, GCC 8% per second of an application that sends 100 ms in 4 s. They would need a start-up probe or a sender that is not application-limited; a bursty application is the case they were not made for.
+5. **No variant on the current feedback is better than ADAPTIVE without a price.** The only no-wire change with a model benefit is the start rate (`adapt_hi`: 0 wins, 0 losses; 1 MiB on 100-200 Mbit/s startup 14 -> 8 s, p99 7.2x -> 2.1x the oracle's; the static links' 128 KiB p99 1.56x -> 1.21x) and it does nothing for the 5G case.
+
+**The 5G report's inferred cause is not supported by the model.** The 5G run (RESULTS section 5) inferred, and said it had not tested, that ADAPTIVE's 16-19% of the capacity at 128 KiB on N2/N3 came from its 8 Mbit/s start rate. In the model a start rate of 62.5 Mbit/s leaves N3 at 75 ms (73 ms with 8 Mbit/s) and N2 at 58 ms (65 ms): the estimator does not climb during a 128 KiB sample (it ends before a probe round completes) and falls to the measured rate after every blockage or outage. **A higher start rate is not the fix** (this is a model result; the Pi has not been run with one).
+
+### 27.5 Stress: links that serve in slots, and a receiver clock with jitter
+
+The model's link serves continuously; a Wi-Fi TXOP or a 5G TTI delivers a queue in lumps, and a receiver stamps arrivals with a clock of finite resolution and interrupt coalescing. The stress sweep serves the queue only at slot boundaries (the datagrams of a slot arrive together) and adds uniform jitter to the receiver's arrival stamps, on 11 workloads. Cell: in +-30% / p50 x oracle / p99 x oracle / over 3x.
+
+
+#### Stress, 128 KiB (workloads P7 N1 N2 N3 N4 M1 S1 RS RSm RSd H100; 6 seeds): in +-30% of the capacity / p50 x oracle / p99 x oracle / over 3x
+
+| candidate | clean | slot 1 ms, jitter 0.2 ms | slot 2 ms, jitter 0.5 ms | slot 4 ms, jitter 1 ms |
+|---|---|---|---|---|
+| oracle | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% |
+| fixed | 56% / 1.11 / 0.98 / 11.6% | 56% / 1.11 / 0.98 / 11.6% | 56% / 1.11 / 0.99 / 11.6% | 56% / 1.13 / 1.01 / 11.6% |
+| adapt-a | 37% / 1.62 / 1.23 / 2.1% | 36% / 1.72 / 1.30 / 1.6% | 38% / 1.66 / 1.46 / 2.3% | 32% / 1.76 / 2.00 / 2.4% |
+| adapt_hi-a | 37% / 1.59 / 1.12 / 2.2% | 38% / 1.64 / 1.17 / 1.7% | 36% / 1.63 / 1.24 / 2.3% | 33% / 1.77 / 1.25 / 2.2% |
+| bbr3-b | 53% / 1.43 / 1.22 / 5.6% | 50% / 1.38 / 1.21 / 8.2% | 47% / 1.38 / 1.28 / 6.6% | 43% / 1.41 / 1.27 / 10.3% |
+| nada-b | 42% / 1.95 / 2.31 / 1.3% | 39% / 1.89 / 2.49 / 1.6% | 42% / 1.82 / 2.36 / 1.6% | 34% / 1.93 / 2.38 / 1.7% |
+| gcc-b | 31% / 2.18 / 1.26 / 1.7% | 33% / 2.21 / 1.33 / 1.6% | 32% / 2.20 / 1.36 / 1.7% | 32% / 2.20 / 1.34 / 1.6% |
+| train-b | 78% / 1.14 / 1.09 / 1.8% | 74% / 1.11 / 1.14 / 1.7% | 60% / 1.14 / 1.18 / 1.6% | 58% / 1.23 / 1.19 / 1.8% |
+| train1-b | 88% / 1.02 / 1.02 / 2.1% | 81% / 1.02 / 1.03 / 1.9% | 64% / 1.07 / 1.06 / 1.9% | 62% / 1.13 / 1.07 / 2.0% |
+| train1t-b | 88% / 1.02 / 1.03 / 2.1% | 86% / 1.01 / 1.01 / 2.0% | 81% / 1.01 / 1.09 / 1.9% | 63% / 1.10 / 1.07 / 2.1% |
+| traint-b | 78% / 1.14 / 1.09 / 1.7% | 78% / 1.15 / 1.13 / 1.6% | 75% / 1.11 / 1.18 / 1.6% | 58% / 1.18 / 1.15 / 1.7% |
+
+#### Stress, 1 MiB (workloads P7 N1 N2 N3 N4 M1 S1 RS RSm RSd H100; 6 seeds): in +-30% of the capacity / p50 x oracle / p99 x oracle / over 3x
+
+| candidate | clean | slot 1 ms, jitter 0.2 ms | slot 2 ms, jitter 0.5 ms | slot 4 ms, jitter 1 ms |
+|---|---|---|---|---|
+| oracle | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% | 100% / 1.00 / 1.00 / 0.0% |
+| fixed | 56% / 1.19 / 1.08 / 11.6% | 56% / 1.20 / 1.08 / 11.6% | 56% / 1.19 / 1.06 / 11.6% | 56% / 1.21 / 1.08 / 11.6% |
+| adapt-a | 52% / 1.23 / 1.79 / 2.4% | 47% / 1.33 / 1.91 / 2.1% | 49% / 1.27 / 1.89 / 2.4% | 47% / 1.29 / 2.31 / 2.1% |
+| adapt_hi-a | 52% / 1.22 / 1.63 / 2.4% | 52% / 1.26 / 1.88 / 2.2% | 53% / 1.18 / 1.92 / 2.2% | 49% / 1.25 / 1.91 / 2.6% |
+| bbr3-b | 60% / 1.49 / 1.24 / 1.7% | 60% / 1.45 / 1.24 / 1.8% | 61% / 1.40 / 1.27 / 2.1% | 62% / 1.31 / 1.27 / 2.4% |
+| nada-b | 54% / 1.97 / 2.47 / 1.3% | 51% / 1.88 / 2.47 / 1.5% | 51% / 1.97 / 2.49 / 1.8% | 50% / 1.98 / 2.33 / 2.2% |
+| gcc-b | 34% / 2.44 / 2.48 / 0.4% | 35% / 2.43 / 2.49 / 0.4% | 34% / 2.38 / 3.42 / 0.4% | 34% / 2.34 / 2.48 / 0.4% |
+| train-b | 77% / 1.12 / 1.11 / 2.1% | 74% / 1.12 / 1.12 / 2.0% | 68% / 1.15 / 1.13 / 2.1% | 64% / 1.19 / 1.39 / 2.0% |
+| train1-b | 88% / 1.08 / 1.05 / 2.2% | 82% / 1.15 / 1.10 / 1.9% | 64% / 1.22 / 1.13 / 1.9% | 62% / 1.28 / 1.53 / 1.9% |
+| train1t-b | 88% / 1.08 / 1.05 / 2.2% | 86% / 1.10 / 1.08 / 2.0% | 85% / 1.15 / 1.10 / 2.0% | 79% / 1.23 / 1.54 / 3.5% |
+| traint-b | 75% / 1.12 / 1.12 / 2.1% | 75% / 1.12 / 1.13 / 2.1% | 74% / 1.11 / 1.13 / 2.0% | 71% / 1.13 / 1.38 / 2.0% |
+
+TRAIN1's fixed 20-datagram train loses its accuracy once the train spans fewer than a few slots (at 100 Mbit/s 20 datagrams are 2.4 ms: one or two slots of 2-4 ms): in +-30% falls from 88% to 62-64% at 128 KiB, p50 1.13x at 4 ms. The 10 ms train (TRAIN1T) holds 81-86% up to 2 ms slots with 0.5 ms jitter and 63-79% at 4 ms / 1 ms; its p99 at 1 MiB at 4 ms is 1.54x, against ADAPTIVE's 2.31x on the same link. So the length of the train must be long against the link's service interval (about 10 ms and at least a few slots), and a heavily aggregating link degrades it to the level of the current ADAPTIVE, no worse than it in this model. Packet-train dispersion is known to be fragile against cross traffic, token-bucket bursts, multi-hop paths and radio rate adaptation; **none of these is in the model.**
+
+### 27.6 The exact wire and feedback change for the top two (a proposal, not implemented; needs the user's approval)
+
+**(1) TRAIN1 / TRAIN1T: no new submessage, no `tt_VERSION` change, interoperable with v2.1/v2.2 readers and writers.**
+
+* **Sender.** The first K datagrams of a large sample go out back to back (K = 20, or about 10 ms of the estimated link, between 20 and half the sample), the rest at 95% of the capacity estimate. Immediately after datagram K a HEARTBEAT is sent with a new flag bit **`tt_HEARTBEAT_FLAG_TRAIN` (1U << 2)**, `last_seq_no` = the train's last datagram. Flag bits 0 (FINAL) and 1 (LIVELINESS) are the only ones a v14 receiver tests (`process_heartbeat()` reads them as `flags & BIT`), so an older reader sees an ordinary HEARTBEAT; K is carried by the range, so a variable K needs no field. Cost: one HEARTBEAT (about 70 B on the wire) per large sample.
+* **Reader.** It stamps the arrival of the first datagram of the sample and of `last_seq_no` (two clock reads per sample) and answers with its ordinary ACKNACK, whose **`tt_AckNackHeader.reserved` (u16, written zero and read by no one: `tickle.c` writes `acknack_header->reserved = 0` and no receive path reads it)** now carries the span between the two arrivals in 8 us units (0 = no measurement, the old meaning; 0xFFFF = 524 ms or more). The datagrams of the train that arrived follow from the ACKNACK's watermark and bitmap, so no count field is needed. Cost: **0 bytes**: the ACKNACK is sent today.
+* **Sender, on the answer.** capacity = (datagrams received - 1) x wire bytes x 8 / span; a missing or zero span means an older reader and the sender keeps the current ADAPTIVE (feedback model a).
+* **Compat.** Same rule as `marks` and `summary_interval` (section 3, the user's decision of 2026-10-22: a reserved field given a meaning whose zero is the old one). A v2.1/2.2 writer ignores the field; a v2.1/2.2 reader ignores the flag and answers with zero. A context with the train off (the default) sends today's bytes; with it on, the flag bit and the ACKNACK field are the only new patterns, and the wire identity tests would mask them as they mask `marks`. The one asymmetry: a **new writer sends 20 datagrams unpaced to an old reader** (the old reader can't use it); the queue ahead of the link must hold them.
+* **Rate and size.** One report per large sample; extra bytes: the one HEARTBEAT per sample; the model's feedback total for train1-b is below ADAPTIVE's in every family (6.6 against 7.9 kB/s on the varying patterns at 1 MiB), since the ACKNACK/solicit stream is unchanged.
+* **Implementation risk.** The reader's arrival stamps must be per datagram: the Linux receive path drains in batches (`recvmmsg`, the GRO merge, `rx_drain`), which hides the spacing a train is measured by; kernel receive time stamps (`SO_TIMESTAMPING`) or reading the clock per datagram in the drain would be needed, and the FreeRTOS path stamps at its own receive. This is the first thing to measure on the Pi.
+
+**(2) TRAIN with 100 ms reports** (second in the ranking; **not recommended**: it adds little to (1) in the model): a **new submessage `RX_REPORT` (type 16)** from the reader every 100 ms while a large sample arrives: `endpoint_id` u32, `entity_id` u32, `rx_bytes` u32, `t_first` u32 and `t_last` u32 (reader microseconds), `n_pkts` u16, `gaps_new` u16, `owd_min15` i32 (a relative one-way delay in microseconds), and the train block of (1) (`span` u16): 32 B + 4 B submessage header; 82 B on the wire, **820 B/s while a transfer runs**. Compat: by the rule of section 3 a new submessage type bumps `tt_VERSION` (14 -> 15) and v14 and v15 nodes refuse each other's every datagram, which breaks 2.2.0 against 2.1.x; the alternative (no bump, relying on the receive path's "unknown submessage type, skipping" for type 16) leaves old readers logging a warning per report and is a departure from the rule that is the user's to decide.
+
+Everything else the candidates read (the NADA/GCC/BBRv3-b fields) needs this submessage too, which is a reason to prefer (1).
+
+### 27.7 What the model cannot show
+
+* It does not reproduce the Pi's **lumpy readings** (executor and `recvmmsg` batching, ACKNACKs bunched behind the reader's work), **repair-delayed RTT samples**, or **absolute latency**; its RTT samples are cleaner, its reports are never merged, and its reader ticks at 8 ms exactly. The model's ADAPTIVE is therefore likely better than the Pi's, and the train's arrival stamps likely noisier on the Pi than here.
+* **Single flow, single reader, no cross traffic**, a symmetric link, a reverse path without queueing; the N3 delay steps are made order-preserving (a delay decrease compresses the flight).
+* The links serve **continuously** unless the stress is on; real Wi-Fi aggregates and rate-adapts, real 5G schedules per slot and per user. The stress covers two crude cases; cross traffic and token buckets are not covered.
+* The train is **ideal** in the clean runs: the receiver stamps exactly. Whatever the Linux receive path does to arrival times is the largest unknown (27.6).
+* The oracle and the fixed arm know the capacity or its mean; TRAIN1 knows neither. The comparison with `fixed` is the one that matters for the recommendation "fixed pacing at 95% of the known bandwidth".
+* NADA, GCC and BBRv3 are re-implementations of the algorithms from their documents, with the deviations of the table in 27.2, not the vendors' code, and tuned by nobody; GCC runs without its probe controller. Their poor result is a statement about a bursty application and these feedback models, not about those algorithms in their home settings.
+* Seeds change the loss draws and the BBR probe timers; the schedules (N1-N4 included) are single draws. 6 seeds per cell.
+* **Guards.** The existing `tests/test_adaptive_pacing.c` checks (frozen state, probe storm, the M2r2/S2r2 replays) pass with the unmodified header, and with a start ceiling of 62.5 Mbit/s (they use caps of 30 Mbit/s and below, so that variant is not stressed by them). They test the ADAPTIVE header, so they do not apply to the other candidates; their model proxies are slow<10% and over>3x in `results/cells.csv`: BBRv3-a is over 3x the capacity 33-45% of the time at 1 MiB (a probe storm), the train candidates 0-3.6% (the outages of N2/N3 and the steps), ADAPTIVE 0-4%.
+
+### 27.8 Reproduce
+
+```
+examples/perf_hil/experiments/adaptive_pacing/algosim/build.sh <repo root> <out dir>     # algosim from the unmodified header
+python3 .../algosim/mksched.py .../algosim/sched <dir with N1-N4.json>                      # the schedules (committed)
+python3 .../algosim/run_all.py <out>/algosim .../algosim/sched <out>/res 6 6                 # 6 jobs, 6 seeds
+python3 .../algosim/aggregate.py <out>/res tables.md cells.csv; python3 .../algosim/condense.py tables.md
+CANDS=... WLS=... SLOT_US=2000 JITTER_US=500 python3 .../algosim/run_all.py ...             # the stress sweep
+```
+`algosim <sched> <datagrams per sample> <candidate> <a|b> <seed>` prints one line per run. A run takes 0.01-0.3 s; the whole sweep a few minutes on 6 cores.
+
+### 27.9 Recommendation (phase A)
+
+1. If the user wants a Wi-Fi/5G-capable ADAPTIVE in 2.2.0, the candidate is **the packet train (TRAIN1T) with a one-field feedback in `tt_AckNackHeader.reserved`**: no version bump, no new submessage, v2.1/2.2 interoperable, no bytes added. It is the only candidate that follows the capacity in every family of the model, and it removes the 128 KiB startup problem on 100-200 Mbit/s links (in the model).
+2. **Before any library work, measure on the Pi whether a reader can stamp per-datagram arrival times well enough** (27.6, implementation risk) and what the Pi's receive path does to a 29 KB train: a first, small Pi run with the train and the existing ACKNACK, no pacing change. That is phase B.
+3. Without the wire change: nothing in the model beats the current ADAPTIVE; `adapt_hi` (the start rate) is a safe small gain and does nothing for 5G. The 2.2.0 position stays: fixed pacing at about 95% of the known bandwidth, ADAPTIVE opt-in experimental for Wi-Fi-class links.
+4. The sentence in the 2.2.0 docs that gives the 8 Mbit/s start rate as the (untested) cause of ADAPTIVE's low rate on the 5G-like links should be reworded: the model does not support it (27.4).
