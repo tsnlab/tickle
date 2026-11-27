@@ -34,8 +34,8 @@
 //   each-gro    `each` with UDP_GRO on: the kernel hands same-flow datagrams over merged, with their size in a cmsg
 //               (the HAL's offload does this)
 // and says, per train, the span between the first and last datagram (the user stamp's, the kernel's) against the ideal
-// (N - 1) x (size + overhead) x 8 / rate for a link of --rate-kbit: the spans' error, the datagrams per distinct stamp
-// (1 = every datagram stamped on its own, N = the whole train under one stamp: the batching hides the spacing), and
+// (N - 1) x (size + overhead) x 8 / rate for a link of --rate-kbit: the spans' error, the number of distinct stamps
+// (N = every datagram has its own stamp, 1 = the whole train under one stamp: the batching hides the spacing), and
 // the lag of the user stamp behind the kernel's. Percentiles over the trains that arrived whole.
 //
 // The receiver's own port is printed first ("port=N"; the HAL's data socket is ephemeral).
@@ -362,7 +362,7 @@ static void print_percentiles(const char* name, int64_t* values, uint32_t count,
     printf(" %s\n", unit);
 }
 
-// The datagrams per distinct stamp: stamps within GROUP_GAP_NS of the group's first are one read.
+// The number of distinct stamps: stamps within GROUP_GAP_NS of each other are one read.
 static uint32_t groups_of(const struct train* train, uint32_t count) {
     int64_t sorted[MAX_N];
     for (uint32_t i = 0; i < count; i++) {
@@ -449,7 +449,8 @@ static void report(const struct options* opt, uint32_t sent_hint) {
     }
     print_percentiles("user span - ideal (ns)", user_err, whole, "ns");
     print_percentiles("user span / ideal (x1000)", user_ratio, whole, "");
-    print_percentiles("datagrams per distinct stamp", groups, whole, "(n = the whole train under one stamp)");
+    print_percentiles("distinct stamps per train", groups, whole,
+                      "(n = every datagram has its own stamp; 1 = all under one)");
     if (kernel_whole != 0) {
         print_percentiles("kernel span - ideal (ns)", kernel_err, kernel_whole, "ns");
         print_percentiles("user stamp - kernel stamp (ns)", lag, kernel_whole, "ns (last datagram)");
