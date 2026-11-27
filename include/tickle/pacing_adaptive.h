@@ -111,6 +111,21 @@
     8U // a stall (sending, nothing delivered) needs this many data units sent in the round: repairs and control are not
        // data
 #define AP_RTT_MAX_NS 1000000000ULL // a round trip sample above this is a repair or a queue, not the path
+// The packet train (adaptive_pacing/DESIGN.md 28): the arrival span of the first K datagrams of a large sample sent
+// back to back is the link's capacity sample. What is believed of it:
+#define AP_TRAIN_MIN_SPAN_NS \
+    16000ULL // below this - two 8 us units - the clock cannot resolve the span (probe: +-1-2 us)
+#define AP_TRAIN_MAX_SPAN_NS 2000000000ULL // a train that took longer than this was not one
+#define AP_TRAIN_LINE_PCT 125U     // a sample above 1.25 x the cap (the 1 Gbit/s default's) is not a measurement
+#define AP_TRAIN_MAX_JUMP_X 16U    // nor one above 16 x the last estimate (a 4 -> 30 Mbit/s rise is 7.5 x)
+#define AP_TRAIN_RISE_PCT 150U     // a rise of more than this over the last estimate needs a second train to agree
+#define AP_TRAIN_RATE_PCT 95U      // the rate is this share of the capacity
+#define AP_TRAIN_BAD_TRIPS 2U      // guard trips (queue + drop) in the sample after a train: the train read too high
+#define AP_TRAIN_BAD_SAMPLES 2U    // that many such samples in a row block rises ...
+#define AP_TRAIN_BLOCK_SAMPLES 16U // ... for this many samples
+#define AP_TRAIN_FRESH_NS \
+    12000000000ULL       // probes are held back for this long after a train (they find what it just measured)
+#define AP_TRAIN_HIST 3U // the trains the median reads
 #define AP_RTT_OUTLIER_X \
     16U // and so is one above this many times the estimate, once there are three (a queue of a few times the path
         // is the signal the queue guard reads and stays)
@@ -184,6 +199,20 @@ struct ap_pacer {
     uint32_t low_rounds;          // consecutive rounds below half the BtlBw
     uint64_t last_active_ns;      // when this pacer last sent
     uint64_t rounds;              // active rounds so far, the max filter's clock
+    // The packet train: the last estimate it gave (0: none), the per-round samples the median reads, the round of the
+    // newest, the guard trips when it was applied, and the bookkeeping that holds rises back when a train reads too
+    // high.
+    uint64_t train_est_bps;
+    uint64_t train_hist[AP_TRAIN_HIST];
+    uint32_t train_hist_n;
+    uint32_t train_round;
+    uint32_t train_bad;
+    uint32_t train_block;
+    uint64_t train_trips0;
+    uint64_t train_fresh_until_ns;
+    uint64_t train_samples;
+    uint64_t train_rejected;
+    uint64_t train_applied;
     // counters
     uint64_t samples;
     uint64_t queue_trips;
@@ -683,7 +712,7 @@ static inline void ap_cruise_round(struct ap_pacer* ctl, const struct ap_round* 
         bool due = ctl->rounds_since_probe >= AP_PROBE_EVERY_ROUNDS ||
                    (round->big && ctl->rounds_since_probe >= 2U &&
                     ctl->round_end_ns - ctl->last_probe_ns >= AP_PROBE_EVERY_NS);
-        if (due && !ctl->draining && !round->app_limited) {
+        if (due && !ctl->draining && !round->app_limited && ctl->round_end_ns >= ctl->train_fresh_until_ns) {
             ctl->phase = AP_PH_PROBE;
             ctl->probe_base_bps = bandwidth;
             ctl->probe_gain_pct = ctl->damp_probe_rounds != 0 ? AP_DAMPED_PROBE_GAIN_PCT : AP_PROBE_GAIN_PCT;
@@ -816,6 +845,140 @@ static inline void ap_anchor_round(struct ap_pacer* ctl, const struct ap_round* 
     } else if (!low && ctl->anchor_qrounds == 0 && ctl->rate_bps < ctl->cap_bps) {
         ctl->rate_bps = ap_clamp_rate(ctl, ctl->rate_bps * AP_ANCHOR_RECOVER_PCT / AP_PERCENT);
     }
+}
+
+// The packet train (adaptive_pacing/DESIGN.md 28). A train is the first K datagrams of a large sample sent back to
+// back; the reader reports the span between the first and the last to arrive, so bytes of the K - 1 after the first
+// over that span is what the path carried them at: the capacity when the path was the narrowest part, and what a
+// burst-forming link (slots, aggregation) released in a burst when not. Samples are taken, per round (one per large
+// sample: every reader's train of it), as the least over the readers; three rounds are kept.
+//
+//  - implausible samples (no span, one the clock cannot resolve, above 1.25 x the cap or 16 x the last estimate) are
+//  not read;
+//  - a sample below the last estimate is taken at once (an overestimate is the dangerous one: a queue); one above it is
+//  taken
+//    up to 1.5 x the last estimate, and past that only as far as the median of the last three rounds agrees (two of
+//    three);
+//  - when the guards trip (queue or drop, twice) in the sample after one was applied, the train read too high - the
+//    burst of a slotted link: after two such samples in a row rises are not taken for AP_TRAIN_BLOCK_SAMPLES samples,
+//    and the rate is what the estimator finds by itself;
+//  - the estimate becomes BtlBw at AP_TRAIN_RATE_PCT of it and the state CRUISE (a train ends a START search), and
+//  probes
+//    wait AP_TRAIN_FRESH_NS (the train has just said what they would find). Everything else - the queue guard, the drop
+//    guard, the stall restart - runs as before and can lower it again; without trains nothing here ever runs.
+static inline uint64_t ap_train_median(const struct ap_pacer* ctl) {
+    const uint64_t* hist = ctl->train_hist;
+    if (ctl->train_hist_n >= 3U) {
+        uint64_t low = ap_min_u64(hist[0], hist[1]);
+        uint64_t high = ap_max_u64(hist[0], hist[1]);
+        return ap_max_u64(low, ap_min_u64(high, hist[2]));
+    }
+    return ctl->train_hist_n == 2U ? ap_min_u64(hist[0], hist[1]) : hist[0];
+}
+
+static inline void ap_train_apply(struct ap_pacer* ctl, uint64_t now, uint64_t estimate) {
+    uint64_t bandwidth = ap_clamp_rate(ctl, estimate * AP_TRAIN_RATE_PCT / AP_PERCENT);
+    ap_filter_reset(&ctl->bw, bandwidth, ctl->rounds);
+    ctl->state = AP_CRUISE;
+    ctl->phase = AP_PH_CRUISE;
+    ctl->draining = false;
+    ctl->drain_rounds = 0;
+    ctl->queue_over = 0;
+    ctl->low_rounds = 0;
+    ctl->stalls = 0;
+    ctl->prev_round_bps = 0;
+    ctl->rounds_since_probe = 0;
+    ctl->probe_carried = 0;
+    ctl->last_cruise_bps = bandwidth;
+    ctl->rate_bps = bandwidth;
+    ctl->train_est_bps = estimate;
+    ctl->train_trips0 = ctl->queue_trips + ctl->drop_trips;
+    ctl->train_fresh_until_ns = now + AP_TRAIN_FRESH_NS;
+    ctl->train_applied++;
+    ap_round_begin(ctl, now);
+}
+
+// Whether a sample is a measurement at all.
+static inline bool ap_train_plausible(const struct ap_pacer* ctl, uint64_t sample_bps, uint64_t span_ns) {
+    uint64_t line = ctl->cap_bps != 0 && ctl->cap_bps < AP_CAP_UNSET_BPS ? ctl->cap_bps : AP_PRIOR_MAX_BPS;
+    if (span_ns < AP_TRAIN_MIN_SPAN_NS || span_ns > AP_TRAIN_MAX_SPAN_NS || sample_bps == 0) {
+        return false;
+    }
+    return sample_bps <= line * AP_TRAIN_LINE_PCT / AP_PERCENT &&
+           (ctl->train_est_bps == 0 || sample_bps <= ctl->train_est_bps * AP_TRAIN_MAX_JUMP_X);
+}
+
+// A new round (the first reader's train of a large sample): did the rate the last train gave hold - guards that tripped
+// since say it did not - and the sample joins the three kept.
+static inline void ap_train_new_round(struct ap_pacer* ctl, uint32_t round, uint64_t sample_bps) {
+    if (ctl->train_est_bps != 0) {
+        uint64_t trips = ctl->queue_trips + ctl->drop_trips;
+        if (ctl->train_block != 0) {
+            ctl->train_block--;
+        } else {
+            ctl->train_bad = trips - ctl->train_trips0 >= AP_TRAIN_BAD_TRIPS ? ctl->train_bad + 1U : 0U;
+            if (ctl->train_bad >= AP_TRAIN_BAD_SAMPLES) {
+                ctl->train_block = AP_TRAIN_BLOCK_SAMPLES;
+                ctl->train_bad = 0;
+            }
+        }
+    }
+    if (ctl->train_hist_n == AP_TRAIN_HIST) {
+        for (uint32_t i = 1; i < AP_TRAIN_HIST; i++) {
+            ctl->train_hist[i - 1U] = ctl->train_hist[i];
+        }
+        ctl->train_hist_n--;
+    }
+    ctl->train_hist[ctl->train_hist_n++] = sample_bps;
+    ctl->train_round = round;
+}
+
+// The estimate to take from this round's value: lower at once, higher by at most 1.5 x or as far as the median of three
+// agrees.
+static inline uint64_t ap_train_choose(const struct ap_pacer* ctl, uint64_t candidate) {
+    uint64_t prev = ctl->train_est_bps;
+    if (prev == 0 || candidate <= prev) {
+        return candidate;
+    }
+    return ap_min_u64(candidate, ap_max_u64(prev * AP_TRAIN_RISE_PCT / AP_PERCENT, ap_train_median(ctl)));
+}
+
+// One reader's train of `round`: `sample_bps` on the wire over a span of `span_ns`. True when it was read.
+static inline bool ap_train_sample(struct ap_pacer* ctl, uint64_t now, uint32_t round, uint64_t sample_bps,
+                                   uint64_t span_ns) {
+    ctl->train_samples++;
+    if (!ap_train_plausible(ctl, sample_bps, span_ns)) {
+        ctl->train_rejected++;
+        return false;
+    }
+    if (ctl->state == AP_ANCHOR) {
+        // The user's prior is believed: a train only says when it is wrong (a link a good deal below it).
+        if (sample_bps * AP_PERCENT < ctl->prior_bps * AP_PRIOR_VERIFY_PCT) {
+            ap_anchor_wrong(ctl, sample_bps);
+            ctl->train_applied++;
+        }
+        return true;
+    }
+    if (ctl->train_hist_n == 0 || round != ctl->train_round) {
+        ap_train_new_round(ctl, round, sample_bps);
+    } else {
+        uint64_t* newest = &ctl->train_hist[ctl->train_hist_n - 1U];
+        *newest = ap_min_u64(*newest, sample_bps); // the least over the round's readers
+    }
+    uint64_t candidate = ctl->train_hist[ctl->train_hist_n - 1U];
+    if (ctl->train_block != 0) {
+        // The trains have read too high (a burst-forming link): what they say is read only to go lower than the
+        // estimator's own bandwidth, which it finds without them; the estimate they gave is forgotten for what it
+        // found.
+        uint64_t own = ap_btlbw_bps(ctl) * AP_PERCENT / AP_TRAIN_RATE_PCT;
+        ctl->train_est_bps = own;
+        if (candidate < own) {
+            ap_train_apply(ctl, now, candidate);
+        }
+        return true;
+    }
+    ap_train_apply(ctl, now, ap_train_choose(ctl, candidate));
+    return true;
 }
 
 static inline void ap_end_round(struct ap_pacer* ctl, uint64_t now) {

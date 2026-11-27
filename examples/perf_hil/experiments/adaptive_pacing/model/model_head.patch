@@ -1,0 +1,97 @@
+--- a/tests/test_adaptive_pacing.c
++++ b/model_vary.c
+@@ -20,7 +20,10 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#define EXP_ORACLE_DEFS 1
+ #include <tickle/pacing_adaptive.h>
++uint64_t g_oracle_bps = 0;
++int g_oracle_noise_pct = 0;
+ 
+ #define UNIT_WIRE 1538U   // a full frame on the wire: 1472 payload + UDP, IP and Ethernet framing
+ #define SAMPLE_UNITS 723U // 1 MiB in 1472-byte units
+@@ -86,6 +89,9 @@
+     uint64_t max_rate_bps;
+     uint64_t min_rate_bps;
+     uint64_t trips_q, trips_d;
++    uint32_t rate_series[2048]; // rate (kbit/s) at every 100 ms
++    uint64_t ratio_hist[512];
++    uint64_t steps_counted;
+     uint64_t delivered_by_reader[MAX_READERS]; // unique datagrams each reader holds at the end
+ };
+ 
+@@ -117,7 +123,22 @@
+     return phase == 1 ? cfg->step1_ns : cfg->step2_ns;
+ }
+ 
++struct sched_pt {
++    uint64_t t_ns;
++    uint64_t bps;
++};
++static struct sched_pt g_sched[256];
++static uint32_t g_sched_n = 0;
+ static uint64_t link_rate(const struct link_cfg* cfg, uint64_t now) {
++    if (g_sched_n != 0) {
++        uint64_t r = g_sched[0].bps;
++        for (uint32_t i = 0; i < g_sched_n; i++) {
++            if (now >= g_sched[i].t_ns) {
++                r = g_sched[i].bps;
++            }
++        }
++        return r;
++    }
+     return cfg->rate_bps[link_phase(cfg, now)];
+ }
+ 
+@@ -189,6 +210,8 @@
+ // carries it `readers` times, and the pacer is one per link, fed by every reader's reports (the pooled, link-level
+ // estimate).
+ static uint32_t g_model_sample_units = 0; // run(): units of a sample, 0 = SAMPLE_UNITS (1 MiB)
++static uint32_t g_seed = 12345U;
++static bool g_defer_repairs = false; // the Pi defers repairs behind the paced send (pace_repair_allowed)
+ static bool g_model_prior = false;        // run(): the cap is the user's prior of the link (START begins at half of it)
+ 
+ static uint32_t model_sample_units(void) {
+@@ -241,7 +264,7 @@
+     uint64_t next_unsolicited_ns = 0;
+     uint64_t last_solicit_ns = 0;
+     bool solicit_open = false; // a solicitation is out and no report has come since
+-    uint32_t lcg = 12345;
++    uint32_t lcg = g_seed;
+     bool ge_bad = false;
+     uint64_t next_jump_ns = 0;
+     uint64_t jump_units = 0;             // units the watermark has moved past without holding them
+@@ -269,7 +292,17 @@
+             next_sample_ns = period_ns != 0 ? now + period_ns : 0;
+         }
+         // 2. the writer sends: repairs ahead of new units, at the pacing rate
++        g_oracle_bps = link_rate(cfg, now) * 991ULL / 1000ULL;
+         uint64_t rate = send_rate(mode, fixed_bps, &ap);
++        if (g_sched_n != 0 && now > 2000000000ULL) {
++            uint64_t capb = link_rate(cfg, now) * 991ULL / 1000ULL;
++            uint64_t ratio100 = rate * 100ULL / capb;
++            out->ratio_hist[ratio100 < 511 ? ratio100 : 511]++;
++            out->steps_counted++;
++            if (now % (100ULL * MS) < STEP_NS && now / (100ULL * MS) < 2048U) {
++                out->rate_series[now / (100ULL * MS)] = (uint32_t)(rate / 1000U);
++            }
++        }
+         if (rate > out->max_rate_bps) {
+             out->max_rate_bps = rate;
+         }
+@@ -280,7 +313,7 @@
+             int64_t unit = -1;
+             bool repair = false;
+             for (int64_t u = sample_first; u < sample_next; u++) {
+-                if (want_repair[u] && !got[u] && now - last_sent[u] > srtt + srtt / 2U) {
++                if (want_repair[u] && !got[u] && now - last_sent[u] > srtt + srtt / 2U && (!g_defer_repairs || sample_next > sample_end)) {
+                     unit = u;
+                     repair = true;
+                     break;
+@@ -1241,3 +1274,5 @@
+     check_anchor_causes();
+ }
+ 
++
++

@@ -1,0 +1,4 @@
+name S2
+dur_ms 100000
+limit_pkts 100
+0 4000 20 30000

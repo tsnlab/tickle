@@ -385,8 +385,8 @@ static void test_adaptive_starts_between_floor_and_cap(void) {
     EXPECT_TRUE(!node.rate[0].adaptive);
     uint64_t rate = pacer_rate_bps();
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, 0, &ack, 100, 100);
-    rate_acknack(&node, 0, 0, &ack, 900, 900);
+    rate_acknack(&node, 0, 0, &ack, 100, 100, 0);
+    rate_acknack(&node, 0, 0, &ack, 900, 900, 0);
     EXPECT_EQ_U64(rate, pacer_rate_bps());
     EXPECT_EQ_U64(0, node.rate[0].ap.delivered);
     EXPECT_EQ_U32(0, ack.rate_units_valid ? 1U : 0U);
@@ -439,18 +439,18 @@ static void test_readers_pool_into_one_link_count(void) {
     struct tt_PeerAck a = {0};
     struct tt_PeerAck b = {0};
     // First ACKNACKs are baselines: nothing counted.
-    rate_acknack(&node, 0, 0, &a, 500, 500);
-    rate_acknack(&node, 0, 0, &b, 9000, 9000);
+    rate_acknack(&node, 0, 0, &a, 500, 500, 0);
+    rate_acknack(&node, 0, 0, &b, 9000, 9000, 0);
     EXPECT_EQ_U64(0, node.rate[0].ap.held_units);
     // Each reader's advance adds to the one count.
-    rate_acknack(&node, 0, 0, &a, 510, 510);
+    rate_acknack(&node, 0, 0, &a, 510, 510, 0);
     EXPECT_EQ_U64(10, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, 0, &b, 9020, 9020);
+    rate_acknack(&node, 0, 0, &b, 9020, 9020, 0);
     EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
     // A reordered, older ACKNACK moves nothing, and does not lower the baseline.
-    rate_acknack(&node, 0, 0, &a, 505, 505);
+    rate_acknack(&node, 0, 0, &a, 505, 505, 0);
     EXPECT_EQ_U64(30, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, 0, &a, 512, 512);
+    rate_acknack(&node, 0, 0, &a, 512, 512, 0);
     EXPECT_EQ_U64(32, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(32ULL * unit, node.rate[0].ap.delivered);
     destroy();
@@ -466,7 +466,7 @@ static void test_the_round_trip_reads_the_watermark_only(void) {
     opts.net.links[0].rate_control = tt_RATE_CONTROL_ADAPTIVE;
     create(&opts);
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, 0, &ack, 0, 0); // the baseline
+    rate_acknack(&node, 0, 0, &ack, 0, 0, 0); // the baseline
     uint64_t t0 = test_mock_now;
     for (uint32_t unit = 0; unit < 30; unit++) {
         pace_charge(&node, 0, 1472U, t0 + ((uint64_t)unit * 1000000ULL)); // a unit a ms
@@ -474,7 +474,7 @@ static void test_the_round_trip_reads_the_watermark_only(void) {
     // 30 ms on: the watermark is at 10 units; the bitmap names the 20 sent since as missing (in flight), which a count
     // of held + named would read as the newest sent unit, a round trip of 1 ms.
     test_mock_now = t0 + 30000000ULL;
-    rate_acknack(&node, 0, 0, &ack, 30, 3);
+    rate_acknack(&node, 0, 0, &ack, 30, 3, 0);
     EXPECT_EQ_U64(1, node.rate[0].ap.rtt_samples); // the watermark moved by 3 units: a sample
     // The sample is the time since the unit under the watermark was sent: unit 2, at 2 ms.
     EXPECT_EQ_U64(28000000ULL, ap_filter_get(&node.rate[0].ap.rtt));
@@ -570,16 +570,16 @@ static void test_a_watermark_jump_is_not_delivery(void) {
         pace_charge(&node, 0, 1472U, test_mock_now);
     }
     struct tt_PeerAck ack = {0};
-    rate_acknack(&node, 0, 0, &ack, 1000, 1000); // the baseline
-    rate_acknack(&node, 0, 0, &ack, 1050, 1050); // 50 held
+    rate_acknack(&node, 0, 0, &ack, 1000, 1000, 0); // the baseline
+    rate_acknack(&node, 0, 0, &ack, 1050, 1050, 0); // 50 held
     EXPECT_EQ_U64(50, node.rate[0].ap.held_units);
-    rate_acknack(&node, 0, 0, &ack, 1800, 1800); // the watermark jumps 750 units: only 100 were ever sent
+    rate_acknack(&node, 0, 0, &ack, 1800, 1800, 0); // the watermark jumps 750 units: only 100 were ever sent
     EXPECT_EQ_U64(100, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
     for (uint32_t i = 0; i < 20; i++) {
         pace_charge(&node, 0, 1472U, test_mock_now); // 20 more go and are held
     }
-    rate_acknack(&node, 0, 0, &ack, 1820, 1820);
+    rate_acknack(&node, 0, 0, &ack, 1820, 1820, 0);
     EXPECT_EQ_U64(120, node.rate[0].ap.held_units);
     EXPECT_EQ_U64(700, node.rate[0].ap.jump_units);
     destroy();
@@ -603,7 +603,7 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
     const uint64_t step = 1000000ULL; // 1 ms
     uint64_t start = test_mock_now;
     *queue_peak = 0;
-    rate_acknack(&node, 0, 0, &ack, 0, 0); // the baseline
+    rate_acknack(&node, 0, 0, &ack, 0, 0, 0); // the baseline
     for (uint64_t t = 0; t < (uint64_t)seconds * tt_SECOND; t += step) {
         test_mock_now = start + t;
         uint64_t bps = link_bps(t / tt_SECOND);
@@ -632,7 +632,7 @@ static void fluid_link(uint64_t (*link_bps)(uint64_t second), uint32_t queue_byt
             reply_at = test_mock_now + (base_rtt / 2U); // and back
             snapped = true;
         } else if (snapped && test_mock_now >= reply_at) {
-            rate_acknack(&node, 0, 0, &ack, (uint32_t)held_at_solicit, (uint32_t)held_at_solicit);
+            rate_acknack(&node, 0, 0, &ack, (uint32_t)held_at_solicit, (uint32_t)held_at_solicit, 0);
             outstanding = false;
         }
         if ((t + step) % tt_SECOND == 0) {

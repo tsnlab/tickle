@@ -428,10 +428,10 @@ source. `source` is the context id (1-254); `receiver` an id or `tt_SUBMESSAGE_I
 |---:|---|---|---|
 | 1, 7 | *retired* (UPDATE, UPDATE_PART) | - | never reused |
 | 2 | `DATA` | `tt_DataHeader`: endpoint_id, seq_no, timestamp (u32 us), entity_id - 16 B | one sample in one datagram |
-| 3 | `ACKNACK` | endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] - 20 + 8/word B | reader's cumulative ack + missing bitmap |
+| 3 | `ACKNACK` | endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, reserved (u16: a packet train's arrival span in 8 us units, 0 = none; below), bitmap[] - 20 + 8/word B | reader's cumulative ack + missing bitmap |
 | 4 | `CALLREQUEST` | endpoint_id, seq_no (u16), retry, client_tag - 8 B | service request; client_tag: which Client of its context (0 = untold) |
 | 5 | `CALLRESPONSE` | endpoint_id, seq_no, retry, return_code - 8 B | service response |
-| 6 | `HEARTBEAT` | endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, summary_interval (2 B), summary_miss_threshold - 20 B | writer's range; `tt_HEARTBEAT_FLAG_LIVELINESS` = manual liveliness assertion; the last 3 B are the sender's discovery timing on a summary (section 5), zero elsewhere |
+| 6 | `HEARTBEAT` | endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, summary_interval (2 B), summary_miss_threshold - 20 B | writer's range; `tt_HEARTBEAT_FLAG_LIVELINESS` = manual liveliness assertion; `tt_HEARTBEAT_FLAG_TRAIN` (bit 2) = the first K datagrams of a large sample just went back to back, `last_seq_no` is the last of them, FINAL clear (below); the last 3 B are the sender's discovery timing on a summary (section 5), zero elsewhere |
 | 8 | `FRAG_FIRST` | `tt_DataHeader` + frag_count (u8) - 17 B | first fragment of a sample |
 | 9 | `FRAG_CONT` | entity_id, seq_no, frag_index, frag_count (u8) - 10 B | later fragments |
 | 10 | `SHM_DATA` | - | reserved for good; nothing produces it; refused from a socket |
@@ -488,6 +488,14 @@ timing (section 5) in `tt_HeartbeatHeader`'s 3 reserved bytes; the precedent is 
 round trip exactly (`tt_Context.announce_rtt_ns`) however many were outstanding. An older peer sends 0 and ignores what it
 reads, so nothing is timed with it and nothing else changes. Not byte-identical to the parent's for a default context:
 the wire identity tests mask these two bytes and compare the rest.
+
+The same rule gives the **packet train** (2.2.0, `rate_control = tt_RATE_CONTROL_ADAPTIVE`, experiments/adaptive_pacing/DESIGN.md sections 27 and 28):
+`tt_AckNackHeader.reserved`, written 0 by every build and read by none (`tickle.c` writes it at its two encoders and no receive path reads it; checked
+for v2.1.0 and the 2.2.0 head by `tests/compat_train.sh`), carries the arrival span of a train in 8 us units, and bit 2 of `tt_HeartbeatHeader.flags`,
+which receivers test only for FINAL and LIVELINESS, marks the HEARTBEAT that closes it. A writer sends a train, and reads `reserved`, only on an ADAPTIVE
+link and only while it has a train outstanding to that reader; a reader writes a nonzero `reserved` only in the ACKNACK that answers a TRAIN HEARTBEAT whose
+train it stamped whole and in order. A context that is not ADAPTIVE sends today's bytes, byte for byte, and an older peer on either side answers or ignores
+as it always did.
 
 ## 4. Sending: flush, batching and unicast peers
 
