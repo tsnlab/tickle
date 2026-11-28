@@ -1,0 +1,33 @@
+
+### train of N = 10 datagrams: user span / ideal  p50 (p5-p95) | kernel span / ideal p50 | distinct stamps per train p50 (N = each on its own) | user-kernel lag p50 us | OK = p50 within 10 %, p5-p95 within 20 %
+| mode | 4 Mbit/s | 30 Mbit/s | 100 Mbit/s | 200 Mbit/s |
+|---|---|---|---|---|
+| hal_offload0 | 1.00 (1.00-1.00); st 10 **OK** | 1.00 (0.99-1.00); st 10 **OK** | 0.99 (0.98-0.99); st 10 **OK** | 0.88 (0.84-0.89); st 6 x |
+| hal_offload0_drain | 1.00 (1.00-1.00); st 10 **OK** | 1.00 (0.99-1.00); st 10 **OK** | 0.99 (0.98-1.00); st 10 **OK** | 0.88 (0.86-1.00); st 6 x |
+| hal_offload1 | 0.00 (0.00-0.00); st 2 x | 0.00 (0.00-0.01); st 1 x | 0.01 (0.01-0.02); st 1 x | 0.03 (0.03-0.04); st 1 x |
+| hal_offload1_drain | 0.00 (0.00-0.00); st 2 x | 0.01 (0.00-0.01); st 2 x | 0.01 (0.01-0.02); st 2 x | 0.03 (0.03-0.04); st 2 x |
+| each | 0.00 (0.00-0.00); k 0.00; st 2; lag 47 x | 0.01 (0.01-0.01); k 0.01; st 2; lag 47 x | 0.03 (0.03-0.04); k 0.03; st 2; lag 48 x | 0.06 (0.06-0.20); k 0.06; st 2; lag 44 x |
+| batch | 0.00 (0.00-0.00); st 1 x | 0.00 (0.00-0.03); st 1 x | 0.00 (0.00-0.09); st 1 x | 0.00 (0.00-0.17); st 1 x |
+| each_gro | 0.00 (0.00-0.00); k 0.00; st 2; lag 48 x | 0.00 (0.00-0.03); k 0.01; st 2; lag 45 x | 0.01 (0.01-0.09); k 0.03; st 2; lag 34 x | 0.03 (0.02-0.17); k 0.05; st 2; lag 37 x |
+
+### train of N = 20 datagrams: user span / ideal  p50 (p5-p95) | kernel span / ideal p50 | distinct stamps per train p50 (N = each on its own) | user-kernel lag p50 us | OK = p50 within 10 %, p5-p95 within 20 %
+| mode | 4 Mbit/s | 30 Mbit/s | 100 Mbit/s | 200 Mbit/s |
+|---|---|---|---|---|
+| hal_offload0 | 1.00 (1.00-1.00); st 20 **OK** | 1.00 (1.00-1.00); st 20 **OK** | 1.00 (0.99-1.00); st 20 **OK** | 0.95 (0.93-0.95); st 17 **OK** |
+| hal_offload0_drain | 1.00 (1.00-1.00); st 20 **OK** | 1.00 (1.00-1.00); st 20 **OK** | 1.00 (0.99-1.00); st 20 **OK** | 0.94 (0.92-0.95); st 11 **OK** |
+| hal_offload1 | 0.00 (0.00-0.00); st 2 x | 0.00 (0.00-0.01); st 2 x | 0.01 (0.01-0.06); st 2 x | 0.03 (0.02-0.11); st 2 x |
+| hal_offload1_drain | 0.00 (0.00-0.00); st 2 x | 0.00 (0.00-0.01); st 2 x | 0.01 (0.01-0.06); st 2 x | 0.03 (0.02-0.08); st 2 x |
+| each | 0.00 (0.00-0.00); k 0.00; st 3; lag 46 x | 0.02 (0.01-0.02); k 0.02; st 3; lag 63 x | 0.06 (0.06-0.10); k 0.06; st 3; lag 52 x | 0.14 (0.12-0.20); k 0.15; st 4; lag 44 x |
+| batch | 0.00 (0.00-0.00); st 3 x | 0.01 (0.00-0.03); st 3 x | 0.05 (0.04-0.08); st 3 x | 0.09 (0.00-0.17); st 3 x |
+| each_gro | 0.00 (0.00-0.00); k 0.00; st 3; lag 38 x | 0.01 (0.00-0.03); k 0.02; st 3; lag 43 x | 0.07 (0.05-0.09); k 0.07; st 3; lag 42 x | 0.14 (0.09-0.17); k 0.14; st 3; lag 38 x |
+
+### train of N = 40 datagrams: user span / ideal  p50 (p5-p95) | kernel span / ideal p50 | distinct stamps per train p50 (N = each on its own) | user-kernel lag p50 us | OK = p50 within 10 %, p5-p95 within 20 %
+| mode | 4 Mbit/s | 30 Mbit/s | 100 Mbit/s | 200 Mbit/s |
+|---|---|---|---|---|
+| hal_offload0 | 1.00 (1.00-1.00); st 40 **OK** | 1.00 (1.00-1.00); st 40 **OK** | 1.00 (0.99-1.00); st 40 **OK** | 0.97 (0.96-0.98); st 22 **OK** |
+| hal_offload0_drain | 1.00 (1.00-1.00); st 40 **OK** | 1.00 (1.00-1.00); st 40 **OK** | 1.00 (0.99-1.00); st 40 **OK** | 0.99 (0.97-1.00); st 39 **OK** |
+| hal_offload1 | 0.00 (0.00-0.00); st 2 x | 0.01 (0.01-0.03); st 3 x | 0.05 (0.02-0.07); st 3 x | 0.08 (0.04-0.13); st 3 x |
+| hal_offload1_drain | 0.00 (0.00-0.00); st 3 x | 0.01 (0.00-0.02); st 2 x | 0.03 (0.02-0.08); st 2 x | 0.08 (0.03-0.15); st 3 x |
+| each | 0.00 (0.00-0.00); k 0.00; st 6; lag 55 x | 0.03 (0.02-0.03); k 0.03; st 6; lag 47 x | 0.09 (0.07-0.10); k 0.09; st 6; lag 42 x | 0.18 (0.15-0.20); k 0.18; st 6; lag 41 x |
+| batch | 0.00 (0.00-0.00); st 6 x | 0.02 (0.01-0.03); st 6 x | 0.08 (0.01-0.10); st 6 x | 0.16 (0.01-0.20); st 6 x |
+| each_gro | 0.00 (0.00-0.00); k 0.00; st 6; lag 49 x | 0.03 (0.02-0.03); k 0.03; st 6; lag 36 x | 0.08 (0.05-0.10); k 0.09; st 6; lag 37 x | 0.17 (0.12-0.20); k 0.18; st 6; lag 36 x |

@@ -1,0 +1,8 @@
+port=42874
+raw reads=2000 merged_reads=0
+mode=each-gro n=20 size=1468 rate_kbit=100000 overhead=42 drain=0 trains_seen=100 whole=100 (sent 100) ideal_span_us=2295
+  user span - ideal (ns)     p05    -64689 p25    -49040 p50    -29892 p75     20664 p95     33146 ns
+  user span / ideal (x1000)  p05       971 p25       978 p50       986 p75      1009 p95      1014 
+  datagrams per distinct stamp p05        20 p25        20 p50        20 p75        20 p95        20 (n = the whole train under one stamp)
+  kernel span - ideal (ns)   p05    -27781 p25    -18299 p50    -16243 p75    -14170 p95    -11503 ns
+  user stamp - kernel stamp (ns) p05      7130 p25     17481 p50     43760 p75     57908 p95     74611 ns (last datagram)

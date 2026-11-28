@@ -20,6 +20,9 @@ up)
     ssh -n $SSHO $CLI "sudo -n ip netns exec wtc_sta ping -c 2 -W 2 10.90.0.3 | tail -2" ;;
 down)
     ssh -n $SSHO $CLI "$T cli down; $T modules unload"; ssh -n $SSHO $SRV "$T srv down; $T modules unload" ;;
+cake) # the shaper CAKE splits a GSO packet into its segments before it shapes (split-gso), single tin, no flow isolation; rtt 1 s keeps its AQM out of the way
+    ssh -n $SSHO $CLI "sudo -n modprobe sch_cake; sudo -n ip netns exec wtc_sta tc qdisc del dev wtcgc root; sudo -n ip netns exec wtc_sta tc qdisc add dev wtcgc root cake bandwidth ${2}kbit raw besteffort flowblind rtt 1s"
+    ssh -n $SSHO $SRV "sudo -n modprobe sch_cake; sudo -n ip netns exec wtc_srv tc qdisc del dev wtcgs root; sudo -n ip netns exec wtc_srv tc qdisc add dev wtcgs root cake bandwidth ${2}kbit raw besteffort flowblind rtt 1s" ;;
 rate) tcset "limit 1000 delay 5ms rate ${2}kbit" ;;
 slot) tcset "limit 1000 delay 5ms slot 4ms 4ms bytes $((${2} / 2))" ;; # rate x 4 ms / 8 = rate_kbit / 2 bytes per slot
 build)
@@ -27,5 +30,5 @@ build)
         git -C "$REPO" archive HEAD | ssh $SSHO $h 'rm -rf tpr_src && mkdir tpr_src && tar -x -C tpr_src'
         ssh -n $SSHO $h 'cd tpr_src && examples/perf_hil/experiments/train_probe_rig.sh build /tmp/train_probe 2>&1 | tail -1'
     done ;;
-*) echo "usage: $0 up|down|rate K|slot K|build"; exit 2 ;;
+*) echo "usage: $0 up|down|rate K|slot K|cake K|build"; exit 2 ;;
 esac
